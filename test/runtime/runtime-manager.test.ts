@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -17,6 +17,19 @@ afterEach(async () => {
 })
 
 describe('RuntimeManager', () => {
+  it('uses the staged Runtime during development when it is available', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-path-'))
+    roots.push(root)
+    const stagedEntry = join(root, 'out', 'dsh-runtime', 'lib', 'bin.js')
+    await mkdir(join(root, 'out', 'dsh-runtime', 'lib'), { recursive: true })
+    await writeFile(stagedEntry, '')
+
+    expect(resolveRuntimeEntryPath({
+      appPath: root,
+      isPackaged: false
+    })).toBe(stagedEntry)
+  })
+
   it('resolves the packaged Runtime inside the Electron app resources', () => {
     expect(resolveRuntimeEntryPath({
       appPath: '/Applications/EzDSH.app/Contents/Resources/app',

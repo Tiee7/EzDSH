@@ -1,4 +1,4 @@
-import { createWriteStream, type WriteStream } from 'node:fs'
+import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createServer } from 'node:net'
@@ -17,9 +17,18 @@ export interface RuntimePathOptions {
 
 /** Resolve the source-built or staged Runtime entry without consulting user PATH. */
 export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
-  return options.isPackaged
-    ? join(options.resourcesPath ?? resolve(options.appPath, '..'), 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
-    : join(options.appPath, 'vendor', 'deepseek-harness', 'apps', 'cli', 'lib', 'bin.js')
+  if (options.isPackaged) {
+    return join(options.resourcesPath ?? resolve(options.appPath, '..'), 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
+  }
+
+  // The source checkout's CLI depends on pnpm workspace links. Those links are
+  // intentionally not part of the application package and can be incomplete
+  // after an npm-only install. Prefer the staged, self-contained Runtime when
+  // it exists so `npm run dev` exercises the same dependency graph as a build.
+  const stagedEntry = join(options.appPath, 'out', 'dsh-runtime', 'lib', 'bin.js')
+  if (existsSync(stagedEntry)) return stagedEntry
+
+  return join(options.appPath, 'vendor', 'deepseek-harness', 'apps', 'cli', 'lib', 'bin.js')
 }
 
 /** Resolve the bundled Node executable used by packaged Runtime processes. */
