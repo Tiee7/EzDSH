@@ -14,8 +14,9 @@ if (runtimePackage === undefined) {
   throw new Error(`The current release target is unsupported: ${target}`)
 }
 const expectedVersion = manifest.devDependencies?.[runtimePackage]
+  ?? manifest.optionalDependencies?.[runtimePackage]
 if (typeof expectedVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(expectedVersion)) {
-  throw new Error(`devDependencies.${runtimePackage} must be pinned to an exact version`)
+  throw new Error(`${runtimePackage} must be pinned to an exact version in devDependencies or optionalDependencies`)
 }
 
 const packageRoot = join(projectRoot, 'node_modules', runtimePackage)

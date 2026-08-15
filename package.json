@@ -50,12 +50,14 @@
     "electron": "43.4.0",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
-    "node-bin-darwin-arm64": "24.18.0",
-    "node-win-x64": "24.18.0",
     "pnpm": "11.7.0",
     "typescript": "5.9.3",
     "vite": "^6.3.5",
     "vitest": "^3.1.2"
+  },
+  "optionalDependencies": {
+    "node-bin-darwin-arm64": "24.18.0",
+    "node-win-x64": "24.18.0"
   },
   "build": {
     "appId": "com.ezdsh.desktop",
