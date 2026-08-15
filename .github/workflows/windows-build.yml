@@ -29,8 +29,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare Windows package
+        run: npm run prepare:package
+
       - name: Build Windows installer
-        run: npm run package:win
+        run: npx electron-builder --win --publish never
+
+      - name: Check Windows package files
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "out\node-runtime\bin\node.exe")) {
+            throw "Bundled Windows Node runtime is missing"
+          }
+          if (-not (Test-Path "out\dsh-runtime.tar.gz")) {
+            throw "Bundled DSH Runtime archive is missing"
+          }
+          if (-not (Get-ChildItem "dist\*.exe" -ErrorAction SilentlyContinue)) {
+            throw "Windows installer was not generated"
+          }
 
       - name: Create temporary self-signed certificate
         shell: pwsh
