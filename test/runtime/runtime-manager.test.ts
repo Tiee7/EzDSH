@@ -3,7 +3,11 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { RuntimeManager } from '../../src/main/runtime/runtime-manager'
+import {
+  resolveRuntimeCommandPath,
+  resolveRuntimeEntryPath,
+  RuntimeManager
+} from '../../src/main/runtime/runtime-manager'
 import { getUserDataLayout } from '../../src/main/state/user-data'
 
 const roots: string[] = []
@@ -13,6 +17,23 @@ afterEach(async () => {
 })
 
 describe('RuntimeManager', () => {
+  it('resolves the packaged Runtime inside the Electron app resources', () => {
+    expect(resolveRuntimeEntryPath({
+      appPath: '/Applications/Ez DSH.app/Contents/Resources/app',
+      resourcesPath: '/Applications/Ez DSH.app/Contents/Resources',
+      isPackaged: true
+    })).toBe('/Applications/Ez DSH.app/Contents/Resources/app/out/dsh-runtime/lib/bin.js')
+  })
+
+  it('resolves the packaged Node executable inside the Electron app resources', () => {
+    expect(resolveRuntimeCommandPath({
+      appPath: '/Applications/Ez DSH.app/Contents/Resources/app',
+      resourcesPath: '/Applications/Ez DSH.app/Contents/Resources',
+      isPackaged: true,
+      platform: 'darwin'
+    })).toBe('/Applications/Ez DSH.app/Contents/Resources/app/out/node-runtime/bin/node')
+  })
+
   it('starts, reports ready, and stops without removing the harness directory', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-'))
     roots.push(root)
@@ -27,6 +48,8 @@ describe('RuntimeManager', () => {
       }
     })
     let spawnedArgs: readonly string[] = []
+    let spawnedOptions: import('node:child_process').SpawnOptions | undefined
+    const processSignals: Array<[number, NodeJS.Signals]> = []
     const manager = new RuntimeManager({
       layout,
       runtimeEntryPath: '/dev/null',
@@ -35,9 +58,15 @@ describe('RuntimeManager', () => {
       stopTimeoutMs: 1_000,
       allocatePort: async () => 4567,
       waitForHealthy: async () => undefined,
-      spawnProcess: (_command, args) => {
+      spawnProcess: (_command, args, options) => {
         spawnedArgs = args
+        spawnedOptions = options
         return child as never
+      },
+      processKill: (pid, signal) => {
+        processSignals.push([pid, signal as NodeJS.Signals])
+        child.emit('exit', 0, signal)
+        return true
       }
     })
 
@@ -45,9 +74,11 @@ describe('RuntimeManager', () => {
     expect(ready.phase).toBe('ready')
     expect(ready.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(spawnedArgs[0]).toBe('--expose-internals')
+    expect(spawnedOptions?.detached).toBe(process.platform !== 'win32')
 
     await manager.stop()
     expect(manager.snapshot().phase).toBe('stopped')
+    if (process.platform !== 'win32') expect(processSignals).toContainEqual([-12345, 'SIGTERM'])
     await expect(import('node:fs/promises').then(({ access }) => access(layout.harness))).resolves.toBeUndefined()
   })
 

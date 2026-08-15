@@ -12,13 +12,28 @@ export interface RuntimePathOptions {
   appPath: string
   resourcesPath?: string
   isPackaged: boolean
+  platform?: NodeJS.Platform
 }
 
 /** Resolve the source-built or staged Runtime entry without consulting user PATH. */
 export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
   return options.isPackaged
-    ? join(options.resourcesPath ?? resolve(options.appPath, '..'), 'dsh-runtime', 'lib', 'bin.js')
+    ? join(options.resourcesPath ?? resolve(options.appPath, '..'), 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
     : join(options.appPath, 'vendor', 'deepseek-harness', 'apps', 'cli', 'lib', 'bin.js')
+}
+
+/** Resolve the bundled Node executable used by packaged Runtime processes. */
+export function resolveRuntimeCommandPath(options: RuntimePathOptions): string | undefined {
+  if (!options.isPackaged) return undefined
+  const executable = (options.platform ?? process.platform) === 'win32' ? 'node.exe' : 'node'
+  return join(
+    options.resourcesPath ?? resolve(options.appPath, '..'),
+    'app',
+    'out',
+    'node-runtime',
+    'bin',
+    executable
+  )
 }
 
 export interface RuntimeManagerOptions {
@@ -31,6 +46,7 @@ export interface RuntimeManagerOptions {
   fetchImpl?: typeof fetch
   waitForHealthy?: typeof waitForRuntimeHealthy
   spawnProcess?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
+  processKill?: (pid: number, signal: NodeJS.Signals) => boolean
   allocatePort?: () => Promise<number>
 }
 
@@ -152,6 +168,7 @@ export class RuntimeManager {
       : [this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port)]
     const spawnOptions: SpawnOptions = {
       cwd: this.config.layout.launchRoot,
+      detached: process.platform !== 'win32',
       env: {
         ...process.env,
         DSH_HOME: this.config.layout.harness,
@@ -238,14 +255,14 @@ export class RuntimeManager {
       }
       child.once('exit', settle)
       try {
-        child.kill('SIGTERM')
+        this.signalChild(child, 'SIGTERM')
       } catch {
         settle()
       }
       setTimeout(() => {
         if (settled) return
         try {
-          child.kill('SIGKILL')
+          this.signalChild(child, 'SIGKILL')
         } finally {
           settle()
         }
@@ -255,6 +272,19 @@ export class RuntimeManager {
     this.child = undefined
     this.closeLog()
     this.setSnapshot({ phase: 'stopped', pid: undefined, port: undefined, url: undefined, message: 'Runtime 已停止' })
+  }
+
+  private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
+    if (process.platform !== 'win32' && child.pid !== undefined) {
+      try {
+        const killProcess = this.config.processKill ?? process.kill
+        killProcess(-child.pid, signal)
+        return
+      } catch {
+        // Fall back to the root process if the process group is already gone.
+      }
+    }
+    child.kill(signal)
   }
 
   private fail(error: unknown): void {

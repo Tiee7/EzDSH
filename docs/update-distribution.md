@@ -15,6 +15,8 @@ https://ezdsh.vercel.app/updates/
 
 版本检查以这些元数据中的 `version` 为准，不额外维护一套容易不一致的版本号接口。官网如果需要展示版本号，可以读取同一份元数据，或者由发布流程生成一个独立的 `version.json`。
 
+项目展示版本可以使用四段格式，例如 `0.8.15.1`；但 `electron-updater` 和更新元数据必须使用标准三段 SemVer。当前打包配置将 `0.8.15.1` 映射为更新版本 `0.8.15`，因此 Vercel 更新目录中的 `latest-mac.yml`、`latest.yml` 以及安装包元数据必须使用 `0.8.15`。后续需要发布更新时提升三段版本，例如展示版本 `0.8.16.1` 对应更新版本 `0.8.16`；第四段只作为展示/构建标识，不参与更新比较。
+
 ## 2. Vercel 是否适合
 
 可行，推荐拆成两层：
@@ -29,7 +31,7 @@ https://ezdsh.vercel.app/updates/
 开发环境默认不访问更新源。临时指定远程源后，Main 进程会启用同一套更新检查逻辑：
 
 ```bash
-EZDSH_UPDATE_FEED_URL=https://your-project.vercel.app/updates/ pnpm dev
+EZDSH_UPDATE_FEED_URL=https://your-project.vercel.app/updates/ npm run dev
 ```
 
 测试源至少需要提供当前平台对应的 `latest-mac.yml` 或 `latest.yml`。只模拟版本检查时，元数据中的版本可以高于当前版本；要继续测试下载和安装，必须同时提供真实、签名且与元数据哈希一致的安装包。

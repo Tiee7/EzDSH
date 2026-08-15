@@ -4,10 +4,9 @@
   "description": "A desktop client for DeepSeek Harness.",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.7.0",
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
-    "pnpm": ">=11.7.0"
+    "npm": ">=9.0.0"
   },
   "main": "./out/main/index.js",
   "author": "EzDSH",
@@ -21,13 +20,17 @@
     "check:runtime": "node scripts/check-runtime.mjs",
     "dsh:install": "CI=true pnpm --dir vendor/deepseek-harness install --frozen-lockfile",
     "dsh:build": "CI=true pnpm --dir vendor/deepseek-harness run build",
+    "stage:node-runtime": "node scripts/stage-node-runtime.mjs",
     "stage:dsh-runtime": "node scripts/stage-dsh-runtime.mjs",
-    "postinstall": "pnpm run check:runtime && pnpm run dsh:install",
-    "prepare:package": "pnpm run dsh:build && pnpm run build && pnpm run stage:dsh-runtime",
-    "package:dir": "pnpm run prepare:package && electron-builder --dir",
-    "package:mac": "pnpm run prepare:package && electron-builder --mac --publish never",
-    "package:mac:zip": "pnpm run prepare:package && electron-builder --mac zip --publish never",
-    "package:win": "pnpm run prepare:package && electron-builder --win --x64 --publish never"
+    "stage:runtime": "npm run stage:node-runtime && npm run stage:dsh-runtime",
+    "verify:runtime": "node scripts/verify-runtime-bundle.mjs",
+    "verify:package:mac": "node scripts/verify-runtime-bundle.mjs \"dist/mac-arm64/Ez DSH.app/Contents/Resources/app/out\"",
+    "postinstall": "npm run check:runtime && npm run dsh:install",
+    "prepare:package": "npm run dsh:install && npm run dsh:build && npm run build && npm run stage:runtime && npm run verify:runtime",
+    "package:dir": "npm run prepare:package && electron-builder --dir",
+    "package:mac": "npm run prepare:package && electron-builder --mac --publish never && npm run verify:package:mac",
+    "package:mac:zip": "npm run prepare:package && electron-builder --mac zip --publish never && npm run verify:package:mac",
+    "package:mac:release": "npm run prepare:package && electron-builder --mac --publish never -c.mac.forceCodeSigning=true && npm run verify:package:mac"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
@@ -43,6 +46,8 @@
     "electron": "43.4.0",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
+    "node-bin-darwin-arm64": "24.18.0",
+    "pnpm": "11.7.0",
     "typescript": "5.9.3",
     "vite": "^6.3.5",
     "vitest": "^3.1.2"
@@ -57,6 +62,7 @@
     },
     "files": [
       "out/**/*",
+      "out/dsh-runtime/node_modules/**/*",
       "node_modules/**/*",
       "package.json"
     ],
@@ -69,16 +75,25 @@
     "icon": "logo.png",
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": ["dmg", "zip"]
+      "hardenedRuntime": true,
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "publish": [
       {
         "provider": "generic",
         "url": "https://ezdsh.vercel.app/updates/"
       }
-    ]
+    ],
+    "extraMetadata": {
+      "version": "0.8.15"
+    }
   }
 }

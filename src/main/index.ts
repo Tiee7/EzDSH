@@ -11,7 +11,11 @@ import type { UpdateState } from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale.js'
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
-import { RuntimeManager, resolveRuntimeEntryPath } from './runtime/runtime-manager.js'
+import {
+  RuntimeManager,
+  resolveRuntimeCommandPath,
+  resolveRuntimeEntryPath
+} from './runtime/runtime-manager.js'
 import { ProviderService } from './providers/provider-service.js'
 import { UpdateManager } from './update/update-manager.js'
 import { getApplicationMenuTemplate } from './application-menu.js'
@@ -277,6 +281,11 @@ if (!singleInstance) {
     runtimeManager = new RuntimeManager({
       layout,
       runtimeEntryPath: resolveRuntimeEntryPath({
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath,
+        isPackaged: app.isPackaged
+      }),
+      command: resolveRuntimeCommandPath({
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath,
         isPackaged: app.isPackaged

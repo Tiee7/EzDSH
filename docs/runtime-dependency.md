@@ -22,7 +22,9 @@ Checked at:         2026-08-15
 
 EzDSH 项目自身通过上游源码子模块和固定 commit 完成 DSH Runtime 构建。打包时，构建后的 Runtime 代码和运行所需资源会进入 EzDSH 安装包；用户安装 EzDSH 后即可启动，不需要再手动安装 Node.js、执行命令或配置 DSH 路径。
 
-当前 staging 流程使用上游 workspace 的 `pnpm deploy --legacy --filter @deepseek-ai/dsh --prod` 生成生产依赖闭包，再把 `apps/web/dist` 纳入同一目录。生产入口为 `out/dsh-runtime/lib/bin.js`，因此打包后不依赖开发目录中的 `apps/cli` 路径。
+当前 staging 流程使用上游 workspace 的 `pnpm deploy --legacy --ignore-scripts --filter @deepseek-ai/dsh --prod` 生成依赖闭包，并单独执行 Runtime 所需的原生模块准备脚本；对指向上游源码目录的 workspace 链接做有限展开，再把 `apps/web/dist` 纳入同一目录。生产入口为 `out/dsh-runtime/lib/bin.js`，因此打包后不依赖开发目录中的 `apps/cli` 路径。electron-builder 会把这份 staging 目录随 `out/**/*` 放入安装包，主进程从 `Contents/Resources/app/out/dsh-runtime/lib/bin.js` 启动它。
+
+根项目通过 npm 精确锁定 `node-bin-darwin-arm64@24.18.0` 和 `pnpm@11.7.0`。二者安装在被 Git 忽略的 `node_modules` 中；Node 平台包及其完整性哈希直接记录在根 `package-lock.json`，不经过隐藏的二次安装。打包时仅把 Node 可执行文件和许可证复制到同样被忽略的 `out/node-runtime`，最终进入安装包。正式运行时，EzDSH 从 `Contents/Resources/app/out/node-runtime/bin/node` 启动 DSH，不读取系统 PATH，也不要求用户安装 Node、npm 或 pnpm。
 
 因此，三者关系如下：
 
@@ -36,6 +38,7 @@ EzDSH 源码
           ▼
 EzDSH 安装包
 ├── 图形界面
+├── Node Runtime 24.18.0
 ├── DSH Runtime
 └── 运行所需依赖
           │
@@ -152,8 +155,39 @@ API Key 不应直接保存在 EzDSH 安装目录或普通状态 JSON 中。EzDSH
 3. 是否需要本地源码联调；
 4. 如果需要联调，再提供源码目录和 commit。
 
-默认开发路径采用“上游 Git 子模块 + pnpm workspace + 打包内置 Runtime”。EzDSH 根项目通过 `pnpm install` 安装自身依赖，并在 `postinstall` 阶段执行 `pnpm --dir vendor/deepseek-harness install --frozen-lockfile`。首个实现使用 `@deepseek-ai/dsh@0.1.0-rc.5` 对应的上游 commit，不请求不存在的同版本 NPM 包。
+默认开发路径采用“上游 Git 子模块 + npm 根项目 + 打包内置 Runtime”。EzDSH 根项目通过 `npm install` 安装自身依赖，并在 `postinstall` 阶段调用上游 lockfile 要求的 `pnpm --dir vendor/deepseek-harness install --frozen-lockfile`。这个 pnpm 来自 npm 锁定的本地开发依赖，不要求开发者全局安装。开发者的入口命令始终是 npm；只有构建内置 DSH Runtime 时，脚本内部使用上游指定的 pnpm workspace。首个实现使用 `@deepseek-ai/dsh@0.1.0-rc.5` 对应的上游 commit，不请求不存在的同版本 NPM 包。
 
-本机使用 `n` 切换 Node 版本是可以的；当前上游构建要求 Node `^22.19.0 || >=24.0.0`，开发环境还应使用 pnpm `11.7.0`。EzDSH 的 `pnpm install`、`pnpm run dsh:build` 和 `pnpm run stage:dsh-runtime` 都应在满足该版本要求的 Node 下执行。
+本机使用 `n` 切换 Node 版本是可以的；当前上游构建要求 Node `^22.19.0 || >=24.0.0`。应先执行 `n 24.18.0`，并确认当前终端的 `node -v` 实际为 `v24.18.0`。如果 NVM 的路径排在 `/usr/local/bin` 前面，终端仍可能命中旧 Node，需要重新打开终端或调整 PATH。
 
-根项目还声明了 Node/pnpm engines，并在 `postinstall` 前运行版本检查。若当前终端仍然指向旧 Node，脚本会直接提示使用 `n` 切换，而不会继续执行上游安装。
+根项目还声明了 Node/npm engines，并在 `postinstall` 前运行版本检查。若当前终端仍然指向旧 Node，脚本会直接提示使用 `n` 切换，而不会继续执行上游安装。
+
+## 7. 可发布打包流程
+
+```bash
+n 24.18.0
+node -v
+npm ci
+CI=true ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm run package:mac:zip
+```
+
+`prepare:package` 会依次执行 DSH 安装与构建、EzDSH 构建、Node/DSH Runtime 暂存和真实健康检查。健康检查会用暂存的 Node 启动暂存的 DSH，并在无供应商配置的临时用户目录中请求 Web 页面；未通过时不会继续生成安装包。electron-builder 完成后还会从最终 `.app` 再启动一次包内 Node 与 DSH，确保复制、依赖链接和架构没有在组装阶段损坏。
+
+当前发布目标明确限定为 macOS arm64。构建脚本会校验主机平台和架构，并拒绝在其他平台上错误地混入 macOS arm64 原生依赖。Windows 和 macOS x64 需要分别在对应原生 runner 上建立并验证自己的 Node/原生模块 staging 后再开放打包命令。
+
+本地 `package:mac:zip` 可以生成未签名测试包。对外发布必须使用：
+
+```bash
+npm run package:mac:release
+```
+
+该命令要求 electron-builder 找到有效的 Developer ID，并强制在缺少签名时失败。签名使用 `CSC_LINK`、`CSC_KEY_PASSWORD` 等 CI Secret；公证推荐使用 `APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`，也可使用 Apple ID 对应的三项环境变量。所有证书、私钥、密码和 API Key 都只能注入环境，不能提交 Git。
+
+以下目录都是可重新生成的本地环境或产物，并由 `.gitignore` 排除：
+
+- `node_modules/`
+- `.pnpm-store/`
+- `vendor/deepseek-harness/node_modules/`
+- `out/`
+- `dist/`
+
+提交到 Git 的只有 npm 锁文件、构建脚本、上游子模块 commit 和应用源码，不提交 Node 二进制、依赖目录或打包产物。
