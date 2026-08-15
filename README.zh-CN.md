@@ -96,40 +96,105 @@ Harness 提供引擎，EzDSH 提供体验。
 
 ## 本地使用
 
-1. 从 [Releases](../../releases) 页面下载适合你平台的 macOS 或 Windows 安装包。
-2. 安装并打开 EzDSH。
-3. 在 Harness Web UI 中配置模型供应商。
-4. 开始工作。EzDSH 会自动启动 Runtime 并打开 Harness 工作空间。
+### 方式一：使用已安装的应用
+
+以下步骤适合只想使用 EzDSH 的普通用户，不需要安装 Node.js、pnpm，也不需要使用命令行。
+
+1. 打开 [Releases](../../releases) 页面。
+2. 下载对应平台的安装包：
+   - macOS Apple Silicon：`.dmg`
+   - Windows x64：`.exe`
+3. 安装 EzDSH：
+   - macOS：打开 `.dmg`，将 `EzDSH.app` 拖入“应用程序”文件夹。
+   - Windows：运行 `.exe` 安装程序，按照提示完成安装。
+4. 从“应用程序”或开始菜单打开 EzDSH。
+5. 在 Harness Web UI 中配置模型供应商。
+6. 开始工作。EzDSH 会自动启动 Runtime 并打开 Harness 工作空间。
+
+### 方式二：从源码本地运行
+
+以下步骤适合希望从源码运行项目的开发者。这和生成安装包是两件不同的事情。
+
+1. 安装 Node.js `24.18.0`（或 `package.json` 接受的版本）。
+2. 打开终端，进入项目目录：
+
+   ```bash
+   cd /Users/snake/Documents/ChatGPT/ezdsh
+   ```
+
+3. 安装项目依赖。首次克隆项目后执行一次；依赖发生变化时也需要重新执行：
+
+   ```bash
+   npm ci
+   ```
+
+4. 启动本地开发应用：
+
+   ```bash
+   npm run dev
+   ```
+
+5. 使用 EzDSH 打开的 Harness Web UI。需要停止开发应用时，在终端按 `Ctrl+C`。
 
 ## 从源码编译
 
 ### macOS（Apple Silicon）
 
-当前正式发布目标是 macOS arm64。请使用 `package.json` 要求的 Node.js 版本（推荐 `24.18.0`），在项目根目录执行：
+以下步骤适合需要生成可分发安装包或正式发布包的开发者。
+
+1. 使用 macOS Apple Silicon 电脑，并安装 Node.js `24.18.0`（或 `package.json` 接受的版本）。
+2. 打开终端，进入项目目录：
+
+   ```bash
+   cd /Users/snake/Documents/ChatGPT/ezdsh
+   ```
+
+3. 安装项目依赖：
 
 ```bash
 npm ci
+```
+
+4. 创建签名发布包：
+
+```bash
 npm run package:mac:release
 ```
 
-`package:mac:release` 会构建内置 DSH Runtime，生成签名的 DMG 和 ZIP，并验证打包后的 Runtime。正式发布需要有效的 `Developer ID Application` 证书。仅用于本地自动更新测试的未强制签名 ZIP，可以执行：
+该命令会构建内置 DSH Runtime，生成签名的 DMG 和 ZIP，并验证打包后的 Runtime。正式发布需要有效的 `Developer ID Application` 证书。产物会写入 `dist/`。
+
+仅用于本地自动更新测试的未强制签名 ZIP，可以改为执行：
 
 ```bash
 npm run package:mac:zip
 ```
 
-产物会写入 `dist/`。安装 DMG 时，打开 DMG 并将 `EzDSH.app` 拖入“应用程序”文件夹。直接运行 `dist/mac-arm64/EzDSH.app` 适合本地开发调试，但不能验证 DMG 安装和 Gatekeeper 流程。
+5. 安装 DMG 时，打开 DMG 并将 `EzDSH.app` 拖入“应用程序”文件夹。直接运行 `dist/mac-arm64/EzDSH.app` 适合本地开发调试，但不能验证 DMG 安装和 Gatekeeper 流程。
 
 ### Windows（x64）
 
-请在原生 Windows x64 机器上使用 Node.js `24.18.0`，进入项目目录后执行：
+1. 使用原生 Windows x64 电脑，并安装 Node.js `24.18.0`。
+2. 打开 PowerShell，进入项目目录：
+
+   ```powershell
+   cd C:\path\to\ezdsh
+   ```
+
+3. 安装项目依赖：
 
 ```powershell
 npm ci
+```
+
+4. 创建 Windows 安装程序：
+
+```powershell
 npm run package:win
 ```
 
-该命令会暂存 Windows Node Runtime，使用 Windows 原生依赖构建 DSH Runtime，生成 NSIS 安装程序，并验证解包后的应用。安装程序会写入 `dist/`，可以直接在 Windows 上运行。正式签名发布时配置 Windows 代码签名证书，然后执行：
+该命令会暂存 Windows Node Runtime，使用 Windows 原生依赖构建 DSH Runtime，生成 NSIS 安装程序，并验证解包后的应用。安装程序会写入 `dist/`。
+
+5. 正式签名发布时，配置 Windows 代码签名证书，然后执行：
 
 ```powershell
 npm run package:win:release

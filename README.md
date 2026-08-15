@@ -96,40 +96,105 @@ Harness provides the engine. EzDSH provides the experience.
 
 ## Local use
 
-1. **Download** the installer for macOS or Windows from the [Releases](../../releases) page.
-2. **Install and open** EzDSH.
-3. **Configure your provider** in the Harness Web UI.
-4. **Start working.** EzDSH launches the Runtime and opens the Harness workspace automatically.
+### Option A: Use the installed app
+
+These steps are for users who only want to use EzDSH. You do not need Node.js, pnpm, or a terminal.
+
+1. Open the [Releases](../../releases) page.
+2. Download the installer for your platform:
+   - macOS Apple Silicon: `.dmg`
+   - Windows x64: `.exe`
+3. Install EzDSH:
+   - On macOS, open the `.dmg` and drag `EzDSH.app` to `Applications`.
+   - On Windows, run the `.exe` installer and follow the prompts.
+4. Open EzDSH from `Applications` or the Start menu.
+5. Configure your model provider in the Harness Web UI.
+6. Start working. EzDSH launches the Runtime and opens the Harness workspace automatically.
+
+### Option B: Run from source
+
+These steps are for developers who want to run the project locally from a source checkout. This is different from building an installer.
+
+1. Install Node.js `24.18.0` (or a version accepted by `package.json`).
+2. Open a terminal and enter the project directory:
+
+   ```bash
+   cd /Users/snake/Documents/ChatGPT/ezdsh
+   ```
+
+3. Install project dependencies. Run this once after cloning, or whenever dependencies change:
+
+   ```bash
+   npm ci
+   ```
+
+4. Start the local development app:
+
+   ```bash
+   npm run dev
+   ```
+
+5. Use the Harness Web UI opened by EzDSH. Press `Ctrl+C` in the terminal to stop the development app.
 
 ## Build from source
 
 ### macOS (Apple Silicon)
 
-The current release target is macOS arm64. Use Node.js `24.18.0` (or another version accepted by `package.json`) and run from the repository root:
+These steps are for developers who need to create a distributable installer or release package.
+
+1. Use a macOS Apple Silicon machine and install Node.js `24.18.0` (or a version accepted by `package.json`).
+2. Open a terminal and enter the project directory:
+
+   ```bash
+   cd /Users/snake/Documents/ChatGPT/ezdsh
+   ```
+
+3. Install project dependencies:
 
 ```bash
 npm ci
+```
+
+4. Create the signed release packages:
+
+```bash
 npm run package:mac:release
 ```
 
-`package:mac:release` builds the bundled DSH Runtime, creates a signed DMG and ZIP, and verifies the packaged Runtime. A valid `Developer ID Application` certificate is required for release builds. For a local unsigned ZIP used only for testing updates, use:
+This builds the bundled DSH Runtime, creates a signed DMG and ZIP, and verifies the packaged Runtime. A valid `Developer ID Application` certificate is required. The artifacts are written to `dist/`.
+
+For a local unsigned ZIP used only for testing updates, run instead:
 
 ```bash
 npm run package:mac:zip
 ```
 
-The artifacts are written to `dist/`. To install the DMG, open it and drag `EzDSH.app` into `Applications`. Opening `dist/mac-arm64/EzDSH.app` directly is useful for local development, but does not test the DMG installation or Gatekeeper flow.
+5. To install the DMG, open it and drag `EzDSH.app` into `Applications`. Opening `dist/mac-arm64/EzDSH.app` directly is useful for local development, but does not test the DMG installation or Gatekeeper flow.
 
 ### Windows (x64)
 
-Build on a native Windows x64 machine with Node.js `24.18.0` and the repository checkout:
+1. Use a native Windows x64 machine and install Node.js `24.18.0`.
+2. Open PowerShell and enter the project directory:
+
+   ```powershell
+   cd C:\path\to\ezdsh
+   ```
+
+3. Install project dependencies:
 
 ```powershell
 npm ci
+```
+
+4. Create the Windows installer:
+
+```powershell
 npm run package:win
 ```
 
-The command stages the Windows Node Runtime, builds the DSH Runtime with Windows-native dependencies, creates an NSIS installer, and verifies the unpacked bundle. The installer is written to `dist/` and can be run directly on Windows. For a signed release build, configure a Windows code-signing certificate and use:
+This stages the Windows Node Runtime, builds the DSH Runtime with Windows-native dependencies, creates an NSIS installer, and verifies the unpacked bundle. The installer is written to `dist/`.
+
+5. For a signed release build, configure a Windows code-signing certificate and run:
 
 ```powershell
 npm run package:win:release
