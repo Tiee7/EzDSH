@@ -172,7 +172,7 @@ CI=true ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm run package:
 
 `prepare:package` 会依次执行 DSH 安装与构建、EzDSH 构建、Node/DSH Runtime 暂存和真实健康检查。健康检查会用暂存的 Node 启动暂存的 DSH，并在无供应商配置的临时用户目录中请求 Web 页面；未通过时不会继续生成安装包。electron-builder 完成后还会从最终 `.app` 再启动一次包内 Node 与 DSH，确保复制、依赖链接和架构没有在组装阶段损坏。
 
-当前发布目标明确限定为 macOS arm64。构建脚本会校验主机平台和架构，并拒绝在其他平台上错误地混入 macOS arm64 原生依赖。Windows 和 macOS x64 需要分别在对应原生 runner 上建立并验证自己的 Node/原生模块 staging 后再开放打包命令。
+当前发布目标支持 macOS arm64 和 Windows x64。构建脚本会根据原生主机平台选择对应的内置 Node Runtime，并拒绝在其他平台上错误地混入原生依赖。Windows 打包必须在 Windows x64 runner 上执行；macOS arm64 打包必须在 macOS arm64 runner 上执行。Windows 原生打包流程已准备，但需要在对应 Windows 环境中完成首次构建验证后再作为正式发布链路使用。
 
 本地 `package:mac:zip` 可以生成未签名测试包。对外发布必须使用：
 

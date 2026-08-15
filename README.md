@@ -37,9 +37,22 @@ npm run package:mac:zip
 
 The artifacts are written to `dist/`. To install the DMG, open it and drag `EzDSH.app` into `Applications`. Opening `dist/mac-arm64/EzDSH.app` directly is useful for local development, but does not test the DMG installation or Gatekeeper flow.
 
-### Windows
+### Windows (x64)
 
-The Electron Builder configuration includes an NSIS target, but Windows packaging is not enabled in the current release scripts. The current Runtime staging script is restricted to macOS arm64, so a Windows installer cannot be produced from this checkout yet. Windows support requires a Windows-native Runtime staging step and a dedicated `package:win` release script before the generated `.exe` can be built and installed.
+Build on a native Windows x64 machine with Node.js `24.18.0` and the repository checkout:
+
+```powershell
+npm ci
+npm run package:win
+```
+
+The command stages the Windows Node Runtime, builds the DSH Runtime with Windows-native dependencies, creates an NSIS installer, and verifies the unpacked bundle. The installer is written to `dist/` and can be run directly on Windows. For a signed release build, configure a Windows code-signing certificate and use:
+
+```powershell
+npm run package:win:release
+```
+
+Windows packaging is prepared for x64 only. It is not executed on the current macOS development machine.
 
 ## Why EzDSH
 

@@ -7,6 +7,7 @@ import { pruneRuntimeFiles } from './prune-runtime-files.mjs'
 const projectRoot = resolve(import.meta.dirname, '..')
 const runtimeSource = join(projectRoot, 'vendor', 'deepseek-harness')
 const destination = join(projectRoot, 'out', 'dsh-runtime')
+const linkType = process.platform === 'win32' ? 'junction' : undefined
 
 await rm(destination, { recursive: true, force: true })
 await mkdir(dirname(destination), { recursive: true })
@@ -135,7 +136,7 @@ for (const peerName of requiredPeers) {
       filter: (entry) => !relative(source, entry).split(sep).includes('node_modules')
     })
   } else {
-    await symlink(relative(dirname(target), await realpath(source)), target)
+    await symlink(relative(dirname(target), await realpath(source)), target, linkType)
   }
   peerPackageCount += 1
 }
@@ -222,7 +223,7 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
       } catch {
         // The package is not already exposed at the deployment root.
       }
-      await symlink(relative(dirname(targetPackage), sourcePackage), targetPackage)
+      await symlink(relative(dirname(targetPackage), sourcePackage), targetPackage, linkType)
       rootDependencyLinkCount += 1
     }
     continue
@@ -236,7 +237,7 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
   } catch {
     // The package is not already exposed at the deployment root.
   }
-  await symlink(relative(dirname(targetPackage), sourcePackage), targetPackage)
+  await symlink(relative(dirname(targetPackage), sourcePackage), targetPackage, linkType)
   rootDependencyLinkCount += 1
 }
 

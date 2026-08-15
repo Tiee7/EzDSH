@@ -37,9 +37,22 @@ npm run package:mac:zip
 
 产物会写入 `dist/`。安装 DMG 时，打开 DMG 并将 `EzDSH.app` 拖入“应用程序”文件夹。直接运行 `dist/mac-arm64/EzDSH.app` 适合本地开发调试，但不能验证 DMG 安装和 Gatekeeper 流程。
 
-### Windows
+### Windows（x64）
 
-Electron Builder 已配置 NSIS 目标，但当前发布脚本尚未启用 Windows 打包。现有 Runtime 暂存脚本限定为 macOS arm64，因此当前检出版本还不能生成 Windows 安装程序。要支持 Windows，需要先增加 Windows 原生 Runtime 暂存步骤和专用的 `package:win` 发布脚本，然后才能构建并安装 `.exe`。
+请在原生 Windows x64 机器上使用 Node.js `24.18.0`，进入项目目录后执行：
+
+```powershell
+npm ci
+npm run package:win
+```
+
+该命令会暂存 Windows Node Runtime，使用 Windows 原生依赖构建 DSH Runtime，生成 NSIS 安装程序，并验证解包后的应用。安装程序会写入 `dist/`，可以直接在 Windows 上运行。正式签名发布时配置 Windows 代码签名证书，然后执行：
+
+```powershell
+npm run package:win:release
+```
+
+当前 Windows 打包准备仅支持 x64，不会在现有 macOS 开发机上执行 Windows 打包。
 
 ## 为什么选择 EzDSH
 

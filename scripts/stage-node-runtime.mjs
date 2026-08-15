@@ -4,17 +4,22 @@ import { basename, dirname, join, resolve } from 'node:path'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const manifest = JSON.parse(await readFile(join(projectRoot, 'package.json'), 'utf8'))
-const runtimePackage = 'node-bin-darwin-arm64'
+const target = `${process.platform}-${process.arch}`
+const runtimePackageByTarget = {
+  'darwin-arm64': 'node-bin-darwin-arm64',
+  'win32-x64': 'node-win-x64'
+}
+const runtimePackage = runtimePackageByTarget[target]
+if (runtimePackage === undefined) {
+  throw new Error(`The current release target is unsupported: ${target}`)
+}
 const expectedVersion = manifest.devDependencies?.[runtimePackage]
 if (typeof expectedVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(expectedVersion)) {
   throw new Error(`devDependencies.${runtimePackage} must be pinned to an exact version`)
 }
-if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-  throw new Error(`The current release target requires darwin-arm64, found ${process.platform}-${process.arch}`)
-}
 
-const executableName = 'node'
 const packageRoot = join(projectRoot, 'node_modules', runtimePackage)
+const executableName = process.platform === 'win32' ? 'node.exe' : 'node'
 const source = join(packageRoot, 'bin', executableName)
 const destinationRoot = join(projectRoot, 'out', 'node-runtime')
 const destination = join(destinationRoot, 'bin', basename(source))
@@ -27,7 +32,11 @@ if (actualVersion !== `v${expectedVersion}`) {
 await rm(destinationRoot, { recursive: true, force: true })
 await mkdir(dirname(destination), { recursive: true })
 await copyFile(source, destination)
-await chmod(destination, 0o755)
-await copyFile(join(packageRoot, 'LICENSE'), join(destinationRoot, 'LICENSE'))
+if (process.platform !== 'win32') await chmod(destination, 0o755)
+try {
+  await copyFile(join(packageRoot, 'LICENSE'), join(destinationRoot, 'LICENSE'))
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error
+}
 
-console.log(`Staged Node Runtime ${actualVersion} at ${destination}`)
+console.log(`Staged Node Runtime ${actualVersion} for ${target} at ${destination}`)
