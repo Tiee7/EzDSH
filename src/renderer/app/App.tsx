@@ -1,17 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ProviderDefinition } from '../../shared/providers.js'
-import { needsProviderSetup } from '../../shared/providers.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../../shared/locale.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
-import { ProviderSetupPage } from '../onboarding/ProviderSetupPage'
 import './app.css'
 
 export function App() {
   const [locale, setLocale] = useState<AppLocale>(DEFAULT_APP_LOCALE)
   const copy = getAppCopy(locale)
-  const [definitions, setDefinitions] = useState<ProviderDefinition[]>([])
   const [runtime, setRuntime] = useState<RuntimeSnapshot>()
-  const [setupRequired, setSetupRequired] = useState(true)
   const [loading, setLoading] = useState(true)
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
 
@@ -28,21 +23,6 @@ export function App() {
     }
   }, [])
 
-  const continueToRuntime = useCallback(async (): Promise<void> => {
-    setSetupRequired(false)
-    await ensureRuntime()
-  }, [ensureRuntime])
-
-  const saveAndRestartRuntime = useCallback(async (): Promise<void> => {
-    setSetupRequired(false)
-    setErrorKey(undefined)
-    try {
-      setRuntime(await window.EzDSH.runtime.restart())
-    } catch {
-      setErrorKey('runtime-restart')
-    }
-  }, [])
-
   useEffect(() => {
     let active = true
     const unsubscribe = window.EzDSH.runtime.onStateChange((snapshot) => {
@@ -51,18 +31,13 @@ export function App() {
     const unsubscribeLocale = window.EzDSH.locale.onChange((nextLocale) => {
       if (active) setLocale(nextLocale)
     })
-    void window.EzDSH.locale.get().then((nextLocale) => {
-      if (active) setLocale(nextLocale)
-    })
-    void Promise.all([window.EzDSH.providers.listDefinitions(), window.EzDSH.providers.getStatus()])
-      .then(([nextDefinitions, statuses]) => {
+    void window.EzDSH.locale.get()
+      .then((nextLocale) => {
         if (!active) return
-        setDefinitions(nextDefinitions)
-        const needsSetup = needsProviderSetup(statuses)
-        setSetupRequired(needsSetup)
+        setLocale(nextLocale)
         setLoading(false)
       })
-      .catch((reason: unknown) => {
+      .catch(() => {
         if (!active) return
         setErrorKey('config-read')
         setLoading(false)
@@ -80,10 +55,6 @@ export function App() {
 
   if (loading) {
     return <main className="app-shell"><p>{copy.loadingConfig}</p></main>
-  }
-
-  if (setupRequired) {
-    return <ProviderSetupPage locale={locale} definitions={definitions} onSaved={saveAndRestartRuntime} onSkip={continueToRuntime} />
   }
 
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {

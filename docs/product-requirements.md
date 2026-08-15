@@ -32,13 +32,12 @@ EzDSH 不重新实现 Harness 的 Agent 能力，而是解决以下桌面产品�
 
 1. 启动 EzDSH；
 2. EzDSH 创建自己的运行目录并启动 DSH Runtime；
-3. 当检测不到可用模型供应商时，显示模型供应商配置页面，同时保持 DSH Runtime 可用；
-4. 用户可以跳过配置并先进入 Harness Web UI；
-5. 用户输入 API Key 并完成连接测试；
-6. 配置安全保存，必要时重启 Runtime 使配置生效；
-7. 关闭应用时自动停止 Runtime；
-8. 下次启动时恢复配置和历史数据；
-9. 检查新版本并在用户确认后完成应用内更新。
+3. 进入 Harness Web UI，由 DSH 自己负责模型供应商配置；
+4. 关闭应用时自动停止 Runtime；
+5. 下次启动时恢复配置和历史数据；
+6. 检查新版本并在用户确认后完成应用内更新。
+
+EzDSH 自己的供应商配置页面暂缓到后续版本。当前版本保留 Provider Service、凭据边界和 IPC 合约，但不在 Renderer 中展示该配置入口，优先保证 Runtime 启动和应用发布链路稳定。
 
 ### 2.2 非目标
 
@@ -74,24 +73,16 @@ EzDSH 不重新实现 Harness 的 Agent 能力，而是解决以下桌面产品�
 
 ### 3.2 没有模型供应商时
 
-当本地没有任何可用模型供应商，或者所有已配置供应商均无有效凭据时，EzDSH 必须显示模型供应商配置页面，但不得阻止 DSH Runtime 启动。
+当本地没有任何可用模型供应商时，EzDSH 仍然启动 DSH Runtime 并进入 Harness Web UI，由 DSH 自己提示和处理供应商配置。EzDSH 当前不显示独立的模型供应商配置页面。
 
 ```text
 启动 EzDSH
   ↓
-并行启动 DSH Runtime、检查供应商状态
+启动 DSH Runtime
   ↓
-没有可用供应商
+加载 Harness Web UI
   ↓
-显示“配置模型供应商”页面
-  ├─ 跳过 → 进入 Harness Web UI
-  └─ 选择供应商、输入 API Key、测试连接
-       ↓
-     保存 Credential 和 Provider Route
-       ↓
-     按需重启 Runtime
-       ↓
-     进入 Harness Web UI
+由 DSH Web UI 配置模型供应商
 ```
 
 页面要求：

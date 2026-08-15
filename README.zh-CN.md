@@ -44,11 +44,9 @@ EzDSH 不只是一个浏览器外壳，它管理 Runtime 的完整生命周期�
 
 你看到的是一个稳定的桌面应用，而不是一堆终端窗口。
 
-### 多模型供应商，无需手写 YAML
+### 使用 DSH 自带配置
 
-首次启动会引导你完成供应商配置。选择模型服务商、填写 API Key、测试连接、保存即可。无需手动处理 Provider Route，也无需编辑配置文件。
-
-当前支持 DeepSeek、OpenAI、Anthropic、Google Gemini、Moonshot / Kimi、MiniMax、智谱 GLM、Mistral AI、OpenRouter、Groq、Together AI 等主流供应商。
+EzDSH 会直接启动 DSH Runtime，并将供应商配置交给 Harness Web UI。当前版本暂时隐藏 EzDSH 自己的供应商配置页面，先保证启动和发布链路稳定；桌面端配置流程将在后续版本加入。
 
 ### 本地优先，重视安全
 
@@ -100,7 +98,7 @@ Harness 提供引擎，EzDSH 提供体验。
 
 1. 从 [Releases](../../releases) 页面下载适合你平台的 macOS 或 Windows 安装包。
 2. 安装并打开 EzDSH。
-3. 在首次启动向导中选择模型服务商、填写 API Key 并测试连接。
+3. 在 Harness Web UI 中配置模型供应商。
 4. 开始工作。EzDSH 会自动启动 Runtime 并打开 Harness 工作空间。
 
 ## 编译与安装

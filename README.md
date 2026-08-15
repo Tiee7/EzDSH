@@ -44,11 +44,9 @@ EzDSH is not a browser wrapper. It manages the complete Runtime lifecycle:
 
 You see a stable desktop app, not a collection of terminal windows.
 
-### Multi-provider setup without touching YAML
+### DSH-native configuration
 
-First launch walks you through provider configuration. Choose a model provider, enter your API key, test the connection, and save. No manual provider routing, no config file editing.
-
-Supported providers include DeepSeek, OpenAI, Anthropic, Google Gemini, Moonshot / Kimi, MiniMax, Zhipu GLM, Mistral AI, OpenRouter, Groq, and Together AI.
+EzDSH starts the DSH Runtime directly and leaves provider configuration to the Harness Web UI. EzDSH's own provider setup page is currently hidden so the first release can focus on reliable startup and packaging; the desktop configuration flow will be added in a later version.
 
 ### Local-first and security-minded
 
@@ -100,7 +98,7 @@ Harness provides the engine. EzDSH provides the experience.
 
 1. **Download** the installer for macOS or Windows from the [Releases](../../releases) page.
 2. **Install and open** EzDSH.
-3. **Set up your provider** on first launch — pick a model service, enter your API key, and test the connection.
+3. **Configure your provider** in the Harness Web UI.
 4. **Start working.** EzDSH launches the Runtime and opens the Harness workspace automatically.
 
 ## Build and install

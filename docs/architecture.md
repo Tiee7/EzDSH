@@ -80,12 +80,11 @@ interface EzDSHBridge {
 
 Renderer 负责展示状态和收集用户操作：
 
-- 首次配置页面；
-- 供应商选择和 API Key 输入；
-- 连接测试结果；
 - Runtime 启动进度和错误恢复；
 - 更新提示和下载进度；
 - Harness Web UI 容器。
+
+当前版本暂时不显示 EzDSH 自己的供应商配置页面。供应商、模型和 API Key 配置由 Harness Web UI 负责，EzDSH 只负责启动 Runtime、等待健康检查并加载本地页面。Provider IPC 和 Main Process 服务仍然保留，供后续版本重新启用桌面端配置流程。
 
 Renderer 不负责：
 
@@ -95,7 +94,7 @@ Renderer 不负责：
 - 调用任意外部 URL；
 - 决定凭据存储方式。
 
-首次启动时，Renderer 通过 IPC 请求供应商状态，同时让 Main 启动 DSH Runtime。只要没有一个 `usable` 供应商，EzDSH 就显示供应商配置页，但不阻止用户跳过并查看 Runtime 的图形界面。保存供应商后，EzDSH 重启 Runtime 使新配置生效，再将健康检查得到的本地 URL 放入受限 iframe。Runtime 页面中的模型设置仍然由 Harness Web UI 提供，EzDSH 负责应用级的启动、退出、日志和更新边界。
+首次启动时，Renderer 让 Main 启动 DSH Runtime，并在健康检查通过后将本地 URL 放入受限 iframe。Runtime 页面中的模型设置和供应商配置由 Harness Web UI 提供，EzDSH 负责应用级的启动、退出、日志和更新边界。
 
 ### 2.4 语言同步
 
@@ -152,6 +151,8 @@ interface RuntimeSnapshot {
 - 不删除 `harness/`、`profiles/`、`sessions/` 或 `plugins/`。
 
 ## 4. 模型供应商配置模块
+
+本模块的 Main Process 服务、Provider Definition 和 IPC 合约暂时保留，但当前版本不从 Renderer 展示或触发 EzDSH 配置页面。后续版本可以在不改变凭据文件和 IPC 边界的前提下重新启用桌面端配置。
 
 ### 4.1 Provider Definition
 
