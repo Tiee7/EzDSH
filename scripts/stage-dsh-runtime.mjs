@@ -127,7 +127,11 @@ for (const peerName of requiredPeers) {
   await rm(target, { recursive: true, force: true })
   await mkdir(dirname(target), { recursive: true })
   if (workspacePackages.has(peerName)) {
-    await cp(source, target, { recursive: true, force: true })
+    await cp(source, target, {
+      recursive: true,
+      force: true,
+      filter: (entry) => !relative(source, entry).split(sep).includes('node_modules')
+    })
   } else {
     await symlink(relative(dirname(target), await realpath(source)), target)
   }

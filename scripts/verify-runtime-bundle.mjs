@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -35,6 +35,30 @@ async function allocatePort() {
 
 const port = await allocatePort()
 const url = `http://127.0.0.1:${String(port)}`
+
+async function rpc(method, payload) {
+  const response = await fetch(`${url}/api/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      type: 'client-request',
+      rpcId: `ezdsh-verification-${method}`,
+      method,
+      payload
+    }),
+    signal: AbortSignal.timeout(10_000)
+  })
+  if (!response.ok) {
+    throw new Error(`${method} failed over HTTP ${String(response.status)}: ${await response.text()}`)
+  }
+  const body = await response.json()
+  if (body?.result?.ok !== true) {
+    const error = body?.result?.error
+    throw new Error(`${method} failed: ${String(error?.code ?? 'unknown')}: ${String(error?.message ?? 'unknown error')}`)
+  }
+  return body.result.value
+}
+
 const child = spawn(nodeExecutable, [
   runtimeEntry,
   'web',
@@ -107,11 +131,9 @@ try {
   let healthy = false
   while (Date.now() < deadline && childExit === undefined) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(2_000) })
-      if (response.ok) {
-        healthy = true
-        break
-      }
+      await rpc('host.describe', {})
+      healthy = true
+      break
     } catch {
       // Runtime is still starting.
     }
@@ -127,7 +149,19 @@ try {
     throw new Error(`Bundled DSH Runtime did not become healthy (${exitDetail})\n${output}`)
   }
 
-  console.log(`Verified bundled DSH Runtime ${runtimeIdentity.version} at ${url}`)
+  const workspacePath = join(testRoot, 'workspace')
+  await mkdir(workspacePath)
+  const createdWorkspace = await rpc('workspace.create', { path: workspacePath })
+  const workspaceId = createdWorkspace?.workspace?.workspaceId
+  if (typeof workspaceId !== 'string') {
+    throw new Error(`workspace.create returned no workspace id: ${JSON.stringify(createdWorkspace)}`)
+  }
+  const createdSession = await rpc('session.create', { workspaceId })
+  if (typeof createdSession?.sessionId !== 'string') {
+    throw new Error(`session.create returned no session id: ${JSON.stringify(createdSession)}`)
+  }
+
+  console.log(`Verified bundled DSH Runtime ${runtimeIdentity.version} at ${url} (workspace and session creation succeeded)`)
 } finally {
   if (childExit === undefined) signalChild('SIGTERM')
   await waitForExit(5_000)
