@@ -18,42 +18,6 @@
 
 ---
 
-## 编译与安装
-
-### macOS（Apple Silicon）
-
-当前正式发布目标是 macOS arm64。请使用 `package.json` 要求的 Node.js 版本（推荐 `24.18.0`），在项目根目录执行：
-
-```bash
-npm ci
-npm run package:mac:release
-```
-
-`package:mac:release` 会构建内置 DSH Runtime，生成签名的 DMG 和 ZIP，并验证打包后的 Runtime。正式发布需要有效的 `Developer ID Application` 证书。仅用于本地自动更新测试的未强制签名 ZIP，可以执行：
-
-```bash
-npm run package:mac:zip
-```
-
-产物会写入 `dist/`。安装 DMG 时，打开 DMG 并将 `EzDSH.app` 拖入“应用程序”文件夹。直接运行 `dist/mac-arm64/EzDSH.app` 适合本地开发调试，但不能验证 DMG 安装和 Gatekeeper 流程。
-
-### Windows（x64）
-
-请在原生 Windows x64 机器上使用 Node.js `24.18.0`，进入项目目录后执行：
-
-```powershell
-npm ci
-npm run package:win
-```
-
-该命令会暂存 Windows Node Runtime，使用 Windows 原生依赖构建 DSH Runtime，生成 NSIS 安装程序，并验证解包后的应用。安装程序会写入 `dist/`，可以直接在 Windows 上运行。正式签名发布时配置 Windows 代码签名证书，然后执行：
-
-```powershell
-npm run package:win:release
-```
-
-当前 Windows 打包准备仅支持 x64，不会在现有 macOS 开发机上执行 Windows 打包。
-
 ## 为什么选择 EzDSH
 
 DeepSeek Harness 功能强大，但在本地跑起来往往需要安装运行环境、从命令行启动服务、管理端口、编辑供应商配置、维持后台进程。EzDSH 把这一整套流程封装成一个桌面应用，让你专注于用 AI 创造价值，而不是和环境配置作斗争。
@@ -138,6 +102,42 @@ Harness 提供引擎，EzDSH 提供体验。
 2. 安装并打开 EzDSH。
 3. 在首次启动向导中选择模型服务商、填写 API Key 并测试连接。
 4. 开始工作。EzDSH 会自动启动 Runtime 并打开 Harness 工作空间。
+
+## 编译与安装
+
+### macOS（Apple Silicon）
+
+当前正式发布目标是 macOS arm64。请使用 `package.json` 要求的 Node.js 版本（推荐 `24.18.0`），在项目根目录执行：
+
+```bash
+npm ci
+npm run package:mac:release
+```
+
+`package:mac:release` 会构建内置 DSH Runtime，生成签名的 DMG 和 ZIP，并验证打包后的 Runtime。正式发布需要有效的 `Developer ID Application` 证书。仅用于本地自动更新测试的未强制签名 ZIP，可以执行：
+
+```bash
+npm run package:mac:zip
+```
+
+产物会写入 `dist/`。安装 DMG 时，打开 DMG 并将 `EzDSH.app` 拖入“应用程序”文件夹。直接运行 `dist/mac-arm64/EzDSH.app` 适合本地开发调试，但不能验证 DMG 安装和 Gatekeeper 流程。
+
+### Windows（x64）
+
+请在原生 Windows x64 机器上使用 Node.js `24.18.0`，进入项目目录后执行：
+
+```powershell
+npm ci
+npm run package:win
+```
+
+该命令会暂存 Windows Node Runtime，使用 Windows 原生依赖构建 DSH Runtime，生成 NSIS 安装程序，并验证解包后的应用。安装程序会写入 `dist/`，可以直接在 Windows 上运行。正式签名发布时配置 Windows 代码签名证书，然后执行：
+
+```powershell
+npm run package:win:release
+```
+
+当前 Windows 打包准备仅支持 x64，不会在现有 macOS 开发机上执行 Windows 打包。
 
 ## 下载
 

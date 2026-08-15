@@ -18,42 +18,6 @@
 
 ---
 
-## Build and install
-
-### macOS (Apple Silicon)
-
-The current release target is macOS arm64. Use Node.js `24.18.0` (or another version accepted by `package.json`) and run from the repository root:
-
-```bash
-npm ci
-npm run package:mac:release
-```
-
-`package:mac:release` builds the bundled DSH Runtime, creates a signed DMG and ZIP, and verifies the packaged Runtime. A valid `Developer ID Application` certificate is required for release builds. For a local unsigned ZIP used only for testing updates, use:
-
-```bash
-npm run package:mac:zip
-```
-
-The artifacts are written to `dist/`. To install the DMG, open it and drag `EzDSH.app` into `Applications`. Opening `dist/mac-arm64/EzDSH.app` directly is useful for local development, but does not test the DMG installation or Gatekeeper flow.
-
-### Windows (x64)
-
-Build on a native Windows x64 machine with Node.js `24.18.0` and the repository checkout:
-
-```powershell
-npm ci
-npm run package:win
-```
-
-The command stages the Windows Node Runtime, builds the DSH Runtime with Windows-native dependencies, creates an NSIS installer, and verifies the unpacked bundle. The installer is written to `dist/` and can be run directly on Windows. For a signed release build, configure a Windows code-signing certificate and use:
-
-```powershell
-npm run package:win:release
-```
-
-Windows packaging is prepared for x64 only. It is not executed on the current macOS development machine.
-
 ## Why EzDSH
 
 DeepSeek Harness is powerful, but getting it running locally means installing runtimes, starting services from the terminal, managing ports, editing provider configs, and keeping processes alive. EzDSH wraps all of that into a single desktop app so you can focus on building with AI instead of fighting your environment.
@@ -138,6 +102,42 @@ Harness provides the engine. EzDSH provides the experience.
 2. **Install and open** EzDSH.
 3. **Set up your provider** on first launch — pick a model service, enter your API key, and test the connection.
 4. **Start working.** EzDSH launches the Runtime and opens the Harness workspace automatically.
+
+## Build and install
+
+### macOS (Apple Silicon)
+
+The current release target is macOS arm64. Use Node.js `24.18.0` (or another version accepted by `package.json`) and run from the repository root:
+
+```bash
+npm ci
+npm run package:mac:release
+```
+
+`package:mac:release` builds the bundled DSH Runtime, creates a signed DMG and ZIP, and verifies the packaged Runtime. A valid `Developer ID Application` certificate is required for release builds. For a local unsigned ZIP used only for testing updates, use:
+
+```bash
+npm run package:mac:zip
+```
+
+The artifacts are written to `dist/`. To install the DMG, open it and drag `EzDSH.app` into `Applications`. Opening `dist/mac-arm64/EzDSH.app` directly is useful for local development, but does not test the DMG installation or Gatekeeper flow.
+
+### Windows (x64)
+
+Build on a native Windows x64 machine with Node.js `24.18.0` and the repository checkout:
+
+```powershell
+npm ci
+npm run package:win
+```
+
+The command stages the Windows Node Runtime, builds the DSH Runtime with Windows-native dependencies, creates an NSIS installer, and verifies the unpacked bundle. The installer is written to `dist/` and can be run directly on Windows. For a signed release build, configure a Windows code-signing certificate and use:
+
+```powershell
+npm run package:win:release
+```
+
+Windows packaging is prepared for x64 only. It is not executed on the current macOS development machine.
 
 ## Download
 
