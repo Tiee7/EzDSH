@@ -102,6 +102,18 @@ function setApplicationMenu(locale: AppLocale = localeService?.snapshot() ?? DEF
   })))
 }
 
+function getAppIconPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'logo.png')
+    : join(app.getAppPath(), 'logo.png')
+}
+
+function setDockIcon(): void {
+  if (process.platform === 'darwin' && app.dock !== undefined) {
+    app.dock.setIcon(getAppIconPath())
+  }
+}
+
 function success<T>(data: T): IpcResult<T> {
   return { ok: true, data }
 }
@@ -214,6 +226,7 @@ function createWindow(): BrowserWindow {
     show: false,
     title: APP_NAME,
     backgroundColor: '#101114',
+    icon: getAppIconPath(),
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const }
       : {}),
@@ -298,6 +311,7 @@ if (!singleInstance) {
       }
       setApplicationMenu(locale)
     })
+    setDockIcon()
     createWindow()
     setApplicationMenu()
     if (updateChecksEnabled) void handleUpdateCheck(false)

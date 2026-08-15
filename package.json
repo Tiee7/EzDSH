@@ -60,6 +60,13 @@
       "node_modules/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "logo.png",
+        "to": "logo.png"
+      }
+    ],
+    "icon": "logo.png",
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": ["dmg", "zip"]
