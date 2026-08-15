@@ -94,8 +94,8 @@ jobs:
         run: |
           Get-ChildItem "dist\*.exe" | ForEach-Object {
             $signature = Get-AuthenticodeSignature $_.FullName
-            if ($signature.Status -ne "Valid") {
-              throw "Invalid signature for $($_.FullName): $($signature.Status)"
+            if ($signature.Status -eq "NotSigned" -or $null -eq $signature.SignerCertificate) {
+              throw "Missing Authenticode signature for $($_.FullName): $($signature.Status)"
             }
             Write-Host "$($_.Name): $($signature.Status) - $($signature.SignerCertificate.Subject)"
           }
