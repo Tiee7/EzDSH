@@ -157,14 +157,14 @@ API Key 不应直接保存在 EzDSH 安装目录或普通状态 JSON 中。EzDSH
 
 默认开发路径采用“上游 Git 子模块 + npm 根项目 + 打包内置 Runtime”。EzDSH 根项目通过 `npm install` 安装自身依赖，并在 `postinstall` 阶段调用上游 lockfile 要求的 `pnpm --dir vendor/deepseek-harness install --frozen-lockfile`。这个 pnpm 来自 npm 锁定的本地开发依赖，不要求开发者全局安装。开发者的入口命令始终是 npm；只有构建内置 DSH Runtime 时，脚本内部使用上游指定的 pnpm workspace。首个实现使用 `@deepseek-ai/dsh@0.1.0-rc.5` 对应的上游 commit，不请求不存在的同版本 NPM 包。
 
-本机使用 `n` 切换 Node 版本是可以的；当前上游构建要求 Node `^22.19.0 || >=24.0.0`。应先执行 `n 24.18.0`，并确认当前终端的 `node -v` 实际为 `v24.18.0`。如果 NVM 的路径排在 `/usr/local/bin` 前面，终端仍可能命中旧 Node，需要重新打开终端或调整 PATH。
+本项目使用 NVM 切换 Node 版本，仓库根目录的 `.nvmrc` 固定为 Node `24.18.0`；当前上游构建要求 Node `^22.19.0 || >=24.0.0`。进入项目后应先执行 `nvm use`，并确认当前终端的 `node -v` 实际为 `v24.18.0`。
 
-根项目还声明了 Node/npm engines，并在 `postinstall` 前运行版本检查。若当前终端仍然指向旧 Node，脚本会直接提示使用 `n` 切换，而不会继续执行上游安装。
+根项目还声明了 Node/npm engines，并在 `postinstall` 前运行版本检查。若当前终端仍然指向旧 Node，脚本会直接提示使用 NVM 切换，而不会继续执行上游安装。
 
 ## 7. 可发布打包流程
 
 ```bash
-n 24.18.0
+nvm use
 node -v
 npm ci
 CI=true ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm run package:mac:zip

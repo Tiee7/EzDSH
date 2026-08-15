@@ -7,6 +7,6 @@ const supported = nodeMajor >= 24
 
 if (!supported) {
   console.error(`EzDSH requires Node.js ^${requiredNodeMajor}.${requiredNodeMinor}.0 or >=24.0.0; current version is ${process.versions.node}.`)
-  console.error('Please switch Node.js with n, for example: n 24.18.0')
+  console.error('Please switch Node.js with NVM, for example: nvm use')
   process.exitCode = 1
 }
