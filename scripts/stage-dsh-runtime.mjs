@@ -243,11 +243,21 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
 
 const runtimeArchive = join(projectRoot, 'out', 'dsh-runtime.tar.gz')
 await rm(runtimeArchive, { force: true })
-await createArchive({
-  cwd: join(projectRoot, 'out'),
-  file: runtimeArchive,
-  gzip: true,
-  portable: true
-}, ['dsh-runtime'])
+if (process.platform === 'win32') {
+  // Windows junctions created by pnpm can leave node-tar's async walker
+  // unresolved. Windows ships bsdtar, which handles these entries correctly.
+  execFileSync('tar.exe', [
+    '-czf', runtimeArchive,
+    '-C', join(projectRoot, 'out'),
+    'dsh-runtime'
+  ], { stdio: 'inherit' })
+} else {
+  await createArchive({
+    cwd: join(projectRoot, 'out'),
+    file: runtimeArchive,
+    gzip: true,
+    portable: true
+  }, ['dsh-runtime'])
+}
 
 console.log(`Staged DSH Runtime at ${destination} (${String(materializedCount)} external links materialized, ${String(peerPackageCount)} peer packages added, ${String(rootDependencyLinkCount)} root dependency links added)`)
