@@ -14,10 +14,11 @@ const bundleRoot = process.argv[2] === undefined
 const temporaryRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-bundle-'))
 let runtimeExtractionRoot
 
+const nodeExecutableName = process.platform === 'win32' ? 'node.exe' : 'node'
 const nodeCandidates = [
-  join(bundleRoot, 'node-runtime', 'bin', 'node'),
-  join(bundleRoot, 'app.asar.unpacked', 'out', 'node-runtime', 'bin', 'node'),
-  join(bundleRoot, 'app', 'out', 'node-runtime', 'bin', 'node')
+  join(bundleRoot, 'node-runtime', 'bin', nodeExecutableName),
+  join(bundleRoot, 'app.asar.unpacked', 'out', 'node-runtime', 'bin', nodeExecutableName),
+  join(bundleRoot, 'app', 'out', 'node-runtime', 'bin', nodeExecutableName)
 ]
 let nodeExecutable = nodeCandidates.find((candidate) => {
   return existsSync(candidate)
