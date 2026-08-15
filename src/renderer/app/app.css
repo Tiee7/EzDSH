@@ -1,0 +1,142 @@
+:root {
+  color: #f7f7f4;
+  background: #101114;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 960px;
+  min-height: 640px;
+  -webkit-app-region: drag;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(52, 67, 93, 0.2), transparent 34rem),
+    #101114;
+}
+
+button,
+input,
+select,
+textarea,
+a,
+iframe,
+[role="button"],
+[contenteditable="true"] {
+  font: inherit;
+  -webkit-app-region: no-drag;
+}
+
+.app-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px;
+}
+
+.welcome-card {
+  width: min(440px, 100%);
+  padding: 48px 44px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 24px;
+  background: rgba(25, 27, 32, 0.82);
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.3);
+  text-align: center;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 34px;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 750;
+  letter-spacing: -0.06em;
+}
+
+.brand-mark span:last-child {
+  color: #f08a4b;
+}
+
+.eyebrow {
+  margin: 0 0 14px;
+  color: #9197a5;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+
+h1 {
+  margin: 0;
+  font-size: 42px;
+  letter-spacing: -0.06em;
+}
+
+.subtitle {
+  margin: 14px 0 30px;
+  color: #abb1bd;
+  font-size: 15px;
+}
+
+.status-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: #c6cad2;
+  font-size: 13px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e4a04f;
+  box-shadow: 0 0 0 4px rgba(228, 160, 79, 0.12);
+}
+
+.status-dot-ready {
+  background: #69d29a;
+  box-shadow: 0 0 0 4px rgba(105, 210, 154, 0.12);
+}
+
+.retry-button {
+  margin-top: 24px;
+  border: 1px solid #454c5b;
+  border-radius: 10px;
+  padding: 9px 14px;
+  background: transparent;
+  color: #dce7ff;
+  cursor: pointer;
+}
+
+.runtime-host {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  padding-top: 14px;
+  overflow: hidden;
+  background: #101114;
+}
+
+.runtime-drag-region {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  width: 180px;
+  height: 30px;
+  -webkit-app-region: drag;
+}
+
+.runtime-host iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+}

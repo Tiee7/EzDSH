@@ -1,0 +1,144 @@
+.setup-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: radial-gradient(circle at 50% -20%, #263141 0%, #101114 58%);
+  color: #f1f3f5;
+}
+
+.setup-card {
+  width: min(100%, 520px);
+  padding: 42px;
+  border: 1px solid #30343d;
+  border-radius: 24px;
+  background: rgba(23, 25, 30, 0.94);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.34);
+}
+
+.setup-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  background: #dce7ff;
+  color: #101114;
+  font-weight: 800;
+}
+
+.setup-page .eyebrow {
+  margin: 28px 0 10px;
+  color: #aebce0;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.setup-card h1 {
+  margin: 0;
+  font-size: 32px;
+  letter-spacing: -0.04em;
+}
+
+.setup-lede {
+  margin: 16px 0 28px;
+  color: #a7acb7;
+  line-height: 1.65;
+}
+
+.setup-card form {
+  display: grid;
+  gap: 16px;
+}
+
+.setup-card label {
+  display: grid;
+  gap: 8px;
+  color: #dfe3eb;
+  font-size: 13px;
+}
+
+.setup-card input,
+.setup-card select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #3b414d;
+  border-radius: 10px;
+  padding: 12px 13px;
+  background: #111318;
+  color: #f1f3f5;
+  font: inherit;
+  outline: none;
+}
+
+.setup-card input:focus,
+.setup-card select:focus {
+  border-color: #91a9df;
+  box-shadow: 0 0 0 3px rgba(145, 169, 223, 0.15);
+}
+
+.optional {
+  color: #858c99;
+}
+
+.primary-button {
+  margin-top: 4px;
+  border: 0;
+  border-radius: 10px;
+  padding: 12px 16px;
+  background: #dce7ff;
+  color: #101114;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.primary-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.secondary-button {
+  border: 1px solid #3b414d;
+  border-radius: 10px;
+  padding: 11px 16px;
+  background: transparent;
+  color: #dfe3eb;
+  cursor: pointer;
+  font: inherit;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.skip-button {
+  border: 0;
+  padding: 4px;
+  background: transparent;
+  color: #9ca6ba;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.skip-button:hover {
+  color: #dce7ff;
+}
+
+.skip-button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.setup-error {
+  margin: 0;
+  color: #ff9d9d;
+}
+
+.setup-test-result {
+  margin: 0;
+  color: #91d9b0;
+}

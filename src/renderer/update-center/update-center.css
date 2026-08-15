@@ -1,0 +1,43 @@
+.update-center {
+  position: fixed;
+  z-index: 2;
+  top: 16px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(520px, calc(100vw - 40px));
+  padding: 10px 12px;
+  border: 1px solid rgba(244, 180, 84, 0.35);
+  border-radius: 12px;
+  background: rgba(27, 24, 20, 0.94);
+  color: #f8e9cf;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+}
+
+.update-center strong {
+  font-weight: 600;
+}
+
+.update-center span {
+  color: #f4b454;
+}
+
+.update-center progress {
+  width: 120px;
+  height: 5px;
+  accent-color: #f4b454;
+}
+
+.update-center button {
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: #f4b454;
+  color: #251a0d;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}

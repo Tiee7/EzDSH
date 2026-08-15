@@ -1,0 +1,59 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import type { EzDSHBridge } from '../shared/contracts.js'
+import type { IpcResult } from '../shared/errors.js'
+import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
+
+async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
+  const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>
+  if (!result.ok) {
+    const error = new Error(result.error.message)
+    Object.assign(error, result.error)
+    throw error
+  }
+  return result.data
+}
+
+const bridge: EzDSHBridge = {
+  app: {
+    name: APP_NAME,
+    version: APP_VERSION
+  },
+  runtime: {
+    getStatus: () => invoke('runtime:get-status'),
+    start: () => invoke('runtime:start'),
+    restart: () => invoke('runtime:restart'),
+    openLog: () => invoke('runtime:open-log'),
+    onStateChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]) => listener(snapshot)
+      ipcRenderer.on('runtime:state-change', handler)
+      return () => ipcRenderer.removeListener('runtime:state-change', handler)
+    }
+  },
+  providers: {
+    listDefinitions: () => invoke('providers:list-definitions'),
+    getStatus: () => invoke('providers:get-status'),
+    testConnection: (input) => invoke('providers:test-connection', input),
+    save: (input) => invoke('providers:save', input)
+  },
+  locale: {
+    get: () => invoke('locale:get'),
+    onChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, locale: Parameters<typeof listener>[0]) => listener(locale)
+      ipcRenderer.on('locale:state-change', handler)
+      return () => ipcRenderer.removeListener('locale:state-change', handler)
+    }
+  },
+  updates: {
+    getStatus: () => invoke('updates:get-status'),
+    check: () => invoke('updates:check'),
+    download: () => invoke('updates:download'),
+    install: () => invoke('updates:install'),
+    onStateChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state)
+      ipcRenderer.on('updates:state-change', handler)
+      return () => ipcRenderer.removeListener('updates:state-change', handler)
+    }
+  }
+}
+
+contextBridge.exposeInMainWorld('EzDSH', bridge)

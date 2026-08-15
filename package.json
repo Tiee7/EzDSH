@@ -1,0 +1,77 @@
+{
+  "name": "ezdsh",
+  "version": "0.8.15.1",
+  "description": "A desktop client for DeepSeek Harness.",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "pnpm": ">=11.7.0"
+  },
+  "main": "./out/main/index.js",
+  "author": "EzDSH",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:runtime": "node scripts/check-runtime.mjs",
+    "dsh:install": "CI=true pnpm --dir vendor/deepseek-harness install --frozen-lockfile",
+    "dsh:build": "CI=true pnpm --dir vendor/deepseek-harness run build",
+    "stage:dsh-runtime": "node scripts/stage-dsh-runtime.mjs",
+    "postinstall": "pnpm run check:runtime && pnpm run dsh:install",
+    "prepare:package": "pnpm run dsh:build && pnpm run build && pnpm run stage:dsh-runtime",
+    "package:dir": "pnpm run prepare:package && electron-builder --dir",
+    "package:mac": "pnpm run prepare:package && electron-builder --mac --publish never",
+    "package:mac:zip": "pnpm run prepare:package && electron-builder --mac zip --publish never",
+    "package:win": "pnpm run prepare:package && electron-builder --win --x64 --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.4.1",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "5.9.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.1.2"
+  },
+  "build": {
+    "appId": "com.ezdsh.desktop",
+    "productName": "Ez DSH",
+    "asar": false,
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://ezdsh.vercel.app/updates/"
+      }
+    ]
+  }
+}

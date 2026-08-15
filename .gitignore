@@ -1,0 +1,40 @@
+node_modules/
+.pnpm-store/
+
+# Build and test output
+out/
+dist/
+coverage/
+
+# Local operating-system and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+*.temp
+
+# Local logs and debug/update configuration
+*.log
+dev-app-update.yml
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local user data, Runtime state, and generated caches
+.ezdsh/
+userData/
+harness/
+logs/
+backups/
+.cache/
+
+# Agent/planning workspace files are kept locally but are not project source
+.agents/
+.codex/
+docs/superpowers/
+superpowers/
