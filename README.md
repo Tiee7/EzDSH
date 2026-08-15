@@ -5,55 +5,112 @@
 </p>
 
 <p align="center">
-  <strong>A desktop workspace for DeepSeek Harness.</strong><br/>
-  Run agents, manage profiles, and keep your local runtime in one place.
+  <strong>The truly out-of-the-box DeepSeek Harness desktop workspace.</strong><br/>
+  Turn DeepSeek Harness from a developer tool into a ready-to-use local AI agent platform.
 </p>
 
 <p align="center">
+  <a href="#why-ezdsh">Why EzDSH</a> •
   <a href="#download">Download</a> •
   <a href="#quick-start">Quick Start</a> •
-  <a href="#features">Features</a> •
   <a href="README.zh-CN.md">中文版</a>
 </p>
 
 ---
 
+## Why EzDSH
+
+DeepSeek Harness is powerful, but getting it running locally means installing runtimes, starting services from the terminal, managing ports, editing provider configs, and keeping processes alive. EzDSH wraps all of that into a single desktop app so you can focus on building with AI instead of fighting your environment.
+
+> **EzDSH makes DeepSeek Harness feel like a finished product, not a setup tutorial.**
+
+## What you get
+
+### Install and run, no environment setup
+
+EzDSH ships with a fixed-version DeepSeek Harness Runtime. You do not need to install Node.js, pnpm, or the Harness CLI yourself. The app creates the workspace, picks a local port, starts the runtime, and loads the Harness Web UI automatically.
+
+### Full runtime lifecycle management
+
+EzDSH is not a browser wrapper. It manages the complete Runtime lifecycle:
+
+- Automatic startup and graceful shutdown
+- Health checks and readiness detection
+- Port conflict detection and retry
+- Startup timeout handling
+- Crash recovery and restart
+- Runtime log collection and viewing
+- No orphaned background processes
+
+You see a stable desktop app, not a collection of terminal windows.
+
+### Multi-provider setup without touching YAML
+
+First launch walks you through provider configuration. Choose a model provider, enter your API key, test the connection, and save. No manual provider routing, no config file editing.
+
+Supported providers include DeepSeek, OpenAI, Anthropic, Google Gemini, Moonshot / Kimi, MiniMax, Zhipu GLM, Mistral AI, OpenRouter, Groq, and Together AI.
+
+### Local-first and security-minded
+
+Your keys, sessions, profiles, plugins, and logs stay on your machine.
+
+- API keys never enter renderer storage
+- API keys never appear in ordinary logs
+- Credentials are saved with restricted permissions
+- Renderer is isolated from the file system and Node.js APIs
+- Runtime only listens on `127.0.0.1`
+
+EzDSH is built for users who want to keep their model calls and work data under their own control.
+
+### Upgrades that respect your data
+
+App code, Runtime, and user data are kept separate. Updating EzDSH replaces the client and runtime without touching your:
+
+- Configuration
+- Sessions
+- Profiles
+- Plugins
+- Logs
+- Local workspace data
+
+You do not rebuild your environment every time the app updates.
+
+### A polished front door for Harness
+
+DeepSeek Harness handles the agent runtime, model calls, tool execution, and Web UI. EzDSH adds the product layer it needs:
+
+- Installer and first-run onboarding
+- Visual provider and profile management
+- Process supervision and error recovery
+- Local data and log management
+- Built-in update delivery
+- Security boundaries
+
+Harness provides the engine. EzDSH provides the experience.
+
+## Who it is for
+
+- Developers who want to run DeepSeek Harness locally
+- AI users who prefer not to live in the terminal
+- Users who switch between multiple model providers
+- Anyone who wants API keys and project data kept local
+- Professionals who need a stable desktop entry point for agent, tool, and plugin workflows
+
+## Quick start
+
+1. **Download** the installer for macOS or Windows from the [Releases](../../releases) page.
+2. **Install and open** EzDSH.
+3. **Set up your provider** on first launch — pick a model service, enter your API key, and test the connection.
+4. **Start working.** EzDSH launches the Runtime and opens the Harness workspace automatically.
+
 ## Download
 
-EzDSH is available for macOS and Windows. Download the latest release from the [Releases](../../releases) page.
-
-| Platform | Installer |
-|----------|-----------|
+| Platform | Package |
+|----------|---------|
 | macOS (Apple Silicon) | `.dmg` / `.zip` |
 | Windows | `.exe` installer |
 
-The app checks for updates automatically and will prompt you when a new version is available.
-
-## Quick Start
-
-1. **Install EzDSH** using the installer for your platform.
-2. **Launch the app.** On first run, EzDSH will guide you through the initial setup.
-3. **Connect your DeepSeek Harness runtime.** If you already have a Harness checkout, point EzDSH to it; otherwise the app will help you stage the bundled runtime.
-4. **Start working.** Create or open a profile, configure your model provider, and run your first agent session.
-
-> **Note:** API keys, sessions, and profile data are stored in your user data directory, never inside the application install location.
-
-## Features
-
-- **Local-first runtime** — DeepSeek Harness runs on your machine. Your code, sessions, and keys stay under your control.
-- **Profile & provider management** — Switch between model providers and project profiles without editing config files by hand.
-- **Agent workspace** — Start, monitor, and stop agent sessions from a single window.
-- **Automatic updates** — Stay current with built-in update notifications.
-- **Recoverable setup** — Reinstall or move the app without losing your data.
-
-## Requirements
-
-- macOS 11+ (Apple Silicon) or Windows 10/11
-- A local DeepSeek Harness runtime (bundled setup available during first launch)
-
-## Documentation
-
-For detailed product and developer documentation, see the [`docs`](./docs) directory.
+EzDSH checks for updates automatically and notifies you when a new release is available.
 
 ## License
 
@@ -62,5 +119,5 @@ EzDSH is released under the [MIT License](./LICENSE).
 ---
 
 <p align="center">
-  <sub>Built with care for the DeepSeek Harness community.</sub>
+  <sub>Built for the DeepSeek Harness community.</sub>
 </p>
