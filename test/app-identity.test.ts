@@ -6,7 +6,7 @@ import { getApplicationMenuTemplate } from '../src/main/application-menu'
 
 describe('application identity', () => {
   it('uses the human-facing application name', () => {
-    expect(APP_NAME).toBe('Ez DSH')
+    expect(APP_NAME).toBe('EzDSH')
   })
 
   it('keeps the project and displayed application version aligned', () => {

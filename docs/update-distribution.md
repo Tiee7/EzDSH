@@ -1,8 +1,8 @@
-# Ez DSH 发布与自动更新
+# EzDSH 发布与自动更新
 
 ## 1. 更新源
 
-Ez DSH 使用 `electron-updater` 的 `generic` 更新源。当前暂定地址为：
+EzDSH 使用 `electron-updater` 的 `generic` 更新源。当前暂定地址为：
 
 ```text
 https://ezdsh.vercel.app/updates/

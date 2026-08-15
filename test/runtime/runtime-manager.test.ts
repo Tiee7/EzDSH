@@ -19,19 +19,19 @@ afterEach(async () => {
 describe('RuntimeManager', () => {
   it('resolves the packaged Runtime inside the Electron app resources', () => {
     expect(resolveRuntimeEntryPath({
-      appPath: '/Applications/Ez DSH.app/Contents/Resources/app',
-      resourcesPath: '/Applications/Ez DSH.app/Contents/Resources',
+      appPath: '/Applications/EzDSH.app/Contents/Resources/app',
+      resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
       isPackaged: true
-    })).toBe('/Applications/Ez DSH.app/Contents/Resources/app/out/dsh-runtime/lib/bin.js')
+    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/out/dsh-runtime/lib/bin.js')
   })
 
   it('resolves the packaged Node executable inside the Electron app resources', () => {
     expect(resolveRuntimeCommandPath({
-      appPath: '/Applications/Ez DSH.app/Contents/Resources/app',
-      resourcesPath: '/Applications/Ez DSH.app/Contents/Resources',
+      appPath: '/Applications/EzDSH.app/Contents/Resources/app',
+      resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
       isPackaged: true,
       platform: 'darwin'
-    })).toBe('/Applications/Ez DSH.app/Contents/Resources/app/out/node-runtime/bin/node')
+    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/out/node-runtime/bin/node')
   })
 
   it('starts, reports ready, and stops without removing the harness directory', async () => {

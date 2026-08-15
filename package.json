@@ -24,7 +24,7 @@
     "stage:dsh-runtime": "node scripts/stage-dsh-runtime.mjs",
     "stage:runtime": "npm run stage:node-runtime && npm run stage:dsh-runtime",
     "verify:runtime": "node scripts/verify-runtime-bundle.mjs",
-    "verify:package:mac": "node scripts/verify-runtime-bundle.mjs \"dist/mac-arm64/Ez DSH.app/Contents/Resources/app/out\"",
+    "verify:package:mac": "node scripts/verify-runtime-bundle.mjs \"dist/mac-arm64/EzDSH.app/Contents/Resources/app/out\"",
     "postinstall": "npm run check:runtime && npm run dsh:install",
     "prepare:package": "npm run dsh:install && npm run dsh:build && npm run build && npm run stage:runtime && npm run verify:runtime",
     "package:dir": "npm run prepare:package && electron-builder --dir",
@@ -54,7 +54,7 @@
   },
   "build": {
     "appId": "com.ezdsh.desktop",
-    "productName": "Ez DSH",
+    "productName": "EzDSH",
     "asar": false,
     "npmRebuild": false,
     "directories": {
