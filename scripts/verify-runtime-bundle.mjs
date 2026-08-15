@@ -1,15 +1,69 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { extractFile } from '@electron/asar'
+import { x as extractArchive } from 'tar'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const bundleRoot = process.argv[2] === undefined
   ? join(projectRoot, 'out')
   : resolve(projectRoot, process.argv[2])
-const nodeExecutable = join(bundleRoot, 'node-runtime', 'bin', 'node')
-const runtimeEntry = join(bundleRoot, 'dsh-runtime', 'lib', 'bin.js')
+const temporaryRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-bundle-'))
+let runtimeExtractionRoot
+
+const nodeCandidates = [
+  join(bundleRoot, 'node-runtime', 'bin', 'node'),
+  join(bundleRoot, 'app.asar.unpacked', 'out', 'node-runtime', 'bin', 'node'),
+  join(bundleRoot, 'app', 'out', 'node-runtime', 'bin', 'node')
+]
+let nodeExecutable = nodeCandidates.find((candidate) => {
+  return existsSync(candidate)
+})
+
+const runtimeCandidates = [
+  join(bundleRoot, 'dsh-runtime', 'lib', 'bin.js'),
+  join(bundleRoot, 'app.asar.unpacked', 'out', 'dsh-runtime', 'lib', 'bin.js'),
+  join(bundleRoot, 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
+]
+let runtimeEntry = runtimeCandidates.find((candidate) => {
+  return existsSync(candidate)
+})
+
+if (nodeExecutable === undefined) {
+  throw new Error(`Bundled Node executable was not found under ${bundleRoot}`)
+}
+
+if (runtimeEntry === undefined) {
+  const archiveCandidates = [
+    join(bundleRoot, 'dsh-runtime.tar.gz'),
+    join(bundleRoot, 'app.asar.unpacked', 'out', 'dsh-runtime.tar.gz'),
+    join(bundleRoot, 'app', 'out', 'dsh-runtime.tar.gz')
+  ]
+  let archivePath = archiveCandidates.find((candidate) => {
+    try {
+      return require('node:fs').existsSync(candidate)
+    } catch {
+      return false
+    }
+  })
+  if (archivePath === undefined) {
+    const appAsar = join(bundleRoot, 'app.asar')
+    if (existsSync(appAsar)) {
+      archivePath = join(temporaryRoot, 'dsh-runtime.tar.gz')
+      await writeFile(archivePath, extractFile(appAsar, 'out/dsh-runtime.tar.gz'))
+    }
+  }
+  if (archivePath === undefined) {
+    throw new Error(`Bundled DSH Runtime directory or archive was not found under ${bundleRoot}`)
+  }
+  runtimeExtractionRoot = join(temporaryRoot, 'extracted')
+  await mkdir(runtimeExtractionRoot, { recursive: true })
+  await extractArchive({ file: archivePath, cwd: runtimeExtractionRoot, strict: true })
+  runtimeEntry = join(runtimeExtractionRoot, 'dsh-runtime', 'lib', 'bin.js')
+}
 const testRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-verification-'))
 
 const runtimeIdentity = JSON.parse(execFileSync(nodeExecutable, [
@@ -171,4 +225,5 @@ try {
   }
   if (childExit === undefined) throw new Error('Bundled DSH Runtime process did not exit')
   await rm(testRoot, { recursive: true, force: true })
+  await rm(temporaryRoot, { recursive: true, force: true })
 }

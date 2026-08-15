@@ -1,6 +1,8 @@
 import { access, cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { c as createArchive } from 'tar'
+import { pruneRuntimeFiles } from './prune-runtime-files.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const runtimeSource = join(projectRoot, 'vendor', 'deepseek-harness')
@@ -194,6 +196,11 @@ while (pending.length > 0) {
   for (const entry of await readdir(current)) pending.push(join(current, entry))
 }
 
+// Workspace peers are copied from source directories because they are not
+// published packages. Remove development-only payloads before packaging so
+// electron-builder does not need to open tens of thousands of irrelevant files.
+await pruneRuntimeFiles(destination)
+
 // Node resolves a package imported through a symlink relative to the symlink
 // path. Expose pnpm's public dependency links at the deployment root as well,
 // so those imports keep working after the app is moved into Resources/app.
@@ -232,5 +239,14 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
   await symlink(relative(dirname(targetPackage), sourcePackage), targetPackage)
   rootDependencyLinkCount += 1
 }
+
+const runtimeArchive = join(projectRoot, 'out', 'dsh-runtime.tar.gz')
+await rm(runtimeArchive, { force: true })
+await createArchive({
+  cwd: join(projectRoot, 'out'),
+  file: runtimeArchive,
+  gzip: true,
+  portable: true
+}, ['dsh-runtime'])
 
 console.log(`Staged DSH Runtime at ${destination} (${String(materializedCount)} external links materialized, ${String(peerPackageCount)} peer packages added, ${String(rootDependencyLinkCount)} root dependency links added)`)

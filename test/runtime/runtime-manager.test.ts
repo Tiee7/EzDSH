@@ -1,11 +1,13 @@
 import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { c as createArchive } from 'tar'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath,
+  preparePackagedRuntime,
   RuntimeManager
 } from '../../src/main/runtime/runtime-manager'
 import { getUserDataLayout } from '../../src/main/state/user-data'
@@ -36,6 +38,36 @@ describe('RuntimeManager', () => {
       resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
       isPackaged: true
     })).toBe('/Applications/EzDSH.app/Contents/Resources/app.asar.unpacked/out/dsh-runtime/lib/bin.js')
+  })
+
+  it('extracts the packaged Runtime archive into user data', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-archive-'))
+    roots.push(root)
+    const sourceRoot = join(root, 'source')
+    const archiveRoot = join(root, 'resources')
+    await mkdir(join(sourceRoot, 'dsh-runtime', 'lib'), { recursive: true })
+    await mkdir(archiveRoot, { recursive: true })
+    await writeFile(join(sourceRoot, 'dsh-runtime', 'lib', 'bin.js'), 'runtime')
+    await createArchive({
+      cwd: sourceRoot,
+      file: join(archiveRoot, 'dsh-runtime.tar.gz'),
+      gzip: true,
+      portable: true
+    }, ['dsh-runtime'])
+
+    const runtimeRoot = await preparePackagedRuntime({
+      appPath: join(root, 'app.asar'),
+      resourcesPath: archiveRoot,
+      isPackaged: true,
+      userDataRoot: join(root, 'user-data')
+    })
+
+    expect(await readFile(join(runtimeRoot, 'lib', 'bin.js'), 'utf8')).toBe('runtime')
+    expect(resolveRuntimeEntryPath({
+      appPath: join(root, 'app.asar'),
+      isPackaged: true,
+      runtimeRoot
+    })).toBe(join(runtimeRoot, 'lib', 'bin.js'))
   })
 
   it('resolves the packaged Node executable inside the Electron app resources', () => {

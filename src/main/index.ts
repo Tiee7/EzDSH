@@ -13,6 +13,7 @@ import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
 import {
   RuntimeManager,
+  preparePackagedRuntime,
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath
 } from './runtime/runtime-manager.js'
@@ -293,12 +294,21 @@ if (!singleInstance) {
     await ensureUserDataLayout(layout)
     localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
     await localeService.start()
+    const packagedRuntimeRoot = app.isPackaged
+      ? await preparePackagedRuntime({
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath,
+        isPackaged: true,
+        userDataRoot: layout.root
+      })
+      : undefined
     runtimeManager = new RuntimeManager({
       layout,
       runtimeEntryPath: resolveRuntimeEntryPath({
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath,
-        isPackaged: app.isPackaged
+        isPackaged: app.isPackaged,
+        runtimeRoot: packagedRuntimeRoot
       }),
       command: resolveRuntimeCommandPath({
         appPath: app.getAppPath(),

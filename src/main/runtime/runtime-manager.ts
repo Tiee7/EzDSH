@@ -1,8 +1,9 @@
 import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
+import { x as extractArchive } from 'tar'
 import type { UserDataLayout } from '../../shared/state.js'
 import { ensureUserDataLayout } from '../state/user-data.js'
 import { waitForRuntimeHealthy } from './health-check.js'
@@ -13,11 +14,13 @@ export interface RuntimePathOptions {
   resourcesPath?: string
   isPackaged: boolean
   platform?: NodeJS.Platform
+  runtimeRoot?: string
 }
 
 /** Resolve the source-built or staged Runtime entry without consulting user PATH. */
 export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
   if (options.isPackaged) {
+    if (options.runtimeRoot !== undefined) return join(options.runtimeRoot, 'lib', 'bin.js')
     return join(options.resourcesPath ?? resolve(options.appPath, '..'), 'app.asar.unpacked', 'out', 'dsh-runtime', 'lib', 'bin.js')
   }
 
@@ -29,6 +32,77 @@ export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
   if (existsSync(stagedEntry)) return stagedEntry
 
   return join(options.appPath, 'vendor', 'deepseek-harness', 'apps', 'cli', 'lib', 'bin.js')
+}
+
+export interface PackagedRuntimeOptions extends RuntimePathOptions {
+  userDataRoot: string
+}
+
+function findPackagedRuntimeArchive(options: PackagedRuntimeOptions): string | undefined {
+  const resourcesPath = options.resourcesPath ?? resolve(options.appPath, '..')
+  const candidates = [
+    join(options.appPath, 'out', 'dsh-runtime.tar.gz'),
+    join(resourcesPath, 'dsh-runtime.tar.gz'),
+    join(resourcesPath, 'app.asar.unpacked', 'out', 'dsh-runtime.tar.gz')
+  ]
+  return candidates.find((candidate) => existsSync(candidate))
+}
+
+/**
+ * Materialize the packaged Runtime outside the signed application bundle.
+ *
+ * The archive keeps macOS code-signing from recursively scanning thousands of
+ * JavaScript files. Extraction is cached in user data and refreshed whenever
+ * the archive's size or modification time changes.
+ */
+export async function preparePackagedRuntime(options: PackagedRuntimeOptions): Promise<string> {
+  if (!options.isPackaged) {
+    throw new Error('Packaged Runtime preparation requires isPackaged=true')
+  }
+
+  const legacyRoot = join(
+    options.resourcesPath ?? resolve(options.appPath, '..'),
+    'app.asar.unpacked',
+    'out',
+    'dsh-runtime'
+  )
+  if (existsSync(join(legacyRoot, 'lib', 'bin.js'))) return legacyRoot
+
+  const archivePath = findPackagedRuntimeArchive(options)
+  if (archivePath === undefined) {
+    throw new Error(`Packaged DSH Runtime archive was not found near ${options.appPath}`)
+  }
+
+  const cacheRoot = join(options.userDataRoot, 'runtime-cache')
+  const runtimeRoot = join(cacheRoot, 'dsh-runtime')
+  const markerPath = join(cacheRoot, 'runtime-ready.json')
+  await mkdir(cacheRoot, { recursive: true, mode: 0o700 })
+  const archiveStats = await stat(archivePath)
+  const archiveSignature = `${String(archiveStats.size)}:${String(archiveStats.mtimeMs)}`
+
+  try {
+    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { signature?: string }
+    if (marker.signature === archiveSignature && existsSync(join(runtimeRoot, 'lib', 'bin.js'))) {
+      return runtimeRoot
+    }
+  } catch {
+    // A missing or incomplete marker triggers a fresh extraction.
+  }
+
+  const extractionRoot = await mkdtemp(join(cacheRoot, '.extract-'))
+  try {
+    await extractArchive({ file: archivePath, cwd: extractionRoot, strict: true })
+    const extractedRuntimeRoot = join(extractionRoot, 'dsh-runtime')
+    if (!existsSync(join(extractedRuntimeRoot, 'lib', 'bin.js'))) {
+      throw new Error('Packaged DSH Runtime archive is missing lib/bin.js')
+    }
+    await rm(runtimeRoot, { recursive: true, force: true })
+    await rename(extractedRuntimeRoot, runtimeRoot)
+    await writeFile(markerPath, JSON.stringify({ signature: archiveSignature }), { mode: 0o600 })
+    return runtimeRoot
+  } finally {
+    await rm(extractionRoot, { recursive: true, force: true })
+  }
 }
 
 /** Resolve the bundled Node executable used by packaged Runtime processes. */
