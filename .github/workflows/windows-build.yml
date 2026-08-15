@@ -2,6 +2,10 @@ name: Windows Build
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+      - "windows-*"
 
 permissions:
   contents: read
