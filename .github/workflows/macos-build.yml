@@ -1,0 +1,57 @@
+name: macOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+      - "macos-*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      # This build is intentionally unsigned because no Apple Developer
+      # signing certificate is stored in the repository secrets.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare macOS package
+        run: npm run prepare:package
+
+      - name: Build macOS DMG and ZIP
+        run: npx --no-install electron-builder --mac dmg zip --publish never
+
+      - name: Check macOS package files
+        shell: bash
+        run: |
+          test -f out/node-runtime/bin/node
+          test -f out/dsh-runtime.tar.gz
+          compgen -G "dist/*.dmg" > /dev/null
+          compgen -G "dist/*.zip" > /dev/null
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: EzDSH-macOS-unsigned
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
