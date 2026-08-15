@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
@@ -29,6 +29,20 @@ let updateManager: UpdateManager | undefined
 let isQuitting = false
 let updateDialogOpen = false
 const require = createRequire(import.meta.url)
+
+const LIGHT_WINDOW_BACKGROUND = '#f9fafb'
+const DARK_WINDOW_BACKGROUND = '#151517'
+
+function getWindowBackgroundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? DARK_WINDOW_BACKGROUND : LIGHT_WINDOW_BACKGROUND
+}
+
+function syncWindowBackgroundColor(): void {
+  const backgroundColor = getWindowBackgroundColor()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.setBackgroundColor(backgroundColor)
+  }
+}
 
 function getAutoUpdater(): AppUpdater {
   return (require('electron-updater') as typeof import('electron-updater')).autoUpdater
@@ -229,7 +243,7 @@ function createWindow(): BrowserWindow {
     minHeight: 640,
     show: false,
     title: APP_NAME,
-    backgroundColor: '#101114',
+    backgroundColor: getWindowBackgroundColor(),
     icon: getAppIconPath(),
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const }
@@ -273,6 +287,7 @@ if (!singleInstance) {
 } else {
   app.whenReady().then(async () => {
     app.setName(APP_NAME)
+    nativeTheme.on('updated', syncWindowBackgroundColor)
     const updateFeedUrl = process.env.EZDSH_UPDATE_FEED_URL?.trim() || undefined
     const layout = getUserDataLayout(app.getPath('userData'))
     await ensureUserDataLayout(layout)
