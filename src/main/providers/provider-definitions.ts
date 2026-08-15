@@ -11,21 +11,22 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
     modelCatalogSource: 'builtin'
   },
   ...[
-    ['openai', 'OpenAI', 'OPENAI_API_KEY'],
-    ['anthropic', 'Anthropic', 'ANTHROPIC_API_KEY'],
-    ['google', 'Google Gemini', 'GOOGLE_API_KEY'],
-    ['moonshotai', 'Moonshot / Kimi', 'MOONSHOT_API_KEY'],
-    ['minimax', 'MiniMax', 'MINIMAX_API_KEY'],
-    ['zhipuai', '智谱 GLM', 'ZHIPU_API_KEY'],
-    ['mistral', 'Mistral AI', 'MISTRAL_API_KEY'],
-    ['openrouter', 'OpenRouter', 'OPENROUTER_API_KEY'],
-    ['groq', 'Groq', 'GROQ_API_KEY'],
-    ['togetherai', 'Together AI', 'TOGETHERAI_API_KEY']
-  ].map(([id, displayName, credentialKey]) => ({
+    ['openai', 'OpenAI', 'OPENAI_API_KEY', 'https://api.openai.com/v1'],
+    ['anthropic', 'Anthropic', 'ANTHROPIC_API_KEY', 'https://api.anthropic.com'],
+    ['google', 'Google Gemini', 'GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta'],
+    ['moonshotai', 'Moonshot / Kimi', 'MOONSHOT_API_KEY', 'https://api.moonshot.ai/v1'],
+    ['minimax', 'MiniMax', 'MINIMAX_API_KEY', 'https://api.minimax.io/anthropic'],
+    ['zai', 'Z.AI / GLM', 'ZAI_API_KEY', 'https://api.z.ai/api/coding/paas/v4'],
+    ['mistral', 'Mistral AI', 'MISTRAL_API_KEY', 'https://api.mistral.ai'],
+    ['openrouter', 'OpenRouter', 'OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1'],
+    ['groq', 'Groq', 'GROQ_API_KEY', 'https://api.groq.com/openai/v1'],
+    ['together', 'Together AI', 'TOGETHER_API_KEY', 'https://api.together.ai/v1']
+  ].map(([id, displayName, credentialKey, defaultBaseUrl]) => ({
     id,
     displayName,
     category: 'aggregator' as const,
     credentialKey,
+    defaultBaseUrl,
     supportsConnectionTest: true,
     modelCatalogSource: 'builtin' as const
   }))

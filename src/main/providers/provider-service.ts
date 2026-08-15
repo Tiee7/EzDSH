@@ -13,6 +13,11 @@ import { findProviderDefinition, PROVIDER_DEFINITIONS } from './provider-definit
 
 type JsonMap = Record<string, unknown>
 
+const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
+  zhipuai: 'zai',
+  togetherai: 'together'
+}
+
 /** Main-process provider persistence; secrets never leave this service. */
 export class ProviderService {
   private readonly credentialsPath: string
@@ -25,6 +30,14 @@ export class ProviderService {
 
   listDefinitions() {
     return PROVIDER_DEFINITIONS.map((definition) => ({ ...definition }))
+  }
+
+  /** Repair provider route IDs written by older EzDSH builds before Runtime starts. */
+  async initialize(): Promise<void> {
+    const settings = await this.readDocument(this.settingsPath)
+    if (this.migrateLegacyProviderRoutes(settings)) {
+      await this.writePrivateDocument(this.settingsPath, settings)
+    }
   }
 
   async getStatuses(): Promise<ProviderStatus[]> {
@@ -65,7 +78,7 @@ export class ProviderService {
     const baseUrl = input.baseUrl?.trim() || definition.defaultBaseUrl
     if (baseUrl === undefined) return { reachable: false, message: '该供应商需要填写 Base URL' }
 
-    const endpoint = new URL('/models', `${baseUrl.replace(/\/$/u, '')}/`).toString()
+    const endpoint = new URL(`${baseUrl.replace(/\/+$/u, '')}/models`).toString()
     try {
       const response = await fetch(endpoint, {
         headers: { Authorization: `Bearer ${input.apiKey}` },
@@ -111,6 +124,23 @@ export class ProviderService {
     const piAi = asMap(settings['llm-pi-ai'])
     const providers = asMap(piAi?.providers)
     return providers?.[providerId] !== undefined
+  }
+
+  private migrateLegacyProviderRoutes(settings: JsonMap): boolean {
+    const piAi = asMap(settings['llm-pi-ai'])
+    const providers = asMap(piAi?.providers)
+    if (piAi === undefined || providers === undefined) return false
+
+    let changed = false
+    for (const [legacyId, currentId] of Object.entries(LEGACY_PROVIDER_ALIASES)) {
+      const legacyProfile = providers[legacyId]
+      if (!isMap(legacyProfile)) continue
+      if (providers[currentId] === undefined) providers[currentId] = legacyProfile
+      delete providers[legacyId]
+      changed = true
+    }
+    if (changed) settings['llm-pi-ai'] = { ...piAi, providers }
+    return changed
   }
 
   private writeRoute(settings: JsonMap, providerId: string, credentialKey: string, baseUrl?: string): void {

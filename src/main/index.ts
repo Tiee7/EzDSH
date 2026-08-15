@@ -307,6 +307,7 @@ if (!singleInstance) {
       })
     })
     providerService = new ProviderService(layout)
+    await providerService.initialize()
     const updateChecksEnabled = app.isPackaged || updateFeedUrl !== undefined
     updateManager = new UpdateManager({
       currentVersion: app.getVersion(),
