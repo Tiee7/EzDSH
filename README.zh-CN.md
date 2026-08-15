@@ -11,8 +11,8 @@
 
 <p align="center">
   <a href="#为什么选择-ezdsh">为什么选择</a> •
-  <a href="#下载">下载</a> •
-  <a href="#快速开始">快速开始</a> •
+  <a href="#本地使用">本地使用</a> •
+  <a href="#从源码编译">从源码编译</a> •
   <a href="README.md">English</a>
 </p>
 
@@ -94,14 +94,14 @@ Harness 提供引擎，EzDSH 提供体验。
 - 希望 API Key 和项目数据本地保存的用户
 - 需要稳定桌面入口的 Agent、工具和 Plugin 使用者
 
-## 快速开始
+## 本地使用
 
 1. 从 [Releases](../../releases) 页面下载适合你平台的 macOS 或 Windows 安装包。
 2. 安装并打开 EzDSH。
 3. 在 Harness Web UI 中配置模型供应商。
 4. 开始工作。EzDSH 会自动启动 Runtime 并打开 Harness 工作空间。
 
-## 编译与安装
+## 从源码编译
 
 ### macOS（Apple Silicon）
 

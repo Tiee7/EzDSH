@@ -11,8 +11,8 @@
 
 <p align="center">
   <a href="#why-ezdsh">Why EzDSH</a> •
-  <a href="#download">Download</a> •
-  <a href="#quick-start">Quick Start</a> •
+  <a href="#local-use">Local Use</a> •
+  <a href="#build-from-source">Build from Source</a> •
   <a href="README.zh-CN.md">中文版</a>
 </p>
 
@@ -94,14 +94,14 @@ Harness provides the engine. EzDSH provides the experience.
 - Anyone who wants API keys and project data kept local
 - Professionals who need a stable desktop entry point for agent, tool, and plugin workflows
 
-## Quick start
+## Local use
 
 1. **Download** the installer for macOS or Windows from the [Releases](../../releases) page.
 2. **Install and open** EzDSH.
 3. **Configure your provider** in the Harness Web UI.
 4. **Start working.** EzDSH launches the Runtime and opens the Harness workspace automatically.
 
-## Build and install
+## Build from source
 
 ### macOS (Apple Silicon)
 
