@@ -18,6 +18,29 @@
 
 ---
 
+## 编译与安装
+
+### macOS（Apple Silicon）
+
+当前正式发布目标是 macOS arm64。请使用 `package.json` 要求的 Node.js 版本（推荐 `24.18.0`），在项目根目录执行：
+
+```bash
+npm ci
+npm run package:mac:release
+```
+
+`package:mac:release` 会构建内置 DSH Runtime，生成签名的 DMG 和 ZIP，并验证打包后的 Runtime。正式发布需要有效的 `Developer ID Application` 证书。仅用于本地自动更新测试的未强制签名 ZIP，可以执行：
+
+```bash
+npm run package:mac:zip
+```
+
+产物会写入 `dist/`。安装 DMG 时，打开 DMG 并将 `EzDSH.app` 拖入“应用程序”文件夹。直接运行 `dist/mac-arm64/EzDSH.app` 适合本地开发调试，但不能验证 DMG 安装和 Gatekeeper 流程。
+
+### Windows
+
+Electron Builder 已配置 NSIS 目标，但当前发布脚本尚未启用 Windows 打包。现有 Runtime 暂存脚本限定为 macOS arm64，因此当前检出版本还不能生成 Windows 安装程序。要支持 Windows，需要先增加 Windows 原生 Runtime 暂存步骤和专用的 `package:win` 发布脚本，然后才能构建并安装 `.exe`。
+
 ## 为什么选择 EzDSH
 
 DeepSeek Harness 功能强大，但在本地跑起来往往需要安装运行环境、从命令行启动服务、管理端口、编辑供应商配置、维持后台进程。EzDSH 把这一整套流程封装成一个桌面应用，让你专注于用 AI 创造价值，而不是和环境配置作斗争。

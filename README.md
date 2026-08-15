@@ -18,6 +18,29 @@
 
 ---
 
+## Build and install
+
+### macOS (Apple Silicon)
+
+The current release target is macOS arm64. Use Node.js `24.18.0` (or another version accepted by `package.json`) and run from the repository root:
+
+```bash
+npm ci
+npm run package:mac:release
+```
+
+`package:mac:release` builds the bundled DSH Runtime, creates a signed DMG and ZIP, and verifies the packaged Runtime. A valid `Developer ID Application` certificate is required for release builds. For a local unsigned ZIP used only for testing updates, use:
+
+```bash
+npm run package:mac:zip
+```
+
+The artifacts are written to `dist/`. To install the DMG, open it and drag `EzDSH.app` into `Applications`. Opening `dist/mac-arm64/EzDSH.app` directly is useful for local development, but does not test the DMG installation or Gatekeeper flow.
+
+### Windows
+
+The Electron Builder configuration includes an NSIS target, but Windows packaging is not enabled in the current release scripts. The current Runtime staging script is restricted to macOS arm64, so a Windows installer cannot be produced from this checkout yet. Windows support requires a Windows-native Runtime staging step and a dedicated `package:win` release script before the generated `.exe` can be built and installed.
+
 ## Why EzDSH
 
 DeepSeek Harness is powerful, but getting it running locally means installing runtimes, starting services from the terminal, managing ports, editing provider configs, and keeping processes alive. EzDSH wraps all of that into a single desktop app so you can focus on building with AI instead of fighting your environment.
