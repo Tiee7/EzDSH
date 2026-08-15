@@ -55,15 +55,17 @@
   "build": {
     "appId": "com.ezdsh.desktop",
     "productName": "EzDSH",
-    "asar": false,
+    "asar": true,
+    "asarUnpack": [
+      "out/dsh-runtime/**",
+      "out/node-runtime/**"
+    ],
     "npmRebuild": false,
     "directories": {
       "output": "dist"
     },
     "files": [
       "out/**/*",
-      "out/dsh-runtime/node_modules/**/*",
-      "node_modules/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -73,6 +75,9 @@
       }
     ],
     "icon": "logo.png",
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    },
     "mac": {
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
@@ -89,7 +94,7 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://ezdsh.vercel.app/updates/"
+        "url": "http://update.ezdsh.com/updates/"
       }
     ],
     "extraMetadata": {

@@ -18,7 +18,7 @@ export interface RuntimePathOptions {
 /** Resolve the source-built or staged Runtime entry without consulting user PATH. */
 export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
   if (options.isPackaged) {
-    return join(options.resourcesPath ?? resolve(options.appPath, '..'), 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
+    return join(options.resourcesPath ?? resolve(options.appPath, '..'), 'app.asar.unpacked', 'out', 'dsh-runtime', 'lib', 'bin.js')
   }
 
   // The source checkout's CLI depends on pnpm workspace links. Those links are
@@ -37,7 +37,7 @@ export function resolveRuntimeCommandPath(options: RuntimePathOptions): string |
   const executable = (options.platform ?? process.platform) === 'win32' ? 'node.exe' : 'node'
   return join(
     options.resourcesPath ?? resolve(options.appPath, '..'),
-    'app',
+    'app.asar.unpacked',
     'out',
     'node-runtime',
     'bin',

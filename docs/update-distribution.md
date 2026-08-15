@@ -5,7 +5,7 @@
 EzDSH 使用 `electron-updater` 的 `generic` 更新源。当前暂定地址为：
 
 ```text
-https://ezdsh.vercel.app/updates/
+http://update.ezdsh.com/updates/
 ```
 
 打包时，`electron-builder` 会根据该配置生成平台对应的更新元数据：

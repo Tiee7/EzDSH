@@ -35,7 +35,7 @@ describe('RuntimeManager', () => {
       appPath: '/Applications/EzDSH.app/Contents/Resources/app',
       resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
       isPackaged: true
-    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/out/dsh-runtime/lib/bin.js')
+    })).toBe('/Applications/EzDSH.app/Contents/Resources/app.asar.unpacked/out/dsh-runtime/lib/bin.js')
   })
 
   it('resolves the packaged Node executable inside the Electron app resources', () => {
@@ -44,7 +44,7 @@ describe('RuntimeManager', () => {
       resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
       isPackaged: true,
       platform: 'darwin'
-    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/out/node-runtime/bin/node')
+    })).toBe('/Applications/EzDSH.app/Contents/Resources/app.asar.unpacked/out/node-runtime/bin/node')
   })
 
   it('starts, reports ready, and stops without removing the harness directory', async () => {
