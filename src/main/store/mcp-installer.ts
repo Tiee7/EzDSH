@@ -158,7 +158,7 @@ export async function setMcpDisabled(patchFile: string, serverName: string, disa
     if (row === undefined || !row.has('insert')) continue
     const insertSeq = row.get('insert', true)
     if (insertSeq === null || typeof insertSeq !== 'object' || !('items' in (insertSeq as object))) continue
-    for (const child of (insertSeq as YAMLSeq<YAMLMap>).items) {
+    for (const child of (insertSeq as unknown as YAMLSeq<YAMLMap>).items) {
       if (child === undefined || mapValue(child, 'id') !== rowId) continue
       if (disabled) child.set('disabled', true)
       else child.delete('disabled')
