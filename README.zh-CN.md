@@ -163,13 +163,7 @@ npm ci
 npm run package:mac:release
 ```
 
-该命令会构建内置 DSH Runtime，生成签名的 DMG 和 ZIP，并验证打包后的 Runtime。正式发布需要有效的 `Developer ID Application` 证书。产物会写入 `dist/`。
-
-仅用于本地自动更新测试的未强制签名 ZIP，可以改为执行：
-
-```bash
-npm run package:mac:zip
-```
+该命令会构建内置 DSH Runtime，生成签名的 DMG，并验证打包后的 Runtime。正式发布需要有效的 `Developer ID Application` 证书。产物会写入 `dist/`。
 
 5. 安装 DMG 时，打开 DMG 并将 `EzDSH.app` 拖入“应用程序”文件夹。直接运行 `dist/mac-arm64/EzDSH.app` 适合本地开发调试，但不能验证 DMG 安装和 Gatekeeper 流程。
 
@@ -208,12 +202,12 @@ npm run package:win:release
 
 | 平台 | 安装包 |
 |------|--------|
-| macOS (Apple Silicon) | `.dmg` / `.zip` |
+| macOS (Apple Silicon) | `.dmg` |
 | Windows | `.exe` 安装程序 |
 
 EzDSH 会自动检查更新，并在有新版本时提醒你。
 
-普通安装请从 GitHub Release 直接下载 `.dmg` 或 `.exe`。macOS 的 `.zip` 会保留给自动更新通道使用，不作为主要安装包。
+普通安装请从 GitHub Release 直接下载 `.dmg` 或 `.exe`。
 
 ## 许可
 

@@ -163,13 +163,7 @@ npm ci
 npm run package:mac:release
 ```
 
-This builds the bundled DSH Runtime, creates a signed DMG and ZIP, and verifies the packaged Runtime. A valid `Developer ID Application` certificate is required. The artifacts are written to `dist/`.
-
-For a local unsigned ZIP used only for testing updates, run instead:
-
-```bash
-npm run package:mac:zip
-```
+This builds the bundled DSH Runtime, creates a signed DMG, and verifies the packaged Runtime. A valid `Developer ID Application` certificate is required. The artifacts are written to `dist/`.
 
 5. To install the DMG, open it and drag `EzDSH.app` into `Applications`. Opening `dist/mac-arm64/EzDSH.app` directly is useful for local development, but does not test the DMG installation or Gatekeeper flow.
 
@@ -208,12 +202,12 @@ Windows packaging is prepared for x64 only. It is not executed on the current ma
 
 | Platform | Package |
 |----------|---------|
-| macOS (Apple Silicon) | `.dmg` / `.zip` |
+| macOS (Apple Silicon) | `.dmg` |
 | Windows | `.exe` installer |
 
 EzDSH checks for updates automatically and notifies you when a new release is available.
 
-For normal installation, download the `.dmg` or `.exe` directly from a GitHub Release. The macOS `.zip` is retained for the automatic update channel and is not the primary installer.
+For normal installation, download the `.dmg` or `.exe` directly from a GitHub Release.
 
 ## License
 

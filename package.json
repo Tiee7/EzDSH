@@ -30,7 +30,6 @@
     "prepare:package": "npm run dsh:install && npm run dsh:build && npm run build && npm run stage:runtime && npm run verify:runtime",
     "package:dir": "npm run prepare:package && electron-builder --dir",
     "package:mac": "npm run prepare:package && electron-builder --mac --publish never && npm run verify:package:mac",
-    "package:mac:zip": "npm run prepare:package && electron-builder --mac zip --publish never && npm run verify:package:mac",
     "package:mac:release": "npm run prepare:package && electron-builder --mac --publish never -c.mac.forceCodeSigning=true && npm run verify:package:mac",
     "package:win": "npm run prepare:package && electron-builder --win --publish never && npm run verify:package:win",
     "package:win:release": "npm run prepare:package && electron-builder --win --publish never -c.win.forceCodeSigning=true && npm run verify:package:win"
@@ -89,8 +88,7 @@
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "target": [
-        "dmg",
-        "zip"
+        "dmg"
       ]
     },
     "win": {
