@@ -104,6 +104,8 @@ These steps are for users who only want to use EzDSH. You do not need Node.js, p
 2. Download the installer for your platform:
    - macOS Apple Silicon: `.dmg`
    - Windows x64: `.exe`
+
+   Download these files from the release asset list. GitHub Actions' `Artifacts` are build archives wrapped in ZIP format and are intended for CI inspection, not normal installation.
 3. Install EzDSH:
    - On macOS, open the `.dmg` and drag `EzDSH.app` to `Applications`.
    - On Windows, run the `.exe` installer and follow the prompts.
@@ -210,6 +212,8 @@ Windows packaging is prepared for x64 only. It is not executed on the current ma
 | Windows | `.exe` installer |
 
 EzDSH checks for updates automatically and notifies you when a new release is available.
+
+For normal installation, download the `.dmg` or `.exe` directly from a GitHub Release. The macOS `.zip` is retained for the automatic update channel and is not the primary installer.
 
 ## License
 

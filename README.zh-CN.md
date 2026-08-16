@@ -104,6 +104,8 @@ Harness 提供引擎，EzDSH 提供体验。
 2. 下载对应平台的安装包：
    - macOS Apple Silicon：`.dmg`
    - Windows x64：`.exe`
+
+   请从 Release 的附件列表下载这些文件。GitHub Actions 的 `Artifacts` 会被 GitHub 统一包装成 ZIP，它们用于 CI 构建归档，不是普通用户的安装入口。
 3. 安装 EzDSH：
    - macOS：打开 `.dmg`，将 `EzDSH.app` 拖入“应用程序”文件夹。
    - Windows：运行 `.exe` 安装程序，按照提示完成安装。
@@ -210,6 +212,8 @@ npm run package:win:release
 | Windows | `.exe` 安装程序 |
 
 EzDSH 会自动检查更新，并在有新版本时提醒你。
+
+普通安装请从 GitHub Release 直接下载 `.dmg` 或 `.exe`。macOS 的 `.zip` 会保留给自动更新通道使用，不作为主要安装包。
 
 ## 许可
 
