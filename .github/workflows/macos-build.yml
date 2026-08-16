@@ -50,8 +50,8 @@ jobs:
           test -n "$APPLE_API_ISSUER" || { echo "Missing APPLE_API_ISSUER"; exit 1; }
           test -n "$APPLE_TEAM_ID" || { echo "Missing APPLE_TEAM_ID"; exit 1; }
 
-      - name: Build macOS DMG
-        run: npx --no-install electron-builder --mac dmg --publish never -c.mac.notarize=true
+      - name: Build macOS installers
+        run: npx --no-install electron-builder --mac dmg zip --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
 
       - name: Check macOS package files
         shell: bash
@@ -59,6 +59,9 @@ jobs:
           test -f out/node-runtime/bin/node
           test -f out/dsh-runtime.tar.gz
           compgen -G "dist/*.dmg" > /dev/null
+          compgen -G "dist/*.zip" > /dev/null
+          test -f dist/latest-mac.yml
+          compgen -G "dist/*.blockmap" > /dev/null
 
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
@@ -66,6 +69,9 @@ jobs:
           name: EzDSH-macOS-signed-and-notarized
           path: |
             dist/*.dmg
+            dist/*.zip
+            dist/latest-mac.yml
+            dist/*.blockmap
           if-no-files-found: error
 
       - name: Publish macOS installers to GitHub Release
@@ -96,4 +102,7 @@ jobs:
           gh release upload "$tag" \
             --repo "$GITHUB_REPOSITORY" \
             dist/*.dmg \
+            dist/*.zip \
+            dist/latest-mac.yml \
+            dist/*.blockmap \
             --clobber

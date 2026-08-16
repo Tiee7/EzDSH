@@ -159,7 +159,7 @@ npm run package:dir
 
 ```bash
 npm run build
-npx --no-install electron-builder --mac dmg --publish never
+npx --no-install electron-builder --mac dmg zip --publish never
 npm run verify:package:mac
 ```
 
@@ -169,7 +169,7 @@ npm run verify:package:mac
 npm run dsh:build
 npm run stage:dsh-runtime
 npm run build
-npx --no-install electron-builder --mac dmg --publish never
+npx --no-install electron-builder --mac dmg zip --publish never
 npm run verify:package:mac
 ```
 

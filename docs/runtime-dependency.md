@@ -211,7 +211,7 @@ npm run package:mac:release
 
 ```bash
 npm run build
-npx --no-install electron-builder --mac dmg --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
+npx --no-install electron-builder --mac dmg zip --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
 ```
 
 `npm run build` 会重新编译 `out/main`、`out/preload`、`out/renderer`；electron-builder 读取当前 `package.json` 版本号直接打包。版本号改动本身不需要额外构建。
@@ -221,7 +221,7 @@ npx --no-install electron-builder --mac dmg --publish never -c.mac.notarize=true
 ```bash
 npm run dsh:build && npm run stage:dsh-runtime
 npm run build
-npx --no-install electron-builder --mac dmg --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
+npx --no-install electron-builder --mac dmg zip --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
 ```
 
 这里不需要跑 `dsh:install`——只有上游的 `pnpm-lock.yaml` 发生变化时才需要重新安装依赖。`stage:dsh-runtime` 会把新的 Runtime 重新打包成 `out/dsh-runtime.tar.gz`。
