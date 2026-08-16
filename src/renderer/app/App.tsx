@@ -5,6 +5,7 @@ import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import { RUNTIME_IFRAME_ALLOW } from './runtime-frame.js'
 import { StorePage } from '../store/StorePage.js'
 import { PresetPage } from '../store/PresetPage.js'
+import { SettingsPage } from '../settings/SettingsPage.js'
 import logoUrl from '../../../assets/logo.png'
 import './app.css'
 
@@ -103,7 +104,7 @@ export function App() {
           </div>
           {activeTab === 'store' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section> : null}
           {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section> : null}
-          {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabSettings}><p className="workspace-placeholder">{copy.tabSettings}</p></section> : null}
+          {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} /></section> : null}
         </div>
       </main>
     )

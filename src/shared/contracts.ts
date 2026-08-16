@@ -46,6 +46,10 @@ export interface EzDSHBridge {
     listInstalled(): Promise<InstalledListResult>
     onStateChange(listener: (state: InstallState) => void): () => void
   }
+  settings: {
+    setLocale(locale: AppLocale): Promise<void>
+    openHarnessDir(): Promise<void>
+  }
   providers: {
     listDefinitions(): Promise<ProviderDefinition[]>
     getStatus(): Promise<ProviderStatus[]>

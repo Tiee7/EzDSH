@@ -51,6 +51,10 @@ const bridge: EzDSHBridge = {
       return () => ipcRenderer.removeListener('store:state-change', handler)
     }
   },
+  settings: {
+    setLocale: (locale) => invoke('settings:set-locale', locale),
+    openHarnessDir: () => invoke('settings:open-harness-dir')
+  },
   providers: {
     listDefinitions: () => invoke('providers:list-definitions'),
     getStatus: () => invoke('providers:get-status'),

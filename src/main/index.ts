@@ -24,7 +24,7 @@ import {
 import { ProviderService } from './providers/provider-service.js'
 import { UpdateManager } from './update/update-manager.js'
 import { getApplicationMenuTemplate } from './application-menu.js'
-import { LocaleService } from './locale/locale-service.js'
+import { LocaleService, writeDshLocale } from './locale/locale-service.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
@@ -277,6 +277,26 @@ function registerIpcHandlers(): void {
     try {
       if (storeService === undefined) throw new Error('Store service is not ready')
       return success(await storeService.listInstalled())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:set-locale', async (_event, locale: 'zh' | 'en'): Promise<IpcResult<void>> => {
+    try {
+      if (locale !== 'zh' && locale !== 'en') throw new Error(`Unsupported locale: ${String(locale)}`)
+      if (localeService === undefined || userDataLayout === undefined) throw new Error('Locale service is not ready')
+      await writeDshLocale(join(userDataLayout.harness, 'settings.yaml'), locale)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:open-harness-dir', async (): Promise<IpcResult<void>> => {
+    try {
+      if (userDataLayout === undefined) throw new Error('User data layout is not ready')
+      const errorMessage = await shell.openPath(userDataLayout.harness)
+      if (errorMessage !== '') throw new Error(errorMessage)
+      return success(undefined)
     } catch (error) {
       return failure(error)
     }

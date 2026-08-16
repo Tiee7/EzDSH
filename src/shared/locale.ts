@@ -80,6 +80,14 @@ export interface AppCopy {
   phaseInstalling: string
   phaseDone: string
   phaseFailed: string
+  storeSurfaceSkills: string
+  storeSurfaceMcp: string
+  settingsLanguage: string
+  settingsLanguageHint: string
+  settingsOpenLog: string
+  settingsOpenHarnessDir: string
+  settingsAbout: string
+  settingsStoreSource: string
 }
 
 const APP_COPY: Record<AppLocale, AppCopy> = {
@@ -160,6 +168,14 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     phaseInstalling: '安装中…',
     phaseDone: '安装完成',
     phaseFailed: '操作失败',
+    storeSurfaceSkills: '技能',
+    storeSurfaceMcp: '工具扩展（MCP）',
+    settingsLanguage: '界面语言',
+    settingsLanguageHint: '跟随 DeepSeek Harness 的语言设置，切换后各界面同步更新',
+    settingsOpenLog: '打开运行日志',
+    settingsOpenHarnessDir: '打开 Harness 数据目录',
+    settingsAbout: '关于',
+    settingsStoreSource: '商店数据源',
   },
   en: {
     loadingConfig: 'Reading EzDSH configuration…',
@@ -238,6 +254,14 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     phaseInstalling: 'Installing…',
     phaseDone: 'Installed',
     phaseFailed: 'Operation failed',
+    storeSurfaceSkills: 'Skills',
+    storeSurfaceMcp: 'Tool extensions (MCP)',
+    settingsLanguage: 'Interface language',
+    settingsLanguageHint: 'Follows the DeepSeek Harness language setting; every surface updates together',
+    settingsOpenLog: 'Open Runtime log',
+    settingsOpenHarnessDir: 'Open Harness data directory',
+    settingsAbout: 'About',
+    settingsStoreSource: 'Store source',
   },
 }
 

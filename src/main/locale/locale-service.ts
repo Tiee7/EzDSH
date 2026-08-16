@@ -1,6 +1,6 @@
 import { unwatchFile, watchFile, type Stats } from 'node:fs'
-import { readFile } from 'node:fs/promises'
-import { parse } from 'yaml'
+import { readFile, writeFile } from 'node:fs/promises'
+import { parse, parseDocument } from 'yaml'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
 
 interface LocaleDocument {
@@ -17,6 +17,30 @@ export async function readDshLocale(settingsPath: string): Promise<AppLocale> {
   } catch {
     return DEFAULT_APP_LOCALE
   }
+}
+
+/**
+ * Write one locale preference into the DSH settings file, creating the
+ * `locale:` mapping when absent and preserving every other key and comment.
+ * @param settingsPath - absolute path of the DSH `settings.yaml`.
+ * @param locale - the preference to persist.
+ */
+export async function writeDshLocale(settingsPath: string, locale: AppLocale): Promise<void> {
+  let text = ''
+  try {
+    text = await readFile(settingsPath, 'utf8')
+  } catch {
+    text = ''
+  }
+  const document = parseDocument(text)
+  let section = document.get('locale') as ReturnType<typeof document.get>
+  if (section === undefined || section === null || typeof section !== 'object') {
+    document.set('locale', { preference: locale })
+  } else {
+    ;(section as Map<string, string>).set('preference', locale)
+  }
+  const serialized = document.toString()
+  await writeFile(settingsPath, serialized.endsWith('\n') ? serialized : `${serialized}\n`, 'utf8')
 }
 
 export class LocaleService {

@@ -1,8 +1,37 @@
+.store-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.store-surfaces {
+  display: flex;
+  gap: 6px;
+}
+
+.surface-tab {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 6px 14px;
+  background: transparent;
+  color: #9197a5;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.surface-tab-active {
+  color: #f2f4f8;
+  border-color: rgba(120, 148, 214, 0.7);
+  background: rgba(103, 128, 183, 0.18);
+}
+
 .store-layout {
   display: grid;
   grid-template-columns: 180px 1fr 340px;
   gap: 16px;
-  height: 100%;
+  flex: 1;
   min-height: 0;
 }
 
