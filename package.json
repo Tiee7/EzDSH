@@ -1,6 +1,6 @@
 {
   "name": "ezdsh",
-  "version": "0.8.1510",
+  "version": "0.8.1511",
   "description": "A desktop client for DeepSeek Harness.",
   "private": true,
   "type": "module",
@@ -109,7 +109,7 @@
       }
     ],
     "extraMetadata": {
-      "version": "0.8.1510"
+      "version": "0.8.1511"
     }
   }
 }
