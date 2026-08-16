@@ -3,6 +3,8 @@ import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../../shared/loc
 import type { AppTab } from '../../shared/navigation.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import { RUNTIME_IFRAME_ALLOW } from './runtime-frame.js'
+import { StorePage } from '../store/StorePage.js'
+import { PresetPage } from '../store/PresetPage.js'
 import logoUrl from '../../../assets/logo.png'
 import './app.css'
 
@@ -99,8 +101,8 @@ export function App() {
               sandbox="allow-downloads allow-forms allow-modals allow-same-origin allow-scripts"
             />
           </div>
-          {activeTab === 'store' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabStore}><p className="workspace-placeholder">{copy.tabStore}</p></section> : null}
-          {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabPresets}><p className="workspace-placeholder">{copy.tabPresets}</p></section> : null}
+          {activeTab === 'store' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section> : null}
+          {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section> : null}
           {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabSettings}><p className="workspace-placeholder">{copy.tabSettings}</p></section> : null}
         </div>
       </main>

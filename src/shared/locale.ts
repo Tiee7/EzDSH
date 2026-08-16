@@ -51,6 +51,35 @@ export interface AppCopy {
   menuNavigate: string
   menuOpenLog: string
   menuOpenHarnessDir: string
+  storeSearchPlaceholder: string
+  storeAllCategories: string
+  storeInstalledSection: string
+  storeAvailableSection: string
+  storeInstall: string
+  storeInstalled: string
+  storeUninstall: string
+  storeUpdate: string
+  storeLoadFailed: string
+  storeRetry: string
+  storeEmpty: string
+  storeLoading: string
+  storeDetailFiles: string
+  storeDetailMcp: string
+  storeConfirmTitle: string
+  storeConfirmInstall: string
+  storeCancel: string
+  storeAuditReport: string
+  storeAuditFindingsNone: string
+  storeAuditExternalUrls: string
+  storeAuditBlocked: string
+  auditVerified: string
+  auditBasic: string
+  auditUnaudited: string
+  phaseDownloading: string
+  phaseAuditing: string
+  phaseInstalling: string
+  phaseDone: string
+  phaseFailed: string
 }
 
 const APP_COPY: Record<AppLocale, AppCopy> = {
@@ -102,6 +131,35 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     menuNavigate: '前往',
     menuOpenLog: '打开运行日志…',
     menuOpenHarnessDir: '打开 Harness 数据目录…',
+    storeSearchPlaceholder: '搜索技能…',
+    storeAllCategories: '全部分类',
+    storeInstalledSection: '已安装',
+    storeAvailableSection: '可安装',
+    storeInstall: '安装',
+    storeInstalled: '已安装',
+    storeUninstall: '卸载',
+    storeUpdate: '更新',
+    storeLoadFailed: '加载商店失败',
+    storeRetry: '重试',
+    storeEmpty: '这里还没有内容',
+    storeLoading: '加载中…',
+    storeDetailFiles: '包含文件',
+    storeDetailMcp: 'MCP 服务器配置',
+    storeConfirmTitle: '安全检测报告',
+    storeConfirmInstall: '确认安装',
+    storeCancel: '取消',
+    storeAuditReport: '检测结果',
+    storeAuditFindingsNone: '未发现问题',
+    storeAuditExternalUrls: '外链地址',
+    storeAuditBlocked: '该内容未通过安全检测，已阻止安装',
+    auditVerified: '已验证',
+    auditBasic: '基础检测',
+    auditUnaudited: '未审计',
+    phaseDownloading: '下载中…',
+    phaseAuditing: '检测中…',
+    phaseInstalling: '安装中…',
+    phaseDone: '安装完成',
+    phaseFailed: '操作失败',
   },
   en: {
     loadingConfig: 'Reading EzDSH configuration…',
@@ -151,6 +209,35 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     menuNavigate: 'Go',
     menuOpenLog: 'Open Runtime Log…',
     menuOpenHarnessDir: 'Open Harness Data Directory…',
+    storeSearchPlaceholder: 'Search skills…',
+    storeAllCategories: 'All categories',
+    storeInstalledSection: 'Installed',
+    storeAvailableSection: 'Available',
+    storeInstall: 'Install',
+    storeInstalled: 'Installed',
+    storeUninstall: 'Uninstall',
+    storeUpdate: 'Update',
+    storeLoadFailed: 'Failed to load the store',
+    storeRetry: 'Retry',
+    storeEmpty: 'Nothing here yet',
+    storeLoading: 'Loading…',
+    storeDetailFiles: 'Bundled files',
+    storeDetailMcp: 'MCP server wiring',
+    storeConfirmTitle: 'Security audit report',
+    storeConfirmInstall: 'Confirm install',
+    storeCancel: 'Cancel',
+    storeAuditReport: 'Audit result',
+    storeAuditFindingsNone: 'No issues found',
+    storeAuditExternalUrls: 'External URLs',
+    storeAuditBlocked: 'This content failed the security audit; install blocked',
+    auditVerified: 'Verified',
+    auditBasic: 'Basic',
+    auditUnaudited: 'Unaudited',
+    phaseDownloading: 'Downloading…',
+    phaseAuditing: 'Auditing…',
+    phaseInstalling: 'Installing…',
+    phaseDone: 'Installed',
+    phaseFailed: 'Operation failed',
   },
 }
 

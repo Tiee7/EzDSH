@@ -1,0 +1,381 @@
+.store-layout {
+  display: grid;
+  grid-template-columns: 180px 1fr 340px;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+.store-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  overflow-y: auto;
+}
+
+.category-item {
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: transparent;
+  color: #9197a5;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.category-item:hover {
+  color: #d5d9e0;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.category-item-active {
+  color: #f2f4f8;
+  background: rgba(103, 128, 183, 0.25);
+}
+
+.store-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.store-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.store-search input {
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e7eaf0;
+  font-size: 13px;
+}
+
+.store-error {
+  color: #e2695e;
+  font-size: 12px;
+}
+
+.store-status {
+  color: #9197a5;
+  font-size: 13px;
+}
+
+.store-retry {
+  align-self: flex-start;
+  border: 1px solid #454c5b;
+  border-radius: 8px;
+  padding: 6px 12px;
+  background: transparent;
+  color: #dce7ff;
+  cursor: pointer;
+}
+
+.entry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.entry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 14px;
+  background: rgba(25, 27, 32, 0.7);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.entry-card:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.entry-card-selected {
+  border-color: rgba(120, 148, 214, 0.7);
+}
+
+.entry-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.entry-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #eef1f6;
+}
+
+.entry-description {
+  margin: 0;
+  color: #9aa0ad;
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.entry-meta {
+  display: flex;
+  gap: 10px;
+  color: #7d8390;
+  font-size: 11px;
+}
+
+.entry-installed {
+  color: #69d29a;
+}
+
+.badge {
+  flex: none;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.badge-verified {
+  background: rgba(105, 210, 154, 0.15);
+  color: #69d29a;
+}
+
+.badge-basic {
+  background: rgba(228, 160, 79, 0.15);
+  color: #e4a04f;
+}
+
+.badge-unaudited {
+  background: rgba(154, 160, 173, 0.15);
+  color: #9aa0ad;
+}
+
+.store-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(25, 27, 32, 0.7);
+  overflow-y: auto;
+}
+
+.store-detail-empty {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.06);
+  background: transparent;
+}
+
+.detail-name {
+  margin: 0;
+  font-size: 17px;
+  color: #f2f4f8;
+}
+
+.detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #7d8390;
+  font-size: 12px;
+}
+
+.detail-description {
+  margin: 0;
+  color: #9aa0ad;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.detail-readme {
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #c6cad2;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.detail-files p {
+  margin: 0 0 6px;
+  color: #9aa0ad;
+  font-size: 12px;
+}
+
+.detail-files ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #9aa0ad;
+  font-size: 12px;
+}
+
+.detail-files li.file-kind-script,
+.detail-files li.file-kind-binary {
+  color: #e4a04f;
+}
+
+.detail-files pre {
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #c6cad2;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.audit-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid rgba(228, 160, 79, 0.3);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(228, 160, 79, 0.06);
+}
+
+.audit-title {
+  margin: 0;
+  color: #e4a04f;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.audit-clean {
+  margin: 0;
+  color: #69d29a;
+  font-size: 12px;
+}
+
+.audit-findings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.finding {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.finding-rule {
+  font-weight: 600;
+  color: #d5d9e0;
+}
+
+.finding-file {
+  color: #7d8390;
+}
+
+.finding-detail {
+  flex-basis: 100%;
+  color: #9aa0ad;
+}
+
+.finding-block .finding-rule {
+  color: #e2695e;
+}
+
+.finding-warn .finding-rule {
+  color: #e4a04f;
+}
+
+.audit-urls p {
+  margin: 0 0 4px;
+  color: #9aa0ad;
+  font-size: 11px;
+}
+
+.audit-urls ul {
+  margin: 0;
+  padding-left: 16px;
+  color: #7d8390;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.install-phase {
+  margin: 0;
+  font-size: 12px;
+  color: #9aa0ad;
+}
+
+.phase-failed {
+  color: #e2695e;
+}
+
+.phase-done {
+  color: #69d29a;
+}
+
+.install-blocked {
+  margin: 0;
+  color: #e2695e;
+  font-size: 12px;
+}
+
+.confirm-row {
+  display: flex;
+  gap: 8px;
+}
+
+.confirm-accept,
+.detail-install {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: #4a6cf7;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.confirm-accept:disabled,
+.detail-install:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.confirm-cancel,
+.detail-uninstall {
+  border: 1px solid #454c5b;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: transparent;
+  color: #dce7ff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.detail-actions {
+  margin-top: auto;
+  display: flex;
+  gap: 8px;
+}
