@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { c as createArchive } from 'tar'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
@@ -107,6 +107,45 @@ describe('RuntimeManager', () => {
       isPackaged: true,
       runtimeRoot
     })).toBe(join(runtimeRoot, 'lib', 'bin.js'))
+  })
+
+  it('extracts an archive containing directory symlinks on all platforms', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-symlink-'))
+    roots.push(root)
+    const sourceRoot = join(root, 'source')
+    const archiveRoot = join(root, 'resources')
+    const packageDir = join(
+      sourceRoot,
+      'dsh-runtime',
+      'node_modules',
+      '.pnpm',
+      'pkg@1.0.0',
+      'node_modules',
+      'pkg'
+    )
+    const linkDir = join(sourceRoot, 'dsh-runtime', 'node_modules', 'pkg')
+    await mkdir(packageDir, { recursive: true })
+    await mkdir(dirname(linkDir), { recursive: true })
+    await mkdir(archiveRoot, { recursive: true })
+    await mkdir(join(sourceRoot, 'dsh-runtime', 'lib'), { recursive: true })
+    await writeFile(join(sourceRoot, 'dsh-runtime', 'lib', 'bin.js'), 'runtime')
+    await writeFile(join(packageDir, 'index.js'), 'pkg')
+    await symlink(relative(dirname(linkDir), packageDir), linkDir)
+    await createArchive({
+      cwd: sourceRoot,
+      file: join(archiveRoot, 'dsh-runtime.tar.gz'),
+      gzip: true,
+      portable: true
+    }, ['dsh-runtime'])
+
+    const runtimeRoot = await preparePackagedRuntime({
+      appPath: join(root, 'app.asar'),
+      resourcesPath: archiveRoot,
+      isPackaged: true,
+      userDataRoot: join(root, 'user-data')
+    })
+
+    expect(await readFile(join(runtimeRoot, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('pkg')
   })
 
   it('resolves the packaged Node executable inside the Electron app resources', () => {

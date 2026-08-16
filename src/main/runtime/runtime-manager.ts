@@ -1,9 +1,9 @@
 import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
-import { x as extractArchive } from 'tar'
+import { t as listArchive, x as extractArchive } from 'tar'
 import type { UserDataLayout } from '../../shared/state.js'
 import { ensureUserDataLayout } from '../state/user-data.js'
 import { waitForRuntimeHealthy } from './health-check.js'
@@ -91,6 +91,68 @@ export async function removeDirectoryWithRetries(
   }
 }
 
+interface RuntimeSymlinkEntry {
+  path: string
+  linkpath: string
+}
+
+async function createWindowsRuntimeSymlink(linkPath: string, targetPath: string): Promise<void> {
+  await mkdir(dirname(linkPath), { recursive: true })
+  const targetStats = await stat(targetPath)
+  if (targetStats.isDirectory()) {
+    // Junctions can be created by unprivileged users on Windows, unlike file
+    // symlinks. The DSH Runtime pnpm layout only uses directory links.
+    await symlink(targetPath, linkPath, 'junction')
+  } else {
+    // File symlinks also require privileges on Windows. Copy the target as a
+    // fallback; this branch is not expected for the current pnpm layout.
+    await copyFile(targetPath, linkPath)
+  }
+}
+
+/**
+ * Extract a Runtime archive.
+ *
+ * On Windows, node-tar's default symlink creation requires SeCreateSymbolicLink
+ * privilege (administrator or Developer Mode). The archive only contains
+ * directory symlinks from pnpm, so we extract non-link entries first and then
+ * recreate those links as junctions, which do not require elevation.
+ */
+async function extractRuntimeArchive(archivePath: string, cwd: string): Promise<void> {
+  if (process.platform !== 'win32') {
+    await extractArchive({ file: archivePath, cwd, strict: true })
+    return
+  }
+
+  const symlinks: RuntimeSymlinkEntry[] = []
+  await listArchive({
+    file: archivePath,
+    onReadEntry: (entry) => {
+      if (entry.type === 'SymbolicLink' && entry.linkpath !== undefined) {
+        symlinks.push({ path: entry.path, linkpath: entry.linkpath })
+      }
+    }
+  })
+
+  await extractArchive({
+    file: archivePath,
+    cwd,
+    strict: true,
+    filter: (_path, entry) => !('type' in entry) || entry.type !== 'SymbolicLink'
+  })
+
+  for (const { path, linkpath } of symlinks) {
+    const linkAbsolute = resolve(cwd, path)
+    const targetAbsolute = resolve(dirname(linkAbsolute), linkpath)
+    try {
+      await createWindowsRuntimeSymlink(linkAbsolute, targetAbsolute)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Failed to restore runtime symlink ${path} -> ${linkpath}: ${message}`)
+    }
+  }
+}
+
 function findPackagedRuntimeArchive(options: PackagedRuntimeOptions): string | undefined {
   const resourcesPath = options.resourcesPath ?? resolve(options.appPath, '..')
   const candidates = [
@@ -144,7 +206,7 @@ export async function preparePackagedRuntime(options: PackagedRuntimeOptions): P
 
   const extractionRoot = await mkdtemp(join(cacheRoot, '.extract-'))
   try {
-    await extractArchive({ file: archivePath, cwd: extractionRoot, strict: true })
+    await extractRuntimeArchive(archivePath, extractionRoot)
     const extractedRuntimeRoot = join(extractionRoot, 'dsh-runtime')
     if (!existsSync(join(extractedRuntimeRoot, 'lib', 'bin.js'))) {
       throw new Error('Packaged DSH Runtime archive is missing lib/bin.js')

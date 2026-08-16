@@ -1,12 +1,51 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { existsSync, realpathSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { extractFile } from '@electron/asar'
-import { x as extractArchive } from 'tar'
+import { t as listArchive, x as extractArchive } from 'tar'
+
+async function extractBundleArchive(archivePath, cwd) {
+  if (process.platform !== 'win32') {
+    await extractArchive({ file: archivePath, cwd, strict: true })
+    return
+  }
+
+  // Mirror the runtime extraction strategy: node-tar's default symlinks require
+  // elevated privileges on Windows, but the archive only contains directory
+  // links from pnpm. Recreate them as junctions after extracting the rest.
+  const symlinks = []
+  await listArchive({
+    file: archivePath,
+    onReadEntry: (entry) => {
+      if (entry.type === 'SymbolicLink' && entry.linkpath !== undefined) {
+        symlinks.push({ path: entry.path, linkpath: entry.linkpath })
+      }
+    }
+  })
+
+  await extractArchive({
+    file: archivePath,
+    cwd,
+    strict: true,
+    filter: (_path, entry) => !('type' in entry) || entry.type !== 'SymbolicLink'
+  })
+
+  for (const { path, linkpath } of symlinks) {
+    const linkAbsolute = resolve(cwd, path)
+    const targetAbsolute = resolve(dirname(linkAbsolute), linkpath)
+    const targetStats = await stat(targetAbsolute)
+    await mkdir(dirname(linkAbsolute), { recursive: true })
+    if (targetStats.isDirectory()) {
+      await symlink(targetAbsolute, linkAbsolute, 'junction')
+    } else {
+      await copyFile(targetAbsolute, linkAbsolute)
+    }
+  }
+}
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const bundleRoot = process.argv[2] === undefined
@@ -63,7 +102,7 @@ if (runtimeEntry === undefined) {
   }
   runtimeExtractionRoot = join(temporaryRoot, 'extracted')
   await mkdir(runtimeExtractionRoot, { recursive: true })
-  await extractArchive({ file: archivePath, cwd: runtimeExtractionRoot, strict: true })
+  await extractBundleArchive(archivePath, runtimeExtractionRoot)
   runtimeEntry = join(runtimeExtractionRoot, 'dsh-runtime', 'lib', 'bin.js')
 }
 
