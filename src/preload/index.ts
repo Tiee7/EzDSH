@@ -37,6 +37,20 @@ const bridge: EzDSHBridge = {
       return () => ipcRenderer.removeListener('ui:navigate', handler)
     }
   },
+  store: {
+    list: (kind, query) => invoke('store:list', kind, query ?? {}),
+    entry: (kind, id) => invoke('store:entry', kind, id),
+    categories: () => invoke('store:categories'),
+    install: (kind, id) => invoke('store:install', kind, id),
+    confirmInstall: (kind, id, accepted) => invoke('store:confirm-install', kind, id, accepted),
+    uninstall: (kind, id) => invoke('store:uninstall', kind, id),
+    listInstalled: () => invoke('store:list-installed'),
+    onStateChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state)
+      ipcRenderer.on('store:state-change', handler)
+      return () => ipcRenderer.removeListener('store:state-change', handler)
+    }
+  },
   providers: {
     listDefinitions: () => invoke('providers:list-definitions'),
     getStatus: () => invoke('providers:get-status'),

@@ -13,6 +13,8 @@ import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale
 import type { AppTab } from '../shared/navigation.js'
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
 import type { UserDataLayout } from '../shared/state.js'
+import type { StoreKind } from '../shared/store.js'
+import { StoreService } from './store/store-service.js'
 import {
   RuntimeManager,
   preparePackagedRuntime,
@@ -30,6 +32,7 @@ let providerService: ProviderService | undefined
 let localeService: LocaleService | undefined
 let updateManager: UpdateManager | undefined
 let userDataLayout: UserDataLayout | undefined
+let storeService: StoreService | undefined
 let isQuitting = false
 let updateDialogOpen = false
 const require = createRequire(import.meta.url)
@@ -222,6 +225,62 @@ function registerIpcHandlers(): void {
     if (localeService === undefined) return failure(new Error('Locale service is not ready'))
     return success(localeService.snapshot())
   })
+  ipcMain.handle('store:list', async (_event, kind: StoreKind, query: { category?: string; search?: string; page?: number }): Promise<IpcResult<Awaited<ReturnType<StoreService['list']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.list(kind, query ?? {}))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('store:entry', async (_event, kind: StoreKind, id: string): Promise<IpcResult<Awaited<ReturnType<StoreService['entry']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.entry(kind, id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('store:categories', async (): Promise<IpcResult<Awaited<ReturnType<StoreService['categories']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.categories())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('store:install', async (_event, kind: StoreKind, id: string): Promise<IpcResult<Awaited<ReturnType<StoreService['install']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.install(kind, id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('store:confirm-install', async (_event, kind: StoreKind, id: string, accepted: boolean): Promise<IpcResult<Awaited<ReturnType<StoreService['confirmInstall']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.confirmInstall(kind, id, accepted))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('store:uninstall', async (_event, kind: StoreKind, id: string): Promise<IpcResult<Awaited<ReturnType<StoreService['uninstall']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.uninstall(kind, id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('store:list-installed', async (): Promise<IpcResult<Awaited<ReturnType<StoreService['listInstalled']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.listInstalled())
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('updates:get-status', (): IpcResult<UpdateState> => {
     if (updateManager === undefined) return failure(new Error('Update manager is not ready'))
     return success(updateManager.snapshot())
@@ -338,6 +397,13 @@ if (!singleInstance) {
     })
     providerService = new ProviderService(layout)
     await providerService.initialize()
+    storeService = new StoreService({
+      onStateChange: (state) => {
+        for (const window of BrowserWindow.getAllWindows()) {
+          window.webContents.send('store:state-change', state)
+        }
+      }
+    })
     const updateChecksEnabled = app.isPackaged || updateFeedUrl !== undefined
     updateManager = new UpdateManager({
       currentVersion: app.getVersion(),

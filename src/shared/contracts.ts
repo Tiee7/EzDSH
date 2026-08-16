@@ -4,6 +4,14 @@ import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
 import type { AppTab } from './navigation.js'
 import type {
+  InstalledListResult,
+  InstallState,
+  StoreCategory,
+  StoreEntry,
+  StoreKind,
+  StoreListResult
+} from './store.js'
+import type {
   ProviderDefinition,
   ProviderStatus,
   SaveProviderInput,
@@ -25,6 +33,18 @@ export interface EzDSHBridge {
   }
   ui: {
     onNavigate(listener: (tab: AppTab) => void): () => void
+  }
+  store: {
+    list(kind: StoreKind, query?: { category?: string; search?: string; page?: number }): Promise<StoreListResult>
+    entry(kind: StoreKind, id: string): Promise<StoreEntry>
+    categories(): Promise<StoreCategory[]>
+    /** Start an install: downloads and audits, then resolves at `confirm-wait` with the audit report. */
+    install(kind: StoreKind, id: string): Promise<InstallState>
+    /** Answer a `confirm-wait` prompt; `accepted: false` cancels with `user-cancelled`. */
+    confirmInstall(kind: StoreKind, id: string, accepted: boolean): Promise<InstallState>
+    uninstall(kind: StoreKind, id: string): Promise<InstallState>
+    listInstalled(): Promise<InstalledListResult>
+    onStateChange(listener: (state: InstallState) => void): () => void
   }
   providers: {
     listDefinitions(): Promise<ProviderDefinition[]>
