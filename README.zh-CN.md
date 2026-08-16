@@ -1,7 +1,7 @@
 # EzDSH
 
 <p align="center">
-  <img src="logo.png" alt="EzDSH" width="128" />
+  <img src="assets/logo.png" alt="EzDSH" width="128" />
 </p>
 
 <p align="center">

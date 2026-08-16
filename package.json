@@ -76,11 +76,11 @@
     ],
     "extraResources": [
       {
-        "from": "logo.png",
-        "to": "logo.png"
+        "from": "assets/logo.png",
+        "to": "assets/logo.png"
       }
     ],
-    "icon": "logo.png",
+    "icon": "assets/logo.png",
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },

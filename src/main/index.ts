@@ -123,8 +123,8 @@ function setApplicationMenu(locale: AppLocale = localeService?.snapshot() ?? DEF
 
 function getAppIconPath(): string {
   return app.isPackaged
-    ? join(process.resourcesPath, 'logo.png')
-    : join(app.getAppPath(), 'logo.png')
+    ? join(process.resourcesPath, 'assets', 'logo.png')
+    : join(app.getAppPath(), 'assets', 'logo.png')
 }
 
 function setDockIcon(): void {
