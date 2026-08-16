@@ -38,7 +38,7 @@ export class UpdateManager {
     }
 
     this.updater.autoDownload = false
-    this.updater.autoInstallOnAppQuit = false
+    this.updater.autoInstallOnAppQuit = true
     this.updater.allowPrerelease = options.currentVersion.includes('-')
     this.updater.on('checking-for-update', () => {
       this.publish({ phase: 'checking', message: '正在检查更新' })

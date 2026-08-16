@@ -67,20 +67,9 @@ async function handleUpdateCheck(interactive: boolean): Promise<void> {
     const copy = getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE)
     const state = await updateManager.check()
     if (state.phase === 'available') {
-      const result = await showAppMessageBox({
-        type: 'info',
-        title: APP_NAME,
-        message: copy.updateAvailable(state.availableVersion ?? ''),
-        detail: copy.updateAvailableDetail,
-        buttons: [copy.downloadUpdate, copy.later],
-        defaultId: 0,
-        cancelId: 1
-      })
-      if (result.response !== 0) return
-
       const downloaded = await updateManager.download()
       if (downloaded.phase !== 'downloaded') {
-        if (downloaded.phase === 'failed') {
+        if (downloaded.phase === 'failed' && interactive) {
           await showAppMessageBox({
             type: 'error',
             title: APP_NAME,

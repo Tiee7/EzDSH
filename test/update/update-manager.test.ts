@@ -53,7 +53,7 @@ describe('UpdateManager', () => {
     })
 
     expect(updater.autoDownload).toBe(false)
-    expect(updater.autoInstallOnAppQuit).toBe(false)
+    expect(updater.autoInstallOnAppQuit).toBe(true)
     expect(updater.allowPrerelease).toBe(true)
     await manager.check()
     expect(manager.snapshot()).toMatchObject({ phase: 'available', availableVersion: '0.2.0' })

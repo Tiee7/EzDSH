@@ -33,9 +33,6 @@ export interface AppCopy {
   menuAbout: string
   menuCheckForUpdates: string
   menuQuit: string
-  updateAvailable: (version: string) => string
-  updateAvailableDetail: string
-  downloadUpdate: string
   later: string
   updateDownloadFailed: string
   updateDownloaded: string
@@ -121,9 +118,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     menuAbout: '关于 EzDSH',
     menuCheckForUpdates: '检查更新…',
     menuQuit: '退出 EzDSH',
-    updateAvailable: (version) => `发现新版本 ${version}`.trim(),
-    updateAvailableDetail: '可以现在下载，下载完成后再决定是否重启安装。',
-    downloadUpdate: '下载更新',
     later: '稍后',
     updateDownloadFailed: '更新下载失败',
     updateDownloaded: '更新已下载',
@@ -207,9 +201,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     menuAbout: 'About EzDSH',
     menuCheckForUpdates: 'Check for Updates…',
     menuQuit: 'Quit EzDSH',
-    updateAvailable: (version) => `New version ${version} is available`.trim(),
-    updateAvailableDetail: 'Download it now, then choose when to restart and install it.',
-    downloadUpdate: 'Download Update',
     later: 'Later',
     updateDownloadFailed: 'Update download failed',
     updateDownloaded: 'Update downloaded',
