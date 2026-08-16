@@ -339,6 +339,235 @@ const DEMO_SKILLS: readonly DemoSkill[] = [
   }
 ]
 
+// ---- Preset payloads ----
+//
+// Compositions stay fully declarative: the audit engine blocks `!!js`
+// expressions in store-installed presets, so platform conditionals and
+// code-evaluated paths (the shipped presets' `disabled: !!js` rows and
+// `customSkillDirs` hooks) are deliberately absent.
+
+const DEEP_RESEARCH_COMPOSITION = `# The \`deep-research\` agent preset: a web-first research agent built on the
+# standard toolset. Search and fetch are always on, and the persona installs a
+# research methodology: query design, source triangulation, synthesis.
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |
+      You are a research agent operating in Deep Research mode, powered by {{model}}. Your working directory is {{cwd}}.
+
+      You investigate questions with the live web: design queries, read multiple independent sources, and synthesize findings the reader can act on. Every claim in your output traces to a fetched source; distinguish what sources say, what you inferred, and what remains unknown or contested.
+
+      Work in passes. SCOPING: restate the question, name the decision it serves, and list what an answer must cover. SEARCH: branch queries by sub-question, entity name, and language; prefer official documentation, standards, primary data, and recent reporting over aggregators that merely restate. READ: fetch the promising results; skip paywall summaries and content farms instead of guessing from snippets. TRIANGULATE: a load-bearing claim needs at least two independent sources; record where they disagree. SYNTHESIZE: write for the stated audience - a direct answer first, then evidence, then open questions.
+
+      Never fabricate links, quotes, numbers, or dates. If a page could not be fetched, say so and drop the claim rather than keeping it on memory alone. Track the access date of every source. Save the deliverable under research/ in the workspace: report.md plus sources.md (URL, title, access date, one-line verdict per source).
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+`
+
+const CODE_REVIEW_COMPOSITION = `# The \`code-review\` agent preset: a read-only reviewer built on the standard
+# toolset. The persona installs a review discipline: inspect the real diff,
+# review by risk category, no drive-by refactors. The deliverable is the review.
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |
+      You are a code review agent operating in Code Review mode, powered by {{model}}. Your working directory is {{cwd}}.
+
+      You review changes and codebases, and you do not modify them. Never edit files, run formatters or code generators, commit, or push. Read-only inspection commands (status, diff, log, show, grep, tests that do not rewrite tracked files) are your instruments.
+
+      Ground every finding in the actual code. Read the diff hunk by hunk with its surrounding context; open the callers and the tests a change touches before judging it. Findings cite file and line, quote the relevant code, and say what breaks and under what input - not that something could be improved.
+
+      Review by risk, in order: correctness (does the change do what it claims, edge cases, error paths, concurrency), security (injection, authz, secrets, untrusted input), then maintainability and tests. Flag what a test should have covered. Separate severity - block (must fix before merge), warn (should fix, named consequence), note (optional) - and keep style opinions out unless they hide real defects.
+
+      Acknowledge what you did not review and why. End with a verdict: approve, approve with comments, or request changes, each with its one-paragraph justification.
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+`
+
+const DATA_ANALYSIS_COMPOSITION = `# The \`data-analysis\` agent preset: an analysis agent built on the standard
+# toolset. The persona installs a probe-first, reproducible analysis
+# methodology over shell and filesystem tools.
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |
+      You are a data analysis agent operating in Data Analysis mode, powered by {{model}}. Your working directory is {{cwd}}.
+
+      You answer questions with data: probe before assuming, profile before modeling, and show the evidence behind every number you report. The reader must be able to re-run your steps and get the same result.
+
+      Begin by pinning the question and its decision, the metric definitions, and the population in scope. Then probe: which interpreter and packages exist (python3 and pandas availability, versions), where the data lives, its size and format. Profile every dataset before using it - row counts, schemas, types, null rates, duplicates, ranges, and the anomalies that would silently distort an answer. Never overwrite source data; write derived files under analysis/.
+
+      Keep work reproducible: prefer scripted steps over interactive one-liners when a transformation matters, name intermediate artifacts, and record versions with the result. When results look surprising, suspect the pipeline first - a join key that is not unique, a filter that dropped half the rows, a unit mismatch - before believing the finding.
+
+      Quantify uncertainty the data supports and no further: state sample sizes, note missingness and selection effects, and refuse conclusions the data cannot carry. Report honestly - no signal in this data is an answer. Deliverables under analysis/: the answer with its evidence, the scripts or command trail, generated figures, and a short README stating how to reproduce.
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+`
+
+interface DemoPreset {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly category: string
+  readonly auditLevel: 'verified' | 'basic'
+  readonly version: string
+  readonly readme: string
+  readonly composition: string
+  readonly meta: string
+}
+
+const DEMO_PRESETS: readonly DemoPreset[] = [
+  {
+    id: 'deep-research',
+    name: '深度研究模式 (Deep Research)',
+    description: '面向开放问题的联网研究 Agent：多源检索、交叉验证、可溯源的综合报告。',
+    category: 'modes',
+    auditLevel: 'verified',
+    version: '1.0.0',
+    readme: 'Installs the deep-research agent preset into the local roster. Search and fetch stay on; the persona drives scoping, query design, source triangulation, and a report-plus-source-list deliverable. Appears in the runtime mode picker immediately after install.',
+    composition: DEEP_RESEARCH_COMPOSITION,
+    meta: 'name: 深度研究模式\ndescription: 面向开放问题的联网研究 Agent：多源检索、交叉验证、可溯源的综合报告。\norder: 6\n'
+  },
+  {
+    id: 'code-review',
+    name: '代码审查模式 (Code Review)',
+    description: '只读的代码审查 Agent：基于真实 diff 按正确性、安全性与可维护性分级给出可执行的审查结论。',
+    category: 'modes',
+    auditLevel: 'verified',
+    version: '1.0.0',
+    readme: 'Installs the code-review agent preset into the local roster. A read-only review contract (no edits, no commits), findings grounded in cited file and line with severity block/warn/note, and a verdict-first report. Appears in the runtime mode picker immediately after install.',
+    composition: CODE_REVIEW_COMPOSITION,
+    meta: 'name: 代码审查模式\ndescription: 只读的代码审查 Agent：基于真实 diff 按正确性、安全性与可维护性分级给出可执行的审查结论。\norder: 7\n'
+  },
+  {
+    id: 'data-analysis',
+    name: '数据分析模式 (Data Analysis)',
+    description: '探查优先、可复现的数据分析 Agent：环境与数据画像、脚本化清洗、图表与结论报告。',
+    category: 'modes',
+    auditLevel: 'verified',
+    version: '1.0.0',
+    readme: 'Installs the data-analysis agent preset into the local roster. Probe the toolchain and profile datasets before transforming, keep steps scripted and reproducible under analysis/, and calibrate confidence to what the data carries. Appears in the runtime mode picker immediately after install.',
+    composition: DATA_ANALYSIS_COMPOSITION,
+    meta: 'name: 数据分析模式\ndescription: 探查优先、可复现的数据分析 Agent：环境与数据画像、脚本化清洗、图表与结论报告。\norder: 8\n'
+  }
+]
+
 interface DemoMcp {
   readonly id: string
   readonly name: string
@@ -424,14 +653,35 @@ const MCP_ENTRIES: readonly StoreEntry[] = DEMO_MCPS.map((server) => ({
   mcp: server.mcp
 }))
 
+/** Every file of a demo preset bundle, content kept for the in-memory fetch. */
+const PRESET_FILE_ROWS: readonly (readonly { id: string; path: string; content: string }[])[] = DEMO_PRESETS.map((preset) => [
+  { id: preset.id, path: `${preset.id}/agent.cordis.yml`, content: preset.composition },
+  { id: preset.id, path: `${preset.id}/preset.yml`, content: preset.meta }
+])
+
+const PRESET_ENTRIES: readonly StoreEntry[] = PRESET_FILE_ROWS.map((rows, index) => {
+  const preset = DEMO_PRESETS[index]
+  return {
+    id: preset.id,
+    kind: 'preset' as const,
+    name: preset.name,
+    description: preset.description,
+    category: preset.category,
+    auditLevel: preset.auditLevel,
+    version: preset.version,
+    readme: preset.readme,
+    files: rows.map((row) => demoFile(row.id, row.path, row.content))
+  }
+})
+
 const ENTRIES_BY_KIND: Record<StoreKind, readonly StoreEntry[]> = {
   skill: SKILL_ENTRIES,
-  preset: [],
+  preset: PRESET_ENTRIES,
   mcp: MCP_ENTRIES
 }
 
 const ENTRY_BY_KEY = new Map<string, StoreEntry>()
-for (const entry of [...SKILL_ENTRIES, ...MCP_ENTRIES]) {
+for (const entry of [...SKILL_ENTRIES, ...PRESET_ENTRIES, ...MCP_ENTRIES]) {
   ENTRY_BY_KEY.set(`${entry.kind}:${entry.id}`, entry)
 }
 
@@ -439,14 +689,20 @@ const DEMO_FILE_BY_URL = new Map<string, string>()
 for (const skill of DEMO_SKILLS) {
   DEMO_FILE_BY_URL.set(`${DEMO_FILE_URL_PREFIX}${skill.id}/${skill.id}/SKILL.md`, skill.content)
 }
+for (const rows of PRESET_FILE_ROWS) {
+  for (const row of rows) {
+    DEMO_FILE_BY_URL.set(`${DEMO_FILE_URL_PREFIX}${row.id}/${row.path}`, row.content)
+  }
+}
 
-/** Demo category list spanning both surfaces. */
+/** Demo category list spanning all surfaces. */
 export function demoCategories(): StoreCategory[] {
   return [
     { id: 'workflow', name: 'Workflow' },
     { id: 'quality', name: 'Code Quality' },
     { id: 'docs', name: 'Documentation' },
     { id: 'git', name: 'Git' },
+    { id: 'modes', name: 'Agent Modes' },
     { id: 'tools', name: 'Tools (MCP)' }
   ]
 }

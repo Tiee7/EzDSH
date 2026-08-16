@@ -13,14 +13,16 @@ import type { StoreEntry } from '../../src/shared/store'
 
 const skillEntries = demoList('skill').entries
 const mcpEntries = demoList('mcp').entries
+const presetEntries = demoList('preset').entries
 
 describe('demo catalog listing', () => {
-  it('serves skill and mcp surfaces marked with the demo source', () => {
+  it('serves skill, preset, and mcp surfaces marked with the demo source', () => {
     expect(skillEntries.length).toBeGreaterThanOrEqual(5)
     expect(mcpEntries.length).toBeGreaterThanOrEqual(3)
     expect(demoList('skill').source).toBe('demo')
     expect(demoList('mcp').source).toBe('demo')
-    expect(demoList('preset').entries).toEqual([])
+    expect(presetEntries.map((entry) => entry.id)).toEqual(['deep-research', 'code-review', 'data-analysis'])
+    expect(demoList('preset').source).toBe('demo')
   })
 
   it('filters by category and search across name, id, and description', () => {
@@ -68,6 +70,18 @@ describe('demo catalog install pipeline', () => {
   it('keeps every demo skill bundle clear of blocking audit verdicts', async () => {
     for (const entry of skillEntries) {
       const bundle = await downloadBundle(entry.files ?? [], { fetchImpl: createDemoFetch() })
+      const report = auditBundle(entry, bundle)
+      expect(report.verdict).not.toBe('block')
+    }
+  })
+
+  it('serves every preset bundle through the demo fetch with checksums and non-blocking audits', async () => {
+    for (const entry of presetEntries) {
+      const bundle = await downloadBundle(entry.files ?? [], { fetchImpl: createDemoFetch() })
+      expect(bundle.files.map((file) => file.path)).toEqual([
+        `${entry.id}/agent.cordis.yml`,
+        `${entry.id}/preset.yml`
+      ])
       const report = auditBundle(entry, bundle)
       expect(report.verdict).not.toBe('block')
     }
