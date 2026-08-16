@@ -11,7 +11,7 @@ describe('application menu navigate section', () => {
     expect(navigate?.submenu).toBeDefined()
     const items = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item)
     expect(items.map((item) => item.accelerator)).toEqual(['CmdOrCtrl+1', 'CmdOrCtrl+2', 'CmdOrCtrl+3', 'CmdOrCtrl+4'])
-    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', '技能商店', '人设商店', '设置'])
+    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Skills', '人设商店', '设置'])
   })
 
   it('invokes onNavigate with the clicked tab', () => {
@@ -33,6 +33,6 @@ describe('application menu navigate section', () => {
     const template = getApplicationMenuTemplate({ locale: 'en' })
     const navigate = template.find((item) => item.label === 'Go')
     const labels = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item).map((item) => item.label)
-    expect(labels).toEqual(['DeepSeek Harness', 'Skill Store', 'Presets', 'Settings'])
+    expect(labels).toEqual(['DeepSeek Harness', 'Skills', 'Presets', 'Settings'])
   })
 })
