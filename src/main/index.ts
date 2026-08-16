@@ -10,7 +10,9 @@ import type { SaveProviderInput, TestProviderInput } from '../shared/providers.j
 import type { UpdateState } from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale.js'
+import type { AppTab } from '../shared/navigation.js'
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
+import type { UserDataLayout } from '../shared/state.js'
 import {
   RuntimeManager,
   preparePackagedRuntime,
@@ -27,6 +29,7 @@ let runtimeManager: RuntimeManager | undefined
 let providerService: ProviderService | undefined
 let localeService: LocaleService | undefined
 let updateManager: UpdateManager | undefined
+let userDataLayout: UserDataLayout | undefined
 let isQuitting = false
 let updateDialogOpen = false
 const require = createRequire(import.meta.url)
@@ -114,10 +117,25 @@ async function handleUpdateCheck(interactive: boolean): Promise<void> {
   }
 }
 
+function navigateToTab(tab: AppTab): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('ui:navigate', tab)
+  }
+}
+
 function setApplicationMenu(locale: AppLocale = localeService?.snapshot() ?? DEFAULT_APP_LOCALE): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(getApplicationMenuTemplate({
     locale,
-    onCheckForUpdates: () => void handleUpdateCheck(true)
+    onCheckForUpdates: () => void handleUpdateCheck(true),
+    onNavigate: navigateToTab,
+    onOpenRuntimeLog: () => {
+      if (runtimeManager === undefined) return
+      void shell.openPath(runtimeManager.snapshot().logPath)
+    },
+    onOpenHarnessDir: () => {
+      if (userDataLayout === undefined) return
+      void shell.openPath(userDataLayout.harness)
+    }
   })))
 }
 
@@ -292,6 +310,7 @@ if (!singleInstance) {
     const updateFeedUrl = process.env.EZDSH_UPDATE_FEED_URL?.trim() || undefined
     const layout = getUserDataLayout(app.getPath('userData'))
     await ensureUserDataLayout(layout)
+    userDataLayout = layout
     localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
     await localeService.start()
     const packagedRuntimeRoot = app.isPackaged

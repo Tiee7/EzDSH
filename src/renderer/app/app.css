@@ -131,6 +131,99 @@ h1 {
   background: var(--ezdsh-runtime-background);
 }
 
+/* ---- Workspace tab layout ---- */
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.tab-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 44px;
+  flex: none;
+  padding: 0 12px;
+  background: #17181c;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+}
+
+.tab-bar-drag-region {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 180px;
+  height: 100%;
+}
+
+.tab-bar-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.tab-bar-item {
+  border: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 7px 16px;
+  background: transparent;
+  color: #9197a5;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.tab-bar-item:hover {
+  color: #d5d9e0;
+}
+
+.tab-bar-item-active {
+  color: #f2f4f8;
+  background: var(--ezdsh-runtime-background);
+}
+
+.workspace-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--ezdsh-runtime-background);
+}
+
+.workspace-pane {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+}
+
+.workspace-pane-active {
+  visibility: visible;
+}
+
+.workspace-pane iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+}
+
+.workspace-pane-page {
+  overflow: auto;
+  padding: 24px;
+  color: #c6cad2;
+}
+
+.workspace-placeholder {
+  margin: 0;
+  color: #9197a5;
+  font-size: 14px;
+}
+
 .runtime-drag-region {
   position: absolute;
   z-index: 2;

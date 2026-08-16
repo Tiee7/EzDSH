@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../../shared/locale.js'
+import type { AppTab } from '../../shared/navigation.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import { RUNTIME_IFRAME_ALLOW } from './runtime-frame.js'
 import logoUrl from '../../../assets/logo.png'
@@ -10,6 +11,7 @@ export function App() {
   const copy = getAppCopy(locale)
   const [runtime, setRuntime] = useState<RuntimeSnapshot>()
   const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<AppTab>('harness')
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
 
   useEffect(() => {
@@ -30,6 +32,9 @@ export function App() {
     const unsubscribe = window.EzDSH.runtime.onStateChange((snapshot) => {
       if (active) setRuntime(snapshot)
     })
+    const unsubscribeNavigate = window.EzDSH.ui.onNavigate((tab) => {
+      if (active) setActiveTab(tab)
+    })
     const unsubscribeLocale = window.EzDSH.locale.onChange((nextLocale) => {
       if (active) setLocale(nextLocale)
     })
@@ -47,6 +52,7 @@ export function App() {
     return () => {
       active = false
       unsubscribe()
+      unsubscribeNavigate()
       unsubscribeLocale()
     }
   }, [ensureRuntime])
@@ -60,15 +66,43 @@ export function App() {
   }
 
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {
+    const tabs: Array<{ id: AppTab; label: string }> = [
+      { id: 'harness', label: copy.tabHarness },
+      { id: 'store', label: copy.tabStore },
+      { id: 'presets', label: copy.tabPresets },
+      { id: 'settings', label: copy.tabSettings }
+    ]
     return (
-      <main className="runtime-host">
-        <div className="runtime-drag-region" aria-hidden="true" />
-        <iframe
-          title="EzDSH Runtime"
-          src={runtime.url}
-          allow={RUNTIME_IFRAME_ALLOW}
-          sandbox="allow-downloads allow-forms allow-modals allow-same-origin allow-scripts"
-        />
+      <main className="workspace">
+        <nav className="tab-bar" aria-label={copy.menuNavigate}>
+          <div className="tab-bar-drag-region" aria-hidden="true" />
+          <div className="tab-bar-tabs" role="tablist">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                className={`tab-bar-item ${activeTab === tab.id ? 'tab-bar-item-active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </nav>
+        <div className="workspace-content">
+          <div className={`workspace-pane ${activeTab === 'harness' ? 'workspace-pane-active' : ''}`}>
+            <iframe
+              title="EzDSH Runtime"
+              src={runtime.url}
+              allow={RUNTIME_IFRAME_ALLOW}
+              sandbox="allow-downloads allow-forms allow-modals allow-same-origin allow-scripts"
+            />
+          </div>
+          {activeTab === 'store' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabStore}><p className="workspace-placeholder">{copy.tabStore}</p></section> : null}
+          {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabPresets}><p className="workspace-placeholder">{copy.tabPresets}</p></section> : null}
+          {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabSettings}><p className="workspace-placeholder">{copy.tabSettings}</p></section> : null}
+        </div>
       </main>
     )
   }

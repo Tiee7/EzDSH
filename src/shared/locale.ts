@@ -44,6 +44,13 @@ export interface AppCopy {
   latestVersion: string
   updateCheckFailed: string
   updateDisabledInDevelopment: string
+  tabHarness: string
+  tabStore: string
+  tabPresets: string
+  tabSettings: string
+  menuNavigate: string
+  menuOpenLog: string
+  menuOpenHarnessDir: string
 }
 
 const APP_COPY: Record<AppLocale, AppCopy> = {
@@ -88,6 +95,13 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     latestVersion: '已是最新版本',
     updateCheckFailed: '检查更新失败',
     updateDisabledInDevelopment: '开发模式不检查更新',
+    tabHarness: 'DeepSeek Harness',
+    tabStore: '技能商店',
+    tabPresets: '人设商店',
+    tabSettings: '设置',
+    menuNavigate: '前往',
+    menuOpenLog: '打开运行日志…',
+    menuOpenHarnessDir: '打开 Harness 数据目录…',
   },
   en: {
     loadingConfig: 'Reading EzDSH configuration…',
@@ -130,6 +144,13 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     latestVersion: 'You are up to date',
     updateCheckFailed: 'Update check failed',
     updateDisabledInDevelopment: 'Update checks are disabled in development mode',
+    tabHarness: 'DeepSeek Harness',
+    tabStore: 'Skill Store',
+    tabPresets: 'Presets',
+    tabSettings: 'Settings',
+    menuNavigate: 'Go',
+    menuOpenLog: 'Open Runtime Log…',
+    menuOpenHarnessDir: 'Open Harness Data Directory…',
   },
 }
 

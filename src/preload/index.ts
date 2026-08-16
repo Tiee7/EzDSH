@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { EzDSHBridge } from '../shared/contracts.js'
 import type { IpcResult } from '../shared/errors.js'
 import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
+import type { AppTab } from '../shared/navigation.js'
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>
@@ -27,6 +28,13 @@ const bridge: EzDSHBridge = {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]) => listener(snapshot)
       ipcRenderer.on('runtime:state-change', handler)
       return () => ipcRenderer.removeListener('runtime:state-change', handler)
+    }
+  },
+  ui: {
+    onNavigate: (listener: (tab: AppTab) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, tab: AppTab) => listener(tab)
+      ipcRenderer.on('ui:navigate', handler)
+      return () => ipcRenderer.removeListener('ui:navigate', handler)
     }
   },
   providers: {

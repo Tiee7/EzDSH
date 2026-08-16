@@ -2,6 +2,7 @@ import type { RuntimeSnapshot } from '../main/runtime/runtime-types.js'
 import type { EzDSHError, IpcResult } from './errors.js'
 import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
+import type { AppTab } from './navigation.js'
 import type {
   ProviderDefinition,
   ProviderStatus,
@@ -21,6 +22,9 @@ export interface EzDSHBridge {
     restart(): Promise<RuntimeSnapshot>
     openLog(): Promise<void>
     onStateChange(listener: (snapshot: RuntimeSnapshot) => void): () => void
+  }
+  ui: {
+    onNavigate(listener: (tab: AppTab) => void): () => void
   }
   providers: {
     listDefinitions(): Promise<ProviderDefinition[]>
