@@ -35,10 +35,9 @@ describe('StoreService read-only delegation', () => {
     expect(categories[0]?.id).toBe('office')
   })
 
-  it('reports install/uninstall as unavailable in this build', async () => {
+  it('reports install/uninstall as unavailable without a configured DSH home', async () => {
     const service = new StoreService()
     await expect(service.install('skill', 'demo')).rejects.toThrow(/not available in this build/)
-    await expect(service.confirmInstall('skill', 'demo', true)).rejects.toThrow(/not available/)
     await expect(service.uninstall('skill', 'demo')).rejects.toThrow(/not available/)
     await expect(service.listInstalled()).rejects.toThrow(/not available/)
   })

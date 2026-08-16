@@ -17,6 +17,7 @@ import type { StoreKind } from '../shared/store.js'
 import { StoreService } from './store/store-service.js'
 import {
   RuntimeManager,
+  preparePackagedRuntime,
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath
 } from './runtime/runtime-manager.js'
@@ -371,12 +372,21 @@ if (!singleInstance) {
     userDataLayout = layout
     localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
     await localeService.start()
+    const packagedRuntimeRoot = app.isPackaged
+      ? await preparePackagedRuntime({
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath,
+        isPackaged: true,
+        userDataRoot: layout.root
+      })
+      : undefined
     runtimeManager = new RuntimeManager({
       layout,
       runtimeEntryPath: resolveRuntimeEntryPath({
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath,
         isPackaged: app.isPackaged,
+        runtimeRoot: packagedRuntimeRoot,
         developmentSourceRoot: process.env.EZDSH_DSH_SOURCE?.trim() || undefined
       }),
       command: resolveRuntimeCommandPath({
@@ -388,6 +398,8 @@ if (!singleInstance) {
     providerService = new ProviderService(layout)
     await providerService.initialize()
     storeService = new StoreService({
+      dshHome: layout.harness,
+      registryPath: join(layout.state, 'installed.json'),
       onStateChange: (state) => {
         for (const window of BrowserWindow.getAllWindows()) {
           window.webContents.send('store:state-change', state)
