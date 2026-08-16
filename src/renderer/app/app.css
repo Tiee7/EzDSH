@@ -58,18 +58,17 @@ iframe,
 }
 
 .brand-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 34px;
-  color: #ffffff;
-  font-size: 18px;
-  font-weight: 750;
-  letter-spacing: -0.06em;
+  display: inline-block;
+  width: 92px;
+  height: 92px;
+  margin-bottom: 26px;
 }
 
-.brand-mark span:last-child {
-  color: #f08a4b;
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .eyebrow {

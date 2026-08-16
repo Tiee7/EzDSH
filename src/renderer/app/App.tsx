@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../../shared/locale.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import { RUNTIME_IFRAME_ALLOW } from './runtime-frame.js'
+import logoUrl from '../../../assets/logo.png'
 import './app.css'
 
 export function App() {
@@ -90,8 +91,7 @@ export function App() {
     <main className="app-shell">
       <section className="welcome-card" aria-labelledby="app-title">
         <div className="brand-mark" aria-hidden="true">
-          <span>Ez</span>
-          <span>DSH</span>
+          <img src={logoUrl} alt="" />
         </div>
         <p className="eyebrow">EzDSH</p>
         <h1 id="app-title">{copy.appTitle}</h1>
