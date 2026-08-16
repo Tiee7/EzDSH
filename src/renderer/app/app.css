@@ -1,6 +1,10 @@
 :root {
   color-scheme: light dark;
   --ezdsh-runtime-background: #f9fafb;
+  --ezdsh-tab-bar-background: #ececee;
+  --ezdsh-tab-color: #55595f;
+  --ezdsh-tab-color-hover: #26292e;
+  --ezdsh-tab-color-active: #1b1e22;
   color: #f7f7f4;
   background: #101114;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -11,6 +15,10 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --ezdsh-runtime-background: #151517;
+    --ezdsh-tab-bar-background: #17181c;
+    --ezdsh-tab-color: #9197a5;
+    --ezdsh-tab-color-hover: #d5d9e0;
+    --ezdsh-tab-color-active: #f2f4f8;
   }
 }
 
@@ -160,12 +168,11 @@ h1 {
 .tab-bar {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   height: 44px;
   flex: none;
   padding: 0 12px;
-  background: #17181c;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--ezdsh-tab-bar-background);
   -webkit-app-region: drag;
   -webkit-user-select: none;
 }
@@ -185,26 +192,30 @@ h1 {
 .tab-bar-tabs {
   display: flex;
   gap: 4px;
-  margin-top: 8px;
+  height: 100%;
+  align-items: flex-end;
 }
 
 .tab-bar-item {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
   border: 0;
   border-radius: 8px 8px 0 0;
-  padding: 7px 16px;
+  padding: 0 16px;
   background: transparent;
-  color: #9197a5;
+  color: var(--ezdsh-tab-color);
   font-size: 13px;
   cursor: pointer;
   transition: color 120ms ease, background 120ms ease;
 }
 
 .tab-bar-item:hover {
-  color: #d5d9e0;
+  color: var(--ezdsh-tab-color-hover);
 }
 
 .tab-bar-item-active {
-  color: #f2f4f8;
+  color: var(--ezdsh-tab-color-active);
   background: var(--ezdsh-runtime-background);
 }
 
