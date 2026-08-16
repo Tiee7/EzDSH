@@ -216,7 +216,7 @@ API Key 必须由 Harness Credentials 能力或操作系统安全存储处理。
 应用版本和 Runtime 版本分别记录：
 
 ```text
-EzDSHVersion: 0.8.15.1
+EzDSHVersion: 0.8.1505
 dshRuntimeVersion: 0.1.0-rc.6
 dataSchemaVersion: 1
 ```

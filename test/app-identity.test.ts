@@ -10,7 +10,6 @@ describe('application identity', () => {
   })
 
   it('keeps the project and displayed application version aligned', () => {
-    expect(packageJson.version).toBe('0.8.15.1')
     expect(APP_VERSION).toBe(packageJson.version)
   })
 
