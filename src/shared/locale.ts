@@ -58,6 +58,7 @@ export interface AppCopy {
   storeUpdate: string
   storeLoadFailed: string
   storeRetry: string
+  storeDemoBadge: string
   storeEmpty: string
   storeLoading: string
   storeDetailFiles: string
@@ -143,6 +144,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeUpdate: '更新',
     storeLoadFailed: '加载商店失败',
     storeRetry: '重试',
+    storeDemoBadge: '演示目录',
     storeEmpty: '这里还没有内容',
     storeLoading: '加载中…',
     storeDetailFiles: '包含文件',
@@ -226,6 +228,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeUpdate: 'Update',
     storeLoadFailed: 'Failed to load the store',
     storeRetry: 'Retry',
+    storeDemoBadge: 'Demo catalog',
     storeEmpty: 'Nothing here yet',
     storeLoading: 'Loading…',
     storeDetailFiles: 'Bundled files',

@@ -15,6 +15,8 @@ import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
 import type { UserDataLayout } from '../shared/state.js'
 import type { StoreKind } from '../shared/store.js'
 import { StoreService } from './store/store-service.js'
+import { StoreClient } from './store/store-client.js'
+import { createDemoFetch, withDemoFallback } from './store/demo-catalog.js'
 import {
   RuntimeManager,
   preparePackagedRuntime,
@@ -407,6 +409,8 @@ if (!singleInstance) {
     providerService = new ProviderService(layout)
     await providerService.initialize()
     storeService = new StoreService({
+      client: withDemoFallback(new StoreClient()),
+      fetchImpl: createDemoFetch(),
       dshHome: layout.harness,
       registryPath: join(layout.state, 'installed.json'),
       onStateChange: (state) => {

@@ -90,6 +90,8 @@ export interface StoreListResult {
   readonly entries: readonly StoreEntry[]
   readonly page: number
   readonly pageCount: number
+  /** Present when the list was served by the bundled demo catalog fallback. */
+  readonly source?: 'demo'
 }
 
 /** Verdict of the client-side static audit. */

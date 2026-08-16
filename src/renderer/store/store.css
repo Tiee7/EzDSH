@@ -95,6 +95,17 @@
   font-size: 12px;
 }
 
+.store-demo-badge {
+  flex: none;
+  border: 1px solid rgba(224, 183, 90, 0.55);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(224, 183, 90, 0.12);
+  color: #e0b75a;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .store-status {
   color: #9197a5;
   font-size: 13px;

@@ -85,6 +85,7 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
   const [installState, setInstallState] = useState<InstallState | undefined>()
   const [error, setError] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [demoSource, setDemoSource] = useState(false)
 
   const installedById = useMemo(() => {
     const map = new Map<string, InstalledRecord>()
@@ -101,6 +102,7 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
         window.EzDSH.store.listInstalled()
       ])
       setEntries(list.entries)
+      setDemoSource(list.source === 'demo')
       setInstalled(installedList.records)
       setSelected(undefined)
       setInstallState(undefined)
@@ -204,6 +206,7 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
             placeholder={copy.storeSearchPlaceholder}
             onChange={(event) => { setSearch(event.target.value) }}
           />
+          {demoSource ? <span className="store-demo-badge">{copy.storeDemoBadge}</span> : null}
           {error ? <span className="store-error" role="alert">{copy.storeLoadFailed}</span> : null}
         </form>
         {loading ? <p className="store-status">{copy.storeLoading}</p> : null}
