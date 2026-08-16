@@ -130,13 +130,22 @@ Harness 提供引擎，EzDSH 提供体验。
    npm ci
    ```
 
-4. 启动本地开发应用：
+4. 首次运行或更新 DSH Runtime 后，构建并 staging 自包含 Runtime：
+
+   ```bash
+   npm run dsh:build
+   npm run stage:dsh-runtime
+   ```
+
+   `npm run dev` 不会再静默回退到依赖不完整的上游源码入口。若要联调指定的 Runtime 源码，必须显式设置 `EZDSH_DSH_SOURCE`。
+
+5. 启动本地开发应用：
 
    ```bash
    npm run dev
    ```
 
-5. 使用 EzDSH 打开的 Harness Web UI。需要停止开发应用时，在终端按 `Ctrl+C`。
+6. 使用 EzDSH 打开的 Harness Web UI。需要停止开发应用时，在终端按 `Ctrl+C`。
 
 ## 从源码编译
 

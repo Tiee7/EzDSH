@@ -130,13 +130,22 @@ These steps are for developers who want to run the project locally from a source
    npm ci
    ```
 
-4. Start the local development app:
+4. On the first run, or after changing the DSH Runtime, build and stage the self-contained Runtime:
+
+   ```bash
+   npm run dsh:build
+   npm run stage:dsh-runtime
+   ```
+
+   `npm run dev` no longer silently falls back to a source checkout with incomplete workspace dependencies. To explicitly develop against a Runtime source checkout, set `EZDSH_DSH_SOURCE`.
+
+5. Start the local development app:
 
    ```bash
    npm run dev
    ```
 
-5. Use the Harness Web UI opened by EzDSH. Press `Ctrl+C` in the terminal to stop the development app.
+6. Use the Harness Web UI opened by EzDSH. Press `Ctrl+C` in the terminal to stop the development app.
 
 ## Build from source
 

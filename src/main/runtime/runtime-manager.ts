@@ -15,6 +15,7 @@ export interface RuntimePathOptions {
   isPackaged: boolean
   platform?: NodeJS.Platform
   runtimeRoot?: string
+  developmentSourceRoot?: string
 }
 
 /** Resolve the source-built or staged Runtime entry without consulting user PATH. */
@@ -24,14 +25,23 @@ export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
     return join(options.resourcesPath ?? resolve(options.appPath, '..'), 'app.asar.unpacked', 'out', 'dsh-runtime', 'lib', 'bin.js')
   }
 
+  if (options.developmentSourceRoot !== undefined) {
+    const sourceEntry = join(resolve(options.developmentSourceRoot), 'lib', 'bin.js')
+    if (!existsSync(sourceEntry)) {
+      throw new Error(`Development DSH Runtime source is missing lib/bin.js at ${options.developmentSourceRoot}`)
+    }
+    return sourceEntry
+  }
+
   // The source checkout's CLI depends on pnpm workspace links. Those links are
-  // intentionally not part of the application package and can be incomplete
-  // after an npm-only install. Prefer the staged, self-contained Runtime when
-  // it exists so `npm run dev` exercises the same dependency graph as a build.
+  // intentionally not part of the application package. Prefer the staged,
+  // self-contained Runtime so `npm run dev` exercises the same dependency graph
+  // as a build. A missing staged Runtime is an installation error, not a reason
+  // to silently start a partially-resolved source checkout.
   const stagedEntry = join(options.appPath, 'out', 'dsh-runtime', 'lib', 'bin.js')
   if (existsSync(stagedEntry)) return stagedEntry
 
-  return join(options.appPath, 'vendor', 'deepseek-harness', 'apps', 'cli', 'lib', 'bin.js')
+  throw new Error(`Staged DSH Runtime is missing lib/bin.js at ${stagedEntry}`)
 }
 
 export interface PackagedRuntimeOptions extends RuntimePathOptions {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../../shared/locale.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
+import { RUNTIME_IFRAME_ALLOW } from './runtime-frame.js'
 import './app.css'
 
 export function App() {
@@ -64,6 +65,7 @@ export function App() {
         <iframe
           title="EzDSH Runtime"
           src={runtime.url}
+          allow={RUNTIME_IFRAME_ALLOW}
           sandbox="allow-downloads allow-forms allow-modals allow-same-origin allow-scripts"
         />
       </main>

@@ -308,7 +308,8 @@ if (!singleInstance) {
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath,
         isPackaged: app.isPackaged,
-        runtimeRoot: packagedRuntimeRoot
+        runtimeRoot: packagedRuntimeRoot,
+        developmentSourceRoot: process.env.EZDSH_DSH_SOURCE?.trim() || undefined
       }),
       command: resolveRuntimeCommandPath({
         appPath: app.getAppPath(),

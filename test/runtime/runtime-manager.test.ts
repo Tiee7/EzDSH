@@ -32,6 +32,24 @@ describe('RuntimeManager', () => {
     })).toBe(stagedEntry)
   })
 
+  it('requires an explicit source override when the staged Runtime is missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-source-'))
+    roots.push(root)
+
+    expect(() => resolveRuntimeEntryPath({
+      appPath: root,
+      isPackaged: false
+    })).toThrow(/staged DSH Runtime is missing/i)
+
+    await mkdir(join(root, 'source-runtime', 'lib'), { recursive: true })
+    await writeFile(join(root, 'source-runtime', 'lib', 'bin.js'), '')
+    expect(resolveRuntimeEntryPath({
+      appPath: root,
+      isPackaged: false,
+      developmentSourceRoot: join(root, 'source-runtime')
+    })).toBe(join(root, 'source-runtime', 'lib', 'bin.js'))
+  })
+
   it('resolves the packaged Runtime inside the Electron app resources', () => {
     expect(resolveRuntimeEntryPath({
       appPath: '/Applications/EzDSH.app/Contents/Resources/app',
