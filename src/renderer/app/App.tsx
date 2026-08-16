@@ -65,10 +65,6 @@ export function App() {
     void ensureRuntime()
   }, [ensureRuntime])
 
-  if (loading) {
-    return <main className="app-shell"><p>{copy.loadingConfig}</p></main>
-  }
-
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {
     const tabs: Array<{ id: AppTab; label: string }> = [
       { id: 'harness', label: copy.tabHarness },
@@ -111,19 +107,23 @@ export function App() {
     )
   }
 
-  const statusMessage = errorKey === 'runtime-start'
-    ? copy.runtimeStartFailed
-    : errorKey === 'runtime-restart'
-      ? copy.runtimeRestartFailed
-      : errorKey === 'config-read'
-        ? copy.configReadFailed
-        : runtime?.phase === 'ready'
-          ? copy.ready
-          : runtime?.phase === 'failed'
-            ? copy.runtimeFailed
-            : runtime?.phase === 'starting'
-              ? copy.starting
-              : copy.preparing
+  const statusMessage = loading
+    ? copy.loadingConfig
+    : errorKey === 'runtime-start'
+      ? copy.runtimeStartFailed
+      : errorKey === 'runtime-restart'
+        ? copy.runtimeRestartFailed
+        : errorKey === 'config-read'
+          ? copy.configReadFailed
+          : runtime?.phase === 'ready'
+            ? copy.ready
+            : runtime?.phase === 'failed'
+              ? copy.runtimeFailed
+              : runtime?.phase === 'starting'
+                ? copy.starting
+                : copy.preparing
+
+  const isBusy = loading || runtime?.phase === 'starting' || runtime?.phase === 'preparing'
 
   return (
     <main className="app-shell">
@@ -134,6 +134,7 @@ export function App() {
         <p className="eyebrow">EzDSH</p>
         <h1 id="app-title">{copy.appTitle}</h1>
         <p className="subtitle">{copy.appSubtitle}</p>
+        {isBusy ? <div className="loading-spinner" aria-hidden="true" /> : null}
         <div className="status-row" role="status" aria-live="polite">
           <span className={`status-dot ${runtime?.phase === 'ready' ? 'status-dot-ready' : ''}`} />
           <span>{statusMessage}</span>

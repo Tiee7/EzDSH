@@ -122,6 +122,22 @@ h1 {
   cursor: pointer;
 }
 
+.loading-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 18px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #4a6cf7;
+  border-radius: 50%;
+  animation: spinner-rotate 1s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .runtime-host {
   position: relative;
   width: 100vw;
