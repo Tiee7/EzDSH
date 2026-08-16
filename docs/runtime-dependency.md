@@ -22,7 +22,7 @@ Checked at:         2026-08-15
 
 EzDSH 项目自身通过上游源码子模块和固定 commit 完成 DSH Runtime 构建。打包时，构建后的 Runtime 代码和运行所需资源会进入 EzDSH 安装包；用户安装 EzDSH 后即可启动，不需要再手动安装 Node.js、执行命令或配置 DSH 路径。
 
-当前 staging 流程使用上游 workspace 的 `pnpm deploy --legacy --ignore-scripts --filter @deepseek-ai/dsh --prod` 生成依赖闭包，并单独执行 Runtime 所需的原生模块准备脚本；对指向上游源码目录的 workspace 链接做有限展开，再把 `apps/web/dist` 纳入同一目录。生产入口为 `out/dsh-runtime/lib/bin.js`，因此打包后不依赖开发目录中的 `apps/cli` 路径。electron-builder 会把这份 staging 目录随 `out/**/*` 放入安装包，主进程从 `Contents/Resources/app/out/dsh-runtime/lib/bin.js` 启动它。
+当前 staging 流程使用上游 workspace 的 `pnpm deploy --legacy --ignore-scripts --prod --filter @deepseek-ai/dsh` 直接生成生产运行时依赖树，再根据已部署包的 manifest 自动补齐实际运行需要的 workspace peer 包，不维护手工包名列表。脚本还负责补入生成的 `apps/web/dist`、准备目标平台原生模块、处理指向 staging 目录外的 workspace 链接，并把最终目录直接交付给 electron-builder。生产入口为 `out/dsh-runtime/lib/bin.js`，因此打包后不依赖开发目录中的 `apps/cli` 路径。electron-builder 会把这份完整 staging 目录随 `out/**/*` 放入安装包，主进程从 `Contents/Resources/app/out/dsh-runtime/lib/bin.js` 启动它。
 
 根项目通过 npm 精确锁定 `node-bin-darwin-arm64@24.18.0` 和 `pnpm@11.7.0`。二者安装在被 Git 忽略的 `node_modules` 中；Node 平台包及其完整性哈希直接记录在根 `package-lock.json`，不经过隐藏的二次安装。打包时仅把 Node 可执行文件和许可证复制到同样被忽略的 `out/node-runtime`，最终进入安装包。正式运行时，EzDSH 从 `Contents/Resources/app/out/node-runtime/bin/node` 启动 DSH，不读取系统 PATH，也不要求用户安装 Node、npm 或 pnpm。
 
@@ -203,7 +203,7 @@ npm run package:mac:release
 - `node_modules` 和 `vendor/deepseek-harness/node_modules` 只要 lockfile 没变，就不要重新 `npm ci` / `pnpm install`；
 - Electron 二进制首次下载后缓存在 `~/Library/Caches/electron`，后续打包不再重复下载；
 - 唯一无法避免的网络请求是 Apple 公证；
-- DSH Runtime 归档（`out/dsh-runtime.tar.gz`）和内置 Node Runtime（`out/node-runtime`）只要上游源码和依赖没变，也不需要重新生成。
+- DSH Runtime 目录（`out/dsh-runtime`）和内置 Node Runtime（`out/node-runtime`）只要上游源码和依赖没变，也不需要重新生成。
 
 因此按改动范围选择最小命令即可：
 
@@ -224,7 +224,7 @@ npm run build
 npx --no-install electron-builder --mac dmg zip --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
 ```
 
-这里不需要跑 `dsh:install`——只有上游的 `pnpm-lock.yaml` 发生变化时才需要重新安装依赖。`stage:dsh-runtime` 会把新的 Runtime 重新打包成 `out/dsh-runtime.tar.gz`。
+这里不需要跑 `dsh:install`——只有上游的 `pnpm-lock.yaml` 发生变化时才需要重新安装依赖。`stage:dsh-runtime` 会把新的完整 Runtime 目录准备到 `out/dsh-runtime`。
 
 ### 8.3 验证产物
 

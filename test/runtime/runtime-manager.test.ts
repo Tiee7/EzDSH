@@ -1,14 +1,11 @@
 import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative } from 'node:path'
-import { c as createArchive } from 'tar'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  removeDirectoryWithRetries,
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath,
-  preparePackagedRuntime,
   RuntimeManager
 } from '../../src/main/runtime/runtime-manager'
 import { getUserDataLayout } from '../../src/main/state/user-data'
@@ -20,26 +17,6 @@ afterEach(async () => {
 })
 
 describe('RuntimeManager', () => {
-  it('retries transient Windows directory cleanup failures', async () => {
-    let attempts = 0
-    const remove = async (_path: string, _options: {
-      recursive: true
-      force: true
-      maxRetries: number
-      retryDelay: number
-    }): Promise<void> => {
-      attempts += 1
-      if (attempts < 3) {
-        const error = Object.assign(new Error('directory not empty'), { code: 'ENOTEMPTY' })
-        throw error
-      }
-    }
-
-    await removeDirectoryWithRetries('/tmp/runtime-extract', remove, async () => undefined)
-
-    expect(attempts).toBe(3)
-  })
-
   it('uses the staged Runtime during development when it is available', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-path-'))
     roots.push(root)
@@ -71,81 +48,12 @@ describe('RuntimeManager', () => {
     })).toBe(join(root, 'source-runtime', 'lib', 'bin.js'))
   })
 
-  it('resolves the packaged Runtime inside the Electron app resources', () => {
+  it('resolves the packaged Runtime directly inside the Electron app resources', () => {
     expect(resolveRuntimeEntryPath({
       appPath: '/Applications/EzDSH.app/Contents/Resources/app',
       resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
       isPackaged: true
-    })).toBe('/Applications/EzDSH.app/Contents/Resources/app.asar.unpacked/out/dsh-runtime/lib/bin.js')
-  })
-
-  it('extracts the packaged Runtime archive into user data', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-archive-'))
-    roots.push(root)
-    const sourceRoot = join(root, 'source')
-    const archiveRoot = join(root, 'resources')
-    await mkdir(join(sourceRoot, 'dsh-runtime', 'lib'), { recursive: true })
-    await mkdir(archiveRoot, { recursive: true })
-    await writeFile(join(sourceRoot, 'dsh-runtime', 'lib', 'bin.js'), 'runtime')
-    await createArchive({
-      cwd: sourceRoot,
-      file: join(archiveRoot, 'dsh-runtime.tar.gz'),
-      gzip: true,
-      portable: true
-    }, ['dsh-runtime'])
-
-    const runtimeRoot = await preparePackagedRuntime({
-      appPath: join(root, 'app.asar'),
-      resourcesPath: archiveRoot,
-      isPackaged: true,
-      userDataRoot: join(root, 'user-data')
-    })
-
-    expect(await readFile(join(runtimeRoot, 'lib', 'bin.js'), 'utf8')).toBe('runtime')
-    expect(resolveRuntimeEntryPath({
-      appPath: join(root, 'app.asar'),
-      isPackaged: true,
-      runtimeRoot
-    })).toBe(join(runtimeRoot, 'lib', 'bin.js'))
-  })
-
-  it('extracts an archive containing directory symlinks on all platforms', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-symlink-'))
-    roots.push(root)
-    const sourceRoot = join(root, 'source')
-    const archiveRoot = join(root, 'resources')
-    const packageDir = join(
-      sourceRoot,
-      'dsh-runtime',
-      'node_modules',
-      '.pnpm',
-      'pkg@1.0.0',
-      'node_modules',
-      'pkg'
-    )
-    const linkDir = join(sourceRoot, 'dsh-runtime', 'node_modules', 'pkg')
-    await mkdir(packageDir, { recursive: true })
-    await mkdir(dirname(linkDir), { recursive: true })
-    await mkdir(archiveRoot, { recursive: true })
-    await mkdir(join(sourceRoot, 'dsh-runtime', 'lib'), { recursive: true })
-    await writeFile(join(sourceRoot, 'dsh-runtime', 'lib', 'bin.js'), 'runtime')
-    await writeFile(join(packageDir, 'index.js'), 'pkg')
-    await symlink(relative(dirname(linkDir), packageDir), linkDir)
-    await createArchive({
-      cwd: sourceRoot,
-      file: join(archiveRoot, 'dsh-runtime.tar.gz'),
-      gzip: true,
-      portable: true
-    }, ['dsh-runtime'])
-
-    const runtimeRoot = await preparePackagedRuntime({
-      appPath: join(root, 'app.asar'),
-      resourcesPath: archiveRoot,
-      isPackaged: true,
-      userDataRoot: join(root, 'user-data')
-    })
-
-    expect(await readFile(join(runtimeRoot, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('pkg')
+    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/out/dsh-runtime/lib/bin.js')
   })
 
   it('resolves the packaged Node executable inside the Electron app resources', () => {
@@ -154,7 +62,7 @@ describe('RuntimeManager', () => {
       resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
       isPackaged: true,
       platform: 'darwin'
-    })).toBe('/Applications/EzDSH.app/Contents/Resources/app.asar.unpacked/out/node-runtime/bin/node')
+    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/out/node-runtime/bin/node')
   })
 
   it('starts, reports ready, and stops without removing the harness directory', async () => {

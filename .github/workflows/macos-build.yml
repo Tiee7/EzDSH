@@ -53,11 +53,14 @@ jobs:
       - name: Build macOS installers
         run: npx --no-install electron-builder --mac dmg zip --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
 
+      - name: Verify packaged macOS Runtime
+        run: node scripts/verify-runtime-bundle.mjs "dist/mac-arm64/EzDSH.app/Contents/Resources"
+
       - name: Check macOS package files
         shell: bash
         run: |
           test -f out/node-runtime/bin/node
-          test -f out/dsh-runtime.tar.gz
+          test -f out/dsh-runtime/lib/bin.js
           compgen -G "dist/*.dmg" > /dev/null
           compgen -G "dist/*.zip" > /dev/null
           test -f dist/latest-mac.yml

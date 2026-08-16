@@ -1,63 +1,20 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { existsSync, realpathSync } from 'node:fs'
-import { copyFile, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { extractFile } from '@electron/asar'
-import { t as listArchive, x as extractArchive } from 'tar'
-
-async function extractBundleArchive(archivePath, cwd) {
-  if (process.platform !== 'win32') {
-    await extractArchive({ file: archivePath, cwd, strict: true })
-    return
-  }
-
-  // Mirror the runtime extraction strategy: node-tar's default symlinks require
-  // elevated privileges on Windows, but the archive only contains directory
-  // links from pnpm. Recreate them as junctions after extracting the rest.
-  const symlinks = []
-  await listArchive({
-    file: archivePath,
-    onReadEntry: (entry) => {
-      if (entry.type === 'SymbolicLink' && entry.linkpath !== undefined) {
-        symlinks.push({ path: entry.path, linkpath: entry.linkpath })
-      }
-    }
-  })
-
-  await extractArchive({
-    file: archivePath,
-    cwd,
-    strict: true,
-    filter: (_path, entry) => !('type' in entry) || entry.type !== 'SymbolicLink'
-  })
-
-  for (const { path, linkpath } of symlinks) {
-    const linkAbsolute = resolve(cwd, path)
-    const targetAbsolute = resolve(dirname(linkAbsolute), linkpath)
-    const targetStats = await stat(targetAbsolute)
-    await mkdir(dirname(linkAbsolute), { recursive: true })
-    if (targetStats.isDirectory()) {
-      await symlink(targetAbsolute, linkAbsolute, 'junction')
-    } else {
-      await copyFile(targetAbsolute, linkAbsolute)
-    }
-  }
-}
+import { join, resolve } from 'node:path'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const bundleRoot = process.argv[2] === undefined
   ? join(projectRoot, 'out')
   : resolve(projectRoot, process.argv[2])
 const temporaryRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-bundle-'))
-let runtimeExtractionRoot
 
 const nodeExecutableName = process.platform === 'win32' ? 'node.exe' : 'node'
 const nodeCandidates = [
   join(bundleRoot, 'node-runtime', 'bin', nodeExecutableName),
-  join(bundleRoot, 'app.asar.unpacked', 'out', 'node-runtime', 'bin', nodeExecutableName),
   join(bundleRoot, 'app', 'out', 'node-runtime', 'bin', nodeExecutableName)
 ]
 let nodeExecutable = nodeCandidates.find((candidate) => {
@@ -66,7 +23,6 @@ let nodeExecutable = nodeCandidates.find((candidate) => {
 
 const runtimeCandidates = [
   join(bundleRoot, 'dsh-runtime', 'lib', 'bin.js'),
-  join(bundleRoot, 'app.asar.unpacked', 'out', 'dsh-runtime', 'lib', 'bin.js'),
   join(bundleRoot, 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
 ]
 let runtimeEntry = runtimeCandidates.find((candidate) => {
@@ -78,32 +34,7 @@ if (nodeExecutable === undefined) {
 }
 
 if (runtimeEntry === undefined) {
-  const archiveCandidates = [
-    join(bundleRoot, 'dsh-runtime.tar.gz'),
-    join(bundleRoot, 'app.asar.unpacked', 'out', 'dsh-runtime.tar.gz'),
-    join(bundleRoot, 'app', 'out', 'dsh-runtime.tar.gz')
-  ]
-  let archivePath = archiveCandidates.find((candidate) => {
-    try {
-      return require('node:fs').existsSync(candidate)
-    } catch {
-      return false
-    }
-  })
-  if (archivePath === undefined) {
-    const appAsar = join(bundleRoot, 'app.asar')
-    if (existsSync(appAsar)) {
-      archivePath = join(temporaryRoot, 'dsh-runtime.tar.gz')
-      await writeFile(archivePath, extractFile(appAsar, 'out/dsh-runtime.tar.gz'))
-    }
-  }
-  if (archivePath === undefined) {
-    throw new Error(`Bundled DSH Runtime directory or archive was not found under ${bundleRoot}`)
-  }
-  runtimeExtractionRoot = join(temporaryRoot, 'extracted')
-  await mkdir(runtimeExtractionRoot, { recursive: true })
-  await extractBundleArchive(archivePath, runtimeExtractionRoot)
-  runtimeEntry = join(runtimeExtractionRoot, 'dsh-runtime', 'lib', 'bin.js')
+  throw new Error(`Bundled DSH Runtime directory was not found under ${bundleRoot}`)
 }
 
 // Several runtime seams are keyed by Symbols exported from shared packages.

@@ -1,9 +1,8 @@
 import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
-import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
-import { t as listArchive, x as extractArchive } from 'tar'
 import type { UserDataLayout } from '../../shared/state.js'
 import { ensureUserDataLayout } from '../state/user-data.js'
 import { waitForRuntimeHealthy } from './health-check.js'
@@ -14,15 +13,13 @@ export interface RuntimePathOptions {
   resourcesPath?: string
   isPackaged: boolean
   platform?: NodeJS.Platform
-  runtimeRoot?: string
   developmentSourceRoot?: string
 }
 
 /** Resolve the source-built or staged Runtime entry without consulting user PATH. */
 export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
   if (options.isPackaged) {
-    if (options.runtimeRoot !== undefined) return join(options.runtimeRoot, 'lib', 'bin.js')
-    return join(options.resourcesPath ?? resolve(options.appPath, '..'), 'app.asar.unpacked', 'out', 'dsh-runtime', 'lib', 'bin.js')
+    return join(options.appPath, 'out', 'dsh-runtime', 'lib', 'bin.js')
   }
 
   if (options.developmentSourceRoot !== undefined) {
@@ -44,199 +41,11 @@ export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
   throw new Error(`Staged DSH Runtime is missing lib/bin.js at ${stagedEntry}`)
 }
 
-export interface PackagedRuntimeOptions extends RuntimePathOptions {
-  userDataRoot: string
-}
-
-type DirectoryRemover = (
-  path: string,
-  options: {
-    recursive: true
-    force: true
-    maxRetries: number
-    retryDelay: number
-  }
-) => Promise<void>
-
-const RETRYABLE_DIRECTORY_ERRORS = new Set(['EACCES', 'EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY', 'EPERM'])
-const DIRECTORY_CLEANUP_ATTEMPTS = 4
-const DIRECTORY_CLEANUP_RETRY_DELAY_MS = 100
-
-/** Remove extracted Runtime files across Windows file-lock and junction races. */
-export async function removeDirectoryWithRetries(
-  path: string,
-  remove: DirectoryRemover = rm as DirectoryRemover,
-  wait: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise(resolve => setTimeout(resolve, milliseconds))
-): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await remove(path, {
-        recursive: true,
-        force: true,
-        maxRetries: 8,
-        retryDelay: DIRECTORY_CLEANUP_RETRY_DELAY_MS
-      })
-      return
-    } catch (error) {
-      const code = typeof error === 'object' && error !== null && 'code' in error
-        ? (error as { code?: unknown }).code
-        : undefined
-      if (typeof code !== 'string'
-        || !RETRYABLE_DIRECTORY_ERRORS.has(code)
-        || attempt >= DIRECTORY_CLEANUP_ATTEMPTS - 1) {
-        throw error
-      }
-      await wait(DIRECTORY_CLEANUP_RETRY_DELAY_MS * (attempt + 1))
-    }
-  }
-}
-
-interface RuntimeSymlinkEntry {
-  path: string
-  linkpath: string
-}
-
-async function createWindowsRuntimeSymlink(linkPath: string, targetPath: string): Promise<void> {
-  await mkdir(dirname(linkPath), { recursive: true })
-  const targetStats = await stat(targetPath)
-  if (targetStats.isDirectory()) {
-    // Junctions can be created by unprivileged users on Windows, unlike file
-    // symlinks. The DSH Runtime pnpm layout only uses directory links.
-    await symlink(targetPath, linkPath, 'junction')
-  } else {
-    // File symlinks also require privileges on Windows. Copy the target as a
-    // fallback; this branch is not expected for the current pnpm layout.
-    await copyFile(targetPath, linkPath)
-  }
-}
-
-/**
- * Extract a Runtime archive.
- *
- * On Windows, node-tar's default symlink creation requires SeCreateSymbolicLink
- * privilege (administrator or Developer Mode). The archive only contains
- * directory symlinks from pnpm, so we extract non-link entries first and then
- * recreate those links as junctions, which do not require elevation.
- */
-async function extractRuntimeArchive(archivePath: string, cwd: string): Promise<void> {
-  if (process.platform !== 'win32') {
-    await extractArchive({ file: archivePath, cwd, strict: true })
-    return
-  }
-
-  const symlinks: RuntimeSymlinkEntry[] = []
-  await listArchive({
-    file: archivePath,
-    onReadEntry: (entry) => {
-      if (entry.type === 'SymbolicLink' && entry.linkpath !== undefined) {
-        symlinks.push({ path: entry.path, linkpath: entry.linkpath })
-      }
-    }
-  })
-
-  await extractArchive({
-    file: archivePath,
-    cwd,
-    strict: true,
-    filter: (_path, entry) => !('type' in entry) || entry.type !== 'SymbolicLink'
-  })
-
-  for (const { path, linkpath } of symlinks) {
-    const linkAbsolute = resolve(cwd, path)
-    const targetAbsolute = resolve(dirname(linkAbsolute), linkpath)
-    try {
-      await createWindowsRuntimeSymlink(linkAbsolute, targetAbsolute)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`Failed to restore runtime symlink ${path} -> ${linkpath}: ${message}`)
-    }
-  }
-}
-
-function findPackagedRuntimeArchive(options: PackagedRuntimeOptions): string | undefined {
-  const resourcesPath = options.resourcesPath ?? resolve(options.appPath, '..')
-  const candidates = [
-    join(options.appPath, 'out', 'dsh-runtime.tar.gz'),
-    join(resourcesPath, 'dsh-runtime.tar.gz'),
-    join(resourcesPath, 'app.asar.unpacked', 'out', 'dsh-runtime.tar.gz')
-  ]
-  return candidates.find((candidate) => existsSync(candidate))
-}
-
-/**
- * Materialize the packaged Runtime outside the signed application bundle.
- *
- * The archive keeps macOS code-signing from recursively scanning thousands of
- * JavaScript files. Extraction is cached in user data and refreshed whenever
- * the archive's size or modification time changes.
- */
-export async function preparePackagedRuntime(options: PackagedRuntimeOptions): Promise<string> {
-  if (!options.isPackaged) {
-    throw new Error('Packaged Runtime preparation requires isPackaged=true')
-  }
-
-  const legacyRoot = join(
-    options.resourcesPath ?? resolve(options.appPath, '..'),
-    'app.asar.unpacked',
-    'out',
-    'dsh-runtime'
-  )
-  if (existsSync(join(legacyRoot, 'lib', 'bin.js'))) return legacyRoot
-
-  const archivePath = findPackagedRuntimeArchive(options)
-  if (archivePath === undefined) {
-    throw new Error(`Packaged DSH Runtime archive was not found near ${options.appPath}`)
-  }
-
-  const cacheRoot = join(options.userDataRoot, 'runtime-cache')
-  const runtimeRoot = join(cacheRoot, 'dsh-runtime')
-  const markerPath = join(cacheRoot, 'runtime-ready.json')
-  await mkdir(cacheRoot, { recursive: true, mode: 0o700 })
-  const archiveStats = await stat(archivePath)
-  const archiveSignature = `${String(archiveStats.size)}:${String(archiveStats.mtimeMs)}`
-
-  try {
-    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { signature?: string }
-    if (marker.signature === archiveSignature && existsSync(join(runtimeRoot, 'lib', 'bin.js'))) {
-      return runtimeRoot
-    }
-  } catch {
-    // A missing or incomplete marker triggers a fresh extraction.
-  }
-
-  const extractionRoot = await mkdtemp(join(cacheRoot, '.extract-'))
-  try {
-    await extractRuntimeArchive(archivePath, extractionRoot)
-    const extractedRuntimeRoot = join(extractionRoot, 'dsh-runtime')
-    if (!existsSync(join(extractedRuntimeRoot, 'lib', 'bin.js'))) {
-      throw new Error('Packaged DSH Runtime archive is missing lib/bin.js')
-    }
-    await removeDirectoryWithRetries(runtimeRoot)
-    await rename(extractedRuntimeRoot, runtimeRoot)
-    await writeFile(markerPath, JSON.stringify({ signature: archiveSignature }), { mode: 0o600 })
-    return runtimeRoot
-  } finally {
-    try {
-      await removeDirectoryWithRetries(extractionRoot)
-    } catch (error) {
-      // A locked temporary file must not hide a successful Runtime extraction.
-      console.warn(`Could not remove temporary Runtime extraction at ${extractionRoot}`, error)
-    }
-  }
-}
-
 /** Resolve the bundled Node executable used by packaged Runtime processes. */
 export function resolveRuntimeCommandPath(options: RuntimePathOptions): string | undefined {
   if (!options.isPackaged) return undefined
   const executable = (options.platform ?? process.platform) === 'win32' ? 'node.exe' : 'node'
-  return join(
-    options.resourcesPath ?? resolve(options.appPath, '..'),
-    'app.asar.unpacked',
-    'out',
-    'node-runtime',
-    'bin',
-    executable
-  )
+  return join(options.appPath, 'out', 'node-runtime', 'bin', executable)
 }
 
 export interface RuntimeManagerOptions {

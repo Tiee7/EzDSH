@@ -1,15 +1,17 @@
 import { access, cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { c as createArchive } from 'tar'
 import { pruneRuntimeFiles } from './prune-runtime-files.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const runtimeSource = join(projectRoot, 'vendor', 'deepseek-harness')
 const destination = join(projectRoot, 'out', 'dsh-runtime')
+const legacyArchive = join(projectRoot, 'out', 'dsh-runtime.tar.gz')
 const linkType = process.platform === 'win32' ? 'junction' : undefined
+const rootNodeModules = join(destination, 'node_modules')
 
 await rm(destination, { recursive: true, force: true })
+await rm(legacyArchive, { force: true })
 await mkdir(dirname(destination), { recursive: true })
 
 execFileSync(process.execPath, [
@@ -18,8 +20,8 @@ execFileSync(process.execPath, [
   'deploy',
   '--legacy',
   '--ignore-scripts',
-  '--filter', '@deepseek-ai/dsh',
   '--prod',
+  '--filter', '@deepseek-ai/dsh',
   destination
 ], {
   cwd: projectRoot,
@@ -48,10 +50,10 @@ if (deployedWebRoot === undefined) {
   throw new Error('Unable to locate the staged DSH web frontend package')
 }
 
-// Some Runtime packages declare workspace plugins as peer dependencies. A
-// production deploy intentionally omits those peers, even though the web
-// profile loads them at startup. Build a small peer closure from the deployed
-// manifests and publish missing workspace peers into the staged package.
+// pnpm deploy follows package dependencies, but it intentionally does not
+// materialize workspace packages that are only peer dependencies. DSH uses
+// those peers as runtime plugins, so derive the missing workspace peer closure
+// from package manifests instead of maintaining a second hand-written list.
 async function indexWorkspacePackages(directory, packages = new Map()) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name === '.git') continue
@@ -85,7 +87,7 @@ async function indexStagedPackages(directory, packages = new Map()) {
         packages.set(manifest.name, dirname(current))
       }
     } catch {
-      // Ignore non-package JSON files.
+      // Ignore incomplete package metadata.
     }
   }
   return packages
@@ -93,7 +95,6 @@ async function indexStagedPackages(directory, packages = new Map()) {
 
 const workspacePackages = await indexWorkspacePackages(runtimeSource)
 const stagedPackages = await indexStagedPackages(join(destination, 'node_modules', '.pnpm'))
-const rootNodeModules = join(destination, 'node_modules')
 const peerQueue = [...stagedPackages.values()]
 const visitedPeerManifests = new Set()
 const requiredPeers = new Set()
@@ -140,6 +141,7 @@ for (const peerName of requiredPeers) {
   }
   peerPackageCount += 1
 }
+
 try {
   await access(join(deployedWebRoot, 'dist', 'index.html'))
 } catch {
@@ -151,14 +153,14 @@ try {
 
 const runtimeNodeModules = join(destination, 'node_modules', '.pnpm', 'node_modules')
 const runtimeKoffi = join(runtimeNodeModules, 'koffi')
-execFileSync('node', ['./cnoke.cjs', '-P', '.', '-D', 'src/koffi', '--prebuild', '--release'], {
+execFileSync(process.execPath, ['./cnoke.cjs', '-P', '.', '-D', 'src/koffi', '--prebuild', '--release'], {
   cwd: runtimeKoffi,
   env: { ...process.env, CI: 'true' },
   stdio: 'inherit'
 })
 
 const runtimeSpawnHelper = join(runtimeNodeModules, '@deepseek-ai', 'dsh-subprocess-local')
-execFileSync('node', ['scripts/ensure-spawn-helper.mjs'], {
+execFileSync(process.execPath, ['scripts/ensure-spawn-helper.mjs'], {
   cwd: runtimeSpawnHelper,
   env: { ...process.env, CI: 'true' },
   stdio: 'inherit'
@@ -197,9 +199,6 @@ while (pending.length > 0) {
   for (const entry of await readdir(current)) pending.push(join(current, entry))
 }
 
-// Workspace peers are copied from source directories because they are not
-// published packages. Remove development-only payloads before packaging so
-// electron-builder does not need to open tens of thousands of irrelevant files.
 await pruneRuntimeFiles(destination)
 
 // Node resolves a package imported through a symlink relative to the symlink
@@ -247,23 +246,4 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
   rootDependencyLinkCount += 1
 }
 
-const runtimeArchive = join(projectRoot, 'out', 'dsh-runtime.tar.gz')
-await rm(runtimeArchive, { force: true })
-if (process.platform === 'win32') {
-  // Windows junctions created by pnpm can leave node-tar's async walker
-  // unresolved. Windows ships bsdtar, which handles these entries correctly.
-  execFileSync('tar.exe', [
-    '-czf', runtimeArchive,
-    '-C', join(projectRoot, 'out'),
-    'dsh-runtime'
-  ], { stdio: 'inherit' })
-} else {
-  await createArchive({
-    cwd: join(projectRoot, 'out'),
-    file: runtimeArchive,
-    gzip: true,
-    portable: true
-  }, ['dsh-runtime'])
-}
-
-console.log(`Staged DSH Runtime at ${destination} (${String(materializedCount)} external links materialized, ${String(peerPackageCount)} peer packages added, ${String(rootDependencyLinkCount)} root dependency links added)`)
+console.log(`Staged direct DSH Runtime at ${destination} (${String(materializedCount)} external links materialized, ${String(peerPackageCount)} peer packages added, ${String(rootDependencyLinkCount)} root dependency links added)`)

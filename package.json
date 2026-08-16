@@ -19,8 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:runtime": "node scripts/check-runtime.mjs",
-    "dsh:install": "pnpm --dir vendor/deepseek-harness install --frozen-lockfile",
-    "dsh:build": "pnpm --dir vendor/deepseek-harness run build",
+    "dsh:install": "node node_modules/pnpm/bin/pnpm.mjs --dir vendor/deepseek-harness install --frozen-lockfile",
+    "dsh:build": "node node_modules/pnpm/bin/pnpm.mjs --dir vendor/deepseek-harness run build",
     "stage:node-runtime": "node scripts/stage-node-runtime.mjs",
     "stage:dsh-runtime": "node scripts/stage-dsh-runtime.mjs",
     "stage:runtime": "npm run stage:node-runtime && npm run stage:dsh-runtime",
@@ -39,7 +39,6 @@
     "electron-updater": "^6.8.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tar": "^7.5.22",
     "yaml": "^2.8.1"
   },
   "devDependencies": {
@@ -62,17 +61,14 @@
   "build": {
     "appId": "com.ezdsh.desktop",
     "productName": "EzDSH",
-    "asar": true,
-    "asarUnpack": [
-      "out/node-runtime/**"
-    ],
+    "asar": false,
     "npmRebuild": false,
     "directories": {
       "output": "dist"
     },
     "files": [
       "out/**/*",
-      "!out/dsh-runtime/**",
+      "!out/**/*.map",
       "package.json"
     ],
     "extraResources": [

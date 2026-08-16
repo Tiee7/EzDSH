@@ -35,14 +35,17 @@ jobs:
       - name: Build Windows installer
         run: npx electron-builder --win --publish never
 
+      - name: Verify packaged Windows Runtime
+        run: node scripts/verify-runtime-bundle.mjs "dist/win-unpacked/resources"
+
       - name: Check Windows package files
         shell: pwsh
         run: |
           if (-not (Test-Path "out\node-runtime\bin\node.exe")) {
             throw "Bundled Windows Node runtime is missing"
           }
-          if (-not (Test-Path "out\dsh-runtime.tar.gz")) {
-            throw "Bundled DSH Runtime archive is missing"
+          if (-not (Test-Path "out\dsh-runtime\lib\bin.js")) {
+            throw "Bundled DSH Runtime entry is missing"
           }
           if (-not (Get-ChildItem "dist\*.exe" -ErrorAction SilentlyContinue)) {
             throw "Windows installer was not generated"

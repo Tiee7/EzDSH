@@ -1,6 +1,9 @@
 import { readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
+// Published npm packages normally omit these development-only payloads. The
+// workspace deploy contains source checkouts instead, so remove the same
+// non-runtime material before Electron Builder scans the direct directory.
 const PRUNED_DIRECTORY_NAMES = new Set([
   'test',
   'tests',
@@ -17,8 +20,7 @@ const PRUNED_FILE_PATTERNS = [
   /^CONTRIBUTING(?:\.|$)/i,
   /^tsconfig(?:\.|$)/i,
   /^tsdown\.config\./i,
-  /\.d\.ts(?:\.map)?$/i,
-  /\.js\.map$/i
+  /\.(?:d\.ts|ts|mts|cts|tsx|map)$/i
 ]
 
 export function shouldPruneRuntimePath(relativePath) {
