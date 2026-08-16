@@ -356,6 +356,12 @@ if (!singleInstance) {
         createWindow()
       }
     })
+  }).catch((error: unknown) => {
+    // A silent rejection here previously left the app running without any window.
+    console.error('EzDSH failed to start:', error)
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    dialog.showErrorBox(APP_NAME, `EzDSH 启动失败，应用将退出。\nEzDSH failed to start and will now quit.\n\n${message}`)
+    app.exit(1)
   })
 
   app.on('second-instance', () => {
