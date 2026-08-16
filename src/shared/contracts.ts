@@ -3,6 +3,7 @@ import type { EzDSHError, IpcResult } from './errors.js'
 import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
 import type { AppTab } from './navigation.js'
+import type { AppPlatform } from './platform.js'
 import type {
   InstalledListResult,
   InstallState,
@@ -23,6 +24,7 @@ export interface EzDSHBridge {
   app: {
     name: string
     version: string
+    platform: AppPlatform
   }
   runtime: {
     getStatus(): Promise<RuntimeSnapshot>

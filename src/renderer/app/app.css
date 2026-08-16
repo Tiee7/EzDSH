@@ -154,6 +154,10 @@ h1 {
   -webkit-user-select: none;
 }
 
+.tab-bar-mac {
+  padding-left: 86px;
+}
+
 .tab-bar-drag-region {
   position: absolute;
   top: 0;

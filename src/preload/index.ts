@@ -3,6 +3,7 @@ import type { EzDSHBridge } from '../shared/contracts.js'
 import type { IpcResult } from '../shared/errors.js'
 import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
 import type { AppTab } from '../shared/navigation.js'
+import type { AppPlatform } from '../shared/platform.js'
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>
@@ -17,7 +18,8 @@ async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 const bridge: EzDSHBridge = {
   app: {
     name: APP_NAME,
-    version: APP_VERSION
+    version: APP_VERSION,
+    platform: (process.platform as unknown) as AppPlatform
   },
   runtime: {
     getStatus: () => invoke('runtime:get-status'),

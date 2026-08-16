@@ -16,6 +16,7 @@ export function App() {
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<AppTab>('harness')
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
+  const isMac = window.EzDSH.app.platform === 'darwin'
 
   useEffect(() => {
     document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN'
@@ -77,7 +78,7 @@ export function App() {
     ]
     return (
       <main className="workspace">
-        <nav className="tab-bar" aria-label={copy.menuNavigate}>
+        <nav className={`tab-bar ${isMac ? 'tab-bar-mac' : ''}`} aria-label={copy.menuNavigate}>
           <div className="tab-bar-drag-region" aria-hidden="true" />
           <div className="tab-bar-tabs" role="tablist">
             {tabs.map((tab) => (
