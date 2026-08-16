@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { c as createArchive } from 'tar'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  removeDirectoryWithRetries,
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath,
   preparePackagedRuntime,
@@ -19,6 +20,26 @@ afterEach(async () => {
 })
 
 describe('RuntimeManager', () => {
+  it('retries transient Windows directory cleanup failures', async () => {
+    let attempts = 0
+    const remove = async (_path: string, _options: {
+      recursive: true
+      force: true
+      maxRetries: number
+      retryDelay: number
+    }): Promise<void> => {
+      attempts += 1
+      if (attempts < 3) {
+        const error = Object.assign(new Error('directory not empty'), { code: 'ENOTEMPTY' })
+        throw error
+      }
+    }
+
+    await removeDirectoryWithRetries('/tmp/runtime-extract', remove, async () => undefined)
+
+    expect(attempts).toBe(3)
+  })
+
   it('uses the staged Runtime during development when it is available', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-path-'))
     roots.push(root)

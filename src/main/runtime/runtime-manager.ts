@@ -48,6 +48,49 @@ export interface PackagedRuntimeOptions extends RuntimePathOptions {
   userDataRoot: string
 }
 
+type DirectoryRemover = (
+  path: string,
+  options: {
+    recursive: true
+    force: true
+    maxRetries: number
+    retryDelay: number
+  }
+) => Promise<void>
+
+const RETRYABLE_DIRECTORY_ERRORS = new Set(['EACCES', 'EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY', 'EPERM'])
+const DIRECTORY_CLEANUP_ATTEMPTS = 4
+const DIRECTORY_CLEANUP_RETRY_DELAY_MS = 100
+
+/** Remove extracted Runtime files across Windows file-lock and junction races. */
+export async function removeDirectoryWithRetries(
+  path: string,
+  remove: DirectoryRemover = rm as DirectoryRemover,
+  wait: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise(resolve => setTimeout(resolve, milliseconds))
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await remove(path, {
+        recursive: true,
+        force: true,
+        maxRetries: 8,
+        retryDelay: DIRECTORY_CLEANUP_RETRY_DELAY_MS
+      })
+      return
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined
+      if (typeof code !== 'string'
+        || !RETRYABLE_DIRECTORY_ERRORS.has(code)
+        || attempt >= DIRECTORY_CLEANUP_ATTEMPTS - 1) {
+        throw error
+      }
+      await wait(DIRECTORY_CLEANUP_RETRY_DELAY_MS * (attempt + 1))
+    }
+  }
+}
+
 function findPackagedRuntimeArchive(options: PackagedRuntimeOptions): string | undefined {
   const resourcesPath = options.resourcesPath ?? resolve(options.appPath, '..')
   const candidates = [
@@ -106,12 +149,17 @@ export async function preparePackagedRuntime(options: PackagedRuntimeOptions): P
     if (!existsSync(join(extractedRuntimeRoot, 'lib', 'bin.js'))) {
       throw new Error('Packaged DSH Runtime archive is missing lib/bin.js')
     }
-    await rm(runtimeRoot, { recursive: true, force: true })
+    await removeDirectoryWithRetries(runtimeRoot)
     await rename(extractedRuntimeRoot, runtimeRoot)
     await writeFile(markerPath, JSON.stringify({ signature: archiveSignature }), { mode: 0o600 })
     return runtimeRoot
   } finally {
-    await rm(extractionRoot, { recursive: true, force: true })
+    try {
+      await removeDirectoryWithRetries(extractionRoot)
+    } catch (error) {
+      // A locked temporary file must not hide a successful Runtime extraction.
+      console.warn(`Could not remove temporary Runtime extraction at ${extractionRoot}`, error)
+    }
   }
 }
 
