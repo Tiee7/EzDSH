@@ -163,6 +163,8 @@ API Key 不应直接保存在 EzDSH 安装目录或普通状态 JSON 中。EzDSH
 
 ## 7. 可发布打包流程
 
+发布操作的统一入口已整理到 [EzDSH 发布手册](./release-manual.md)。本节保留 Runtime 依赖与打包边界的技术说明；实际发布时请按发布手册的顺序执行，并以其中的版本、签名、公证和产物检查清单为准。
+
 ```bash
 nvm use
 node -v

@@ -1,5 +1,7 @@
 # EzDSH 发布与自动更新
 
+> 完整发布操作请先阅读 [发布手册](./release-manual.md)。本文只保留更新源和分发协议，避免与操作手册重复。
+
 ## 1. 更新源
 
 EzDSH 使用 `electron-updater` 的 `generic` 更新源。当前暂定地址为：
@@ -15,7 +17,7 @@ http://update.ezdsh.com/updates/
 
 版本检查以这些元数据中的 `version` 为准，不额外维护一套容易不一致的版本号接口。官网如果需要展示版本号，可以读取同一份元数据，或者由发布流程生成一个独立的 `version.json`。
 
-EzDSH 统一使用标准三段 SemVer，例如 `0.8.1505`。应用展示、Electron 打包元数据和 `electron-updater` 更新元数据都使用同一个版本号，不再使用第四段版本号。修改版本时运行 `npm run version:set -- 0.8.1505`，由脚本同步所有需要更新的文件。
+EzDSH 统一使用标准三段 SemVer。应用展示、Electron 打包元数据和 `electron-updater` 更新元数据都使用同一个版本号。版本修改由发布手册中的 `npm run version:set -- x.y.z` 脚本完成。
 
 ## 2. Vercel 是否适合
 
@@ -38,7 +40,7 @@ EZDSH_UPDATE_FEED_URL=https://your-project.vercel.app/updates/ npm run dev
 
 ## 4. 发布约束
 
-- 每次发布只提升 `package.json` 的应用版本号，不手工修改客户端内的第二份版本号；
+- 每次发布使用 `npm run version:set -- x.y.z` 同步应用、打包和更新所需的版本号；
 - macOS 发布包必须签名并经过公证，否则安装更新时会被系统安全策略拦截；
 - Windows 安装包必须使用稳定的代码签名证书；
 - 更新元数据和安装包必须来自同一次构建；

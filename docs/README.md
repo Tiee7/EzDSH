@@ -7,6 +7,7 @@ EzDSH 是一个基于 Electron 的 DeepSeek Harness 桌面客户端。它负责�
 - [产品需求](./product-requirements.md)：产品目标、用户流程、功能范围和验收标准
 - [技术架构](./architecture.md)：进程结构、启动流程、配置存储、安全和更新机制
 - [DSH Runtime 依赖关系](./runtime-dependency.md)：项目依赖、本机安装和打包运行时的边界
+- [发布手册](./release-manual.md)：版本、素材、验证、打包、签名、公证和自动更新的完整流程
 - [发布与自动更新](./update-distribution.md)：Vercel 更新源、版本元数据和安装包分发方案
 - [开发计划](./superpowers/plans/2026-08-15-ezdsh-foundation.md)：按任务拆分的后续实施顺序
 
