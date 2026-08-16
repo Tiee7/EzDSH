@@ -12,19 +12,19 @@
 }
 
 .surface-tab {
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--ezdsh-panel-border);
   border-radius: 8px;
   padding: 6px 14px;
   background: transparent;
-  color: #9197a5;
+  color: var(--ezdsh-text-faint);
   font-size: 13px;
   cursor: pointer;
 }
 
 .surface-tab-active {
-  color: #f2f4f8;
-  border-color: rgba(120, 148, 214, 0.7);
-  background: rgba(103, 128, 183, 0.18);
+  color: var(--ezdsh-text-heading);
+  border-color: var(--ezdsh-active-border);
+  background: var(--ezdsh-active-background);
 }
 
 .store-layout {
@@ -41,7 +41,8 @@
   gap: 2px;
   padding: 8px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--ezdsh-panel-background);
+  border: 1px solid var(--ezdsh-panel-border);
   overflow-y: auto;
 }
 
@@ -50,20 +51,20 @@
   border-radius: 8px;
   padding: 7px 10px;
   background: transparent;
-  color: #9197a5;
+  color: var(--ezdsh-text-faint);
   font-size: 13px;
   text-align: left;
   cursor: pointer;
 }
 
 .category-item:hover {
-  color: #d5d9e0;
-  background: rgba(255, 255, 255, 0.04);
+  color: var(--ezdsh-text-body);
+  background: var(--ezdsh-input-background);
 }
 
 .category-item-active {
-  color: #f2f4f8;
-  background: rgba(103, 128, 183, 0.25);
+  color: var(--ezdsh-text-heading);
+  background: var(--ezdsh-active-background);
 }
 
 .store-list {
@@ -82,42 +83,42 @@
 
 .store-search input {
   flex: 1;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--ezdsh-panel-border);
   border-radius: 8px;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.04);
-  color: #e7eaf0;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-body);
   font-size: 13px;
 }
 
 .store-error {
-  color: #e2695e;
+  color: var(--ezdsh-accent-red);
   font-size: 12px;
 }
 
 .store-demo-badge {
   flex: none;
-  border: 1px solid rgba(224, 183, 90, 0.55);
+  border: 1px solid var(--ezdsh-accent-orange);
   border-radius: 999px;
   padding: 4px 10px;
-  background: rgba(224, 183, 90, 0.12);
-  color: #e0b75a;
+  background: transparent;
+  color: var(--ezdsh-accent-orange);
   font-size: 12px;
   white-space: nowrap;
 }
 
 .store-status {
-  color: #9197a5;
+  color: var(--ezdsh-text-faint);
   font-size: 13px;
 }
 
 .store-retry {
   align-self: flex-start;
-  border: 1px solid #454c5b;
+  border: 1px solid var(--ezdsh-button-border);
   border-radius: 8px;
   padding: 6px 12px;
   background: transparent;
-  color: #dce7ff;
+  color: var(--ezdsh-button-text);
   cursor: pointer;
 }
 
@@ -131,21 +132,21 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--ezdsh-panel-border);
   border-radius: 12px;
   padding: 14px;
-  background: rgba(25, 27, 32, 0.7);
+  background: var(--ezdsh-panel-background);
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
 
 .entry-card:hover {
-  border-color: rgba(255, 255, 255, 0.22);
+  border-color: var(--ezdsh-panel-border-strong);
 }
 
 .entry-card-selected {
-  border-color: rgba(120, 148, 214, 0.7);
+  border-color: var(--ezdsh-active-border);
 }
 
 .entry-card-head {
@@ -158,12 +159,12 @@
 .entry-name {
   font-size: 14px;
   font-weight: 600;
-  color: #eef1f6;
+  color: var(--ezdsh-text-heading);
 }
 
 .entry-description {
   margin: 0;
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
   font-size: 12px;
   line-height: 1.5;
   display: -webkit-box;
@@ -175,12 +176,12 @@
 .entry-meta {
   display: flex;
   gap: 10px;
-  color: #7d8390;
+  color: var(--ezdsh-text-faint);
   font-size: 11px;
 }
 
 .entry-installed {
-  color: #69d29a;
+  color: var(--ezdsh-accent-green);
 }
 
 .badge {
@@ -192,54 +193,54 @@
 }
 
 .badge-verified {
-  background: rgba(105, 210, 154, 0.15);
-  color: #69d29a;
+  background: rgba(46, 160, 103, 0.14);
+  color: var(--ezdsh-accent-green);
 }
 
 .badge-basic {
-  background: rgba(228, 160, 79, 0.15);
-  color: #e4a04f;
+  background: rgba(191, 119, 31, 0.14);
+  color: var(--ezdsh-accent-orange);
 }
 
 .badge-unaudited {
-  background: rgba(154, 160, 173, 0.15);
-  color: #9aa0ad;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-muted);
 }
 
 .store-detail {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--ezdsh-panel-border);
   border-radius: 12px;
   padding: 16px;
-  background: rgba(25, 27, 32, 0.7);
+  background: var(--ezdsh-panel-background);
   overflow-y: auto;
 }
 
 .store-detail-empty {
   border-style: dashed;
-  border-color: rgba(255, 255, 255, 0.06);
+  border-color: var(--ezdsh-panel-border);
   background: transparent;
 }
 
 .detail-name {
   margin: 0;
   font-size: 17px;
-  color: #f2f4f8;
+  color: var(--ezdsh-text-heading);
 }
 
 .detail-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #7d8390;
+  color: var(--ezdsh-text-faint);
   font-size: 12px;
 }
 
 .detail-description {
   margin: 0;
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -248,8 +249,8 @@
   margin: 0;
   padding: 10px;
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.25);
-  color: #c6cad2;
+  background: var(--ezdsh-code-background);
+  color: var(--ezdsh-page-text);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -259,28 +260,28 @@
 
 .detail-files p {
   margin: 0 0 6px;
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
   font-size: 12px;
 }
 
 .detail-files ul {
   margin: 0;
   padding-left: 18px;
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
   font-size: 12px;
 }
 
 .detail-files li.file-kind-script,
 .detail-files li.file-kind-binary {
-  color: #e4a04f;
+  color: var(--ezdsh-accent-orange);
 }
 
 .detail-files pre {
   margin: 0;
   padding: 10px;
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.25);
-  color: #c6cad2;
+  background: var(--ezdsh-code-background);
+  color: var(--ezdsh-page-text);
   font-size: 11px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -290,22 +291,22 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border: 1px solid rgba(228, 160, 79, 0.3);
+  border: 1px solid var(--ezdsh-accent-orange);
   border-radius: 10px;
   padding: 12px;
-  background: rgba(228, 160, 79, 0.06);
+  background: transparent;
 }
 
 .audit-title {
   margin: 0;
-  color: #e4a04f;
+  color: var(--ezdsh-accent-orange);
   font-size: 12px;
   font-weight: 600;
 }
 
 .audit-clean {
   margin: 0;
-  color: #69d29a;
+  color: var(--ezdsh-accent-green);
   font-size: 12px;
 }
 
@@ -327,36 +328,36 @@
 
 .finding-rule {
   font-weight: 600;
-  color: #d5d9e0;
+  color: var(--ezdsh-text-body);
 }
 
 .finding-file {
-  color: #7d8390;
+  color: var(--ezdsh-text-faint);
 }
 
 .finding-detail {
   flex-basis: 100%;
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
 }
 
 .finding-block .finding-rule {
-  color: #e2695e;
+  color: var(--ezdsh-accent-red);
 }
 
 .finding-warn .finding-rule {
-  color: #e4a04f;
+  color: var(--ezdsh-accent-orange);
 }
 
 .audit-urls p {
   margin: 0 0 4px;
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
   font-size: 11px;
 }
 
 .audit-urls ul {
   margin: 0;
   padding-left: 16px;
-  color: #7d8390;
+  color: var(--ezdsh-text-faint);
   font-size: 11px;
   word-break: break-all;
 }
@@ -364,20 +365,20 @@
 .install-phase {
   margin: 0;
   font-size: 12px;
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
 }
 
 .phase-failed {
-  color: #e2695e;
+  color: var(--ezdsh-accent-red);
 }
 
 .phase-done {
-  color: #69d29a;
+  color: var(--ezdsh-accent-green);
 }
 
 .install-blocked {
   margin: 0;
-  color: #e2695e;
+  color: var(--ezdsh-accent-red);
   font-size: 12px;
 }
 
@@ -405,17 +406,17 @@
 
 .confirm-cancel,
 .detail-uninstall {
-  border: 1px solid #454c5b;
+  border: 1px solid var(--ezdsh-button-border);
   border-radius: 8px;
   padding: 8px 14px;
   background: transparent;
-  color: #dce7ff;
+  color: var(--ezdsh-button-text);
   font-size: 13px;
   cursor: pointer;
 }
 
-.detail-actions {
-  margin-top: auto;
-  display: flex;
-  gap: 8px;
+.confirm-cancel:disabled,
+.detail-uninstall:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

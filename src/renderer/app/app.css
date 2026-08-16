@@ -5,6 +5,23 @@
   --ezdsh-tab-color: #55595f;
   --ezdsh-tab-color-hover: #26292e;
   --ezdsh-tab-color-active: #1b1e22;
+  --ezdsh-page-text: #3a3f47;
+  --ezdsh-text-heading: #1b1e22;
+  --ezdsh-text-body: #33383f;
+  --ezdsh-text-muted: #5c6370;
+  --ezdsh-text-faint: #78808c;
+  --ezdsh-panel-background: #ffffff;
+  --ezdsh-panel-border: rgba(20, 30, 50, 0.14);
+  --ezdsh-panel-border-strong: rgba(20, 30, 50, 0.28);
+  --ezdsh-input-background: #ffffff;
+  --ezdsh-active-background: rgba(74, 108, 247, 0.1);
+  --ezdsh-active-border: rgba(74, 108, 247, 0.55);
+  --ezdsh-code-background: rgba(20, 30, 50, 0.05);
+  --ezdsh-button-border: rgba(20, 30, 50, 0.22);
+  --ezdsh-button-text: #2f4d78;
+  --ezdsh-accent-green: #1f8a5c;
+  --ezdsh-accent-orange: #b06e14;
+  --ezdsh-accent-red: #c2453a;
   color: #f7f7f4;
   background: #101114;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -19,6 +36,23 @@
     --ezdsh-tab-color: #9197a5;
     --ezdsh-tab-color-hover: #d5d9e0;
     --ezdsh-tab-color-active: #f2f4f8;
+    --ezdsh-page-text: #c6cad2;
+    --ezdsh-text-heading: #f2f4f8;
+    --ezdsh-text-body: #d5d9e0;
+    --ezdsh-text-muted: #9aa0ad;
+    --ezdsh-text-faint: #7d8390;
+    --ezdsh-panel-background: rgba(25, 27, 32, 0.7);
+    --ezdsh-panel-border: rgba(255, 255, 255, 0.1);
+    --ezdsh-panel-border-strong: rgba(255, 255, 255, 0.22);
+    --ezdsh-input-background: rgba(255, 255, 255, 0.04);
+    --ezdsh-active-background: rgba(103, 128, 183, 0.18);
+    --ezdsh-active-border: rgba(120, 148, 214, 0.7);
+    --ezdsh-code-background: rgba(0, 0, 0, 0.25);
+    --ezdsh-button-border: #454c5b;
+    --ezdsh-button-text: #dce7ff;
+    --ezdsh-accent-green: #69d29a;
+    --ezdsh-accent-orange: #e4a04f;
+    --ezdsh-accent-red: #e2695e;
   }
 }
 
@@ -246,12 +280,12 @@ h1 {
 .workspace-pane-page {
   overflow: auto;
   padding: 24px;
-  color: #c6cad2;
+  color: var(--ezdsh-page-text);
 }
 
 .workspace-placeholder {
   margin: 0;
-  color: #9197a5;
+  color: var(--ezdsh-text-faint);
   font-size: 14px;
 }
 

@@ -8,7 +8,7 @@
 .settings-page h2 {
   margin: 0 0 8px;
   font-size: 18px;
-  color: #f2f4f8;
+  color: var(--ezdsh-text-heading);
 }
 
 .settings-row {
@@ -16,35 +16,35 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--ezdsh-panel-border);
   border-radius: 12px;
   padding: 14px 16px;
-  background: rgba(25, 27, 32, 0.7);
+  background: var(--ezdsh-panel-background);
 }
 
 .settings-label {
   margin: 0;
-  color: #d5d9e0;
+  color: var(--ezdsh-text-body);
   font-size: 13px;
 }
 
 .settings-hint {
   margin: 4px 0 0;
-  color: #7d8390;
+  color: var(--ezdsh-text-faint);
   font-size: 11px;
 }
 
 .settings-value {
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
   font-size: 12px;
 }
 
 .settings-action {
-  border: 1px solid #454c5b;
+  border: 1px solid var(--ezdsh-button-border);
   border-radius: 8px;
   padding: 7px 12px;
   background: transparent;
-  color: #dce7ff;
+  color: var(--ezdsh-button-text);
   font-size: 12px;
   cursor: pointer;
 }
@@ -55,11 +55,11 @@
 }
 
 .locale-option {
-  border: 1px solid #454c5b;
+  border: 1px solid var(--ezdsh-button-border);
   border-radius: 8px;
   padding: 7px 12px;
   background: transparent;
-  color: #9aa0ad;
+  color: var(--ezdsh-text-muted);
   font-size: 12px;
   cursor: pointer;
 }
