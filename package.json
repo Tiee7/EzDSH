@@ -86,7 +86,7 @@
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
     "mac": {
-      "category": "public.app-category.developer-tools",
+      "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "target": [
         "dmg"
