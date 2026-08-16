@@ -218,11 +218,15 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
       const sourcePackage = await realpath(join(sourceScope, packageEntry))
       const targetPackage = join(targetScope, packageEntry)
       try {
-        await lstat(targetPackage)
-        continue
+        if (await realpath(targetPackage) === sourcePackage) continue
       } catch {
         // The package is not already exposed at the deployment root.
       }
+      // `pnpm deploy --legacy` may leave a copied package at the root while
+      // peer imports resolve through `.pnpm/node_modules`. Keep one physical
+      // package path so symbol-based cross-package seams (for example the
+      // tool scheduler) retain identity across all importers.
+      await rm(targetPackage, { recursive: true, force: true })
       await symlink(relative(dirname(targetPackage), sourcePackage), targetPackage, linkType)
       rootDependencyLinkCount += 1
     }
@@ -232,11 +236,13 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
   const sourcePackage = await realpath(sourceScope)
   const targetPackage = join(rootNodeModules, scopeEntry.name)
   try {
-    await lstat(targetPackage)
-    continue
+    if (await realpath(targetPackage) === sourcePackage) continue
   } catch {
     // The package is not already exposed at the deployment root.
   }
+  // See the scoped-package branch above: replace copied root packages with
+  // links to pnpm's canonical package path to avoid duplicate module identity.
+  await rm(targetPackage, { recursive: true, force: true })
   await symlink(relative(dirname(targetPackage), sourcePackage), targetPackage, linkType)
   rootDependencyLinkCount += 1
 }

@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -64,6 +65,21 @@ if (runtimeEntry === undefined) {
   await mkdir(runtimeExtractionRoot, { recursive: true })
   await extractArchive({ file: archivePath, cwd: runtimeExtractionRoot, strict: true })
   runtimeEntry = join(runtimeExtractionRoot, 'dsh-runtime', 'lib', 'bin.js')
+}
+
+// Several runtime seams are keyed by Symbols exported from shared packages.
+// A copied root dependency and pnpm's canonical dependency can therefore look
+// identical while being different JavaScript modules. Verify that the tool
+// scheduler imported by dsh-agent-loop is the same physical module exposed at
+// the runtime root; otherwise every model tool call fails at `.prepare`.
+const runtimeRoot = resolve(runtimeEntry, '..', '..')
+const runtimeRequire = createRequire(join(runtimeRoot, 'package.json'))
+const agentLoopEntry = runtimeRequire.resolve('@deepseek-ai/dsh-agent-loop')
+const agentLoopRequire = createRequire(agentLoopEntry)
+const rootToolsEntry = runtimeRequire.resolve('@deepseek-ai/dsh-tools')
+const agentLoopToolsEntry = agentLoopRequire.resolve('@deepseek-ai/dsh-tools')
+if (realpathSync(rootToolsEntry) !== realpathSync(agentLoopToolsEntry)) {
+  throw new Error(`Bundled DSH Runtime has duplicate @deepseek-ai/dsh-tools modules:\nroot: ${rootToolsEntry}\nagent-loop: ${agentLoopToolsEntry}`)
 }
 const testRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-verification-'))
 
