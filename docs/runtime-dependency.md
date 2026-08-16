@@ -191,3 +191,45 @@ npm run package:mac:release
 - `dist/`
 
 提交到 Git 的只有 npm 锁文件、构建脚本、上游子模块 commit 和应用源码，不提交 Node 二进制、依赖目录或打包产物。
+
+## 8. 增量打包（避免重复下载）
+
+首次准备完成后，如果只是想重新出包，不需要每次都跑完整的 `npm run package:mac:release`。该命令会重做 DSH 依赖安装、构建、暂存和健康检查，其中 `dsh:install` 和 Electron 下载会产生不必要的网络开销。
+
+实际上这些东西都是缓存的：
+
+- `node_modules` 和 `vendor/deepseek-harness/node_modules` 只要 lockfile 没变，就不要重新 `npm ci` / `pnpm install`；
+- Electron 二进制首次下载后缓存在 `~/Library/Caches/electron`，后续打包不再重复下载；
+- 唯一无法避免的网络请求是 Apple 公证；
+- DSH Runtime 归档（`out/dsh-runtime.tar.gz`）和内置 Node Runtime（`out/node-runtime`）只要上游源码和依赖没变，也不需要重新生成。
+
+因此按改动范围选择最小命令即可：
+
+### 8.1 只改了 `src/`（最常见）
+
+```bash
+npm run build
+npx --no-install electron-builder --mac dmg --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
+```
+
+`npm run build` 会重新编译 `out/main`、`out/preload`、`out/renderer`；electron-builder 读取当前 `package.json` 版本号直接打包。版本号改动本身不需要额外构建。
+
+### 8.2 改了 `vendor/deepseek-harness` 里的代码
+
+```bash
+npm run dsh:build && npm run stage:dsh-runtime
+npm run build
+npx --no-install electron-builder --mac dmg --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
+```
+
+这里不需要跑 `dsh:install`——只有上游的 `pnpm-lock.yaml` 发生变化时才需要重新安装依赖。`stage:dsh-runtime` 会把新的 Runtime 重新打包成 `out/dsh-runtime.tar.gz`。
+
+### 8.3 验证产物
+
+无论哪种情况，打包完成后建议跑一次本地校验：
+
+```bash
+npm run verify:package:mac
+```
+
+这条命令只检查最终 `.app` 内的资源完整性，不产生网络请求。
