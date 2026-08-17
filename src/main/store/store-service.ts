@@ -82,8 +82,7 @@ export class StoreService {
 
   /** Installed entries. */
   async listInstalled(): Promise<InstalledListResult> {
-    if (this.registry === undefined) throw new Error('Installed list is not available in this build')
-    return { records: await this.registry.list() }
+    return { records: await this.ensureRegistry().list() }
   }
 
   /**

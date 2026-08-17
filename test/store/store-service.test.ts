@@ -39,7 +39,16 @@ describe('StoreService read-only delegation', () => {
     const service = new StoreService()
     await expect(service.install('skill', 'demo')).rejects.toThrow(/not available in this build/)
     await expect(service.uninstall('skill', 'demo')).rejects.toThrow(/not available/)
-    await expect(service.listInstalled()).rejects.toThrow(/not available/)
+    await expect(service.listInstalled()).rejects.toThrow(/not configured/)
+  })
+
+  it('lists an empty installed registry before any install has run', async () => {
+    const { mkdtemp } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-registry-'))
+    const service = new StoreService({ registryPath: join(directory, 'installed.json') })
+    await expect(service.listInstalled()).resolves.toEqual({ records: [] })
   })
 
   it('publishes state events through the injected sink', () => {

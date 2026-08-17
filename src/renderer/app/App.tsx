@@ -99,9 +99,9 @@ export function App() {
               sandbox="allow-downloads allow-forms allow-modals allow-same-origin allow-scripts"
             />
           </div>
-          {activeTab === 'store' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section> : null}
-          {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section> : null}
-          {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} /></section> : null}
+          {activeTab === 'store' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section> : null}
+          {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section> : null}
+          {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} /></section> : null}
         </div>
       </main>
     )
