@@ -15,12 +15,11 @@ jobs:
     runs-on: macos-14
     env:
       # The p12 certificate and p8 API key are stored as GitHub Actions secrets.
-      CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
       - name: Checkout repository
@@ -43,12 +42,11 @@ jobs:
       - name: Check Apple signing and notarization secrets
         shell: bash
         run: |
-          test -n "$CSC_LINK" || { echo "Missing MAC_CSC_LINK"; exit 1; }
-          test -n "$CSC_KEY_PASSWORD" || { echo "Missing MAC_CSC_KEY_PASSWORD"; exit 1; }
+          test -n "$CSC_LINK" || { echo "Missing CSC_LINK"; exit 1; }
+          test -n "$CSC_KEY_PASSWORD" || { echo "Missing CSC_KEY_PASSWORD"; exit 1; }
           test -n "$APPLE_API_KEY" || { echo "Missing APPLE_API_KEY"; exit 1; }
           test -n "$APPLE_API_KEY_ID" || { echo "Missing APPLE_API_KEY_ID"; exit 1; }
           test -n "$APPLE_API_ISSUER" || { echo "Missing APPLE_API_ISSUER"; exit 1; }
-          test -n "$APPLE_TEAM_ID" || { echo "Missing APPLE_TEAM_ID"; exit 1; }
 
       - name: Build macOS installers
         run: npx --no-install electron-builder --mac dmg zip --publish never -c.mac.notarize=true -c.mac.forceCodeSigning=true
