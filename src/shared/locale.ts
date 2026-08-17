@@ -96,7 +96,6 @@ export interface AppCopy {
   settingsProviderAdd: string
   settingsProviderUsable: string
   settingsProviderConfigured: string
-  settingsProviderEmpty: string
   settingsProviderSave: string
   settingsProviderApiKey: string
   settingsUpdateSection: string
@@ -202,7 +201,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProviderAdd: '添加供应商',
     settingsProviderUsable: '可用',
     settingsProviderConfigured: '已配置',
-    settingsProviderEmpty: '未配置',
     settingsProviderSave: '保存',
     settingsProviderApiKey: 'API Key',
     settingsUpdateSection: '应用更新',
@@ -306,7 +304,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProviderAdd: 'Add provider',
     settingsProviderUsable: 'Usable',
     settingsProviderConfigured: 'Configured',
-    settingsProviderEmpty: 'Not configured',
     settingsProviderSave: 'Save',
     settingsProviderApiKey: 'API Key',
     settingsUpdateSection: 'Application updates',

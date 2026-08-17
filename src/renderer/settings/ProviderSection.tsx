@@ -193,9 +193,10 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
           </div>
           {definition !== undefined ? (
             <form className="provider-form" onSubmit={submit}>
-              <label>
+              <label htmlFor="provider-api-key">
                 {copy.settingsProviderApiKey}
                 <input
+                  id="provider-api-key"
                   type="password"
                   value={apiKey}
                   onChange={(event) => { setApiKey(event.target.value) }}
@@ -205,10 +206,11 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
                   disabled={saving}
                 />
               </label>
-              <label>
+              <label htmlFor="provider-base-url">
                 {copy.baseUrl}{' '}
                 <span className="provider-optional">({copy.optional})</span>
                 <input
+                  id="provider-base-url"
                   type="url"
                   value={baseUrl}
                   onChange={(event) => { setBaseUrl(event.target.value) }}

@@ -10,9 +10,15 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
 
   useEffect(() => {
     let active = true
-    void window.EzDSH.updates.getStatus().then((snapshot) => {
-      if (active) setState(snapshot)
-    })
+    const fetchStatus = async (): Promise<void> => {
+      try {
+        const snapshot = await window.EzDSH.updates.getStatus()
+        if (active) setState(snapshot)
+      } catch {
+        if (active) setError(copy.updateCheckFailed)
+      }
+    }
+    void fetchStatus()
     const unsubscribe = window.EzDSH.updates.onStateChange((snapshot) => {
       if (active) {
         setState(snapshot)
@@ -23,7 +29,7 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
       active = false
       unsubscribe()
     }
-  }, [])
+  }, [copy])
 
   const phase = state?.phase ?? 'idle'
   const action = updateAction(phase)
