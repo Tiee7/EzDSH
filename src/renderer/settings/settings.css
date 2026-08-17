@@ -106,3 +106,23 @@
   color: var(--ezdsh-text-heading);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
 }
+
+.settings-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.settings-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--ezdsh-accent-orange);
+  vertical-align: middle;
+}
+
+.settings-dot-ready {
+  background: var(--ezdsh-accent-green);
+}
