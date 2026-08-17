@@ -537,7 +537,7 @@ const DEMO_PRESETS: readonly DemoPreset[] = [
     id: 'deep-research',
     name: '深度研究模式 (Deep Research)',
     description: '面向开放问题的联网研究 Agent：多源检索、交叉验证、可溯源的综合报告。',
-    category: 'modes',
+    category: 'research',
     auditLevel: 'verified',
     version: '1.0.0',
     readme: 'Installs the deep-research agent preset into the local roster. Search and fetch stay on; the persona drives scoping, query design, source triangulation, and a report-plus-source-list deliverable. Appears in the runtime mode picker immediately after install.',
@@ -548,7 +548,7 @@ const DEMO_PRESETS: readonly DemoPreset[] = [
     id: 'code-review',
     name: '代码审查模式 (Code Review)',
     description: '只读的代码审查 Agent：基于真实 diff 按正确性、安全性与可维护性分级给出可执行的审查结论。',
-    category: 'modes',
+    category: 'coding',
     auditLevel: 'verified',
     version: '1.0.0',
     readme: 'Installs the code-review agent preset into the local roster. A read-only review contract (no edits, no commits), findings grounded in cited file and line with severity block/warn/note, and a verdict-first report. Appears in the runtime mode picker immediately after install.',
@@ -559,7 +559,7 @@ const DEMO_PRESETS: readonly DemoPreset[] = [
     id: 'data-analysis',
     name: '数据分析模式 (Data Analysis)',
     description: '探查优先、可复现的数据分析 Agent：环境与数据画像、脚本化清洗、图表与结论报告。',
-    category: 'modes',
+    category: 'analysis',
     auditLevel: 'verified',
     version: '1.0.0',
     readme: 'Installs the data-analysis agent preset into the local roster. Probe the toolchain and profile datasets before transforming, keep steps scripted and reproducible under analysis/, and calibrate confidence to what the data carries. Appears in the runtime mode picker immediately after install.',
@@ -707,7 +707,9 @@ export function demoCategories(): StoreCategory[] {
     { id: 'quality', name: 'Code Quality' },
     { id: 'docs', name: 'Documentation' },
     { id: 'git', name: 'Git' },
-    { id: 'modes', name: 'Agent Modes' },
+    { id: 'research', name: 'Research' },
+    { id: 'coding', name: 'Coding' },
+    { id: 'analysis', name: 'Analysis' },
     { id: 'tools', name: 'Tools (MCP)' }
   ]
 }
