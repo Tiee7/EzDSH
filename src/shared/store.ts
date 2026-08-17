@@ -92,6 +92,16 @@ export interface StoreListResult {
   readonly pageCount: number
   /** Present when the list was served by the bundled demo catalog fallback. */
   readonly source?: 'demo'
+  /** ISO timestamp of the last successful remote refresh; present once a refresh has succeeded. */
+  readonly fetchedAt?: string
+}
+
+/** Outcome of one explicit remote catalog refresh. */
+export interface StoreRefreshResult {
+  /** ISO timestamp of the fetch. */
+  readonly fetchedAt: string
+  /** Entry counts per kind as fetched from the remote. */
+  readonly counts: Readonly<Record<StoreKind, number>>
 }
 
 /** Verdict of the client-side static audit. */

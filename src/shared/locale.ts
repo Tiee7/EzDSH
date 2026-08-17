@@ -59,6 +59,11 @@ export interface AppCopy {
   storeLoadFailed: string
   storeRetry: string
   storeDemoBadge: string
+  storeRefresh: string
+  storeRefreshing: string
+  storeRefreshFailed: string
+  storeLastUpdated: (time: string) => string
+  storeNeverRefreshed: string
   storeEmpty: string
   storeLoading: string
   storeDetailFiles: string
@@ -86,6 +91,20 @@ export interface AppCopy {
   settingsOpenHarnessDir: string
   settingsAbout: string
   settingsStoreSource: string
+  settingsProviders: string
+  settingsProvidersHint: string
+  settingsProviderAdd: string
+  settingsProviderUsable: string
+  settingsProviderConfigured: string
+  settingsProviderEmpty: string
+  settingsProviderSave: string
+  settingsUpdateSection: string
+  settingsUpdateCurrent: string
+  settingsCheckUpdate: string
+  settingsDownloadUpdate: string
+  settingsRuntimeSection: string
+  settingsRuntimePort: string
+  settingsRestartRuntime: string
 }
 
 const APP_COPY: Record<AppLocale, AppCopy> = {
@@ -145,6 +164,11 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeLoadFailed: '加载商店失败',
     storeRetry: '重试',
     storeDemoBadge: '演示目录',
+    storeRefresh: '更新目录',
+    storeRefreshing: '更新中…',
+    storeRefreshFailed: '更新失败',
+    storeLastUpdated: (time) => `更新于 ${time}`,
+    storeNeverRefreshed: '内置目录，未更新',
     storeEmpty: '这里还没有内容',
     storeLoading: '加载中…',
     storeDetailFiles: '包含文件',
@@ -172,6 +196,20 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsOpenHarnessDir: '打开 Harness 数据目录',
     settingsAbout: '关于',
     settingsStoreSource: '商店数据源',
+    settingsProviders: '模型供应商',
+    settingsProvidersHint: '管理预设供应商的 API Key，与首次运行的配置流程一致',
+    settingsProviderAdd: '添加供应商',
+    settingsProviderUsable: '可用',
+    settingsProviderConfigured: '已配置',
+    settingsProviderEmpty: '未配置',
+    settingsProviderSave: '保存',
+    settingsUpdateSection: '应用更新',
+    settingsUpdateCurrent: '当前版本',
+    settingsCheckUpdate: '检查更新',
+    settingsDownloadUpdate: '下载更新',
+    settingsRuntimeSection: '运行状态',
+    settingsRuntimePort: '端口',
+    settingsRestartRuntime: '重启 Runtime',
   },
   en: {
     loadingConfig: 'Reading EzDSH configuration…',
@@ -229,6 +267,11 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeLoadFailed: 'Failed to load the store',
     storeRetry: 'Retry',
     storeDemoBadge: 'Demo catalog',
+    storeRefresh: 'Refresh',
+    storeRefreshing: 'Refreshing…',
+    storeRefreshFailed: 'Refresh failed',
+    storeLastUpdated: (time) => `Updated ${time}`,
+    storeNeverRefreshed: 'Bundled catalog, never refreshed',
     storeEmpty: 'Nothing here yet',
     storeLoading: 'Loading…',
     storeDetailFiles: 'Bundled files',
@@ -256,6 +299,20 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsOpenHarnessDir: 'Open Harness data directory',
     settingsAbout: 'About',
     settingsStoreSource: 'Store source',
+    settingsProviders: 'Model providers',
+    settingsProvidersHint: 'Manage API keys for preset providers, same flow as first-run setup',
+    settingsProviderAdd: 'Add provider',
+    settingsProviderUsable: 'Usable',
+    settingsProviderConfigured: 'Configured',
+    settingsProviderEmpty: 'Not configured',
+    settingsProviderSave: 'Save',
+    settingsUpdateSection: 'Application updates',
+    settingsUpdateCurrent: 'Current version',
+    settingsCheckUpdate: 'Check for updates',
+    settingsDownloadUpdate: 'Download update',
+    settingsRuntimeSection: 'Runtime status',
+    settingsRuntimePort: 'Port',
+    settingsRestartRuntime: 'Restart runtime',
   },
 }
 

@@ -10,7 +10,8 @@ import type {
   StoreCategory,
   StoreEntry,
   StoreKind,
-  StoreListResult
+  StoreListResult,
+  StoreRefreshResult
 } from './store.js'
 import type {
   ProviderDefinition,
@@ -46,6 +47,8 @@ export interface EzDSHBridge {
     confirmInstall(kind: StoreKind, id: string, accepted: boolean): Promise<InstallState>
     uninstall(kind: StoreKind, id: string): Promise<InstallState>
     listInstalled(): Promise<InstalledListResult>
+    /** Explicitly refresh the catalog from the remote source; resolves with the fetch timestamp. */
+    refresh(): Promise<StoreRefreshResult>
     onStateChange(listener: (state: InstallState) => void): () => void
   }
   settings: {

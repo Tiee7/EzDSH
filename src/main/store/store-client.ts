@@ -54,13 +54,13 @@ export class StoreClient {
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS
   }
 
-  /** List catalog entries of one kind. */
-  async list(kind: StoreKind, query: StoreListQuery = {}): Promise<StoreListResult> {
+  /** List catalog entries of one kind. `force` bypasses the response cache. */
+  async list(kind: StoreKind, query: StoreListQuery = {}, options: { force?: boolean } = {}): Promise<StoreListResult> {
     const params = new URLSearchParams({ kind })
     if (query.category !== undefined && query.category !== '') params.set('category', query.category)
     if (query.search !== undefined && query.search !== '') params.set('q', query.search)
     params.set('page', String(query.page ?? 1))
-    return this.request(`/v1/store?${params.toString()}`, { cache: true }) as Promise<StoreListResult>
+    return this.request(`/v1/store?${params.toString()}`, { cache: options.force !== true }) as Promise<StoreListResult>
   }
 
   /** Fetch one entry's detail. */
@@ -73,9 +73,9 @@ export class StoreClient {
     return entry
   }
 
-  /** Fetch the category list. */
-  async categories(): Promise<StoreCategory[]> {
-    return this.request('/v1/categories', { cache: true }) as Promise<StoreCategory[]>
+  /** Fetch the category list. `force` bypasses the response cache. */
+  async categories(options: { force?: boolean } = {}): Promise<StoreCategory[]> {
+    return this.request('/v1/categories', { cache: options.force !== true }) as Promise<StoreCategory[]>
   }
 
   private async request(path: string, options: { cache?: boolean }): Promise<unknown> {

@@ -16,7 +16,7 @@ import type { UserDataLayout } from '../shared/state.js'
 import type { StoreKind } from '../shared/store.js'
 import { StoreService } from './store/store-service.js'
 import { StoreClient } from './store/store-client.js'
-import { createDemoFetch, withDemoFallback } from './store/demo-catalog.js'
+import { createDemoFetch } from './store/demo-catalog.js'
 import {
   RuntimeManager,
   preparePackagedRuntime,
@@ -272,6 +272,14 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('store:refresh', async (): Promise<IpcResult<Awaited<ReturnType<StoreService['refresh']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.refresh())
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('settings:set-locale', async (_event, locale: 'zh' | 'en'): Promise<IpcResult<void>> => {
     try {
       if (locale !== 'zh' && locale !== 'en') throw new Error(`Unsupported locale: ${String(locale)}`)
@@ -409,10 +417,11 @@ if (!singleInstance) {
     providerService = new ProviderService(layout)
     await providerService.initialize()
     storeService = new StoreService({
-      client: withDemoFallback(new StoreClient()),
+      client: new StoreClient(),
       fetchImpl: createDemoFetch(),
       dshHome: layout.harness,
       registryPath: join(layout.state, 'installed.json'),
+      catalogCachePath: join(layout.state, 'store-catalog.json'),
       onStateChange: (state) => {
         for (const window of BrowserWindow.getAllWindows()) {
           window.webContents.send('store:state-change', state)

@@ -86,6 +86,9 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
   const [error, setError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [demoSource, setDemoSource] = useState(false)
+  const [fetchedAt, setFetchedAt] = useState<string | undefined>()
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState(false)
 
   const installedById = useMemo(() => {
     const map = new Map<string, InstalledRecord>()
@@ -103,6 +106,7 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
       ])
       setEntries(list.entries)
       setDemoSource(list.source === 'demo')
+      setFetchedAt(list.fetchedAt)
       setInstalled(installedList.records)
       setSelected(undefined)
       setInstallState(undefined)
@@ -116,6 +120,20 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  const refreshCatalog = useCallback(async (): Promise<void> => {
+    if (refreshing) return
+    setRefreshing(true)
+    setRefreshError(false)
+    try {
+      await window.EzDSH.store.refresh()
+      await reload()
+    } catch {
+      setRefreshError(true)
+    } finally {
+      setRefreshing(false)
+    }
+  }, [reload, refreshing])
 
   useEffect(() => {
     void window.EzDSH.store.categories()
@@ -207,6 +225,17 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
             onChange={(event) => { setSearch(event.target.value) }}
           />
           {demoSource ? <span className="store-demo-badge">{copy.storeDemoBadge}</span> : null}
+          {refreshing
+            ? <span className="store-meta">{copy.storeRefreshing}</span>
+            : (
+              <span className="store-meta">
+                {fetchedAt !== undefined ? copy.storeLastUpdated(new Date(fetchedAt).toLocaleString()) : copy.storeNeverRefreshed}
+              </span>
+              )}
+          <button className="store-refresh" disabled={refreshing} onClick={() => { void refreshCatalog() }}>
+            {copy.storeRefresh}
+          </button>
+          {refreshError ? <span className="store-error" role="alert">{copy.storeRefreshFailed}</span> : null}
           {error ? <span className="store-error" role="alert">{copy.storeLoadFailed}</span> : null}
         </form>
         {loading ? <p className="store-status">{copy.storeLoading}</p> : null}

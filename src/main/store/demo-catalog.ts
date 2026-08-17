@@ -695,6 +695,11 @@ for (const rows of PRESET_FILE_ROWS) {
   }
 }
 
+/** Raw bundled entries of one kind — the always-available baseline catalog. */
+export function demoEntries(kind: StoreKind): readonly StoreEntry[] {
+  return ENTRIES_BY_KIND[kind] ?? []
+}
+
 /** Demo category list spanning all surfaces. */
 export function demoCategories(): StoreCategory[] {
   return [

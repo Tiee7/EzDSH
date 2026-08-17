@@ -47,6 +47,7 @@ const bridge: EzDSHBridge = {
     confirmInstall: (kind, id, accepted) => invoke('store:confirm-install', kind, id, accepted),
     uninstall: (kind, id) => invoke('store:uninstall', kind, id),
     listInstalled: () => invoke('store:list-installed'),
+    refresh: () => invoke('store:refresh'),
     onStateChange: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state)
       ipcRenderer.on('store:state-change', handler)

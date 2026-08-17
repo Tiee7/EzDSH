@@ -107,6 +107,37 @@
   white-space: nowrap;
 }
 
+.store-meta {
+  flex: none;
+  color: var(--ezdsh-text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.store-refresh {
+  flex: none;
+  border: 1px solid var(--ezdsh-button-border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--ezdsh-button-text);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.store-refresh:hover:not(:disabled) {
+  border-color: var(--ezdsh-active-border);
+  background: var(--ezdsh-active-background);
+}
+
+.store-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .store-status {
   color: var(--ezdsh-text-faint);
   font-size: 13px;
