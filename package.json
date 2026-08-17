@@ -1,6 +1,6 @@
 {
   "name": "ezdsh",
-  "version": "0.8.1511",
+  "version": "0.8.1531",
   "description": "A desktop client for DeepSeek Harness.",
   "private": true,
   "type": "module",
@@ -19,16 +19,17 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:runtime": "node scripts/check-runtime.mjs",
-    "dsh:install": "node node_modules/pnpm/bin/pnpm.mjs --dir vendor/deepseek-harness install --frozen-lockfile",
-    "dsh:build": "node node_modules/pnpm/bin/pnpm.mjs --dir vendor/deepseek-harness run build",
+    "dsh:source:install": "node node_modules/pnpm/bin/pnpm.mjs --dir vendor/deepseek-harness install --frozen-lockfile",
+    "dsh:source:build": "node node_modules/pnpm/bin/pnpm.mjs --dir vendor/deepseek-harness run build",
+    "stage:dsh:source-runtime": "node scripts/stage-dsh-runtime.mjs",
+    "check:published-dsh": "node scripts/check-published-dsh.mjs",
     "stage:node-runtime": "node scripts/stage-node-runtime.mjs",
-    "stage:dsh-runtime": "node scripts/stage-dsh-runtime.mjs",
-    "stage:runtime": "npm run stage:node-runtime && npm run stage:dsh-runtime",
+    "stage:runtime": "npm run stage:node-runtime",
     "verify:runtime": "node scripts/verify-runtime-bundle.mjs",
     "verify:package:mac": "node scripts/verify-runtime-bundle.mjs \"dist/mac-arm64/EzDSH.app/Contents/Resources\"",
     "verify:package:win": "node scripts/verify-runtime-bundle.mjs \"dist/win-unpacked/resources\"",
-    "postinstall": "npm run check:runtime && npm run dsh:install",
-    "prepare:package": "npm run dsh:install && npm run dsh:build && npm run build && npm run stage:runtime && npm run verify:runtime",
+    "postinstall": "npm run check:runtime && npm run check:published-dsh",
+    "prepare:package": "npm run check:published-dsh && npm run build && npm run stage:runtime && npm run verify:runtime",
     "package:dir": "npm run prepare:package && electron-builder --dir",
     "package:mac": "npm run prepare:package && electron-builder --mac --publish never && npm run verify:package:mac",
     "package:mac:release": "npm run prepare:package && electron-builder --mac --publish never -c.mac.forceCodeSigning=true -c.mac.notarize=true && npm run verify:package:mac",
@@ -36,6 +37,27 @@
     "package:win:release": "npm run prepare:package && electron-builder --win --publish never -c.win.forceCodeSigning=true && npm run verify:package:win"
   },
   "dependencies": {
+    "@deepseek-ai/cordis-plugin-group": "1.0.1",
+    "@deepseek-ai/dsh": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-anonymous-user-id": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-atomic-write": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-bash-local": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-code-runtime": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-compaction": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-fs": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-output-retention": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-sandbox": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-scope": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-telemetry": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-title-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-shell": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-spill": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-subagent-in-process-driver": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-subprocess": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-timeout": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-workflow": "0.1.0-rc.6",
+    "@earendil-works/pi-ai": "0.82.1",
     "electron-updater": "^6.8.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -63,12 +85,20 @@
     "productName": "EzDSH",
     "asar": false,
     "npmRebuild": false,
+    "electronLanguages": [
+      "en-US",
+      "zh-CN"
+    ],
     "directories": {
       "output": "dist"
     },
     "files": [
       "out/**/*",
       "!out/**/*.map",
+      "node_modules/**/*",
+      "!**/*.map",
+      "!node_modules/node-bin-darwin-arm64/**",
+      "!node_modules/node-win-x64/**",
       "package.json"
     ],
     "extraResources": [
@@ -96,7 +126,14 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
+      "installerLanguages": [
+        "en_US"
+      ],
+      "multiLanguageInstaller": false,
+      "displayLanguageSelector": false,
+      "language": "1033"
     },
     "publish": [
       {
@@ -105,7 +142,7 @@
       }
     ],
     "extraMetadata": {
-      "version": "0.8.1511"
+      "version": "0.8.1531"
     }
   }
 }

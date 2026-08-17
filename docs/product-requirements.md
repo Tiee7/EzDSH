@@ -18,8 +18,8 @@ EzDSH 不重新实现 Harness 的 Agent 能力，而是解决以下桌面产品�
 
 ### 2.0 Runtime 交付原则
 
-- EzDSH 使用固定 commit 的 DSH Runtime 上游源码子模块进行构建；
-- 首次锁定 `@deepseek-ai/dsh@0.1.0-rc.5`，并记录对应上游 commit；
+- EzDSH 默认使用固定版本的已发布 DSH npm 包；
+- 当前锁定 `@deepseek-ai/dsh@0.1.0-rc.6`，并记录对应 lockfile；
 - 发布安装包包含对应版本的 DSH Runtime；
 - 用户不需要预先安装 DSH、Node.js 或 pnpm；
 - 普通开发不读取本机全局 DSH；

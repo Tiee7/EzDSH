@@ -13,13 +13,19 @@ export interface RuntimePathOptions {
   resourcesPath?: string
   isPackaged: boolean
   platform?: NodeJS.Platform
+  arch?: NodeJS.Architecture
   developmentSourceRoot?: string
 }
 
-/** Resolve the source-built or staged Runtime entry without consulting user PATH. */
+const runtimePackageByTarget: Record<string, string> = {
+  'darwin-arm64': 'node-bin-darwin-arm64',
+  'win32-x64': 'node-win-x64'
+}
+
+/** Resolve the published or explicitly selected source Runtime without consulting user PATH. */
 export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
   if (options.isPackaged) {
-    return join(options.appPath, 'out', 'dsh-runtime', 'lib', 'bin.js')
+    return join(options.appPath, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
   }
 
   if (options.developmentSourceRoot !== undefined) {
@@ -30,22 +36,29 @@ export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
     return sourceEntry
   }
 
-  // The source checkout's CLI depends on pnpm workspace links. Those links are
-  // intentionally not part of the application package. Prefer the staged,
-  // self-contained Runtime so `npm run dev` exercises the same dependency graph
-  // as a build. A missing staged Runtime is an installation error, not a reason
-  // to silently start a partially-resolved source checkout.
-  const stagedEntry = join(options.appPath, 'out', 'dsh-runtime', 'lib', 'bin.js')
-  if (existsSync(stagedEntry)) return stagedEntry
+  const publishedEntry = join(options.appPath, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+  if (existsSync(publishedEntry)) return publishedEntry
 
-  throw new Error(`Staged DSH Runtime is missing lib/bin.js at ${stagedEntry}`)
+  throw new Error(`Published DSH Runtime is missing lib/bin.js at ${publishedEntry}; run npm ci or set EZDSH_DSH_SOURCE for source development`)
 }
 
-/** Resolve the bundled Node executable used by packaged Runtime processes. */
+/** Resolve the standalone Node executable used by Runtime processes. */
 export function resolveRuntimeCommandPath(options: RuntimePathOptions): string | undefined {
-  if (!options.isPackaged) return undefined
-  const executable = (options.platform ?? process.platform) === 'win32' ? 'node.exe' : 'node'
-  return join(options.appPath, 'out', 'node-runtime', 'bin', executable)
+  const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
+  const executable = platform === 'win32' ? 'node.exe' : 'node'
+
+  if (options.isPackaged) {
+    return join(options.appPath, 'out', 'node-runtime', 'bin', executable)
+  }
+
+  const runtimePackage = runtimePackageByTarget[`${platform}-${arch}`]
+  if (runtimePackage === undefined) return undefined
+  const developmentRuntime = join(options.appPath, 'node_modules', runtimePackage, 'bin', executable)
+  if (!existsSync(developmentRuntime)) {
+    throw new Error(`Standalone Node Runtime is missing at ${developmentRuntime}; run npm ci for ${platform}-${arch}`)
+  }
+  return developmentRuntime
 }
 
 export interface RuntimeManagerOptions {
@@ -178,11 +191,13 @@ export class RuntimeManager {
     const args = command === process.execPath
       ? ['--expose-internals', this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port)]
       : [this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port)]
+    const inheritedEnvironment = { ...process.env }
+    if (command !== process.execPath) delete inheritedEnvironment.ELECTRON_RUN_AS_NODE
     const spawnOptions: SpawnOptions = {
       cwd: this.config.layout.launchRoot,
       detached: process.platform !== 'win32',
       env: {
-        ...process.env,
+        ...inheritedEnvironment,
         DSH_HOME: this.config.layout.harness,
         // Electron's executable can run a child as plain Node when this flag is set.
         ...(command === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {})

@@ -130,14 +130,15 @@ Harness 提供引擎，EzDSH 提供体验。
    npm ci
    ```
 
-4. 首次运行或更新 DSH Runtime 后，构建并 staging 自包含 Runtime：
+4. `npm ci` 会安装锁定版本的已发布 `@deepseek-ai/dsh@0.1.0-rc.6` Runtime 及其生产依赖闭包，不需要额外安装或 staging DSH workspace。
+
+   如果要显式联调 vendored DSH 源码，请先构建源码，再将 `EZDSH_DSH_SOURCE` 指向构建后的 CLI 包：
 
    ```bash
-   npm run dsh:build
-   npm run stage:dsh-runtime
+   npm run dsh:source:install
+   npm run dsh:source:build
+   EZDSH_DSH_SOURCE="$PWD/vendor/deepseek-harness/apps/cli" npm run dev
    ```
-
-   `npm run dev` 不会再静默回退到依赖不完整的上游源码入口。若要联调指定的 Runtime 源码，必须显式设置 `EZDSH_DSH_SOURCE`。
 
 5. 启动本地开发应用：
 

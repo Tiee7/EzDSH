@@ -130,14 +130,15 @@ These steps are for developers who want to run the project locally from a source
    npm ci
    ```
 
-4. On the first run, or after changing the DSH Runtime, build and stage the self-contained Runtime:
+4. `npm ci` installs the pinned published `@deepseek-ai/dsh@0.1.0-rc.6` Runtime and its production dependency closure. No separate DSH workspace install or staging step is required.
+
+   To explicitly develop against the vendored DSH source instead, build that source checkout and set `EZDSH_DSH_SOURCE` to its built CLI package:
 
    ```bash
-   npm run dsh:build
-   npm run stage:dsh-runtime
+   npm run dsh:source:install
+   npm run dsh:source:build
+   EZDSH_DSH_SOURCE="$PWD/vendor/deepseek-harness/apps/cli" npm run dev
    ```
-
-   `npm run dev` no longer silently falls back to a source checkout with incomplete workspace dependencies. To explicitly develop against a Runtime source checkout, set `EZDSH_DSH_SOURCE`.
 
 5. Start the local development app:
 

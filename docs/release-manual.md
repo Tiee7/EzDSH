@@ -165,17 +165,18 @@ npx --no-install electron-builder --mac dmg zip --publish never
 npm run verify:package:mac
 ```
 
-修改 `vendor/deepseek-harness` 代码时：
+修改 DSH Runtime 源码时：
 
 ```bash
-npm run dsh:build
-npm run stage:dsh-runtime
+npm run dsh:source:install
+npm run dsh:source:build
+EZDSH_DSH_SOURCE="$PWD/vendor/deepseek-harness/apps/cli" npm run dev
 npm run build
 npx --no-install electron-builder --mac dmg zip --publish never
 npm run verify:package:mac
 ```
 
-只有上游 `pnpm-lock.yaml` 或依赖声明发生变化时，才需要重新执行 DSH 依赖安装。构建产物和本地缓存可以复用，但正式发布前仍建议执行完整的 `package:*:release` 流程。
+源码联调不会自动改变正式安装包。要发布 Runtime 源码修改，必须先生成新的 DSH npm 发布版本，再更新 ezdsh 的 DSH 依赖和 lockfile。
 
 ## 8. 产物检查
 

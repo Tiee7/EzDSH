@@ -22,6 +22,8 @@ let nodeExecutable = nodeCandidates.find((candidate) => {
 })
 
 const runtimeCandidates = [
+  join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
+  join(bundleRoot, 'app', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
   join(bundleRoot, 'dsh-runtime', 'lib', 'bin.js'),
   join(bundleRoot, 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
 ]
@@ -34,7 +36,7 @@ if (nodeExecutable === undefined) {
 }
 
 if (runtimeEntry === undefined) {
-  throw new Error(`Bundled DSH Runtime directory was not found under ${bundleRoot}`)
+  throw new Error(`Bundled DSH Runtime package was not found under ${bundleRoot}`)
 }
 
 // Several runtime seams are keyed by Symbols exported from shared packages.

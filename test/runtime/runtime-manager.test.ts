@@ -17,27 +17,27 @@ afterEach(async () => {
 })
 
 describe('RuntimeManager', () => {
-  it('uses the staged Runtime during development when it is available', async () => {
+  it('uses the published Runtime during development when it is available', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-path-'))
     roots.push(root)
-    const stagedEntry = join(root, 'out', 'dsh-runtime', 'lib', 'bin.js')
-    await mkdir(join(root, 'out', 'dsh-runtime', 'lib'), { recursive: true })
-    await writeFile(stagedEntry, '')
+    const publishedEntry = join(root, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+    await mkdir(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
+    await writeFile(publishedEntry, '')
 
     expect(resolveRuntimeEntryPath({
       appPath: root,
       isPackaged: false
-    })).toBe(stagedEntry)
+    })).toBe(publishedEntry)
   })
 
-  it('requires an explicit source override when the staged Runtime is missing', async () => {
+  it('requires an explicit source override when the published Runtime is missing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-source-'))
     roots.push(root)
 
     expect(() => resolveRuntimeEntryPath({
       appPath: root,
       isPackaged: false
-    })).toThrow(/staged DSH Runtime is missing/i)
+    })).toThrow(/published DSH Runtime is missing/i)
 
     await mkdir(join(root, 'source-runtime', 'lib'), { recursive: true })
     await writeFile(join(root, 'source-runtime', 'lib', 'bin.js'), '')
@@ -53,7 +53,7 @@ describe('RuntimeManager', () => {
       appPath: '/Applications/EzDSH.app/Contents/Resources/app',
       resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
       isPackaged: true
-    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/out/dsh-runtime/lib/bin.js')
+    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/node_modules/@deepseek-ai/dsh/lib/bin.js')
   })
 
   it('resolves the packaged Node executable inside the Electron app resources', () => {
@@ -63,6 +63,21 @@ describe('RuntimeManager', () => {
       isPackaged: true,
       platform: 'darwin'
     })).toBe('/Applications/EzDSH.app/Contents/Resources/app/out/node-runtime/bin/node')
+  })
+
+  it('resolves the standalone Node executable during development', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-dev-node-'))
+    roots.push(root)
+    const executable = join(root, 'node_modules', 'node-bin-darwin-arm64', 'bin', 'node')
+    await mkdir(join(root, 'node_modules', 'node-bin-darwin-arm64', 'bin'), { recursive: true })
+    await writeFile(executable, '')
+
+    expect(resolveRuntimeCommandPath({
+      appPath: root,
+      isPackaged: false,
+      platform: 'darwin',
+      arch: 'arm64'
+    })).toBe(executable)
   })
 
   it('starts, reports ready, and stops without removing the harness directory', async () => {

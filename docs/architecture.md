@@ -2,7 +2,7 @@
 
 ## 1. 总体结构
 
-EzDSH 使用 `vendor/deepseek-harness` Git 子模块和固定 pnpm workspace 构建 DSH Runtime。首个锁定版本为 `@deepseek-ai/dsh@0.1.0-rc.5`，源码提交锁定为 `47f943859bef60e4160492346772ded9b24f765a`。运行时从 EzDSH 自身资源目录启动，不从用户系统 PATH 或不确定的本机安装目录寻找 DSH。开发阶段如需联调其他 Runtime 源码，必须通过显式开发环境变量覆盖，并且该路径不得进入生产配置。
+EzDSH 默认使用固定版本的已发布 `@deepseek-ai/dsh` npm 包和其生产依赖闭包。运行时从 EzDSH 自身安装目录的 `node_modules` 启动，不从用户系统 PATH 或不确定的本机安装目录寻找 DSH。只有需要修改 DSH 本身时，才通过 `vendor/deepseek-harness` 源码 workspace 联调；该路径必须由显式开发环境变量提供，并且不得进入生产配置。
 
 ```text
 ┌─────────────────────────────────────────────┐
