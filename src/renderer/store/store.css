@@ -390,12 +390,19 @@
 .confirm-accept,
 .detail-install {
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 8px 14px;
-  background: #4a6cf7;
+  background: var(--ezdsh-brand);
   color: #fff;
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
+  transition: filter 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.confirm-accept:hover:not(:disabled),
+.detail-install:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
 .confirm-accept:disabled,
