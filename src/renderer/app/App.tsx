@@ -101,7 +101,7 @@ export function App() {
           </div>
           {activeTab === 'store' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section> : null}
           {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section> : null}
-          {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} /></section> : null}
+          {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} /></section> : null}
         </div>
       </main>
     )

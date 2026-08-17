@@ -1,10 +1,20 @@
 import { useState } from 'react'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
+import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import { STORE_API_BASE_URL } from '../../shared/store.js'
+import { ProviderSection } from './ProviderSection.js'
+import { UpdateSection } from './UpdateSection.js'
+import { RuntimeSection } from './RuntimeSection.js'
 import './settings.css'
 
-/** Minimal settings surface: language, data locations, about, store source. */
-export function SettingsPage({ copy, locale }: { copy: AppCopy; locale: AppLocale }): JSX.Element {
+interface SettingsPageProps {
+  copy: AppCopy
+  locale: AppLocale
+  runtime: RuntimeSnapshot | undefined
+}
+
+/** Grouped settings surface: providers, runtime, updates, language, about. */
+export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.Element {
   const [busy, setBusy] = useState(false)
 
   const pickLocale = async (next: AppLocale): Promise<void> => {
@@ -20,8 +30,15 @@ export function SettingsPage({ copy, locale }: { copy: AppCopy; locale: AppLocal
   return (
     <div className="settings-page">
       <h2 className="settings-title">{copy.tabSettings}</h2>
-      <div className="settings-card">
-        <section className="settings-item">
+      <ProviderSection copy={copy} />
+      <section className="settings-card">
+        <RuntimeSection copy={copy} runtime={runtime} />
+      </section>
+      <section className="settings-card">
+        <UpdateSection copy={copy} />
+      </section>
+      <section className="settings-card">
+        <div className="settings-item">
           <div className="settings-item-text">
             <p className="settings-label">{copy.settingsLanguage}</p>
             <p className="settings-hint">{copy.settingsLanguageHint}</p>
@@ -46,28 +63,16 @@ export function SettingsPage({ copy, locale }: { copy: AppCopy; locale: AppLocal
               English
             </button>
           </div>
-        </section>
-        <section className="settings-item">
-          <p className="settings-label">{copy.settingsOpenLog}</p>
-          <button className="settings-action" onClick={() => { void window.EzDSH.runtime.openLog() }}>
-            {copy.menuOpenLog}
-          </button>
-        </section>
-        <section className="settings-item">
-          <p className="settings-label">{copy.settingsOpenHarnessDir}</p>
-          <button className="settings-action" onClick={() => { void window.EzDSH.settings.openHarnessDir() }}>
-            {copy.menuOpenHarnessDir}
-          </button>
-        </section>
-        <section className="settings-item">
+        </div>
+        <div className="settings-item">
           <p className="settings-label">{copy.settingsStoreSource}</p>
           <code className="settings-value">{STORE_API_BASE_URL}</code>
-        </section>
-        <section className="settings-item settings-item-last">
+        </div>
+        <div className="settings-item">
           <p className="settings-label">{copy.settingsAbout}</p>
           <p className="settings-value">{window.EzDSH.app.name} v{window.EzDSH.app.version}</p>
-        </section>
-      </div>
+        </div>
+      </section>
     </div>
   )
 }
