@@ -31,7 +31,7 @@ export function RuntimeSection({ copy, runtime }: RuntimeSectionProps): JSX.Elem
   }
 
   return (
-    <section className="settings-row">
+    <section className="settings-item">
       <div>
         <p className="settings-label">{copy.settingsRuntimeSection}</p>
         <p className="settings-hint">
