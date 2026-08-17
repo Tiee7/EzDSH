@@ -237,6 +237,21 @@
   background: var(--ezdsh-active-background);
 }
 
+.provider-card:focus-visible {
+  outline: 2px solid var(--ezdsh-active-border);
+  outline-offset: 2px;
+}
+
+.settings-progress::-webkit-progress-bar {
+  background: var(--ezdsh-code-background);
+  border-radius: 4px;
+}
+
+.settings-progress::-webkit-progress-value {
+  background: var(--ezdsh-active-border);
+  border-radius: 4px;
+}
+
 .provider-card-name {
   color: var(--ezdsh-text-body);
   font-size: 13px;

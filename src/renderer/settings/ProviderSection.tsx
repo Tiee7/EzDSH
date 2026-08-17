@@ -33,22 +33,28 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
     [statuses]
   )
 
-  const load = async (): Promise<void> => {
+  const load = async (active = true): Promise<void> => {
     setLoadError(false)
     try {
       const [nextDefinitions, nextStatuses] = await Promise.all([
         window.EzDSH.providers.listDefinitions(),
         window.EzDSH.providers.getStatus()
       ])
-      setDefinitions(nextDefinitions)
-      setStatuses(nextStatuses)
+      if (active) {
+        setDefinitions(nextDefinitions)
+        setStatuses(nextStatuses)
+      }
     } catch {
-      setLoadError(true)
+      if (active) setLoadError(true)
     }
   }
 
   useEffect(() => {
-    void load()
+    let active = true
+    void load(active)
+    return () => {
+      active = false
+    }
   }, [])
 
   const openForm = (next: ProviderDefinition): void => {
@@ -163,14 +169,12 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
         </div>
       ) : (
         <div className="settings-card-content">
-          <div className="provider-card-grid" role="listbox" aria-label={copy.settingsProviderAdd}>
+          <div className="provider-card-grid" aria-label={copy.settingsProviderAdd}>
             {definitions.map((candidate) => {
               const badge = providerBadge(statusById.get(candidate.id))
               return (
                 <button
                   key={candidate.id}
-                  role="option"
-                  aria-selected={candidate.id === providerId}
                   className={`provider-card ${candidate.id === providerId ? 'provider-card-active' : ''}`}
                   onClick={() => { openForm(candidate) }}
                 >
@@ -190,7 +194,7 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
           {definition !== undefined ? (
             <form className="provider-form" onSubmit={submit}>
               <label>
-                API Key
+                {copy.settingsProviderApiKey}
                 <input
                   type="password"
                   value={apiKey}

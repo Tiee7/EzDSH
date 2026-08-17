@@ -6,6 +6,7 @@ import { updateAction } from './settings-display.js'
 /** Update row: current version, check/download/install actions driven by update phase. */
 export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
   const [state, setState] = useState<UpdateState>()
+  const [error, setError] = useState<string>()
 
   useEffect(() => {
     let active = true
@@ -13,7 +14,10 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
       if (active) setState(snapshot)
     })
     const unsubscribe = window.EzDSH.updates.onStateChange((snapshot) => {
-      if (active) setState(snapshot)
+      if (active) {
+        setState(snapshot)
+        setError(undefined)
+      }
     })
     return () => {
       active = false
@@ -27,17 +31,22 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
   const message = phase === 'up-to-date'
     ? copy.latestVersion
     : phase === 'failed'
-      ? `${copy.updateCheckFailed}${state?.message ? `：${state.message}` : ''}`
+      ? `${copy.updateCheckFailed}${state?.message ? `: ${state.message}` : ''}`
       : state?.message
 
   const runAction = async (): Promise<void> => {
-    if (action === 'download') await window.EzDSH.updates.download()
-    else if (action === 'install') await window.EzDSH.updates.install()
-    else if (action === 'retry' || action === 'check') await window.EzDSH.updates.check()
+    setError(undefined)
+    try {
+      if (action === 'download') await window.EzDSH.updates.download()
+      else if (action === 'install') await window.EzDSH.updates.install()
+      else if (action === 'retry' || action === 'check') await window.EzDSH.updates.check()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.updateCheckFailed)
+    }
   }
 
   return (
-    <section className="settings-item">
+    <div className="settings-item">
       <div className="settings-item-text">
         <p className="settings-label">{copy.settingsUpdateSection}</p>
         <p className="settings-hint">
@@ -48,6 +57,7 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
         {phase === 'downloading' && state?.percent !== undefined ? (
           <progress className="settings-progress" max="100" value={state.percent} aria-label={copy.settingsDownloadUpdate} />
         ) : null}
+        {error ? <p className="settings-error">{error}</p> : null}
       </div>
       <div className="settings-actions">
         {action !== 'none' ? (
@@ -62,6 +72,6 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
           </button>
         ) : null}
       </div>
-    </section>
+    </div>
   )
 }
