@@ -1,0 +1,5 @@
+{
+  "git": {
+    "ignoredBuildStep": "cd $VERCEL_GIT_REPO_ROOT && git diff HEAD~1 HEAD --quiet -- docs-site/"
+  }
+}
