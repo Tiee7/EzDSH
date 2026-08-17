@@ -32,25 +32,6 @@ jobs:
       - name: Prepare Windows package
         run: npm run prepare:package
 
-      - name: Build Windows installer
-        run: npx electron-builder --win --publish never
-
-      - name: Verify packaged Windows Runtime
-        run: node scripts/verify-runtime-bundle.mjs "dist/win-unpacked/resources"
-
-      - name: Check Windows package files
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "out\node-runtime\bin\node.exe")) {
-            throw "Bundled Windows Node runtime is missing"
-          }
-          if (-not (Test-Path "node_modules\@deepseek-ai\dsh\lib\bin.js")) {
-            throw "Bundled DSH Runtime entry is missing"
-          }
-          if (-not (Get-ChildItem "dist\*.exe" -ErrorAction SilentlyContinue)) {
-            throw "Windows installer was not generated"
-          }
-
       - name: Create temporary self-signed certificate
         shell: pwsh
         run: |
@@ -71,25 +52,32 @@ jobs:
           "EZDSH_PFX_PATH=$pfxPath" | Out-File $env:GITHUB_ENV -Append
           "EZDSH_CERT_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append
 
-      - name: Sign Windows installer
+      - name: Build Windows installer
+        env:
+          CSC_LINK: ${{ env.EZDSH_PFX_PATH }}
+          CSC_KEY_PASSWORD: ${{ env.EZDSH_CERT_PASSWORD }}
+        run: npx electron-builder --win --publish never
+
+      - name: Verify packaged Windows Runtime
+        run: node scripts/verify-runtime-bundle.mjs "dist/win-unpacked/resources"
+
+      - name: Check Windows package files
         shell: pwsh
         run: |
-          $signTool = Get-ChildItem `
-            "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
-            -ErrorAction Stop |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-
-          Get-ChildItem "dist\*.exe" | ForEach-Object {
-            & $signTool.FullName sign `
-              /fd SHA256 `
-              /f $env:EZDSH_PFX_PATH `
-              /p $env:EZDSH_CERT_PASSWORD `
-              $_.FullName
-
-            if ($LASTEXITCODE -ne 0) {
-              throw "signtool failed for $($_.FullName)"
-            }
+          if (-not (Test-Path "out\node-runtime\bin\node.exe")) {
+            throw "Bundled Windows Node runtime is missing"
+          }
+          if (-not (Test-Path "node_modules\@deepseek-ai\dsh\lib\bin.js")) {
+            throw "Bundled DSH Runtime entry is missing"
+          }
+          if (-not (Get-ChildItem "dist\*.exe" -ErrorAction SilentlyContinue)) {
+            throw "Windows installer was not generated"
+          }
+          if (-not (Test-Path "dist\latest.yml")) {
+            throw "Windows update metadata latest.yml was not generated"
+          }
+          if (-not (Get-ChildItem "dist\*.blockmap" -ErrorAction SilentlyContinue)) {
+            throw "Windows differential update blockmap was not generated"
           }
 
       - name: Verify signatures
@@ -109,6 +97,8 @@ jobs:
           name: EzDSH-Windows-self-signed
           path: |
             dist/*.exe
+            dist/latest.yml
+            dist/*.blockmap
             dist/EzDSH-Local-Build.cer
           if-no-files-found: error
 
@@ -140,6 +130,8 @@ jobs:
             }
           }
           $assets = @(Get-ChildItem "dist\*.exe" | Select-Object -ExpandProperty FullName)
+          $assets += @(Get-ChildItem "dist\*.blockmap" | Select-Object -ExpandProperty FullName)
+          $assets += (Join-Path $env:GITHUB_WORKSPACE "dist\latest.yml")
           $assets += (Join-Path $env:GITHUB_WORKSPACE "dist\EzDSH-Local-Build.cer")
           gh release upload $tag `
             $assets `
