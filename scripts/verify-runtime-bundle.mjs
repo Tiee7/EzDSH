@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const projectRoot = resolve(import.meta.dirname, '..')
-const bundleRoot = process.argv[2] === undefined
+const isPrePackageVerification = process.argv[2] === undefined
+const bundleRoot = isPrePackageVerification
   ? join(projectRoot, 'out')
   : resolve(projectRoot, process.argv[2])
 const temporaryRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-bundle-'))
@@ -24,6 +25,9 @@ let nodeExecutable = nodeCandidates.find((candidate) => {
 const runtimeCandidates = [
   join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
   join(bundleRoot, 'app', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
+  ...(isPrePackageVerification
+    ? [join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')]
+    : []),
   join(bundleRoot, 'dsh-runtime', 'lib', 'bin.js'),
   join(bundleRoot, 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
 ]

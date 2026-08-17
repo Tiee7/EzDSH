@@ -16,12 +16,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24.18.0
           cache: npm
@@ -44,7 +44,7 @@ jobs:
           if (-not (Test-Path "out\node-runtime\bin\node.exe")) {
             throw "Bundled Windows Node runtime is missing"
           }
-          if (-not (Test-Path "out\dsh-runtime\lib\bin.js")) {
+          if (-not (Test-Path "node_modules\@deepseek-ai\dsh\lib\bin.js")) {
             throw "Bundled DSH Runtime entry is missing"
           }
           if (-not (Get-ChildItem "dist\*.exe" -ErrorAction SilentlyContinue)) {

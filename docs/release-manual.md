@@ -185,7 +185,7 @@ npm run verify:package:mac
 - macOS `.dmg`、`.zip` 和 `latest-mac.yml` 来自同一次构建；
 - Windows 安装包和 `latest.yml` 来自同一次构建；
 - 版本号与本次发布版本一致；
-- 安装包包含 `out/node-runtime` 和 `out/dsh-runtime`；
+- 安装包包含 `out/node-runtime` 和已发布的 `node_modules/@deepseek-ai/dsh` Runtime；
 - 最终 `.app` 或 Windows 解包目录通过 Runtime 校验：
 
 ```bash

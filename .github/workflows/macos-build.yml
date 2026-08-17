@@ -23,12 +23,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24.18.0
           cache: npm
@@ -58,7 +58,7 @@ jobs:
         shell: bash
         run: |
           test -f out/node-runtime/bin/node
-          test -f out/dsh-runtime/lib/bin.js
+          test -f node_modules/@deepseek-ai/dsh/lib/bin.js
           compgen -G "dist/*.dmg" > /dev/null
           compgen -G "dist/*.zip" > /dev/null
           test -f dist/latest-mac.yml
