@@ -97,9 +97,11 @@ export async function downloadBundle(files: readonly StoreFile[], options: Downl
     }
     let url: URL
     try {
-      url = new URL(file.url)
+      // Relative manifest URLs resolve against the API origin (deployments may
+      // serve them root-relative); absolute URLs pass through unchanged.
+      url = new URL(file.url, STORE_API_BASE_URL)
     } catch {
-      throw new DownloadError(`File URL is not absolute: ${file.url}`)
+      throw new DownloadError(`File URL is not valid: ${file.url}`)
     }
     if (url.protocol !== 'https:') {
       throw new DownloadError(`File URL must use https: ${file.url}`)

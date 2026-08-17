@@ -60,12 +60,12 @@ export class StoreClient {
     if (query.category !== undefined && query.category !== '') params.set('category', query.category)
     if (query.search !== undefined && query.search !== '') params.set('q', query.search)
     params.set('page', String(query.page ?? 1))
-    return this.request(`/v1/store?${params.toString()}`, { cache: options.force !== true }) as Promise<StoreListResult>
+    return this.request(`/v1/hub?${params.toString()}`, { cache: options.force !== true }) as Promise<StoreListResult>
   }
 
   /** Fetch one entry's detail. */
   async entry(kind: StoreKind, id: string): Promise<StoreEntry> {
-    const path = `/v1/store/${kind}/${encodeURIComponent(id)}`
+    const path = `/v1/hub/${kind}/${encodeURIComponent(id)}`
     const entry = await this.request(path, {}) as StoreEntry
     if (!isStoreKind(entry?.kind) || entry.kind !== kind || entry.id !== id) {
       throw new Error(`Store returned an entry whose kind or id does not match the request ${kind}/${id}`)

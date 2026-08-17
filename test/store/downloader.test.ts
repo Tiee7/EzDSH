@@ -58,6 +58,13 @@ describe('downloadBundle URL policy', () => {
     })
     expect(bundle.files[0]?.bytes.toString()).toBe('x')
   })
+
+  it('resolves a root-relative manifest URL against the API origin', async () => {
+    const body = Buffer.from('relative url body')
+    const files = [storeFile({ path: 'demo/SKILL.md', url: '/files/demo/SKILL.md', sha256: sha256(body) })]
+    const bundle = await downloadBundle(files, { fetchImpl: okFetch({ 'demo/SKILL.md': body }) })
+    expect(bundle.files[0]?.bytes.toString()).toBe('relative url body')
+  })
 })
 
 describe('downloadBundle path traversal protection', () => {

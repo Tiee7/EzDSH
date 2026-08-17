@@ -29,7 +29,7 @@ describe('StoreClient list', () => {
     expect(result.pageCount).toBe(3)
     expect(result.entries[0]?.id).toBe('demo')
     const calledUrl = new URL(String(fetchImpl.mock.calls[0]?.[0]))
-    expect(calledUrl.pathname).toBe('/v1/store')
+    expect(calledUrl.pathname).toBe('/v1/hub')
     expect(calledUrl.searchParams.get('kind')).toBe('skill')
     expect(calledUrl.searchParams.get('page')).toBe('1')
     expect(calledUrl.hostname).toBe('hub.ezdsh.com')
@@ -69,7 +69,7 @@ describe('StoreClient list', () => {
 
 describe('StoreClient entry detail', () => {
   it('fetches a single entry by kind and id without caching detail pages', async () => {
-    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => jsonResponse(String(url).includes('/v1/store/skill/demo') ? sampleEntry : {}))
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => jsonResponse(String(url).includes('/v1/hub/skill/demo') ? sampleEntry : {}))
     const client = new StoreClient({ fetchImpl })
     const entry = await client.entry('skill', 'demo')
     expect(entry.id).toBe('demo')
