@@ -32,7 +32,7 @@ describe('StoreClient list', () => {
     expect(calledUrl.pathname).toBe('/v1/store')
     expect(calledUrl.searchParams.get('kind')).toBe('skill')
     expect(calledUrl.searchParams.get('page')).toBe('1')
-    expect(calledUrl.hostname).toBe('store.ezdsh.com')
+    expect(calledUrl.hostname).toBe('hub.ezdsh.com')
     expect(calledUrl.protocol).toBe('https:')
   })
 

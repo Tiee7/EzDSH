@@ -173,4 +173,4 @@ export interface InstalledListResult {
 }
 
 /** Remote curation API base URL; HTTPS-only, enforced by the store client. */
-export const STORE_API_BASE_URL = 'https://store.ezdsh.com'
+export const STORE_API_BASE_URL = 'https://hub.ezdsh.com'

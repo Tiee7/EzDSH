@@ -15,7 +15,7 @@ import type { StoreCategory, StoreEntry, StoreFile, StoreKind, StoreListResult }
 import type { StoreClient, StoreListQuery } from './store-client.js'
 
 /** URL prefix marking a file served from the bundled demo catalog. */
-export const DEMO_FILE_URL_PREFIX = 'https://store.ezdsh.com/demo-files/'
+export const DEMO_FILE_URL_PREFIX = 'https://hub.ezdsh.com/demo-files/'
 
 const DEMO_PAGE_SIZE = 24
 

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DownloadError, downloadBundle } from '../../src/main/store/downloader'
 import type { StoreFile } from '../../src/shared/store'
 
-const OK_HOST = 'store.ezdsh.com'
+const OK_HOST = 'hub.ezdsh.com'
 
 function fileUrl(path: string): string {
   return `https://${OK_HOST}/files/${path}`
