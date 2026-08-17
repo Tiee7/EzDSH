@@ -44,7 +44,7 @@ jobs:
           $password = "ezdsh-${{ github.run_id }}"
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
           $pfxPath = Join-Path $env:RUNNER_TEMP "ezdsh-signing.pfx"
-          $cerPath = Join-Path $env:GITHUB_WORKSPACE "dist\EzDSH-Local-Build.cer"
+          $cerPath = Join-Path $env:RUNNER_TEMP "EzDSH-Local-Build.cer"
 
           Export-PfxCertificate -Cert $certificate -FilePath $pfxPath -Password $securePassword | Out-Null
           Export-Certificate -Cert $certificate -FilePath $cerPath | Out-Null
@@ -57,6 +57,14 @@ jobs:
           CSC_LINK: ${{ env.EZDSH_PFX_PATH }}
           CSC_KEY_PASSWORD: ${{ env.EZDSH_CERT_PASSWORD }}
         run: npx electron-builder --win --publish never
+
+      - name: Copy certificate to Windows artifacts
+        shell: pwsh
+        run: |
+          $distPath = Join-Path $env:GITHUB_WORKSPACE "dist"
+          $cerPath = Join-Path $distPath "EzDSH-Local-Build.cer"
+          New-Item -ItemType Directory -Force -Path $distPath | Out-Null
+          Copy-Item (Join-Path $env:RUNNER_TEMP "EzDSH-Local-Build.cer") $cerPath -Force
 
       - name: Verify packaged Windows Runtime
         run: node scripts/verify-runtime-bundle.mjs "dist/win-unpacked/resources"
