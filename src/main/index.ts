@@ -390,6 +390,19 @@ function createWindow(): BrowserWindow {
     window.show()
   })
 
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    let protocol = ''
+    try {
+      protocol = new URL(url).protocol
+    } catch {
+      protocol = ''
+    }
+    if (protocol === 'http:' || protocol === 'https:') {
+      void shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
   window.on('closed', () => {
     if (mainWindow === window) {
       mainWindow = undefined

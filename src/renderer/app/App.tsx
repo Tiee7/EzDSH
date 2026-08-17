@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../../shared/locale.js'
 import type { AppTab } from '../../shared/navigation.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
-import { RUNTIME_IFRAME_ALLOW } from './runtime-frame.js'
+import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
 import { StorePage } from '../store/StorePage.js'
 import { PresetPage } from '../store/PresetPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
@@ -96,7 +96,7 @@ export function App() {
               title="EzDSH Runtime"
               src={runtime.url}
               allow={RUNTIME_IFRAME_ALLOW}
-              sandbox="allow-downloads allow-forms allow-modals allow-same-origin allow-scripts"
+              sandbox={RUNTIME_IFRAME_SANDBOX}
             />
           </div>
           {activeTab === 'store' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section> : null}
