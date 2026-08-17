@@ -62,7 +62,10 @@ const bridge: EzDSHBridge = {
     listDefinitions: () => invoke('providers:list-definitions'),
     getStatus: () => invoke('providers:get-status'),
     testConnection: (input) => invoke('providers:test-connection', input),
-    save: (input) => invoke('providers:save', input)
+    listModels: (input) => invoke('providers:list-models', input),
+    getProfile: (providerId) => invoke('providers:get-profile', providerId),
+    save: (input) => invoke('providers:save', input),
+    delete: (providerId) => invoke('providers:delete', providerId)
   },
   locale: {
     get: () => invoke('locale:get'),

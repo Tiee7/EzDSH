@@ -35,7 +35,7 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
   const action = updateAction(phase)
   const busy = phase === 'checking' || phase === 'downloading' || phase === 'installing'
   const message = phase === 'up-to-date'
-    ? copy.latestVersion
+    ? copy.latestVersionDetail(state?.currentVersion ?? window.EzDSH.app.version)
     : phase === 'failed'
       ? `${copy.updateCheckFailed}${state?.message ? `: ${state.message}` : ''}`
       : state?.message
@@ -58,7 +58,12 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
         <p className="settings-hint">
           {copy.settingsUpdateCurrent} {window.EzDSH.app.version}
           {state?.availableVersion ? ` → v${state.availableVersion}` : ''}
-          {message ? ` · ${message}` : ''}
+          {message ? (
+            <>
+              {' · '}
+              <span className={phase === 'up-to-date' ? 'settings-hint-highlight' : ''}>{message}</span>
+            </>
+          ) : null}
         </p>
         {phase === 'downloading' && state?.percent !== undefined ? (
           <progress className="settings-progress" max="100" value={state.percent} aria-label={copy.settingsDownloadUpdate} />

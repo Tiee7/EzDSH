@@ -6,7 +6,14 @@ import type { AppUpdater } from 'electron-updater'
 import type { IpcResult } from '../shared/errors.js'
 import { toEzDSHError } from '../shared/errors.js'
 import type { RuntimeSnapshot } from './runtime/runtime-types.js'
-import type { SaveProviderInput, TestProviderInput } from '../shared/providers.js'
+import type {
+  DeleteProviderResult,
+  ListModelsInput,
+  ProviderModel,
+  ProviderProfile,
+  SaveProviderInput,
+  TestProviderInput
+} from '../shared/providers.js'
 import type { UpdateState } from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale.js'
@@ -19,7 +26,6 @@ import { StoreClient } from './store/store-client.js'
 import { createDemoFetch } from './store/demo-catalog.js'
 import {
   RuntimeManager,
-  preparePackagedRuntime,
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath
 } from './runtime/runtime-manager.js'
@@ -99,7 +105,9 @@ async function handleUpdateCheck(interactive: boolean): Promise<void> {
     await showAppMessageBox({
       type: state.phase === 'failed' ? 'error' : 'info',
       title: APP_NAME,
-      message: state.phase === 'failed' ? copy.updateCheckFailed : copy.latestVersion,
+      message: state.phase === 'failed'
+        ? copy.updateCheckFailed
+        : copy.latestVersionDetail(state.currentVersion),
       detail: state.phase === 'failed'
         ? state.message
         : state.message === '开发模式不检查更新'
@@ -208,6 +216,30 @@ function registerIpcHandlers(): void {
     try {
       if (providerService === undefined) throw new Error('Provider service is not ready')
       return success(await providerService.save(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('providers:list-models', async (_event, input: ListModelsInput): Promise<IpcResult<ProviderModel[]>> => {
+    try {
+      if (providerService === undefined) throw new Error('Provider service is not ready')
+      return success(await providerService.listModels(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('providers:get-profile', async (_event, providerId: string): Promise<IpcResult<ProviderProfile | undefined>> => {
+    try {
+      if (providerService === undefined) throw new Error('Provider service is not ready')
+      return success(await providerService.getProfile(providerId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('providers:delete', async (_event, providerId: string): Promise<IpcResult<DeleteProviderResult>> => {
+    try {
+      if (providerService === undefined) throw new Error('Provider service is not ready')
+      return success(await providerService.delete(providerId))
     } catch (error) {
       return failure(error)
     }
@@ -391,27 +423,19 @@ if (!singleInstance) {
     userDataLayout = layout
     localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
     await localeService.start()
-    const packagedRuntimeRoot = app.isPackaged
-      ? await preparePackagedRuntime({
-        appPath: app.getAppPath(),
-        resourcesPath: process.resourcesPath,
-        isPackaged: true,
-        userDataRoot: layout.root
-      })
-      : undefined
     runtimeManager = new RuntimeManager({
       layout,
       runtimeEntryPath: resolveRuntimeEntryPath({
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath,
         isPackaged: app.isPackaged,
-        runtimeRoot: packagedRuntimeRoot,
         developmentSourceRoot: process.env.EZDSH_DSH_SOURCE?.trim() || undefined
       }),
       command: resolveRuntimeCommandPath({
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath,
-        isPackaged: app.isPackaged
+        isPackaged: app.isPackaged,
+        arch: process.arch
       })
     })
     providerService = new ProviderService(layout)

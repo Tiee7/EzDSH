@@ -14,11 +14,16 @@ import type {
   StoreRefreshResult
 } from './store.js'
 import type {
+  DeleteProviderResult,
+  ListModelsInput,
   ProviderDefinition,
+  ProviderModel,
+  ProviderProfile,
   ProviderStatus,
   SaveProviderInput,
   SaveProviderResult,
-  TestConnectionResult
+  TestConnectionResult,
+  TestProviderInput
 } from './providers.js'
 
 export interface EzDSHBridge {
@@ -58,8 +63,11 @@ export interface EzDSHBridge {
   providers: {
     listDefinitions(): Promise<ProviderDefinition[]>
     getStatus(): Promise<ProviderStatus[]>
-    testConnection(input: { providerId: string; apiKey: string; baseUrl?: string }): Promise<TestConnectionResult>
+    testConnection(input: TestProviderInput): Promise<TestConnectionResult>
+    listModels(input: ListModelsInput): Promise<ProviderModel[]>
+    getProfile(providerId: string): Promise<ProviderProfile | undefined>
     save(input: SaveProviderInput): Promise<SaveProviderResult>
+    delete(providerId: string): Promise<DeleteProviderResult>
   }
   locale: {
     get(): Promise<AppLocale>

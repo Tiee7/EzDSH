@@ -285,6 +285,9 @@ h1 {
   overflow: auto;
   padding: 24px;
   color: var(--ezdsh-page-text);
+  -webkit-app-region: no-drag;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .workspace-placeholder {

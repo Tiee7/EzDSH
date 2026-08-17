@@ -55,10 +55,20 @@ export function ProviderSetupPage({ locale, definitions, onSaved, onSkip }: Prov
     setSaving(true)
     setStatus(undefined)
     try {
-      await window.EzDSH.providers.save({
+      const models = await window.EzDSH.providers.listModels({
         providerId,
         apiKey,
         ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {})
+      })
+      if (models.length === 0) {
+        setStatus(copy.settingsProviderModelsEmpty)
+        return
+      }
+      await window.EzDSH.providers.save({
+        providerId,
+        apiKey,
+        ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+        modelIds: models.map((model) => model.id)
       })
       setApiKey('')
       await onSaved()

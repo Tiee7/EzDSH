@@ -8,7 +8,7 @@ export type ProviderBadge = 'usable' | 'configured' | 'empty'
 export function providerBadge(status?: ProviderStatus): ProviderBadge {
   if (status === undefined) return 'empty'
   if (status.usable) return 'usable'
-  if (status.hasCredential || status.routeConfigured) return 'configured'
+  if (status.routeConfigured) return 'configured'
   return 'empty'
 }
 

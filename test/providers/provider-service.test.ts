@@ -14,6 +14,10 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
+function modelListResponse(ids: string[]): Response {
+  return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 })
+}
+
 describe('ProviderService', () => {
   it('requires setup when no provider is configured', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
@@ -37,7 +41,8 @@ describe('ProviderService', () => {
     const result = await service.save({
       providerId: 'deepseek-official',
       apiKey: 'secret-value',
-      baseUrl: 'https://api.deepseek.com'
+      baseUrl: 'https://api.deepseek.com',
+      modelIds: []
     })
 
     expect(result.status).toEqual({
@@ -57,19 +62,45 @@ describe('ProviderService', () => {
     expect(JSON.stringify(result)).not.toContain('secret-value')
   })
 
-  it('writes catalog providers as catalog references without inventing custom fields', async () => {
+  it('writes catalog providers as catalog references with selected models', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
     roots.push(root)
     const layout = getUserDataLayout(root)
     await ensureUserDataLayout(layout)
     const service = new ProviderService(layout)
 
-    await service.save({ providerId: 'zai', apiKey: 'zai-secret' })
+    await service.save({ providerId: 'zai', apiKey: 'zai-secret', modelIds: ['zai-latest'] })
 
     const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
       'llm-pi-ai': { providers: Record<string, Record<string, unknown>> }
     }
-    expect(settings['llm-pi-ai'].providers.zai).toEqual({ apiKeyEnv: 'ZAI_API_KEY' })
+    expect(settings['llm-pi-ai'].providers.zai).toEqual({
+      apiKeyEnv: 'ZAI_API_KEY',
+      models: [{ id: 'zai-latest' }]
+    })
+  })
+
+  it('writes custom providers with api and models', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+
+    await service.save({
+      providerId: 'volcengine',
+      apiKey: 'volc-secret',
+      modelIds: ['model-1', 'model-2']
+    })
+
+    const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
+      'llm-pi-ai': { providers: Record<string, Record<string, unknown>> }
+    }
+    expect(settings['llm-pi-ai'].providers.volcengine).toEqual({
+      apiKeyEnv: 'VOLCENGINE_API_KEY',
+      api: 'openai-completions',
+      models: [{ id: 'model-1' }, { id: 'model-2' }]
+    })
   })
 
   it('migrates legacy provider IDs before Runtime reads settings', async () => {
@@ -108,5 +139,112 @@ describe('ProviderService', () => {
     })).resolves.toEqual({ reachable: true, message: '连接成功' })
     expect(fetchMock).toHaveBeenCalledWith('https://gateway.example/v1/models', expect.any(Object))
     fetchMock.mockRestore()
+  })
+
+  it('lists models from the provider endpoint', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(modelListResponse(['a', 'b']))
+
+    const models = await service.listModels({
+      providerId: 'openai',
+      apiKey: 'test-key',
+      baseUrl: 'https://gateway.example/v1/'
+    })
+    expect(models).toEqual([{ id: 'a' }, { id: 'b' }])
+    expect(fetchMock).toHaveBeenCalledWith('https://gateway.example/v1/models', expect.any(Object))
+    fetchMock.mockRestore()
+  })
+
+  it('falls back to builtin catalog when provider listing fails for a catalog provider', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network error'))
+
+    const models = await service.listModels({
+      providerId: 'openai',
+      apiKey: 'test-key',
+      baseUrl: 'https://gateway.example/v1/'
+    })
+    expect(models.length).toBeGreaterThan(0)
+    expect(models.some((model) => model.id.includes('gpt'))).toBe(true)
+    fetchMock.mockRestore()
+  })
+
+  it('throws when provider listing fails for a custom provider', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network error'))
+
+    await expect(service.listModels({
+      providerId: 'volcengine',
+      apiKey: 'test-key',
+      baseUrl: 'https://ark.example/v1/'
+    })).rejects.toThrow('network error')
+  })
+
+  it('returns the saved profile and model IDs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    await service.save({
+      providerId: 'zai',
+      apiKey: 'zai-secret',
+      baseUrl: 'https://api.z.example/v1',
+      modelIds: ['zai-1', 'zai-2']
+    })
+
+    const profile = await service.getProfile('zai')
+    expect(profile).toEqual({
+      baseUrl: 'https://api.z.example/v1',
+      modelIds: ['zai-1', 'zai-2']
+    })
+  })
+
+  it('deletes the route and credential', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    await service.save({
+      providerId: 'zai',
+      apiKey: 'zai-secret',
+      modelIds: ['zai-1']
+    })
+
+    const result = await service.delete('zai')
+    expect(result.deleted).toBe(true)
+
+    const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
+      'llm-pi-ai': { providers: Record<string, unknown> }
+    }
+    const credentials = parse(await readFile(join(layout.harness, '.credentials.yaml'), 'utf8')) as Record<string, unknown>
+    expect(settings['llm-pi-ai'].providers.zai).toBeUndefined()
+    expect(credentials.ZAI_API_KEY).toBeUndefined()
+  })
+
+  it('recognizes kimi-coding as catalog and volcengine as custom', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    const definitions = service.listDefinitions()
+    const kimi = definitions.find((d) => d.id === 'kimi-coding')
+    const volc = definitions.find((d) => d.id === 'volcengine')
+    expect(kimi?.modelCatalogSource).toBe('catalog')
+    expect(volc?.modelCatalogSource).toBe('custom')
   })
 })

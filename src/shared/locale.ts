@@ -38,7 +38,7 @@ export interface AppCopy {
   updateDownloaded: string
   updateDownloadedDetail: string
   restartAndInstall: string
-  latestVersion: string
+  latestVersionDetail: (version: string) => string
   updateCheckFailed: string
   updateDisabledInDevelopment: string
   tabHarness: string
@@ -97,6 +97,15 @@ export interface AppCopy {
   settingsProviderUsable: string
   settingsProviderConfigured: string
   settingsProviderSave: string
+  settingsProviderEdit: string
+  settingsProviderDelete: string
+  settingsProviderListModels: string
+  settingsProviderModelList: string
+  settingsProviderSelectAll: string
+  settingsProviderDeselectAll: string
+  settingsProviderModelsEmpty: string
+  settingsProviderFetchFailed: string
+  settingsProviderModelsRequired: string
   settingsProviderApiKey: string
   settingsUpdateSection: string
   settingsUpdateCurrent: string
@@ -143,7 +152,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     updateDownloaded: '更新已下载',
     updateDownloadedDetail: '现在重启并安装更新吗？',
     restartAndInstall: '重启并安装',
-    latestVersion: '已是最新版本',
+    latestVersionDetail: (version) => `已是最新版本 v${version}`,
     updateCheckFailed: '检查更新失败',
     updateDisabledInDevelopment: '开发模式不检查更新',
     tabHarness: 'DeepSeek Harness',
@@ -202,6 +211,15 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProviderUsable: '可用',
     settingsProviderConfigured: '已配置',
     settingsProviderSave: '保存',
+    settingsProviderEdit: '修改',
+    settingsProviderDelete: '删除',
+    settingsProviderListModels: '获取模型',
+    settingsProviderModelList: '可用模型',
+    settingsProviderSelectAll: '全选',
+    settingsProviderDeselectAll: '取消全选',
+    settingsProviderModelsEmpty: '该供应商没有返回可用模型',
+    settingsProviderFetchFailed: '获取模型失败',
+    settingsProviderModelsRequired: '请至少选择一个模型',
     settingsProviderApiKey: 'API Key',
     settingsUpdateSection: '应用更新',
     settingsUpdateCurrent: '当前版本',
@@ -246,7 +264,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     updateDownloaded: 'Update downloaded',
     updateDownloadedDetail: 'Restart and install the update now?',
     restartAndInstall: 'Restart and Install',
-    latestVersion: 'You are up to date',
+    latestVersionDetail: (version) => `You are up to date v${version}`,
     updateCheckFailed: 'Update check failed',
     updateDisabledInDevelopment: 'Update checks are disabled in development mode',
     tabHarness: 'DeepSeek Harness',
@@ -305,6 +323,15 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProviderUsable: 'Usable',
     settingsProviderConfigured: 'Configured',
     settingsProviderSave: 'Save',
+    settingsProviderEdit: 'Edit',
+    settingsProviderDelete: 'Delete',
+    settingsProviderListModels: 'Fetch models',
+    settingsProviderModelList: 'Available models',
+    settingsProviderSelectAll: 'Select all',
+    settingsProviderDeselectAll: 'Deselect all',
+    settingsProviderModelsEmpty: 'No models returned',
+    settingsProviderFetchFailed: 'Failed to fetch models',
+    settingsProviderModelsRequired: 'Please select at least one model',
     settingsProviderApiKey: 'API Key',
     settingsUpdateSection: 'Application updates',
     settingsUpdateCurrent: 'Current version',

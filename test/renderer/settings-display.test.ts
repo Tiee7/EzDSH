@@ -19,8 +19,8 @@ describe('providerBadge', () => {
     expect(providerBadge(status())).toBe('empty')
   })
 
-  it('returns configured when a credential exists but is not usable', () => {
-    expect(providerBadge(status({ hasCredential: true }))).toBe('configured')
+  it('returns configured only when a route is configured', () => {
+    expect(providerBadge(status({ hasCredential: true }))).toBe('empty')
     expect(providerBadge(status({ routeConfigured: true }))).toBe('configured')
   })
 

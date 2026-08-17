@@ -1,4 +1,5 @@
 export type ProviderCategory = 'vendor' | 'aggregator' | 'inference'
+export type ProviderCatalogSource = 'catalog' | 'custom'
 
 export interface ProviderDefinition {
   id: string
@@ -7,7 +8,7 @@ export interface ProviderDefinition {
   credentialKey: string
   defaultBaseUrl?: string
   supportsConnectionTest: boolean
-  modelCatalogSource: 'builtin' | 'remote' | 'custom'
+  modelCatalogSource: ProviderCatalogSource
 }
 
 export interface ProviderStatus {
@@ -18,10 +19,27 @@ export interface ProviderStatus {
   usable: boolean
 }
 
+export interface ProviderModel {
+  id: string
+  name?: string
+}
+
+export interface ProviderProfile {
+  baseUrl?: string
+  modelIds: string[]
+}
+
+export interface ListModelsInput {
+  providerId: string
+  apiKey: string
+  baseUrl?: string
+}
+
 export interface SaveProviderInput {
   providerId: string
   apiKey: string
   baseUrl?: string
+  modelIds: string[]
 }
 
 export interface TestProviderInput {
@@ -37,6 +55,11 @@ export interface TestConnectionResult {
 
 export interface SaveProviderResult {
   status: ProviderStatus
+}
+
+export interface DeleteProviderResult {
+  providerId: string
+  deleted: boolean
 }
 
 export function needsProviderSetup(statuses: readonly ProviderStatus[]): boolean {

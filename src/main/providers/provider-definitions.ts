@@ -1,4 +1,4 @@
-import type { ProviderDefinition } from '../../shared/providers.js'
+import type { ProviderCategory, ProviderDefinition } from '../../shared/providers.js'
 
 export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
   {
@@ -8,14 +8,14 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
     credentialKey: 'DEEPSEEK_API_KEY',
     defaultBaseUrl: 'https://api.deepseek.com',
     supportsConnectionTest: true,
-    modelCatalogSource: 'builtin'
+    modelCatalogSource: 'catalog'
   },
   ...[
     ['openai', 'OpenAI', 'OPENAI_API_KEY', 'https://api.openai.com/v1'],
     ['anthropic', 'Anthropic', 'ANTHROPIC_API_KEY', 'https://api.anthropic.com'],
     ['google', 'Google Gemini', 'GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta'],
     ['moonshotai', 'Moonshot / Kimi', 'MOONSHOT_API_KEY', 'https://api.moonshot.ai/v1'],
-    ['kimi-code', 'Kimi Code', 'KIMI_CODE_API_KEY', 'https://api.kimi.com/coding/v1'],
+    ['kimi-coding', 'Kimi Code', 'KIMI_CODING_API_KEY', 'https://api.kimi.com/coding/v1'],
     ['minimax', 'MiniMax', 'MINIMAX_API_KEY', 'https://api.minimax.io/anthropic'],
     ['zai', 'Z.AI / GLM', 'ZAI_API_KEY', 'https://api.z.ai/api/coding/paas/v4'],
     ['mistral', 'Mistral AI', 'MISTRAL_API_KEY', 'https://api.mistral.ai'],
@@ -30,7 +30,7 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
     credentialKey,
     defaultBaseUrl,
     supportsConnectionTest: true,
-    modelCatalogSource: 'builtin' as const
+    modelCatalogSource: id === 'volcengine' ? ('custom' as const) : ('catalog' as const)
   }))
 ]
 
