@@ -15,12 +15,14 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
     ['anthropic', 'Anthropic', 'ANTHROPIC_API_KEY', 'https://api.anthropic.com'],
     ['google', 'Google Gemini', 'GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta'],
     ['moonshotai', 'Moonshot / Kimi', 'MOONSHOT_API_KEY', 'https://api.moonshot.ai/v1'],
+    ['kimi-code', 'Kimi Code', 'KIMI_CODE_API_KEY', 'https://api.kimi.com/coding/v1'],
     ['minimax', 'MiniMax', 'MINIMAX_API_KEY', 'https://api.minimax.io/anthropic'],
     ['zai', 'Z.AI / GLM', 'ZAI_API_KEY', 'https://api.z.ai/api/coding/paas/v4'],
     ['mistral', 'Mistral AI', 'MISTRAL_API_KEY', 'https://api.mistral.ai'],
     ['openrouter', 'OpenRouter', 'OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1'],
     ['groq', 'Groq', 'GROQ_API_KEY', 'https://api.groq.com/openai/v1'],
-    ['together', 'Together AI', 'TOGETHER_API_KEY', 'https://api.together.ai/v1']
+    ['together', 'Together AI', 'TOGETHER_API_KEY', 'https://api.together.ai/v1'],
+    ['volcengine', 'Volcano Engine', 'VOLCENGINE_API_KEY', 'https://ark.cn-beijing.volces.com/api/v3']
   ].map(([id, displayName, credentialKey, defaultBaseUrl]) => ({
     id,
     displayName,
