@@ -180,4 +180,44 @@ describe('RuntimeManager', () => {
     expect(ready.port).toBe(4568)
     await manager.stop()
   })
+
+  it('ignores a late exit from the previous Runtime after restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-restart-race-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    const makeChild = (pid: number) => Object.assign(new EventEmitter(), {
+      pid,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill(): boolean {
+        return true
+      }
+    })
+    const firstChild = makeChild(11001)
+    const secondChild = makeChild(11002)
+    let spawnCount = 0
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      command: process.execPath,
+      startupTimeoutMs: 2_000,
+      stopTimeoutMs: 10,
+      allocatePort: async () => 4567,
+      waitForHealthy: async () => undefined,
+      processKill: () => true,
+      spawnProcess: () => {
+        spawnCount += 1
+        return (spawnCount === 1 ? firstChild : secondChild) as never
+      }
+    })
+
+    await manager.start()
+    const restarted = await manager.restart()
+    expect(restarted.pid).toBe(11002)
+
+    firstChild.emit('exit', 0, 'SIGTERM')
+
+    expect(manager.snapshot().phase).toBe('ready')
+    expect(manager.snapshot().pid).toBe(11002)
+  })
 })

@@ -187,6 +187,7 @@ export class RuntimeManager {
 
     await mkdir(dirname(logPath), { recursive: true, mode: 0o700 })
     this.logStream = createWriteStream(logPath, { flags: 'a', mode: 0o600 })
+    const processLogStream = this.logStream
     const command = this.config.command ?? process.execPath
     const args = command === process.execPath
       ? ['--expose-internals', this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port)]
@@ -221,17 +222,18 @@ export class RuntimeManager {
     })
     const captureOutput = (chunk: Buffer | string): void => {
       if (isPortOccupiedMessage(chunk)) portOccupied = true
-      this.writeLog(chunk)
+      this.writeLog(chunk, processLogStream)
     }
     this.setSnapshot({ pid })
     child.stdout?.on('data', captureOutput)
     child.stderr?.on('data', captureOutput)
     child.once('error', (error) => {
-      this.writeLog(`\n[child process error] ${String(error)}\n`)
-      if (!this.stopping) rejectChildExit(error)
+      this.writeLog(`\n[child process error] ${String(error)}\n`, processLogStream)
+      if (this.child === child && !this.stopping) rejectChildExit(error)
     })
     child.once('exit', (code, signal) => {
-      this.writeLog(`\n[child process exit] code=${String(code)} signal=${String(signal)}\n`)
+      this.writeLog(`\n[child process exit] code=${String(code)} signal=${String(signal)}\n`, processLogStream)
+      if (this.child !== child) return
       this.child = undefined
       const error = portOccupied
         ? new RuntimePortOccupiedError(port)
@@ -296,9 +298,11 @@ export class RuntimeManager {
       }, this.options.stopTimeoutMs)
     })
 
-    this.child = undefined
-    this.closeLog()
-    this.setSnapshot({ phase: 'stopped', pid: undefined, port: undefined, url: undefined, message: 'Runtime 已停止' })
+    if (this.child === child) {
+      this.child = undefined
+      this.closeLog()
+      this.setSnapshot({ phase: 'stopped', pid: undefined, port: undefined, url: undefined, message: 'Runtime 已停止' })
+    }
   }
 
   private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -324,8 +328,8 @@ export class RuntimeManager {
     for (const listener of this.listeners) listener(this.snapshot())
   }
 
-  private writeLog(chunk: Buffer | string): void {
-    this.logStream?.write(chunk)
+  private writeLog(chunk: Buffer | string, stream: WriteStream | undefined = this.logStream): void {
+    if (stream !== undefined && !stream.destroyed && !stream.writableEnded) stream.write(chunk)
   }
 
   private closeLog(): void {
