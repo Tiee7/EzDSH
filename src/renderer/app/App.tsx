@@ -2,10 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../../shared/locale.js'
 import type { AppTab } from '../../shared/navigation.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
+import type { UpdateState } from '../../shared/update.js'
 import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
 import { StorePage } from '../store/StorePage.js'
 import { PresetPage } from '../store/PresetPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
+import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import logoUrl from '../../../assets/logo.png'
 import './app.css'
 
@@ -13,6 +15,7 @@ export function App() {
   const [locale, setLocale] = useState<AppLocale>(DEFAULT_APP_LOCALE)
   const copy = getAppCopy(locale)
   const [runtime, setRuntime] = useState<RuntimeSnapshot>()
+  const [update, setUpdate] = useState<UpdateState>()
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<AppTab>('harness')
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
@@ -42,6 +45,9 @@ export function App() {
     const unsubscribeLocale = window.EzDSH.locale.onChange((nextLocale) => {
       if (active) setLocale(nextLocale)
     })
+    const unsubscribeUpdate = window.EzDSH.updates.onStateChange((snapshot) => {
+      if (active) setUpdate(snapshot)
+    })
     void window.EzDSH.locale.get()
       .then((nextLocale) => {
         if (!active) return
@@ -53,11 +59,19 @@ export function App() {
         setErrorKey('config-read')
         setLoading(false)
       })
+    void window.EzDSH.updates.getStatus()
+      .then((snapshot) => {
+        if (active) setUpdate(snapshot)
+      })
+      .catch(() => {
+        // Ignore update status errors; the settings page handles its own error state.
+      })
     return () => {
       active = false
       unsubscribe()
       unsubscribeNavigate()
       unsubscribeLocale()
+      unsubscribeUpdate()
     }
   }, [ensureRuntime])
 
@@ -103,6 +117,7 @@ export function App() {
           {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section> : null}
           {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} /></section> : null}
         </div>
+        {update ? <UpdateCenter state={update} copy={copy} /> : null}
       </main>
     )
   }

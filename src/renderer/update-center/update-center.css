@@ -1,7 +1,7 @@
 .update-center {
   position: fixed;
   z-index: 2;
-  top: 16px;
+  bottom: 16px;
   right: 20px;
   display: flex;
   align-items: center;

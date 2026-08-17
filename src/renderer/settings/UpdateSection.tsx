@@ -44,7 +44,7 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
   const message = phase === 'up-to-date'
     ? state?.lastCheckedAt
       ? `${copy.latestVersionDetail(state.currentVersion)}，${copy.latestVersionLastChecked(formatDateTime(state.lastCheckedAt))}`
-      : copy.latestVersionDetail(state?.currentVersion ?? window.EzDSH.app.version)
+      : (state?.message ?? copy.latestVersionDetail(state?.currentVersion ?? window.EzDSH.app.version))
     : phase === 'failed'
       ? `${copy.updateCheckFailed}${state?.message ? `: ${state.message}` : ''}`
       : state?.message
