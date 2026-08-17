@@ -398,7 +398,7 @@ function createWindow(): BrowserWindow {
       protocol = ''
     }
     if (protocol === 'http:' || protocol === 'https:') {
-      void shell.openExternal(url)
+      void shell.openExternal(url).catch(() => {})
     }
     return { action: 'deny' }
   })

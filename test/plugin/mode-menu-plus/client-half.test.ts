@@ -7,7 +7,7 @@ interface CapturedLoad {
 }
 
 interface Face {
-  hooks: { agentPresetSeat: { getSnapshot: () => Record<string, unknown> } }
+  hooks: { agentPresetSeat: { getSnapshot: () => Record<string, unknown>; set: (next: Record<string, unknown>) => void } }
   load: () => Promise<void>
   select: (id: string) => Promise<void>
   introduced: () => void
@@ -211,5 +211,59 @@ describe('mode-menu-plus browser half', () => {
     ])
     expect(options.map((option) => option.id)).toEqual(['a', 'c'])
     expect(options[1]).toEqual({ id: 'c', trust: 'user', name: 'C', description: 'desc' })
+  })
+
+  it('ignores select while busy', async () => {
+    await boot()
+    const face = registered[0].opts.inject()
+    face.hooks.agentPresetSeat.set({ ...face.hooks.agentPresetSeat.getSnapshot(), busy: true })
+    await face.select('custom')
+    expect(selectCalls).toEqual([])
+  })
+
+  it('sets error and preserves options/current when load returns ok: false', async () => {
+    api.agentPresets.list = async () => ({ result: { ok: false, error: { message: 'boom' } } })
+    await boot()
+    const face = registered[0].opts.inject()
+    await face.load()
+    const state = face.hooks.agentPresetSeat.getSnapshot() as { options: unknown[]; current: string; error: string | null }
+    expect(state.options).toEqual([])
+    expect(state.current).toBe('')
+    expect(state.error).toBe('boom')
+  })
+
+  it('sets error when load throws', async () => {
+    api.agentPresets.list = async () => { throw new Error('network') }
+    await boot()
+    const face = registered[0].opts.inject()
+    await face.load()
+    const state = face.hooks.agentPresetSeat.getSnapshot() as { error: string | null }
+    expect(state.error).toBe('network')
+  })
+
+  it('reverts to fallback and sets error when select returns ok: false', async () => {
+    sessions.list.getSnapshot = () => ({ current: 's1', byId: { s1: { id: 's1', blank: true } } })
+    api.agentPresets.select = async () => ({ result: { ok: false, error: { message: 'select-fail' } } })
+    await boot()
+    const face = registered[0].opts.inject()
+    await face.load()
+    await face.select('custom')
+    const state = face.hooks.agentPresetSeat.getSnapshot() as { current: string; error: string | null; busy: boolean }
+    expect(state.current).toBe('standard')
+    expect(state.error).toBe('select-fail')
+    expect(state.busy).toBe(false)
+  })
+
+  it('reverts to fallback and sets error when select throws', async () => {
+    sessions.list.getSnapshot = () => ({ current: 's1', byId: { s1: { id: 's1', blank: true } } })
+    api.agentPresets.select = async () => { throw new Error('select-throw') }
+    await boot()
+    const face = registered[0].opts.inject()
+    await face.load()
+    await face.select('custom')
+    const state = face.hooks.agentPresetSeat.getSnapshot() as { current: string; error: string | null; busy: boolean }
+    expect(state.current).toBe('standard')
+    expect(state.error).toBe('select-throw')
+    expect(state.busy).toBe(false)
   })
 })
