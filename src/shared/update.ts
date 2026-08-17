@@ -14,4 +14,5 @@ export interface UpdateState {
   availableVersion?: string
   percent?: number
   message?: string
+  lastCheckedAt?: string
 }

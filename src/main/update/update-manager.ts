@@ -48,11 +48,12 @@ export class UpdateManager {
         phase: 'available',
         availableVersion: info.version,
         percent: undefined,
-        message: `发现新版本 ${info.version}`
+        message: `发现新版本 ${info.version}`,
+        lastCheckedAt: new Date().toISOString()
       })
     })
     this.updater.on('update-not-available', () => {
-      this.publish({ phase: 'up-to-date', message: '已是最新版本' })
+      this.publish({ phase: 'up-to-date', message: '已是最新版本', lastCheckedAt: new Date().toISOString() })
     })
     this.updater.on('download-progress', (progress) => {
       this.publish({
@@ -70,7 +71,11 @@ export class UpdateManager {
       })
     })
     this.updater.on('error', (error) => {
-      this.publish({ phase: 'failed', message: error.message })
+      this.publish({
+        phase: 'failed',
+        message: error.message,
+        lastCheckedAt: this.current.phase === 'checking' ? new Date().toISOString() : this.current.lastCheckedAt
+      })
     })
   }
 
@@ -93,12 +98,13 @@ export class UpdateManager {
         const result = await this.updater?.checkForUpdates()
         if (this.current.phase === 'checking') {
           const version = result?.updateInfo?.version
+          const now = new Date().toISOString()
           this.publish(version === undefined
-            ? { phase: 'up-to-date', message: '已是最新版本' }
-            : { phase: 'available', availableVersion: version, message: `发现新版本 ${version}` })
+            ? { phase: 'up-to-date', message: '已是最新版本', lastCheckedAt: now }
+            : { phase: 'available', availableVersion: version, message: `发现新版本 ${version}`, lastCheckedAt: now })
         }
       } catch (error) {
-        this.publish({ phase: 'failed', message: error instanceof Error ? error.message : '检查更新失败' })
+        this.publish({ phase: 'failed', message: error instanceof Error ? error.message : '检查更新失败', lastCheckedAt: new Date().toISOString() })
       } finally {
         this.checkPromise = undefined
       }

@@ -39,6 +39,7 @@ export interface AppCopy {
   updateDownloadedDetail: string
   restartAndInstall: string
   latestVersionDetail: (version: string) => string
+  latestVersionLastChecked: (time: string) => string
   updateCheckFailed: string
   updateDisabledInDevelopment: string
   tabHarness: string
@@ -152,7 +153,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     updateDownloaded: '更新已下载',
     updateDownloadedDetail: '现在重启并安装更新吗？',
     restartAndInstall: '重启并安装',
-    latestVersionDetail: (version) => `已是最新版本 v${version}`,
+    latestVersionDetail: (version) => '已是最新版本',
+    latestVersionLastChecked: (time) => `最后检查 ${time}`,
     updateCheckFailed: '检查更新失败',
     updateDisabledInDevelopment: '开发模式不检查更新',
     tabHarness: 'DeepSeek Harness',
@@ -264,7 +266,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     updateDownloaded: 'Update downloaded',
     updateDownloadedDetail: 'Restart and install the update now?',
     restartAndInstall: 'Restart and Install',
-    latestVersionDetail: (version) => `You are up to date v${version}`,
+    latestVersionDetail: (version) => 'You are up to date',
+    latestVersionLastChecked: (time) => `Last checked ${time}`,
     updateCheckFailed: 'Update check failed',
     updateDisabledInDevelopment: 'Update checks are disabled in development mode',
     tabHarness: 'DeepSeek Harness',
