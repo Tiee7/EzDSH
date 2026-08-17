@@ -41,3 +41,4 @@ superpowers/
 
 # Local store server reference material (API docs and sample payloads)
 /store/
+.worktrees/
