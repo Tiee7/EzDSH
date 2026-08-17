@@ -99,6 +99,7 @@
       "!**/*.map",
       "!node_modules/node-bin-darwin-arm64/**",
       "!node_modules/node-win-x64/**",
+      "!docs-site/**",
       "package.json"
     ],
     "extraResources": [
