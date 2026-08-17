@@ -83,6 +83,7 @@
   "build": {
     "appId": "com.ezdsh.desktop",
     "productName": "EzDSH",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
     "asar": false,
     "npmRebuild": false,
     "electronLanguages": [
