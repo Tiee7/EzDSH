@@ -1,12 +1,7 @@
-export interface FeishuConfig {
-  appId: string
-  appSecret: string
-  encryptKey?: string
-}
-
 export interface ChannelBridgeConfig {
   enabled: boolean
-  feishu?: FeishuConfig
+  /** Adapter-specific configurations keyed by adapter name. */
+  adapters: Record<string, unknown>
   /** Target DSH session ID. If empty, a new session is created on first message. */
   sessionId?: string
   allowList: string[]

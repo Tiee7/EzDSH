@@ -47,6 +47,15 @@ export interface ChannelReply {
   }
 }
 
+export type ChannelMessageStatus = 'received' | 'processing' | 'done' | 'error'
+
+/** Logger interface used by adapters. */
+export interface Logger {
+  info(message: string, ...args: unknown[]): void
+  error(message: string, ...args: unknown[]): void
+  warn(message: string, ...args: unknown[]): void
+}
+
 /** Every adapter must implement this interface. */
 export interface ChannelAdapter {
   readonly name: string
@@ -55,13 +64,29 @@ export interface ChannelAdapter {
   send(reply: ChannelReply): Promise<void>
   /** Update the runtime allowlist without restarting the adapter. */
   updateAllowList(allowList: string[]): void
+  /** Optional: mark the processing status of a message on the platform. */
+  setStatus?(messageId: string, status: ChannelMessageStatus): Promise<void>
 }
 
-export type { ChannelBridgeConfig, FeishuConfig } from '../../shared/channel-bridge.js'
+export interface ChannelAdapterCreateOptions {
+  config: unknown
+  allowList: string[]
+  logger: Logger
+  /** Invoked for messages from users not in the allowlist. Return a reply to override the default deny message. */
+  onUnauthorizedMessage?: (message: ChannelMessage) => Promise<ChannelReply | undefined>
+}
+
+export interface ChannelAdapterFactory {
+  readonly name: string
+  create(options: ChannelAdapterCreateOptions): ChannelAdapter
+}
+
+export type { ChannelBridgeConfig } from '../../shared/channel-bridge.js'
 import type { ChannelBridgeConfig } from '../../shared/channel-bridge.js'
 
 export const DEFAULT_CHANNEL_BRIDGE_CONFIG: ChannelBridgeConfig = {
   enabled: false,
+  adapters: {},
   allowList: [],
   timeoutMs: 120_000,
   sessionTimeoutMs: 300_000,

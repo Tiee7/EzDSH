@@ -1,24 +1,30 @@
 import * as lark from '@larksuiteoapi/node-sdk'
-import type { ChannelAdapter, ChannelMessage, ChannelReply, FeishuConfig } from './types.js'
+import type {
+  ChannelAdapter,
+  ChannelAdapterCreateOptions,
+  ChannelAdapterFactory,
+  ChannelMessage,
+  ChannelMessageStatus,
+  ChannelReply,
+  Logger,
+} from '../../types.js'
+import type { FeishuConfig, FeishuMessageEvent } from './types.js'
 
-export interface FeishuAdapterOptions {
+export * from './types.js'
+
+export interface FeishuAdapterOptions extends ChannelAdapterCreateOptions {
   config: FeishuConfig
-  allowList: string[]
-  /** Invoked for messages from users not in the allowlist. Return a reply to override the default deny message. */
-  onUnauthorizedMessage?: (message: ChannelMessage) => Promise<ChannelReply | undefined>
-  logger?: {
-    info(message: string, ...args: unknown[]): void
-    error(message: string, ...args: unknown[]): void
-    warn(message: string, ...args: unknown[]): void
-  }
 }
+
+const PROCESSING_EMOJI = 'RUNNING'
+const ERROR_EMOJI = 'CROSS'
 
 export class FeishuAdapter implements ChannelAdapter {
   readonly name = 'feishu'
 
   private readonly config: FeishuConfig
   private allowList: Set<string>
-  private readonly logger: NonNullable<FeishuAdapterOptions['logger']>
+  private readonly logger: Logger
   private messageHandler?: (message: ChannelMessage) => Promise<ChannelReply | undefined>
   private client?: lark.Client
   private wsClient?: lark.WSClient
@@ -27,7 +33,7 @@ export class FeishuAdapter implements ChannelAdapter {
   constructor(private readonly options: FeishuAdapterOptions) {
     this.config = options.config
     this.allowList = new Set(options.allowList)
-    this.logger = options.logger ?? console
+    this.logger = options.logger
   }
 
   onMessage(handler: (message: ChannelMessage) => Promise<ChannelReply | undefined>): void {
@@ -114,6 +120,26 @@ export class FeishuAdapter implements ChannelAdapter {
     }
   }
 
+  async setStatus(messageId: string, status: ChannelMessageStatus): Promise<void> {
+    if (this.client === undefined) {
+      throw new Error('Feishu adapter is not started')
+    }
+
+    if (messageId === '') {
+      return
+    }
+
+    if (status === 'processing') {
+      await this.addReaction(messageId, PROCESSING_EMOJI)
+    } else if (status === 'done') {
+      await this.removeReaction(messageId, PROCESSING_EMOJI)
+    } else if (status === 'error') {
+      await this.removeReaction(messageId, PROCESSING_EMOJI)
+      await this.addReaction(messageId, ERROR_EMOJI)
+    }
+    // 'received' does not need a visible reaction.
+  }
+
   async handleReceiveEvent(event: FeishuMessageEvent): Promise<ChannelReply | undefined> {
     const message = this.normalizeMessage(event)
     if (message === undefined || message.chat === undefined) {
@@ -168,33 +194,37 @@ export class FeishuAdapter implements ChannelAdapter {
       timestamp: Date.now(),
     }
   }
-}
 
-export interface FeishuMessageEvent {
-  sender?: {
-    sender_id?: {
-      union_id?: string
-      user_id?: string
-      open_id?: string
-      name?: string
+  private async addReaction(messageId: string, emojiType: string): Promise<void> {
+    if (this.client === undefined) return
+    try {
+      const response = (await this.client.im.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      })) as { code: number; msg?: string }
+      if (response.code !== 0) {
+        this.logger.warn(`[channel-bridge:feishu] add reaction failed: ${response.code} ${response.msg}`)
+      }
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error)
+      this.logger.warn(`[channel-bridge:feishu] add reaction error: ${messageText}`)
     }
-    sender_type?: string
-    tenant_key?: string
   }
-  message?: {
-    message_id: string
-    root_id?: string
-    parent_id?: string
-    create_time?: string
-    update_time?: string
-    chat_id: string
-    thread_id?: string
-    chat_type: string
-    message_type?: string
-    content: string
-    mentions?: unknown[]
-    user_agent?: string
-    lark_agent_context?: unknown
+
+  private async removeReaction(messageId: string, emojiType: string): Promise<void> {
+    if (this.client === undefined) return
+    try {
+      const response = (await this.client.im.messageReaction.delete({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      })) as { code: number; msg?: string }
+      if (response.code !== 0) {
+        this.logger.warn(`[channel-bridge:feishu] remove reaction failed: ${response.code} ${response.msg}`)
+      }
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error)
+      this.logger.warn(`[channel-bridge:feishu] remove reaction error: ${messageText}`)
+    }
   }
 }
 
@@ -206,4 +236,11 @@ function parseFeishuContent(raw: unknown): string {
   } catch {
     return raw
   }
+}
+
+export const feishuAdapterFactory: ChannelAdapterFactory = {
+  name: 'feishu',
+  create(options: ChannelAdapterCreateOptions): ChannelAdapter {
+    return new FeishuAdapter({ ...options, config: options.config as FeishuConfig })
+  },
 }

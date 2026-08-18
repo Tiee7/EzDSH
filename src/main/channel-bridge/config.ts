@@ -22,7 +22,7 @@ export function createConfigStorage(stateDir: string): ConfigStorage {
     async loadConfig(): Promise<ChannelBridgeConfig> {
       try {
         const raw = await readFile(configPath, 'utf8')
-        const parsed = JSON.parse(raw) as Partial<ChannelBridgeConfig>
+        const parsed = JSON.parse(raw) as Partial<ChannelBridgeConfig> & { feishu?: unknown }
         return mergeConfig(parsed)
       } catch (error) {
         if (isNotFound(error)) return { ...DEFAULT_CHANNEL_BRIDGE_CONFIG }
@@ -36,10 +36,17 @@ export function createConfigStorage(stateDir: string): ConfigStorage {
   }
 }
 
-function mergeConfig(override: Partial<ChannelBridgeConfig>): ChannelBridgeConfig {
+function mergeConfig(override: Partial<ChannelBridgeConfig> & { feishu?: unknown }): ChannelBridgeConfig {
+  const adapters: Record<string, unknown> = override.adapters ?? {}
+
+  // Backward compatibility: legacy top-level `feishu` field moves under `adapters.feishu`.
+  if (override.feishu !== undefined && adapters.feishu === undefined) {
+    adapters.feishu = override.feishu
+  }
+
   return {
     enabled: override.enabled ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.enabled,
-    feishu: override.feishu,
+    adapters,
     sessionId: override.sessionId,
     allowList: override.allowList ?? [...DEFAULT_CHANNEL_BRIDGE_CONFIG.allowList],
     workspace: override.workspace ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.workspace,

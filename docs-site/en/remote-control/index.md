@@ -6,39 +6,6 @@ title: Remote Control
 
 Remote control lets you send commands to DSH through messaging platforms. The first supported platform is **Feishu**, shown as "Feishu control" in settings.
 
-## How it works
-
-```
-Phone / Feishu
-       │
-       ▼
-Feishu server ──WebSocket long connection──▶ EzDSH desktop app
-                                                  │
-                                                  ▼
-                                            FeishuAdapter
-                                                  │
-                                                  ▼
-                                          EzDSH DSH Runtime
-                                                  │
-                                                  ▼
-                              Target session (shared with the GUI)
-                                                  │
-                                                  ▼
-                            Result sent back via Feishu OpenAPI
-```
-
-EzDSH uses the official `@larksuiteoapi/node-sdk` **WebSocket long connection** to receive Feishu events, so no public webhook URL or ngrok is required. The desktop app only needs outbound internet access.
-
-Unlike the earlier one-shot prototype, messages are now routed into a **real DSH session**. That session uses whichever model is already selected in the session, and the GUI and the remote control share the same session state.
-
-Long-running tasks run **asynchronously**:
-
-1. Send a command from Feishu;
-2. The bot immediately replies "Task received, running in the DSH session.";
-3. While the turn is running, the bot sends a progress update at the configured interval (e.g. every 60 seconds);
-4. When the turn finishes, the bot sends the final answer (reasoning/thinking blocks are filtered out);
-5. Only one command per session can run at a time; new messages are rejected until the current turn ends.
-
 ## Setup
 
 ### 1. Create a Feishu custom app
