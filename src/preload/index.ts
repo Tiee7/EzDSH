@@ -4,6 +4,7 @@ import type { IpcResult } from '../shared/errors.js'
 import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
 import type { AppTab } from '../shared/navigation.js'
 import type { AppPlatform } from '../shared/platform.js'
+import type { NavConfig } from '../shared/navigation.js'
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>
@@ -94,6 +95,15 @@ const bridge: EzDSHBridge = {
     startPairing: () => invoke('channel-bridge:start-pairing'),
     cancelPairing: () => invoke('channel-bridge:cancel-pairing'),
     getPairingState: () => invoke('channel-bridge:get-pairing-state')
+  },
+  navigation: {
+    getConfig: () => invoke<NavConfig>('navigation:get-config'),
+    setConfig: (config) => invoke('navigation:set-config', config),
+    onStateChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, config: Parameters<typeof listener>[0]) => listener(config)
+      ipcRenderer.on('navigation:state-change', handler)
+      return () => ipcRenderer.removeListener('navigation:state-change', handler)
+    }
   }
 }
 

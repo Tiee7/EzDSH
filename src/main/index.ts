@@ -34,6 +34,8 @@ import { UpdateManager } from './update/update-manager.js'
 import { getApplicationMenuTemplate } from './application-menu.js'
 import { LocaleService, writeDshLocale } from './locale/locale-service.js'
 import { ChannelBridgeService } from './channel-bridge/index.js'
+import { NavigationService } from './navigation/navigation-service.js'
+import type { NavConfig } from '../shared/navigation.js'
 import { AdapterRegistry } from './channel-bridge/adapter-registry.js'
 import { feishuAdapterFactory } from './channel-bridge/adapters/feishu/index.js'
 
@@ -45,6 +47,7 @@ let updateManager: UpdateManager | undefined
 let userDataLayout: UserDataLayout | undefined
 let storeService: StoreService | undefined
 let channelBridgeService: ChannelBridgeService | undefined
+let navigationService: NavigationService | undefined
 let isQuitting = false
 let updateDialogOpen = false
 const require = createRequire(import.meta.url)
@@ -132,6 +135,7 @@ function navigateToTab(tab: AppTab): void {
 function setApplicationMenu(locale: AppLocale = localeService?.snapshot() ?? DEFAULT_APP_LOCALE): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(getApplicationMenuTemplate({
     locale,
+    navConfig: navigationService?.getConfig(),
     onCheckForUpdates: () => void handleUpdateCheck(true),
     onNavigate: navigateToTab,
     onOpenRuntimeLog: () => {
@@ -420,6 +424,24 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+
+  ipcMain.handle('navigation:get-config', (): IpcResult<NavConfig> => {
+    if (navigationService === undefined) return failure(new Error('Navigation service is not ready'))
+    return success(navigationService.getConfig())
+  })
+  ipcMain.handle('navigation:set-config', async (_event, config: NavConfig): Promise<IpcResult<void>> => {
+    try {
+      if (navigationService === undefined) throw new Error('Navigation service is not ready')
+      await navigationService.setConfig(config)
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('navigation:state-change', navigationService.getConfig())
+      }
+      setApplicationMenu()
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
 }
 
 registerIpcHandlers()
@@ -526,6 +548,8 @@ if (!singleInstance) {
     })
     providerService = new ProviderService(layout)
     await providerService.initialize()
+    navigationService = new NavigationService(layout.state)
+    await navigationService.initialize()
     storeService = new StoreService({
       client: new StoreClient(),
       fetchImpl: createDemoFetch(),

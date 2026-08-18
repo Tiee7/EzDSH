@@ -3,6 +3,7 @@ import type { EzDSHError, IpcResult } from './errors.js'
 import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
 import type { AppTab } from './navigation.js'
+import type { NavConfig } from './navigation.js'
 import type { AppPlatform } from './platform.js'
 import type {
   InstalledListResult,
@@ -92,6 +93,11 @@ export interface EzDSHBridge {
     cancelPairing(): Promise<void>
     /** Get the current pairing challenge state. */
     getPairingState(): Promise<PairingState>
+  }
+  navigation: {
+    getConfig(): Promise<NavConfig>
+    setConfig(config: NavConfig): Promise<void>
+    onStateChange(listener: (config: NavConfig) => void): () => void
   }
 }
 
