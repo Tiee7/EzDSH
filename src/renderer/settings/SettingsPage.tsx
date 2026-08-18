@@ -6,9 +6,10 @@ import { ProviderSection } from './ProviderSection.js'
 import { UpdateSection } from './UpdateSection.js'
 import { RuntimeSection } from './RuntimeSection.js'
 import { ChannelBridgePage } from './ChannelBridgePage.js'
+import { NavigationSection } from './NavigationSection.js'
 import './settings.css'
 
-type SettingsTab = 'general' | 'remote-control'
+type SettingsTab = 'general' | 'remote-control' | 'navigation'
 
 interface SettingsPageProps {
   copy: AppCopy
@@ -34,6 +35,7 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
   const tabs: Array<{ id: SettingsTab; label: string }> = [
     { id: 'general', label: copy.settingsTabGeneral },
     { id: 'remote-control', label: copy.settingsTabRemoteControl },
+    { id: 'navigation', label: copy.settingsTabNavigation },
   ]
 
   return (
@@ -102,8 +104,12 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
               </div>
             </section>
           </>
-        ) : (
+        ) : activeTab === 'remote-control' ? (
           <ChannelBridgePage copy={copy} />
+        ) : (
+          <section className="settings-card">
+            <NavigationSection copy={copy} />
+          </section>
         )}
       </div>
     </div>
