@@ -2,6 +2,7 @@ import { defineConfig } from 'vitepress'
 
 const zhNav = [
   { text: '入门指南', link: '/guide/install' },
+  { text: '免费 Tokens', link: '/guide/free-tokens' },
   { text: '远程控制', link: '/remote-control' },
   { text: '常见问题', link: '/faq' }
 ]
@@ -18,7 +19,8 @@ const zhSidebar = [
     items: [
       { text: '安装', link: '/guide/install' },
       { text: '首次使用', link: '/guide/first-run' },
-      { text: '下载与更新', link: '/guide/update' }
+      { text: '下载与更新', link: '/guide/update' },
+      { text: '免费 Tokens', link: '/guide/free-tokens' }
     ]
   },
   { text: '远程控制', link: '/remote-control' },
