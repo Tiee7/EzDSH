@@ -146,7 +146,7 @@ export function App() {
         <div className="workspace-content">
           {visibleItems.map((item) => {
             if (isCustomNavItem(item)) {
-              return <WebPane key={item.id} item={item} active={activeTab === item.id} copy={copy} />
+              return <WebPane key={item.id} item={item} active={activeTab === item.id} />
             }
             switch (item.id) {
               case 'harness':

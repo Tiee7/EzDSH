@@ -132,7 +132,6 @@ export interface AppCopy {
   navUrlPlaceholder: string
   navShow: string
   navHide: string
-  navReload: string
   navNameRequired: string
   navInvalidUrl: string
   navSaveFailed: string
@@ -295,7 +294,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     navUrlPlaceholder: 'https://example.com',
     navShow: '显示',
     navHide: '隐藏',
-    navReload: '刷新',
     navNameRequired: '请输入名称',
     navInvalidUrl: '请输入有效的 http/https 链接地址',
     navSaveFailed: '保存失败，请重试',
@@ -457,7 +455,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     navUrlPlaceholder: 'https://example.com',
     navShow: 'Show',
     navHide: 'Hide',
-    navReload: 'Reload',
     navNameRequired: 'Name is required',
     navInvalidUrl: 'Enter a valid http/https URL',
     navSaveFailed: 'Save failed. Try again.',
