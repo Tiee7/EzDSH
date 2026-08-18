@@ -148,6 +148,12 @@ export interface AppCopy {
   remoteControlFeishuAppSecretPlaceholder: string
   remoteControlFeishuEncryptKey: string
   remoteControlFeishuIncomplete: string
+  remoteControlFeishuNav: string
+  remoteControlGeneral: string
+  remoteControlIMPlatforms: string
+  remoteControlQQ: string
+  remoteControlWeChat: string
+  remoteControlComingSoon: string
   channelBridgeSessionIdPlaceholder: string
   channelBridgeSessionTimeout: string
   channelBridgeStatusInterval: string
@@ -337,6 +343,12 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     remoteControlFeishuAppSecretPlaceholder: 'xxx',
     remoteControlFeishuEncryptKey: '事件订阅 Encrypt Key（可选）',
     remoteControlFeishuIncomplete: '已启用远程控制，但飞书的 App ID 和 App Secret 尚未填写完整。',
+    remoteControlFeishuNav: '飞书',
+    remoteControlGeneral: '通用',
+    remoteControlIMPlatforms: 'IM 平台',
+    remoteControlQQ: 'QQ',
+    remoteControlWeChat: '微信',
+    remoteControlComingSoon: '即将推出',
   },
   en: {
     loadingConfig: 'Reading EzDSH configuration…',
@@ -504,6 +516,12 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     remoteControlFeishuAppSecretPlaceholder: 'xxx',
     remoteControlFeishuEncryptKey: 'Event subscription Encrypt Key (optional)',
     remoteControlFeishuIncomplete: 'Remote control is enabled, but the Feishu App ID and App Secret are not filled in yet.',
+    remoteControlFeishuNav: 'Feishu',
+    remoteControlGeneral: 'General',
+    remoteControlIMPlatforms: 'IM platforms',
+    remoteControlQQ: 'QQ',
+    remoteControlWeChat: 'WeChat',
+    remoteControlComingSoon: 'Coming soon',
   },
 }
 

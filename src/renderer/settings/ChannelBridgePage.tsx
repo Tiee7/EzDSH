@@ -17,6 +17,15 @@ interface FeishuConfig {
   encryptKey: string
 }
 
+type PlatformTab = 'general' | 'feishu' | 'qq' | 'wechat'
+
+interface PlatformDef {
+  id: PlatformTab
+  label: string
+  disabled?: boolean
+  badge?: string
+}
+
 function getFeishuConfig(adapters: Record<string, unknown>): FeishuConfig {
   const raw = adapters.feishu
   if (raw !== undefined && typeof raw === 'object') {
@@ -39,7 +48,7 @@ interface ChannelBridgePageProps {
   copy: AppCopy
 }
 
-/** Remote-control settings page: one friendly form per supported IM platform. */
+/** Remote-control settings: one full page per IM platform. */
 export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element {
   const [config, setConfig] = useState<ChannelBridgeConfig>(DEFAULT_CONFIG)
   const [loading, setLoading] = useState(true)
@@ -51,6 +60,7 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
   const [pairing, setPairing] = useState<PairingState>({ active: false })
   const [pairingError, setPairingError] = useState<string>()
   const [pairingSuccess, setPairingSuccess] = useState(false)
+  const [selectedPlatform, setSelectedPlatform] = useState<PlatformTab>('feishu')
 
   useEffect(() => {
     window.EzDSH.channelBridge
@@ -174,8 +184,12 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
     return left
   }
 
-  const feishu = getFeishuConfig(config.adapters)
-  const feishuReady = isFeishuReady(config)
+  const platforms: PlatformDef[] = [
+    { id: 'general', label: copy.remoteControlGeneral },
+    { id: 'feishu', label: copy.remoteControlFeishuNav },
+    { id: 'qq', label: copy.remoteControlQQ, disabled: true, badge: copy.remoteControlComingSoon },
+    { id: 'wechat', label: copy.remoteControlWeChat, disabled: true, badge: copy.remoteControlComingSoon },
+  ]
 
   if (loading) {
     return (
@@ -204,169 +218,67 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
             onChange={(e) => { update({ enabled: e.target.checked }) }}
           />
         </label>
-
-        {config.enabled && !feishuReady ? (
-          <p className="settings-error">{copy.remoteControlFeishuIncomplete}</p>
-        ) : null}
       </div>
 
-      <div className="settings-card-content">
-        <div className="bridge-subsection">
-          <div className="bridge-subsection-header">
-            <span className="settings-label">{copy.remoteControlFeishuTitle}</span>
-            <p className="settings-hint">{copy.remoteControlFeishuHint}</p>
-          </div>
-
-          <label className="bridge-row">
-            <span>{copy.remoteControlFeishuAppId}</span>
-            <input
-              type="text"
-              value={feishu.appId}
-              placeholder={copy.remoteControlFeishuAppIdPlaceholder}
-              onChange={(e) => { updateFeishu({ appId: e.target.value }) }}
-            />
-          </label>
-
-          <label className="bridge-row">
-            <span>{copy.remoteControlFeishuAppSecret}</span>
-            <input
-              type="password"
-              value={feishu.appSecret}
-              placeholder={copy.remoteControlFeishuAppSecretPlaceholder}
-              onChange={(e) => { updateFeishu({ appSecret: e.target.value }) }}
-            />
-          </label>
-
-          <label className="bridge-row">
-            <span>{copy.remoteControlFeishuEncryptKey}</span>
-            <input
-              type="text"
-              value={feishu.encryptKey}
-              placeholder={copy.optional}
-              onChange={(e) => { updateFeishu({ encryptKey: e.target.value }) }}
-            />
-          </label>
-        </div>
-      </div>
-
-      <div className="settings-card-content">
-        <div className="bridge-subsection">
-          <div className="bridge-pairing-header">
-            <span className="settings-label">{copy.channelBridgePairTitle}</span>
-            <p className="settings-hint">{copy.channelBridgePairHint}</p>
-          </div>
-
-          {pairing.active && pairing.code !== undefined ? (
-            <div className="bridge-pairing-active">
-              <div className="bridge-pairing-code">{pairing.code}</div>
-              <p className="settings-hint">
-                {copy.channelBridgePairingCodeHint(pairing.code, pairingSecondsLeft())}
-              </p>
+      <div className="settings-card-content bridge-platform-layout">
+        <nav className="bridge-platform-nav" aria-label={copy.remoteControlIMPlatforms}>
+          <p className="bridge-platform-nav-title">{copy.remoteControlIMPlatforms}</p>
+          <div className="bridge-platform-nav-list" role="tablist">
+            {platforms.map((platform) => (
               <button
-                className="settings-action settings-action-small"
-                onClick={() => { void cancelPairing() }}
+                key={platform.id}
+                type="button"
+                role="tab"
+                aria-selected={selectedPlatform === platform.id}
+                disabled={platform.disabled}
+                className={`bridge-platform-nav-item ${selectedPlatform === platform.id ? 'bridge-platform-nav-item-active' : ''}`}
+                onClick={() => { setSelectedPlatform(platform.id) }}
               >
-                {copy.channelBridgeCancelPairing}
+                {platform.label}
+                {platform.badge ? <span className="bridge-platform-nav-badge">{platform.badge}</span> : null}
               </button>
-            </div>
-          ) : (
-            <button
-              className="settings-action settings-action-secondary"
-              disabled={!config.enabled || !feishuReady}
-              onClick={() => { void startPairing() }}
-            >
-              {copy.channelBridgeStartPairing}
-            </button>
+            ))}
+          </div>
+        </nav>
+
+        <div className="bridge-platform-content">
+          {selectedPlatform === 'general' && (
+            <GeneralPage
+              copy={copy}
+              config={config}
+              update={update}
+              sessions={sessions}
+              listingSessions={listingSessions}
+              listSessions={listSessions}
+              selectSession={selectSession}
+            />
           )}
 
-          {pairingSuccess ? <p className="settings-hint">{copy.channelBridgePairingSuccess}</p> : null}
-          {pairingError ? <p className="settings-error">{copy.channelBridgePairingFailed}: {pairingError}</p> : null}
+          {selectedPlatform === 'feishu' && (
+            <FeishuPage
+              copy={copy}
+              config={config}
+              updateFeishu={updateFeishu}
+              pairing={pairing}
+              pairingError={pairingError}
+              pairingSuccess={pairingSuccess}
+              pairingSecondsLeft={pairingSecondsLeft}
+              startPairing={startPairing}
+              cancelPairing={cancelPairing}
+            />
+          )}
+
+          {selectedPlatform === 'qq' && (
+            <PlaceholderPage title={copy.remoteControlQQ} hint={copy.remoteControlComingSoon} />
+          )}
+
+          {selectedPlatform === 'wechat' && (
+            <PlaceholderPage title={copy.remoteControlWeChat} hint={copy.remoteControlComingSoon} />
+          )}
         </div>
       </div>
 
       <div className="settings-card-content">
-        <label className="bridge-row">
-          <span>{copy.channelBridgeSessionId}</span>
-          <input
-            type="text"
-            value={config.sessionId ?? ''}
-            placeholder={copy.channelBridgeSessionIdPlaceholder}
-            onChange={(e) => { update({ sessionId: e.target.value }) }}
-          />
-        </label>
-
-        <div className="bridge-row bridge-row-block">
-          <button
-            className="settings-action settings-action-secondary"
-            disabled={listingSessions}
-            onClick={() => { void listSessions() }}
-          >
-            {listingSessions ? copy.channelBridgeListingSessions : copy.channelBridgeListSessions}
-          </button>
-
-          {sessions.length > 0 ? (
-            <div className="bridge-session-list">
-              {sessions.map((session) => (
-                <div key={session.sessionId} className="bridge-session-item">
-                  <div className="bridge-session-info">
-                    <span className="bridge-session-title" title={session.title ?? session.sessionId}>
-                      {session.title ?? copy.channelBridgeUntitledSession}
-                    </span>
-                    <code className="bridge-session-id" title={session.sessionId}>
-                      {session.sessionId}
-                    </code>
-                  </div>
-                  <span className="bridge-session-meta">
-                    {session.running ? copy.channelBridgeSessionRunning : copy.channelBridgeSessionIdle}
-                  </span>
-                  <button
-                    className="settings-action settings-action-small"
-                    onClick={() => { selectSession(session.sessionId) }}
-                  >
-                    {copy.channelBridgeUseSession}
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="settings-card-content">
-        <label className="bridge-row">
-          <span>{copy.channelBridgeSessionTimeout}</span>
-          <input
-            type="number"
-            value={config.sessionTimeoutMs}
-            onChange={(e) => { update({ sessionTimeoutMs: Number(e.target.value) }) }}
-          />
-        </label>
-
-        <label className="bridge-row">
-          <span>{copy.channelBridgeStatusInterval}</span>
-          <input
-            type="number"
-            value={config.statusIntervalMs}
-            onChange={(e) => { update({ statusIntervalMs: Number(e.target.value) }) }}
-          />
-        </label>
-
-        <label className="bridge-row bridge-row-block">
-          <span>{copy.channelBridgeAllowList}</span>
-          <textarea
-            rows={4}
-            value={config.allowList.join('\n')}
-            onChange={(e) => {
-              update({
-                allowList: e.target.value
-                  .split('\n')
-                  .map((line) => line.trim())
-                  .filter((line) => line.length > 0),
-              })
-            }}
-          />
-        </label>
-
         {error ? <p className="settings-error">{error}</p> : null}
         {saved ? <p className="settings-hint">{copy.channelBridgeSaved}</p> : null}
 
@@ -376,6 +288,227 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+interface GeneralPageProps {
+  copy: AppCopy
+  config: ChannelBridgeConfig
+  update: (patch: Partial<ChannelBridgeConfig>) => void
+  sessions: DshSessionSummary[]
+  listingSessions: boolean
+  listSessions: () => Promise<void>
+  selectSession: (sessionId: string) => void
+}
+
+function GeneralPage({
+  copy,
+  config,
+  update,
+  sessions,
+  listingSessions,
+  listSessions,
+  selectSession,
+}: GeneralPageProps): JSX.Element {
+  return (
+    <div className="bridge-platform-page">
+      <h3 className="bridge-platform-page-title">{copy.remoteControlGeneral}</h3>
+
+      <label className="bridge-row">
+        <span>{copy.channelBridgeSessionId}</span>
+        <input
+          type="text"
+          value={config.sessionId ?? ''}
+          placeholder={copy.channelBridgeSessionIdPlaceholder}
+          onChange={(e) => { update({ sessionId: e.target.value }) }}
+        />
+      </label>
+
+      <div className="bridge-row bridge-row-block">
+        <button
+          className="settings-action settings-action-secondary"
+          disabled={listingSessions}
+          onClick={() => { void listSessions() }}
+        >
+          {listingSessions ? copy.channelBridgeListingSessions : copy.channelBridgeListSessions}
+        </button>
+
+        {sessions.length > 0 ? (
+          <div className="bridge-session-list">
+            {sessions.map((session) => (
+              <div key={session.sessionId} className="bridge-session-item">
+                <div className="bridge-session-info">
+                  <span className="bridge-session-title" title={session.title ?? session.sessionId}>
+                    {session.title ?? copy.channelBridgeUntitledSession}
+                  </span>
+                  <code className="bridge-session-id" title={session.sessionId}>
+                    {session.sessionId}
+                  </code>
+                </div>
+                <span className="bridge-session-meta">
+                  {session.running ? copy.channelBridgeSessionRunning : copy.channelBridgeSessionIdle}
+                </span>
+                <button
+                  className="settings-action settings-action-small"
+                  onClick={() => { selectSession(session.sessionId) }}
+                >
+                  {copy.channelBridgeUseSession}
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <label className="bridge-row">
+        <span>{copy.channelBridgeSessionTimeout}</span>
+        <input
+          type="number"
+          value={config.sessionTimeoutMs}
+          onChange={(e) => { update({ sessionTimeoutMs: Number(e.target.value) }) }}
+        />
+      </label>
+
+      <label className="bridge-row">
+        <span>{copy.channelBridgeStatusInterval}</span>
+        <input
+          type="number"
+          value={config.statusIntervalMs}
+          onChange={(e) => { update({ statusIntervalMs: Number(e.target.value) }) }}
+        />
+      </label>
+
+      <label className="bridge-row bridge-row-block">
+        <span>{copy.channelBridgeAllowList}</span>
+        <textarea
+          rows={4}
+          value={config.allowList.join('\n')}
+          onChange={(e) => {
+            update({
+              allowList: e.target.value
+                .split('\n')
+                .map((line) => line.trim())
+                .filter((line) => line.length > 0),
+            })
+          }}
+        />
+      </label>
+    </div>
+  )
+}
+
+interface FeishuPageProps {
+  copy: AppCopy
+  config: ChannelBridgeConfig
+  updateFeishu: (patch: Partial<FeishuConfig>) => void
+  pairing: PairingState
+  pairingError?: string
+  pairingSuccess: boolean
+  pairingSecondsLeft: () => number
+  startPairing: () => Promise<void>
+  cancelPairing: () => Promise<void>
+}
+
+function FeishuPage({
+  copy,
+  config,
+  updateFeishu,
+  pairing,
+  pairingError,
+  pairingSuccess,
+  pairingSecondsLeft,
+  startPairing,
+  cancelPairing,
+}: FeishuPageProps): JSX.Element {
+  const feishu = getFeishuConfig(config.adapters)
+  const feishuReady = isFeishuReady(config)
+
+  return (
+    <div className="bridge-platform-page">
+      <h3 className="bridge-platform-page-title">{copy.remoteControlFeishuTitle}</h3>
+      <p className="bridge-platform-page-hint">{copy.remoteControlFeishuHint}</p>
+
+      {config.enabled && !feishuReady ? (
+        <p className="settings-error">{copy.remoteControlFeishuIncomplete}</p>
+      ) : null}
+
+      <label className="bridge-row">
+        <span>{copy.remoteControlFeishuAppId}</span>
+        <input
+          type="text"
+          value={feishu.appId}
+          placeholder={copy.remoteControlFeishuAppIdPlaceholder}
+          onChange={(e) => { updateFeishu({ appId: e.target.value }) }}
+        />
+      </label>
+
+      <label className="bridge-row">
+        <span>{copy.remoteControlFeishuAppSecret}</span>
+        <input
+          type="password"
+          value={feishu.appSecret}
+          placeholder={copy.remoteControlFeishuAppSecretPlaceholder}
+          onChange={(e) => { updateFeishu({ appSecret: e.target.value }) }}
+        />
+      </label>
+
+      <label className="bridge-row">
+        <span>{copy.remoteControlFeishuEncryptKey}</span>
+        <input
+          type="text"
+          value={feishu.encryptKey}
+          placeholder={copy.optional}
+          onChange={(e) => { updateFeishu({ encryptKey: e.target.value }) }}
+        />
+      </label>
+
+      <div className="bridge-subsection">
+        <div className="bridge-subsection-header">
+          <span className="settings-label">{copy.channelBridgePairTitle}</span>
+          <p className="settings-hint">{copy.channelBridgePairHint}</p>
+        </div>
+
+        {pairing.active && pairing.code !== undefined ? (
+          <div className="bridge-pairing-active">
+            <div className="bridge-pairing-code">{pairing.code}</div>
+            <p className="settings-hint">
+              {copy.channelBridgePairingCodeHint(pairing.code, pairingSecondsLeft())}
+            </p>
+            <button
+              className="settings-action settings-action-small"
+              onClick={() => { void cancelPairing() }}
+            >
+              {copy.channelBridgeCancelPairing}
+            </button>
+          </div>
+        ) : (
+          <button
+            className="settings-action settings-action-secondary"
+            disabled={!config.enabled || !feishuReady}
+            onClick={() => { void startPairing() }}
+          >
+            {copy.channelBridgeStartPairing}
+          </button>
+        )}
+
+        {pairingSuccess ? <p className="settings-hint">{copy.channelBridgePairingSuccess}</p> : null}
+        {pairingError ? <p className="settings-error">{copy.channelBridgePairingFailed}: {pairingError}</p> : null}
+      </div>
+    </div>
+  )
+}
+
+interface PlaceholderPageProps {
+  title: string
+  hint: string
+}
+
+function PlaceholderPage({ title, hint }: PlaceholderPageProps): JSX.Element {
+  return (
+    <div className="bridge-platform-page">
+      <h3 className="bridge-platform-page-title">{title}</h3>
+      <p className="bridge-platform-page-hint">{hint}</p>
     </div>
   )
 }
