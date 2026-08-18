@@ -247,4 +247,105 @@ describe('ProviderService', () => {
     expect(kimi?.modelCatalogSource).toBe('catalog')
     expect(volc?.modelCatalogSource).toBe('custom')
   })
+
+  it('exposes the official catalog base as the kimi-coding default', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+
+    const kimi = service.listDefinitions().find((d) => d.id === 'kimi-coding')
+    expect(kimi?.defaultBaseUrl).toBe('https://api.kimi.com/coding')
+  })
+
+  it('omits baseURL when a catalog provider base equals the official base', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+
+    await service.save({
+      providerId: 'kimi-coding',
+      apiKey: 'kimi-secret',
+      baseUrl: 'https://api.kimi.com/coding',
+      modelIds: ['kimi-for-coding']
+    })
+
+    const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
+      'llm-pi-ai': { providers: Record<string, Record<string, unknown>> }
+    }
+    expect(settings['llm-pi-ai'].providers['kimi-coding']).toEqual({
+      apiKeyEnv: 'KIMI_CODING_API_KEY',
+      models: [{ id: 'kimi-for-coding' }]
+    })
+  })
+
+  it('normalizes a trailing slash before comparing to the official base', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+
+    await service.save({
+      providerId: 'kimi-coding',
+      apiKey: 'kimi-secret',
+      baseUrl: 'https://api.kimi.com/coding/',
+      modelIds: ['kimi-for-coding']
+    })
+
+    const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
+      'llm-pi-ai': { providers: Record<string, Record<string, unknown>> }
+    }
+    expect(settings['llm-pi-ai'].providers['kimi-coding'].baseURL).toBeUndefined()
+  })
+
+  it('writes baseURL when a catalog provider base differs from the official base', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+
+    await service.save({
+      providerId: 'kimi-coding',
+      apiKey: 'kimi-secret',
+      baseUrl: 'https://gateway.example/kimi',
+      modelIds: ['kimi-for-coding']
+    })
+
+    const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
+      'llm-pi-ai': { providers: Record<string, Record<string, unknown>> }
+    }
+    expect(settings['llm-pi-ai'].providers['kimi-coding']).toEqual({
+      apiKeyEnv: 'KIMI_CODING_API_KEY',
+      baseURL: 'https://gateway.example/kimi',
+      models: [{ id: 'kimi-for-coding' }]
+    })
+  })
+
+  it('drops a stale baseURL when saving a catalog provider without an override', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    await writeFile(
+      join(layout.harness, 'settings.yaml'),
+      'llm-pi-ai:\n  providers:\n    kimi-coding:\n      apiKeyEnv: KIMI_CODING_API_KEY\n      baseURL: https://api.kimi.com/coding/v1\n',
+      { mode: 0o600 }
+    )
+    const service = new ProviderService(layout)
+
+    await service.save({ providerId: 'kimi-coding', apiKey: 'kimi-secret', modelIds: ['kimi-for-coding'] })
+
+    const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
+      'llm-pi-ai': { providers: Record<string, Record<string, unknown>> }
+    }
+    expect(settings['llm-pi-ai'].providers['kimi-coding']).toEqual({
+      apiKeyEnv: 'KIMI_CODING_API_KEY',
+      models: [{ id: 'kimi-for-coding' }]
+    })
+  })
 })

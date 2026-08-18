@@ -15,7 +15,7 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
     ['anthropic', 'Anthropic', 'ANTHROPIC_API_KEY', 'https://api.anthropic.com'],
     ['google', 'Google Gemini', 'GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta'],
     ['moonshotai', 'Moonshot / Kimi', 'MOONSHOT_API_KEY', 'https://api.moonshot.ai/v1'],
-    ['kimi-coding', 'Kimi Code', 'KIMI_CODING_API_KEY', 'https://api.kimi.com/coding/v1'],
+    ['kimi-coding', 'Kimi Code', 'KIMI_CODING_API_KEY', 'https://api.kimi.com/coding'],
     ['minimax', 'MiniMax', 'MINIMAX_API_KEY', 'https://api.minimax.io/anthropic'],
     ['zai', 'Z.AI / GLM', 'ZAI_API_KEY', 'https://api.z.ai/api/coding/paas/v4'],
     ['mistral', 'Mistral AI', 'MISTRAL_API_KEY', 'https://api.mistral.ai'],

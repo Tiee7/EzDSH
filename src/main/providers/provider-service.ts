@@ -6,6 +6,7 @@ import type { UserDataLayout } from '../../shared/state.js'
 import type {
   DeleteProviderResult,
   ListModelsInput,
+  ProviderDefinition,
   ProviderModel,
   ProviderProfile,
   ProviderStatus,
@@ -36,7 +37,10 @@ export class ProviderService {
   }
 
   listDefinitions() {
-    return PROVIDER_DEFINITIONS.map((definition) => ({ ...definition }))
+    return PROVIDER_DEFINITIONS.map((definition) => {
+      const baseUrl = definition.defaultBaseUrl ?? this.catalogBaseUrl(definition.id)
+      return baseUrl === undefined ? { ...definition } : { ...definition, defaultBaseUrl: baseUrl }
+    })
   }
 
   /** Repair provider route IDs written by older EzDSH builds before Runtime starts. */
@@ -273,6 +277,21 @@ export class ProviderService {
     return models.map((model) => ({ id: model.id, name: model.name }))
   }
 
+  private catalogBaseUrl(providerId: string): string | undefined {
+    return builtinProviders().find((candidate) => candidate.id === providerId)?.baseUrl
+  }
+
+  private officialBaseUrl(providerId: string): string | undefined {
+    const definition = findProviderDefinition(providerId)
+    return definition.defaultBaseUrl ?? this.catalogBaseUrl(providerId)
+  }
+
+  private normalizeBaseUrl(url: string | undefined): string | undefined {
+    const trimmed = url?.trim()
+    if (trimmed === undefined || trimmed === '') return undefined
+    return trimmed.replace(/\/+$/u, '')
+  }
+
   private writeRoute(
     settings: JsonMap,
     providerId: string,
@@ -298,10 +317,19 @@ export class ProviderService {
     const route: JsonMap = {
       ...asMap(providers[providerId]),
       apiKeyEnv: credentialKey,
-      ...(baseUrl?.trim() ? { baseURL: baseUrl.trim() } : {}),
       ...(models !== undefined ? { models } : {})
     }
-    if (isCustom) route.api = 'openai-completions'
+    if (isCustom) {
+      route.api = 'openai-completions'
+      const customBase = this.normalizeBaseUrl(baseUrl)
+      if (customBase !== undefined) route.baseURL = customBase
+    } else {
+      delete route.api
+      const requested = this.normalizeBaseUrl(baseUrl)
+      const official = this.normalizeBaseUrl(this.officialBaseUrl(providerId))
+      if (requested !== undefined && requested !== official) route.baseURL = requested
+      else delete route.baseURL
+    }
     providers[providerId] = route
     settings['llm-pi-ai'] = { ...piAi, providers }
   }

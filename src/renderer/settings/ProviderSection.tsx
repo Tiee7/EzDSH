@@ -305,9 +305,6 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
                   {candidate.defaultBaseUrl ? (
                     <span className="provider-card-url">{candidate.defaultBaseUrl}</span>
                   ) : null}
-                  {candidate.modelCatalogSource === 'custom' ? (
-                    <span className="provider-card-tag">{copy.settingsProviderListModels}</span>
-                  ) : null}
                   {badge !== 'empty' ? (
                     <span className={`provider-badge provider-badge-${badge}`}>
                       {badge === 'usable' ? copy.settingsProviderUsable : copy.settingsProviderConfigured}
