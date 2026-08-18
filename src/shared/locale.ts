@@ -120,6 +120,23 @@ export interface AppCopy {
   settingsRestartRuntime: string
   settingsTabGeneral: string
   settingsTabRemoteControl: string
+  settingsTabNavigation: string
+  navSectionHint: string
+  navSystemBadge: string
+  navFixedBadge: string
+  navAddLink: string
+  navEdit: string
+  navDelete: string
+  navSave: string
+  navCancel: string
+  navName: string
+  navUrlPlaceholder: string
+  navShow: string
+  navHide: string
+  navReload: string
+  navNameRequired: string
+  navInvalidUrl: string
+  navSaveFailed: string
   channelBridgeTitle: string
   channelBridgeHint: string
   channelBridgeEnabled: string
@@ -267,6 +284,23 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRestartRuntime: '重启 Runtime',
     settingsTabGeneral: '通用',
     settingsTabRemoteControl: '飞书控制',
+    settingsTabNavigation: '导航管理',
+    navSectionHint: '选择要在标签栏显示的页面，拖动调整顺序；也可以添加自定义链接标签。',
+    navSystemBadge: '系统',
+    navFixedBadge: '固定',
+    navAddLink: '添加链接',
+    navEdit: '编辑',
+    navDelete: '删除',
+    navSave: '保存',
+    navCancel: '取消',
+    navName: '名称',
+    navUrlPlaceholder: 'https://example.com',
+    navShow: '显示',
+    navHide: '隐藏',
+    navReload: '刷新',
+    navNameRequired: '请输入名称',
+    navInvalidUrl: '请输入有效的 http/https 链接地址',
+    navSaveFailed: '保存失败，请重试',
     channelBridgeTitle: '飞书控制',
     channelBridgeHint: '通过飞书机器人远程向 DSH 发送命令。使用飞书官方长连接，无需公网地址。消息会进入下方指定的 DSH 会话。',
     channelBridgeEnabled: '启用飞书控制',
@@ -413,6 +447,23 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRestartRuntime: 'Restart runtime',
     settingsTabGeneral: 'General',
     settingsTabRemoteControl: 'Feishu control',
+    settingsTabNavigation: 'Navigation',
+    navSectionHint: 'Choose which pages appear in the tab bar, drag to reorder, or add custom link tabs.',
+    navSystemBadge: 'System',
+    navFixedBadge: 'Fixed',
+    navAddLink: 'Add link',
+    navEdit: 'Edit',
+    navDelete: 'Delete',
+    navSave: 'Save',
+    navCancel: 'Cancel',
+    navName: 'Name',
+    navUrlPlaceholder: 'https://example.com',
+    navShow: 'Show',
+    navHide: 'Hide',
+    navReload: 'Reload',
+    navNameRequired: 'Name is required',
+    navInvalidUrl: 'Enter a valid http/https URL',
+    navSaveFailed: 'Save failed. Try again.',
     channelBridgeTitle: 'Feishu control',
     channelBridgeHint: 'Send commands to DSH remotely through a Feishu bot. Uses the Feishu official long connection, no public address needed. Messages enter the DSH session specified below.',
     channelBridgeEnabled: 'Enable Feishu control',

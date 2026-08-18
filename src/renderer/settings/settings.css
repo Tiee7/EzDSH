@@ -652,3 +652,129 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 10px;
+  background: var(--ezdsh-panel-background);
+}
+
+.nav-row-dragging {
+  opacity: 0.5;
+}
+
+.nav-drag-handle {
+  cursor: grab;
+  color: var(--ezdsh-text-faint);
+  letter-spacing: -2px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.nav-label {
+  font-size: 13px;
+  color: var(--ezdsh-text-heading);
+}
+
+.nav-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ezdsh-code-background);
+  color: var(--ezdsh-text-muted);
+  font-size: 11px;
+}
+
+.nav-badge-locked {
+  background: var(--ezdsh-active-background);
+  color: var(--ezdsh-brand);
+}
+
+.nav-toggle {
+  margin-left: auto;
+  border: 1px solid var(--ezdsh-button-border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--ezdsh-button-text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.nav-toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.nav-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-body);
+  font-size: 13px;
+}
+
+.nav-input-url {
+  flex: 2;
+}
+
+.nav-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ezdsh-text-muted);
+  font-size: 12px;
+}
+
+.nav-action {
+  border: 1px solid var(--ezdsh-button-border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--ezdsh-button-text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.nav-action-danger {
+  color: var(--ezdsh-accent-red);
+}
+
+.nav-action:disabled,
+.nav-add:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.nav-add {
+  margin-top: 14px;
+  border: 1px dashed var(--ezdsh-panel-border-strong);
+  border-radius: 8px;
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--ezdsh-button-text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.settings-error {
+  margin: 10px 0 0;
+  color: var(--ezdsh-accent-red);
+  font-size: 12px;
+}
