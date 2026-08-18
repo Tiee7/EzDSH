@@ -10,6 +10,7 @@ import {
 } from '../../shared/navigation.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import type { UpdateState } from '../../shared/update.js'
+import type { DeepLinkInstallTarget } from '../../shared/contracts.js'
 import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
 import { WebPane } from './WebPane.js'
 import { StorePage } from '../store/StorePage.js'
@@ -44,6 +45,7 @@ export function App() {
   const [navConfig, setNavConfig] = useState<NavConfig>(() => getDefaultNavConfig())
   const [activeTab, setActiveTab] = useState<string>('harness')
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
+  const [deepLinkTarget, setDeepLinkTarget] = useState<DeepLinkInstallTarget | undefined>()
   const isMac = window.EzDSH.app.platform === 'darwin'
 
   useEffect(() => {
@@ -66,6 +68,9 @@ export function App() {
     })
     const unsubscribeNavigate = window.EzDSH.ui.onNavigate((tab) => {
       if (active) setActiveTab(tab)
+    })
+    const unsubscribeDeepLink = window.EzDSH.ui.onDeepLinkInstall((target) => {
+      if (active) setDeepLinkTarget(target)
     })
     const unsubscribeLocale = window.EzDSH.locale.onChange((nextLocale) => {
       if (active) setLocale(nextLocale)
@@ -105,6 +110,7 @@ export function App() {
       active = false
       unsubscribe()
       unsubscribeNavigate()
+      unsubscribeDeepLink()
       unsubscribeLocale()
       unsubscribeUpdate()
       unsubscribeNav()
@@ -162,7 +168,7 @@ export function App() {
                 )
               case 'store':
                 return activeTab === 'store'
-                  ? <section key="store" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section>
+                  ? <section key="store" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} deepLinkTarget={deepLinkTarget} /></section>
                   : null
               case 'presets':
                 return activeTab === 'presets'

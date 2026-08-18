@@ -45,7 +45,7 @@ function makeService(entries: readonly StoreEntry[], root: { dshHome: string; re
     onStateChange: (state) => events.push(state),
     client: {
       list: () => { throw new Error('not needed') },
-      entry: async (_kind, id) => entries.find((candidate) => candidate.id === id) ?? Promise.reject(new Error(`no entry ${id}`)),
+      entry: async (kind, id) => entries.find((candidate) => candidate.kind === kind && candidate.id === id) ?? Promise.reject(new Error(`no entry ${id}`)),
       categories: () => { throw new Error('not needed') }
     } as never,
     fetchImpl: (async (url: RequestInfo | URL) => {
@@ -167,6 +167,33 @@ describe('install state machine', () => {
     const outcome = await service.uninstall('skill', 'ghost')
     expect(outcome.phase).toBe('failed')
     expect(outcome.failureReason).toBe('conflict')
+  })
+
+  it('resolves an entry by id across all kinds', async () => {
+    const root = await tempRoot()
+    const skill = skillEntry({ id: 'demo-skill', kind: 'skill' })
+    const mcp = skillEntry({ id: 'demo-mcp', kind: 'mcp', files: undefined, mcp: { transport: 'streamable-http', serverName: 'demo-mcp', url: 'https://api.example.com/mcp' } })
+    const service = makeService([skill, mcp], root, [])
+    const resolvedSkill = await service.resolveEntryById('demo-skill')
+    expect(resolvedSkill?.kind).toBe('skill')
+    expect(resolvedSkill?.entry.id).toBe('demo-skill')
+    const resolvedMcp = await service.resolveEntryById('demo-mcp')
+    expect(resolvedMcp?.kind).toBe('mcp')
+    expect(resolvedMcp?.entry.id).toBe('demo-mcp')
+  })
+
+  it('returns undefined when resolving an unknown id', async () => {
+    const root = await tempRoot()
+    const service = makeService([], root, [])
+    expect(await service.resolveEntryById('missing')).toBeUndefined()
+  })
+
+  it('throws when an id is ambiguous across kinds', async () => {
+    const root = await tempRoot()
+    const skill = skillEntry({ id: 'same', kind: 'skill' })
+    const mcp = skillEntry({ id: 'same', kind: 'mcp', files: undefined, mcp: { transport: 'streamable-http', serverName: 'same', url: 'https://api.example.com/mcp' } })
+    const service = makeService([skill, mcp], root, [])
+    await expect(service.resolveEntryById('same')).rejects.toThrow(/ambiguous/i)
   })
 
   it('maps installer conflicts to failureReason conflict', async () => {

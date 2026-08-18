@@ -1,6 +1,6 @@
 {
   "name": "ezdsh",
-  "version": "0.8.1542",
+  "version": "1.8.15",
   "description": "Out-of-the-box DeepSeek Harness desktop client with a bundled Runtime for macOS and Windows.",
   "private": true,
   "type": "module",
@@ -112,6 +112,14 @@
       }
     ],
     "icon": "assets/logo.png",
+    "protocols": [
+      {
+        "name": "EzDSH Protocol",
+        "schemes": [
+          "ezdsh"
+        ]
+      }
+    ],
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
@@ -146,7 +154,7 @@
       }
     ],
     "extraMetadata": {
-      "version": "0.8.1542"
+      "version": "1.8.15"
     }
   }
 }

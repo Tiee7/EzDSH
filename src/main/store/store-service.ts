@@ -20,6 +20,7 @@ import type {
   StoreMcpConfig,
   StoreRefreshResult
 } from '../../shared/store.js'
+import { STORE_KINDS } from '../../shared/store.js'
 import { auditBundle, auditMcpConfig } from './audit.js'
 import { StoreClient, type StoreListQuery } from './store-client.js'
 import { downloadBundle, DownloadError, type DownloadedBundle } from './downloader.js'
@@ -188,6 +189,35 @@ export class StoreService {
   /** Installed entries. */
   async listInstalled(): Promise<InstalledListResult> {
     return { records: await this.ensureRegistry().list() }
+  }
+
+  /**
+   * Resolve an entry by its id across all kinds.
+   * @param id - the entry id.
+   * @returns the kind + entry, or `undefined` when not found.
+   * @throws when the id is ambiguous (matches more than one kind).
+   */
+  async resolveEntryById(id: string): Promise<{ kind: StoreKind; entry: StoreEntry } | undefined> {
+    await this.ensureCatalog()
+    const matches: { kind: StoreKind; entry: StoreEntry }[] = []
+    for (const kind of STORE_KINDS) {
+      const found = this.mergedEntries(kind).find((entry) => entry.id === id)
+      if (found !== undefined) {
+        matches.push({ kind, entry: found })
+        continue
+      }
+      try {
+        const remote = await this.entry(kind, id)
+        if (remote.id === id) matches.push({ kind, entry: remote })
+      } catch {
+        // Not found in this kind.
+      }
+    }
+    if (matches.length === 0) return undefined
+    if (matches.length > 1) {
+      throw new Error(`Plugin id "${id}" is ambiguous across kinds: ${matches.map((m) => m.kind).join(', ')}`)
+    }
+    return matches[0]
   }
 
   /**

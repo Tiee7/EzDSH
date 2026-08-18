@@ -14,6 +14,7 @@ import './store.css'
 interface StoreBrowserProps {
   readonly kind: StoreKind
   readonly copy: AppCopy
+  readonly deepLinkTarget?: import('../../shared/contracts.js').DeepLinkInstallTarget
 }
 
 function AuditBadge({ entry, copy }: { entry: StoreEntry; copy: AppCopy }): JSX.Element {
@@ -75,7 +76,7 @@ function EntryCard({ entry, installed, copy, selected, onSelect }: {
 }
 
 /** Generic catalog browser shared by the skill, preset, and MCP surfaces. */
-export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
+export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps): JSX.Element {
   const [categories, setCategories] = useState<readonly StoreCategory[]>([])
   const [category, setCategory] = useState<string>('')
   const [search, setSearch] = useState('')
@@ -141,6 +142,25 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
       .catch(() => { setCategories([]) })
   }, [kind])
 
+  const installById = useCallback(async (id: string): Promise<void> => {
+    setInstallState(undefined)
+    try {
+      const detail = await window.EzDSH.store.entry(kind, id)
+      setSelected(detail)
+      setInstallState({ kind, id, phase: 'downloading' })
+      const state = await window.EzDSH.store.install(kind, id)
+      setInstallState(state)
+      if (state.phase === 'done') void reload()
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setInstallState({ kind, id, phase: 'failed', message })
+    }
+  }, [kind, reload])
+
+  const startInstall = useCallback(async (entry: StoreEntry): Promise<void> => {
+    await installById(entry.id)
+  }, [installById])
+
   useEffect(() => {
     const unsubscribe = window.EzDSH.store.onStateChange((state) => {
       if (state.kind !== kind) return
@@ -149,20 +169,10 @@ export function StoreBrowser({ kind, copy }: StoreBrowserProps): JSX.Element {
     return unsubscribe
   }, [kind])
 
-  const startInstall = useCallback(async (entry: StoreEntry): Promise<void> => {
-    setInstallState(undefined)
-    try {
-      const detail = await window.EzDSH.store.entry(kind, entry.id)
-      setSelected(detail)
-      setInstallState({ kind, id: entry.id, phase: 'downloading' })
-      const state = await window.EzDSH.store.install(kind, entry.id)
-      setInstallState(state)
-      if (state.phase === 'done') void reload()
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason)
-      setInstallState({ kind, id: entry.id, phase: 'failed', message })
-    }
-  }, [kind, reload])
+  useEffect(() => {
+    if (deepLinkTarget === undefined || deepLinkTarget.kind !== kind) return
+    void installById(deepLinkTarget.id)
+  }, [deepLinkTarget, kind, installById])
 
   const confirmInstall = useCallback(async (accepted: boolean): Promise<void> => {
     if (selected === undefined || installState === undefined) return

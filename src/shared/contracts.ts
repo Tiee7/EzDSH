@@ -28,6 +28,12 @@ import type {
 } from './providers.js'
 import type { ChannelBridgeConfig, DshSessionSummary, PairingState } from './channel-bridge.js'
 
+/** Payload sent from main to renderer when a deep-link install should begin. */
+export interface DeepLinkInstallTarget {
+  kind: StoreKind
+  id: string
+}
+
 export interface EzDSHBridge {
   app: {
     name: string
@@ -43,6 +49,8 @@ export interface EzDSHBridge {
   }
   ui: {
     onNavigate(listener: (tab: AppTab) => void): () => void
+    /** Fired when the app is awakened by an `ezdsh://install/...` link. */
+    onDeepLinkInstall(listener: (target: DeepLinkInstallTarget) => void): () => void
   }
   store: {
     list(kind: StoreKind, query?: { category?: string; search?: string; page?: number }): Promise<StoreListResult>

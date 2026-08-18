@@ -1,11 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
+import type { DeepLinkInstallTarget } from '../../shared/contracts.js'
 import type { StoreKind } from '../../shared/store.js'
 import { StoreBrowser } from './StoreBrowser.js'
 
+interface StorePageProps {
+  copy: AppCopy
+  deepLinkTarget?: DeepLinkInstallTarget
+}
+
 /** The store tab page: skill bundles and MCP tool extensions side by side. */
-export function StorePage({ copy }: { copy: AppCopy }): JSX.Element {
+export function StorePage({ copy, deepLinkTarget }: StorePageProps): JSX.Element {
   const [surface, setSurface] = useState<StoreKind>('skill')
+  useEffect(() => {
+    if (deepLinkTarget !== undefined) {
+      setSurface(deepLinkTarget.kind)
+    }
+  }, [deepLinkTarget])
   return (
     <div className="store-page">
       <div className="store-surfaces" role="tablist">
@@ -26,7 +37,7 @@ export function StorePage({ copy }: { copy: AppCopy }): JSX.Element {
           {copy.storeSurfaceMcp}
         </button>
       </div>
-      <StoreBrowser key={surface} kind={surface} copy={copy} />
+      <StoreBrowser key={surface} kind={surface} copy={copy} deepLinkTarget={deepLinkTarget} />
     </div>
   )
 }

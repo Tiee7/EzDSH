@@ -18,6 +18,7 @@ import type { UpdateState } from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale.js'
 import type { AppTab } from '../shared/navigation.js'
+import { findDeepLinkInArgs, parseDeepLink, type DeepLinkInstall, type ResolvedDeepLinkInstall } from '../shared/deep-link.js'
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
 import type { UserDataLayout } from '../shared/state.js'
 import type { StoreKind } from '../shared/store.js'
@@ -50,6 +51,7 @@ let channelBridgeService: ChannelBridgeService | undefined
 let navigationService: NavigationService | undefined
 let isQuitting = false
 let updateDialogOpen = false
+let pendingDeepLinkInstall: DeepLinkInstall | undefined
 const require = createRequire(import.meta.url)
 
 const LIGHT_WINDOW_BACKGROUND = '#f9fafb'
@@ -130,6 +132,59 @@ function navigateToTab(tab: AppTab): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('ui:navigate', tab)
   }
+}
+
+function focusMainWindow(): BrowserWindow {
+  if (mainWindow === undefined || mainWindow.isDestroyed()) {
+    return createWindow()
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  mainWindow.show()
+  mainWindow.focus()
+  return mainWindow
+}
+
+function emitDeepLinkInstall(kind: StoreKind, id: string): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    window.webContents.send('ui:navigate', 'store')
+    window.webContents.send('store:deep-link-install', { kind, id })
+  }
+}
+
+async function handleDeepLinkInstall(link: DeepLinkInstall): Promise<void> {
+  let kind = link.kind
+  const id = link.id
+  if (kind === undefined) {
+    if (storeService === undefined) {
+      console.error('[deep-link] store service is not ready')
+      return
+    }
+    try {
+      const resolved = await storeService.resolveEntryById(id)
+      if (resolved === undefined) {
+        console.error(`[deep-link] no plugin found for id "${id}"`)
+        return
+      }
+      kind = resolved.kind
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`[deep-link] failed to resolve plugin "${id}":`, message)
+      return
+    }
+  }
+  const resolved: ResolvedDeepLinkInstall = { action: 'install', kind, id }
+  pendingDeepLinkInstall = resolved
+  focusMainWindow()
+  emitDeepLinkInstall(kind, id)
+}
+
+function consumePendingDeepLinkInstall(): DeepLinkInstall | undefined {
+  const link = pendingDeepLinkInstall
+  pendingDeepLinkInstall = undefined
+  return link
 }
 
 function setApplicationMenu(locale: AppLocale = localeService?.snapshot() ?? DEFAULT_APP_LOCALE): void {
@@ -485,6 +540,13 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  window.webContents.on('did-finish-load', () => {
+    const link = consumePendingDeepLinkInstall()
+    if (link !== undefined) {
+      void handleDeepLinkInstall(link)
+    }
+  })
+
   window.on('closed', () => {
     if (mainWindow === window) {
       mainWindow = undefined
@@ -509,6 +571,13 @@ const singleInstance = app.requestSingleInstanceLock()
 if (!singleInstance) {
   app.quit()
 } else {
+  app.setAsDefaultProtocolClient('ezdsh')
+
+  const startupLink = parseDeepLink(findDeepLinkInArgs(process.argv) ?? '')
+  if (startupLink?.action === 'install') {
+    pendingDeepLinkInstall = startupLink
+  }
+
   app.whenReady().then(async () => {
     app.setName(APP_NAME)
     nativeTheme.on('updated', syncWindowBackgroundColor)
@@ -599,11 +668,22 @@ if (!singleInstance) {
     setDockIcon()
     createWindow()
     setApplicationMenu()
+    const startupInstall = consumePendingDeepLinkInstall()
+    if (startupInstall !== undefined) {
+      void handleDeepLinkInstall(startupInstall)
+    }
     if (updateChecksEnabled) void handleUpdateCheck(false)
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow()
+      }
+    })
+
+    app.on('open-url', (_event, url) => {
+      const link = parseDeepLink(url)
+      if (link?.action === 'install') {
+        void handleDeepLinkInstall(link)
       }
     })
   }).catch((error: unknown) => {
@@ -614,7 +694,14 @@ if (!singleInstance) {
     app.exit(1)
   })
 
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    const url = findDeepLinkInArgs(argv)
+    const link = url === undefined ? undefined : parseDeepLink(url)
+    if (link?.action === 'install') {
+      void handleDeepLinkInstall(link)
+      return
+    }
+
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
       return

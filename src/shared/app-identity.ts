@@ -1,2 +1,2 @@
 export const APP_NAME = 'EzDSH' as const
-export const APP_VERSION = '0.8.1542' as const
+export const APP_VERSION = '1.8.15' as const
