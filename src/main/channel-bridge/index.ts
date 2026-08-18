@@ -3,6 +3,7 @@ import { createConfigStorage, type ConfigStorage } from './config.js'
 import { DshSessionClient } from './dsh-session.js'
 import { FeishuAdapter } from './feishu.js'
 import type { ChannelBridgeConfig, ChannelMessage, ChannelReply } from './types.js'
+import type { DshSessionSummary } from '../../shared/channel-bridge.js'
 
 export type { ChannelBridgeConfig }
 
@@ -88,6 +89,19 @@ export class ChannelBridgeService {
 
   get isRunning(): boolean {
     return this.running
+  }
+
+  async listSessions(): Promise<DshSessionSummary[]> {
+    const runtimeUrl = this.options.getRuntimeUrl()
+    if (runtimeUrl === undefined) {
+      throw new Error('DSH Runtime 尚未启动')
+    }
+
+    const client = new DshSessionClient({
+      baseUrl: runtimeUrl,
+      timeoutMs: 10_000,
+    })
+    return client.listSessions()
   }
 
   private async handleMessage(

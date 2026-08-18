@@ -25,7 +25,7 @@ import type {
   TestConnectionResult,
   TestProviderInput
 } from './providers.js'
-import type { ChannelBridgeConfig } from './channel-bridge.js'
+import type { ChannelBridgeConfig, DshSessionSummary } from './channel-bridge.js'
 
 export interface EzDSHBridge {
   app: {
@@ -85,6 +85,7 @@ export interface EzDSHBridge {
     getConfig(): Promise<ChannelBridgeConfig>
     setConfig(config: ChannelBridgeConfig): Promise<void>
     getConfigPath(): Promise<string>
+    listSessions(): Promise<DshSessionSummary[]>
   }
 }
 

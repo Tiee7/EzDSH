@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ChannelBridgeConfig } from '../../shared/channel-bridge.js'
+import type { ChannelBridgeConfig, DshSessionSummary } from '../../shared/channel-bridge.js'
 import type { AppCopy } from '../../shared/locale.js'
 
 const DEFAULT_CONFIG: ChannelBridgeConfig = {
@@ -20,6 +20,8 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
   const [saved, setSaved] = useState(false)
+  const [sessions, setSessions] = useState<DshSessionSummary[]>([])
+  const [listingSessions, setListingSessions] = useState(false)
 
   useEffect(() => {
     window.EzDSH.channelBridge
@@ -58,6 +60,24 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
     } finally {
       setSaving(false)
     }
+  }
+
+  const listSessions = async (): Promise<void> => {
+    setListingSessions(true)
+    setError(undefined)
+    try {
+      const items = await window.EzDSH.channelBridge.listSessions()
+      setSessions(items)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      setSessions([])
+    } finally {
+      setListingSessions(false)
+    }
+  }
+
+  const selectSession = (sessionId: string): void => {
+    update({ sessionId })
   }
 
   if (loading) {
@@ -116,6 +136,37 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
             onChange={(e) => { update({ sessionId: e.target.value }) }}
           />
         </label>
+
+        <div className="bridge-row bridge-row-block">
+          <button
+            className="settings-action settings-action-secondary"
+            disabled={listingSessions}
+            onClick={() => { void listSessions() }}
+          >
+            {listingSessions ? copy.channelBridgeListingSessions : copy.channelBridgeListSessions}
+          </button>
+
+          {sessions.length > 0 ? (
+            <div className="bridge-session-list">
+              {sessions.map((session) => (
+                <div key={session.sessionId} className="bridge-session-item">
+                  <code className="bridge-session-id" title={session.sessionId}>
+                    {session.sessionId}
+                  </code>
+                  <span className="bridge-session-meta">
+                    {session.running ? copy.channelBridgeSessionRunning : copy.channelBridgeSessionIdle}
+                  </span>
+                  <button
+                    className="settings-action settings-action-small"
+                    onClick={() => { selectSession(session.sessionId) }}
+                  >
+                    {copy.channelBridgeUseSession}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
 
         <label className="bridge-row">
           <span>{copy.channelBridgeSessionTimeout}</span>

@@ -381,6 +381,15 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+
+  ipcMain.handle('channel-bridge:list-sessions', async (): Promise<IpcResult<Awaited<ReturnType<ChannelBridgeService['listSessions']>>>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      return success(await channelBridgeService.listSessions())
+    } catch (error) {
+      return failure(error)
+    }
+  })
 }
 
 registerIpcHandlers()

@@ -15,3 +15,10 @@ export interface ChannelBridgeConfig {
   /** How long to wait for the DSH session to finish a turn (ms). */
   sessionTimeoutMs?: number
 }
+
+export interface DshSessionSummary {
+  sessionId: string
+  updatedAt: number
+  running: boolean
+  blank?: boolean
+}

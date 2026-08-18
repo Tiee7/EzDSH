@@ -89,7 +89,8 @@ const bridge: EzDSHBridge = {
   channelBridge: {
     getConfig: () => invoke('channel-bridge:get-config'),
     setConfig: (config) => invoke('channel-bridge:set-config', config),
-    getConfigPath: () => invoke('channel-bridge:get-config-path')
+    getConfigPath: () => invoke('channel-bridge:get-config-path'),
+    listSessions: () => invoke('channel-bridge:list-sessions')
   }
 }
 

@@ -23,6 +23,13 @@ export interface DshSendResult {
   text: string
 }
 
+export interface DshSessionSummary {
+  sessionId: string
+  updatedAt: number
+  running: boolean
+  blank?: boolean
+}
+
 interface SessionCreateRequest {
   sessionId?: string
   cwd?: string
@@ -58,6 +65,17 @@ interface SessionHistoryResponse {
   projections?: unknown
 }
 
+interface SessionListResponse {
+  items: SessionSummaryWire[]
+}
+
+interface SessionSummaryWire {
+  sessionId: string
+  updatedAt: number
+  running: boolean
+  blank?: boolean
+}
+
 interface HistoryEntry {
   event: SessionEvent
   view?: unknown
@@ -88,6 +106,16 @@ export class DshSessionClient {
 
     const response = await this.post<SessionCreateResponse>('/api/session.create', body)
     return { sessionId: response.sessionId }
+  }
+
+  async listSessions(): Promise<DshSessionSummary[]> {
+    const response = await this.post<SessionListResponse>('/api/session.list', {})
+    return response.items.map((item) => ({
+      sessionId: item.sessionId,
+      updatedAt: item.updatedAt,
+      running: item.running,
+      blank: item.blank,
+    }))
   }
 
   async sendPrompt(sessionId: string, text: string): Promise<DshSendResult> {
