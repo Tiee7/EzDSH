@@ -1,0 +1,17 @@
+{
+  "name": "@ezdsh/channel-qq",
+  "version": "0.1.0",
+  "description": "QQ channel adapter for EzDSH remote control via OneBot 11.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": { "default": "./src/index.js" },
+    "./package.json": "./package.json"
+  },
+  "ezdsh": {
+    "channelAdapter": {
+      "name": "qq",
+      "entry": "./src/index.js"
+    }
+  }
+}
