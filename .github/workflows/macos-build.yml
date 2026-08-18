@@ -77,6 +77,11 @@ jobs:
           test -f dist/latest-mac.yml
           compgen -G "dist/*.blockmap" > /dev/null
 
+      - name: Rewrite update metadata with absolute URLs
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: node scripts/rewrite-update-metadata.mjs dist/latest-mac.yml
+
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:

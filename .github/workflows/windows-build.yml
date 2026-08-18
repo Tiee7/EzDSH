@@ -99,6 +99,10 @@ jobs:
             Write-Host "$($_.Name): $($signature.Status) - $($signature.SignerCertificate.Subject)"
           }
 
+      - name: Rewrite update metadata with absolute URLs
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/rewrite-update-metadata.mjs dist/latest.yml
+
       - name: Upload Windows installer and certificate
         uses: actions/upload-artifact@v4
         with:
