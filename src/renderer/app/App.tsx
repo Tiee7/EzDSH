@@ -6,6 +6,7 @@ import type { UpdateState } from '../../shared/update.js'
 import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
 import { StorePage } from '../store/StorePage.js'
 import { PresetPage } from '../store/PresetPage.js'
+import { DocsPage } from '../docs/DocsPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
 import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import logoUrl from '../../../assets/logo.png'
@@ -84,6 +85,7 @@ export function App() {
       { id: 'harness', label: copy.tabHarness },
       { id: 'store', label: copy.tabStore },
       { id: 'presets', label: copy.tabPresets },
+      { id: 'docs', label: copy.tabDocs },
       { id: 'settings', label: copy.tabSettings }
     ]
     return (
@@ -115,6 +117,9 @@ export function App() {
           </div>
           {activeTab === 'store' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section> : null}
           {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section> : null}
+          <div className={`workspace-pane ${activeTab === 'docs' ? 'workspace-pane-active' : ''}`}>
+            <DocsPage locale={locale} />
+          </div>
           {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} /></section> : null}
         </div>
         {update ? <UpdateCenter state={update} copy={copy} /> : null}

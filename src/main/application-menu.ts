@@ -32,7 +32,8 @@ export function getApplicationMenuTemplate(options: ApplicationMenuOptions = {})
         { label: copy.tabHarness, accelerator: 'CmdOrCtrl+1', click: () => options.onNavigate?.('harness') },
         { label: copy.tabStore, accelerator: 'CmdOrCtrl+2', click: () => options.onNavigate?.('store') },
         { label: copy.tabPresets, accelerator: 'CmdOrCtrl+3', click: () => options.onNavigate?.('presets') },
-        { label: copy.tabSettings, accelerator: 'CmdOrCtrl+4', click: () => options.onNavigate?.('settings') },
+        { label: copy.tabDocs, accelerator: 'CmdOrCtrl+4', click: () => options.onNavigate?.('docs') },
+        { label: copy.tabSettings, accelerator: 'CmdOrCtrl+5', click: () => options.onNavigate?.('settings') },
         { type: 'separator' },
         { label: copy.menuOpenLog, click: () => options.onOpenRuntimeLog?.() },
         { label: copy.menuOpenHarnessDir, click: () => options.onOpenHarnessDir?.() }

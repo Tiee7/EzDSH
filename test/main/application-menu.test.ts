@@ -6,12 +6,12 @@ function findMenu(label: string): { label?: string; submenu?: Electron.MenuItemC
 }
 
 describe('application menu navigate section', () => {
-  it('exposes the four tabs with CmdOrCtrl+1..4 accelerators in order', () => {
+  it('exposes the five tabs with CmdOrCtrl+1..5 accelerators in order', () => {
     const navigate = findMenu('前往')
     expect(navigate?.submenu).toBeDefined()
     const items = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item)
-    expect(items.map((item) => item.accelerator)).toEqual(['CmdOrCtrl+1', 'CmdOrCtrl+2', 'CmdOrCtrl+3', 'CmdOrCtrl+4'])
-    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Skills', 'Preset', '设置'])
+    expect(items.map((item) => item.accelerator)).toEqual(['CmdOrCtrl+1', 'CmdOrCtrl+2', 'CmdOrCtrl+3', 'CmdOrCtrl+4', 'CmdOrCtrl+5'])
+    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Skills', 'Preset', '使用手册', '设置'])
   })
 
   it('invokes onNavigate with the clicked tab', () => {
@@ -24,15 +24,15 @@ describe('application menu navigate section', () => {
     const items = (navigate?.submenu ?? []).filter(
       (item) => 'accelerator' in item && typeof item.click === 'function'
     ) as Array<{ click: () => void }>
-    expect(items.length).toBe(4)
+    expect(items.length).toBe(5)
     for (const item of items) item.click()
-    expect(seen).toEqual(['harness', 'store', 'presets', 'settings'])
+    expect(seen).toEqual(['harness', 'store', 'presets', 'docs', 'settings'])
   })
 
   it('keeps locale switching consistent for the English menu', () => {
     const template = getApplicationMenuTemplate({ locale: 'en' })
     const navigate = template.find((item) => item.label === 'Go')
     const labels = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item).map((item) => item.label)
-    expect(labels).toEqual(['DeepSeek Harness', 'Skills', 'Preset', 'Settings'])
+    expect(labels).toEqual(['DeepSeek Harness', 'Skills', 'Preset', 'Docs', 'Settings'])
   })
 })

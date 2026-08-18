@@ -45,6 +45,7 @@ export interface AppCopy {
   tabHarness: string
   tabStore: string
   tabPresets: string
+  tabDocs: string
   tabSettings: string
   menuNavigate: string
   menuOpenLog: string
@@ -171,6 +172,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     tabHarness: 'DeepSeek Harness',
     tabStore: 'Skills',
     tabPresets: 'Preset',
+    tabDocs: '使用手册',
     tabSettings: '设置',
     menuNavigate: '前往',
     menuOpenLog: '打开运行日志…',
@@ -295,6 +297,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     tabHarness: 'DeepSeek Harness',
     tabStore: 'Skills',
     tabPresets: 'Preset',
+    tabDocs: 'Docs',
     tabSettings: 'Settings',
     menuNavigate: 'Go',
     menuOpenLog: 'Open Runtime Log…',
