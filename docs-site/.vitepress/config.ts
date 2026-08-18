@@ -2,11 +2,13 @@ import { defineConfig } from 'vitepress'
 
 const zhNav = [
   { text: '入门指南', link: '/guide/install' },
+  { text: '远程控制', link: '/remote-control' },
   { text: '常见问题', link: '/faq' }
 ]
 
 const enNav = [
   { text: 'Getting Started', link: '/en/guide/install' },
+  { text: 'Remote Control', link: '/en/remote-control' },
   { text: 'FAQ', link: '/en/faq' }
 ]
 
@@ -19,6 +21,7 @@ const zhSidebar = [
       { text: '下载与更新', link: '/guide/update' }
     ]
   },
+  { text: '远程控制', link: '/remote-control' },
   { text: '常见问题', link: '/faq' }
 ]
 
@@ -31,6 +34,7 @@ const enSidebar = [
       { text: 'Download & Update', link: '/en/guide/update' }
     ]
   },
+  { text: 'Remote Control', link: '/en/remote-control' },
   { text: 'FAQ', link: '/en/faq' }
 ]
 
