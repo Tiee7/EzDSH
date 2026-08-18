@@ -139,8 +139,13 @@ export interface AppCopy {
   channelBridgeHint: string
   channelBridgeEnabled: string
   channelBridgeAllowList: string
-  channelBridgeAppId: string
-  channelBridgeAppSecret: string
+  channelBridgeAdapters: string
+  channelBridgeAdapterName: string
+  channelBridgeAdapterConfig: string
+  channelBridgeAddAdapter: string
+  channelBridgeRemoveAdapter: string
+  channelBridgeNoAdapters: string
+  channelBridgeAdapterConfigInvalid: string
   channelBridgeSessionId: string
   channelBridgeSessionIdPlaceholder: string
   channelBridgeSessionTimeout: string
@@ -297,12 +302,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     navNameRequired: '请输入名称',
     navInvalidUrl: '请输入有效的 http/https 链接地址',
     navSaveFailed: '保存失败，请重试',
-    channelBridgeTitle: '飞书控制',
-    channelBridgeHint: '通过飞书机器人远程向 DSH 发送命令。使用飞书官方长连接，无需公网地址。消息会进入下方指定的 DSH 会话。',
-    channelBridgeEnabled: '启用飞书控制',
-    channelBridgeAllowList: '白名单用户 Open ID（每行一个）',
-    channelBridgeAppId: 'App ID',
-    channelBridgeAppSecret: 'App Secret',
+    channelBridgeTitle: '远程控制',
+    channelBridgeHint: '通过 IM Adapter 远程向 DSH 发送命令。消息会进入下方指定的 DSH 会话。',
+    channelBridgeEnabled: '启用远程控制',
+    channelBridgeAllowList: '白名单用户 ID（每行一个）',
+    channelBridgeAdapters: '已配置的 Adapter',
+    channelBridgeAdapterName: 'Adapter 名称',
+    channelBridgeAdapterConfig: '配置 (JSON)',
+    channelBridgeAddAdapter: '添加 Adapter',
+    channelBridgeRemoveAdapter: '移除',
+    channelBridgeNoAdapters: '尚未配置任何 adapter。',
+    channelBridgeAdapterConfigInvalid: '配置 JSON 格式错误',
     channelBridgeSessionId: 'DSH 会话 ID',
     channelBridgeSessionIdPlaceholder: '留空则首次使用时自动创建',
     channelBridgeSessionTimeout: '单轮等待超时（毫秒）',
@@ -315,7 +325,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeUseSession: '使用此会话',
     channelBridgeSaved: '已保存',
     channelBridgePairTitle: '用户配对',
-    channelBridgePairHint: '把验证码发给飞书机器人，即可自动将你的 Open ID 加入白名单。',
+    channelBridgePairHint: '把验证码发给任意已启用 adapter 的机器人，即可自动将你的用户 ID 加入白名单。',
     channelBridgeStartPairing: '开始配对',
     channelBridgeCancelPairing: '取消配对',
     channelBridgePairing: '正在配对…',
@@ -458,12 +468,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     navNameRequired: 'Name is required',
     navInvalidUrl: 'Enter a valid http/https URL',
     navSaveFailed: 'Save failed. Try again.',
-    channelBridgeTitle: 'Feishu control',
-    channelBridgeHint: 'Send commands to DSH remotely through a Feishu bot. Uses the Feishu official long connection, no public address needed. Messages enter the DSH session specified below.',
-    channelBridgeEnabled: 'Enable Feishu control',
-    channelBridgeAllowList: 'Whitelisted user Open IDs (one per line)',
-    channelBridgeAppId: 'App ID',
-    channelBridgeAppSecret: 'App Secret',
+    channelBridgeTitle: 'Remote control',
+    channelBridgeHint: 'Send commands to DSH remotely through an IM adapter. Messages enter the DSH session specified below.',
+    channelBridgeEnabled: 'Enable remote control',
+    channelBridgeAllowList: 'Whitelisted user IDs (one per line)',
+    channelBridgeAdapters: 'Configured adapters',
+    channelBridgeAdapterName: 'Adapter name',
+    channelBridgeAdapterConfig: 'Config (JSON)',
+    channelBridgeAddAdapter: 'Add adapter',
+    channelBridgeRemoveAdapter: 'Remove',
+    channelBridgeNoAdapters: 'No adapters configured.',
+    channelBridgeAdapterConfigInvalid: 'Adapter config JSON is invalid',
     channelBridgeSessionId: 'DSH session ID',
     channelBridgeSessionIdPlaceholder: 'Leave empty to create a session on first use',
     channelBridgeSessionTimeout: 'Turn wait timeout (ms)',
@@ -476,7 +491,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeUseSession: 'Use this session',
     channelBridgeSaved: 'Saved',
     channelBridgePairTitle: 'User pairing',
-    channelBridgePairHint: 'Send the verification code to the Feishu bot to add your Open ID to the allowlist automatically.',
+    channelBridgePairHint: 'Send the verification code to any enabled adapter bot to add your user ID to the allowlist automatically.',
     channelBridgeStartPairing: 'Start pairing',
     channelBridgeCancelPairing: 'Cancel pairing',
     channelBridgePairing: 'Pairing…',
