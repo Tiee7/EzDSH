@@ -1,8 +1,16 @@
 import type { UserDataLayout } from '../../shared/state.js'
+import { AdapterRegistry } from './adapter-registry.js'
 import { createConfigStorage, type ConfigStorage } from './config.js'
 import { DshSessionClient } from './dsh-session.js'
-import { FeishuAdapter } from './feishu.js'
-import type { ChannelBridgeConfig, ChannelMessage, ChannelReply } from './types.js'
+import type {
+  ChannelAdapter,
+  ChannelBridgeConfig,
+  ChannelMessage,
+  ChannelMessageStatus,
+  ChannelReply,
+  Logger,
+} from './types.js'
+import { DEFAULT_CHANNEL_BRIDGE_CONFIG } from './types.js'
 import type { DshSessionSummary, PairingState } from '../../shared/channel-bridge.js'
 
 interface PairingChallenge {
@@ -18,25 +26,21 @@ export interface ChannelBridgeOptions {
   layout: UserDataLayout
   /** Returns the current DSH Runtime URL, or undefined if it is not running. */
   getRuntimeUrl(): string | undefined
+  /** Registry of available channel adapters. */
+  registry: AdapterRegistry
 }
 
 export class ChannelBridgeService {
   private config: ChannelBridgeConfig
   private configStorage: ConfigStorage
-  private adapter?: FeishuAdapter
+  private adapters = new Map<string, ChannelAdapter>()
   private running = false
   private activeTurns = new Map<string, boolean>()
   private pairing?: PairingChallenge
   private pairingTimer?: NodeJS.Timeout
 
   constructor(private readonly options: ChannelBridgeOptions) {
-    this.config = {
-      enabled: false,
-      allowList: [],
-      timeoutMs: 120_000,
-      sessionTimeoutMs: 300_000,
-      statusIntervalMs: 60_000,
-    }
+    this.config = { ...DEFAULT_CHANNEL_BRIDGE_CONFIG }
     this.configStorage = createConfigStorage(this.options.layout.state)
   }
 
@@ -79,28 +83,62 @@ export class ChannelBridgeService {
   async start(): Promise<void> {
     await this.stop()
 
-    if (this.config.feishu === undefined) {
-      throw new Error('Feishu configuration is missing')
+    const configuredAdapters = Object.entries(this.config.adapters).filter(
+      ([, adapterConfig]) => adapterConfig !== undefined && adapterConfig !== null,
+    )
+
+    if (configuredAdapters.length === 0) {
+      throw new Error('没有配置任何 IM adapter')
     }
 
-    this.adapter = new FeishuAdapter({
-      config: this.config.feishu,
-      allowList: this.config.allowList,
-      onUnauthorizedMessage: (message) => this.handleUnauthorizedMessage(message),
-      logger: console,
-    })
-    this.adapter.onMessage(async (message: ChannelMessage): Promise<ChannelReply | undefined> => {
-      return this.handleMessage(this.adapter!, message)
-    })
+    const logger: Logger = console
+    const results = await Promise.allSettled(
+      configuredAdapters.map(async ([name, adapterConfig]) => {
+        const adapter = this.options.registry.create(name, {
+          config: adapterConfig,
+          allowList: this.config.allowList,
+          onUnauthorizedMessage: (message) => this.handleUnauthorizedMessage(message),
+          logger,
+        })
+        adapter.onMessage(async (message: ChannelMessage): Promise<ChannelReply | undefined> => {
+          return this.handleMessage(adapter, message)
+        })
+        await adapter.start()
+        this.adapters.set(name, adapter)
+        console.log(`[channel-bridge] adapter "${name}" started`)
+      }),
+    )
 
-    await this.adapter.start()
+    const failures = results
+      .map((result, index) => ({ result, name: configuredAdapters[index]?.[0] ?? 'unknown' }))
+      .filter(({ result }) => result.status === 'rejected')
+      .map(({ name, result }) => {
+        const reason = result.status === 'rejected' ? (result.reason as Error).message : 'unknown'
+        return `"${name}": ${reason}`
+      })
+
+    if (failures.length > 0) {
+      console.error(`[channel-bridge] adapter start failures: ${failures.join('; ')}`)
+    }
+
+    if (this.adapters.size === 0) {
+      throw new Error(`所有 adapter 启动失败: ${failures.join('; ')}`)
+    }
+
     this.running = true
-    console.log('[channel-bridge] Feishu long connection started')
   }
 
   async stop(): Promise<void> {
-    await this.adapter?.stop()
-    this.adapter = undefined
+    const results = await Promise.allSettled(
+      [...this.adapters.values()].map((adapter) => adapter.stop()),
+    )
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        const messageText = result.reason instanceof Error ? result.reason.message : String(result.reason)
+        console.error('[channel-bridge] adapter stop error:', messageText)
+      }
+    }
+    this.adapters.clear()
     this.running = false
     this.activeTurns.clear()
     this.cancelPairing()
@@ -135,7 +173,7 @@ export class ChannelBridgeService {
   }
 
   async startPairing(): Promise<PairingState> {
-    if (this.adapter === undefined) {
+    if (this.adapters.size === 0) {
       throw new Error('远程控制未启动，请先保存配置并启用')
     }
 
@@ -187,7 +225,9 @@ export class ChannelBridgeService {
     const allowList = [...this.config.allowList, openId]
     this.config = { ...this.config, allowList }
     await this.configStorage.saveConfig(this.config)
-    this.adapter?.updateAllowList(allowList)
+    for (const adapter of this.adapters.values()) {
+      adapter.updateAllowList(allowList)
+    }
     await this.cancelPairing()
 
     console.log(`[channel-bridge] paired with ${openId}`)
@@ -198,7 +238,7 @@ export class ChannelBridgeService {
   }
 
   private async handleMessage(
-    adapter: FeishuAdapter,
+    adapter: ChannelAdapter,
     message: ChannelMessage,
   ): Promise<ChannelReply | undefined> {
     const text = message.content.text.trim()
@@ -224,6 +264,7 @@ export class ChannelBridgeService {
     }
 
     this.activeTurns.set(sessionId, true)
+    await this.safeSetStatus(adapter, message.messageId, 'processing')
 
     const client = new DshSessionClient({
       baseUrl: runtimeUrl,
@@ -255,16 +296,20 @@ export class ChannelBridgeService {
           },
           onComplete: (answer) => {
             this.activeTurns.delete(sessionId)
-            void this.safeSend(adapter, {
-              to: recipient,
-              content: answer.length > 0 ? answer : 'DSH 没有返回任何输出。',
+            void this.safeSetStatus(adapter, message.messageId, 'done').finally(() => {
+              void this.safeSend(adapter, {
+                to: recipient,
+                content: answer.length > 0 ? answer : 'DSH 没有返回任何输出。',
+              })
             })
           },
           onError: (error) => {
             this.activeTurns.delete(sessionId)
-            void this.safeSend(adapter, {
-              to: recipient,
-              content: `执行失败：${error}`,
+            void this.safeSetStatus(adapter, message.messageId, 'error').finally(() => {
+              void this.safeSend(adapter, {
+                to: recipient,
+                content: `执行失败：${error}`,
+              })
             })
           },
         },
@@ -276,10 +321,12 @@ export class ChannelBridgeService {
       .catch((error: unknown) => {
         this.activeTurns.delete(sessionId)
         const messageText = error instanceof Error ? error.message : String(error)
-        void this.safeSend(adapter, { to: recipient, content: `执行失败：${messageText}` })
+        void this.safeSetStatus(adapter, message.messageId, 'error').finally(() => {
+          void this.safeSend(adapter, { to: recipient, content: `执行失败：${messageText}` })
+        })
       })
 
-    // Return immediately so Feishu gets a fast acknowledgement.
+    // Return immediately so the adapter can acknowledge the platform quickly.
     return undefined
   }
 
@@ -311,12 +358,28 @@ export class ChannelBridgeService {
     }
   }
 
-  private async safeSend(adapter: FeishuAdapter, reply: ChannelReply): Promise<void> {
+  private async safeSend(adapter: ChannelAdapter, reply: ChannelReply): Promise<void> {
     try {
       await adapter.send(reply)
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
-      console.error('[channel-bridge] failed to send Feishu reply:', messageText)
+      console.error(`[channel-bridge] failed to send reply via ${adapter.name}:`, messageText)
+    }
+  }
+
+  private async safeSetStatus(
+    adapter: ChannelAdapter,
+    messageId: string,
+    status: ChannelMessageStatus,
+  ): Promise<void> {
+    if (adapter.setStatus === undefined || messageId === '') {
+      return
+    }
+    try {
+      await adapter.setStatus(messageId, status)
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error)
+      console.error(`[channel-bridge] failed to set status on ${adapter.name}:`, messageText)
     }
   }
 }

@@ -15,7 +15,7 @@ describe('channel bridge config storage', () => {
     expect(config.timeoutMs).toBe(120_000)
     expect(config.sessionTimeoutMs).toBe(300_000)
     expect(config.statusIntervalMs).toBe(60_000)
-    expect(config.feishu).toBeUndefined()
+    expect(config.adapters).toEqual({})
   })
 
   it('round-trips custom config', async () => {
@@ -23,7 +23,7 @@ describe('channel bridge config storage', () => {
     const storage = createConfigStorage(dir)
     const custom: ChannelBridgeConfig = {
       enabled: true,
-      feishu: { appId: 'app-id', appSecret: 'app-secret' },
+      adapters: { feishu: { appId: 'app-id', appSecret: 'app-secret' } },
       sessionId: 'session-1',
       allowList: ['user-1', 'user-2'],
       workspace: '/tmp',
@@ -37,7 +37,7 @@ describe('channel bridge config storage', () => {
     expect(storage.getConfigPath()).toBe(join(dir, 'channel-bridge.json'))
   })
 
-  it('migrates legacy config that contained a port field', async () => {
+  it('migrates legacy config with top-level feishu field', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-cb-'))
     const storage = createConfigStorage(dir)
     const legacy = {
@@ -50,10 +50,26 @@ describe('channel bridge config storage', () => {
     await writeFile(storage.getConfigPath(), JSON.stringify(legacy))
     const loaded = await storage.loadConfig()
     expect(loaded.enabled).toBe(true)
-    expect(loaded.feishu).toEqual(legacy.feishu)
+    expect(loaded.adapters.feishu).toEqual(legacy.feishu)
     expect(loaded.allowList).toEqual(['user-1'])
     expect(loaded.timeoutMs).toBe(60_000)
     expect(loaded.sessionTimeoutMs).toBe(300_000)
     expect(loaded.statusIntervalMs).toBe(60_000)
+  })
+
+  it('preserves new adapters field over legacy feishu field', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-cb-'))
+    const storage = createConfigStorage(dir)
+    const legacy = {
+      enabled: true,
+      feishu: { appId: 'old-app-id', appSecret: 'old-secret' },
+      adapters: { feishu: { appId: 'new-app-id', appSecret: 'new-secret' }, slack: { token: 'xoxb' } },
+      allowList: ['user-1'],
+      timeoutMs: 60_000,
+    }
+    await writeFile(storage.getConfigPath(), JSON.stringify(legacy))
+    const loaded = await storage.loadConfig()
+    expect(loaded.adapters.feishu).toEqual({ appId: 'new-app-id', appSecret: 'new-secret' })
+    expect(loaded.adapters.slack).toEqual({ token: 'xoxb' })
   })
 })

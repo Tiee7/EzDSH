@@ -34,6 +34,8 @@ import { UpdateManager } from './update/update-manager.js'
 import { getApplicationMenuTemplate } from './application-menu.js'
 import { LocaleService, writeDshLocale } from './locale/locale-service.js'
 import { ChannelBridgeService } from './channel-bridge/index.js'
+import { AdapterRegistry } from './channel-bridge/adapter-registry.js'
+import { feishuAdapterFactory } from './channel-bridge/adapters/feishu/index.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
@@ -511,9 +513,12 @@ if (!singleInstance) {
       runtimeEntryPath,
       command: runtimeCommandPath
     })
+    const channelBridgeRegistry = new AdapterRegistry()
+    channelBridgeRegistry.register(feishuAdapterFactory)
     channelBridgeService = new ChannelBridgeService({
       layout,
       getRuntimeUrl: () => runtimeManager?.snapshot().url,
+      registry: channelBridgeRegistry,
     })
     await channelBridgeService.initialize().catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)

@@ -29,6 +29,8 @@ export class FeishuAdapter implements ChannelAdapter {
   private client?: lark.Client
   private wsClient?: lark.WSClient
   private eventDispatcher?: lark.EventDispatcher
+  /** Tracks reaction_id for each (messageId, emojiType) so we can delete it later. */
+  private reactionIds = new Map<string, string>()
 
   constructor(private readonly options: FeishuAdapterOptions) {
     this.config = options.config
@@ -140,6 +142,10 @@ export class FeishuAdapter implements ChannelAdapter {
     // 'received' does not need a visible reaction.
   }
 
+  private reactionKey(messageId: string, emojiType: string): string {
+    return `${messageId}:${emojiType}`
+  }
+
   async handleReceiveEvent(event: FeishuMessageEvent): Promise<ChannelReply | undefined> {
     const message = this.normalizeMessage(event)
     if (message === undefined || message.chat === undefined) {
@@ -201,9 +207,14 @@ export class FeishuAdapter implements ChannelAdapter {
       const response = (await this.client.im.messageReaction.create({
         path: { message_id: messageId },
         data: { reaction_type: { emoji_type: emojiType } },
-      })) as { code: number; msg?: string }
+      })) as { code: number; msg?: string; data?: { reaction_id?: string } }
       if (response.code !== 0) {
         this.logger.warn(`[channel-bridge:feishu] add reaction failed: ${response.code} ${response.msg}`)
+        return
+      }
+      const reactionId = response.data?.reaction_id
+      if (reactionId !== undefined) {
+        this.reactionIds.set(this.reactionKey(messageId, emojiType), reactionId)
       }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
@@ -213,14 +224,21 @@ export class FeishuAdapter implements ChannelAdapter {
 
   private async removeReaction(messageId: string, emojiType: string): Promise<void> {
     if (this.client === undefined) return
+    const key = this.reactionKey(messageId, emojiType)
+    const reactionId = this.reactionIds.get(key)
+    if (reactionId === undefined) {
+      // We can only delete a reaction if we previously recorded its reaction_id.
+      return
+    }
     try {
       const response = (await this.client.im.messageReaction.delete({
-        path: { message_id: messageId },
-        data: { reaction_type: { emoji_type: emojiType } },
+        path: { message_id: messageId, reaction_id: reactionId },
       })) as { code: number; msg?: string }
       if (response.code !== 0) {
         this.logger.warn(`[channel-bridge:feishu] remove reaction failed: ${response.code} ${response.msg}`)
+        return
       }
+      this.reactionIds.delete(key)
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
       this.logger.warn(`[channel-bridge:feishu] remove reaction error: ${messageText}`)

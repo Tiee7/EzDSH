@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { FeishuAdapter, type FeishuMessageEvent } from '../../src/main/channel-bridge/feishu.js'
+import { FeishuAdapter, type FeishuMessageEvent } from '../../src/main/channel-bridge/adapters/feishu/index.js'
 
 function createEvent(openId: string, text: string): FeishuMessageEvent {
   return {

@@ -3,7 +3,9 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ChannelBridgeService } from '../../src/main/channel-bridge/index.js'
-import type { FeishuMessageEvent } from '../../src/main/channel-bridge/feishu.js'
+import { AdapterRegistry } from '../../src/main/channel-bridge/adapter-registry.js'
+import { feishuAdapterFactory } from '../../src/main/channel-bridge/adapters/feishu/index.js'
+import type { FeishuMessageEvent } from '../../src/main/channel-bridge/adapters/feishu/index.js'
 import type { ChannelBridgeConfig } from '../../src/shared/channel-bridge.js'
 
 vi.mock('@larksuiteoapi/node-sdk', () => {
@@ -12,6 +14,10 @@ vi.mock('@larksuiteoapi/node-sdk', () => {
       im = {
         message: {
           create: async () => ({ code: 0, msg: 'ok', data: {} }),
+        },
+        messageReaction: {
+          create: async () => ({ code: 0, msg: 'ok', data: {} }),
+          delete: async () => ({ code: 0, msg: 'ok', data: {} }),
         },
       }
     },
@@ -44,6 +50,18 @@ function createEvent(openId: string, text: string, chatType: 'p2p' | 'group' = '
   }
 }
 
+function createRegistry(): AdapterRegistry {
+  const registry = new AdapterRegistry()
+  registry.register(feishuAdapterFactory)
+  return registry
+}
+
+function getFeishuAdapter(service: ChannelBridgeService): { handleReceiveEvent: (event: FeishuMessageEvent) => Promise<unknown> } {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const adapters = (service as unknown as { adapters: Map<string, unknown> }).adapters
+  return adapters.get('feishu') as { handleReceiveEvent: (event: FeishuMessageEvent) => Promise<unknown> }
+}
+
 describe('ChannelBridgeService pairing', () => {
   let service: ChannelBridgeService
   let configDir: string
@@ -53,6 +71,7 @@ describe('ChannelBridgeService pairing', () => {
     service = new ChannelBridgeService({
       layout: { state: configDir, runtime: configDir, cache: configDir },
       getRuntimeUrl: () => 'http://localhost:8080',
+      registry: createRegistry(),
     })
   })
 
@@ -69,7 +88,7 @@ describe('ChannelBridgeService pairing', () => {
     vi.useFakeTimers()
     const config: ChannelBridgeConfig = {
       enabled: true,
-      feishu: { appId: 'cli_xxx', appSecret: 'secret' },
+      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }
@@ -86,17 +105,17 @@ describe('ChannelBridgeService pairing', () => {
   it('adds the sender to the allowlist when the correct code is sent in a private chat', async () => {
     const config: ChannelBridgeConfig = {
       enabled: true,
-      feishu: { appId: 'cli_xxx', appSecret: 'secret' },
+      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }
     await service.setConfig(config)
 
     const state = await service.startPairing()
-    const adapter = (service as unknown as { adapter?: { handleReceiveEvent: (event: FeishuMessageEvent) => Promise<unknown> } }).adapter
+    const adapter = getFeishuAdapter(service)
     expect(adapter).toBeDefined()
 
-    const reply = await adapter!.handleReceiveEvent(createEvent('ou_new_user', state.code!))
+    const reply = await adapter.handleReceiveEvent(createEvent('ou_new_user', state.code!))
     expect((reply as { content: string }).content).toContain('配对成功')
 
     const savedConfig = JSON.parse(await readFile(join(configDir, 'channel-bridge.json'), 'utf-8')) as ChannelBridgeConfig
@@ -109,16 +128,16 @@ describe('ChannelBridgeService pairing', () => {
   it('ignores correct codes sent in group chats', async () => {
     const config: ChannelBridgeConfig = {
       enabled: true,
-      feishu: { appId: 'cli_xxx', appSecret: 'secret' },
+      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }
     await service.setConfig(config)
 
     const state = await service.startPairing()
-    const adapter = (service as unknown as { adapter?: { handleReceiveEvent: (event: FeishuMessageEvent) => Promise<unknown> } }).adapter
+    const adapter = getFeishuAdapter(service)
 
-    const reply = await adapter!.handleReceiveEvent(createEvent('ou_new_user', state.code!, 'group'))
+    const reply = await adapter.handleReceiveEvent(createEvent('ou_new_user', state.code!, 'group'))
     expect((reply as { content: string }).content).toContain('白名单')
 
     const currentConfig = await service.getConfig()
@@ -128,16 +147,16 @@ describe('ChannelBridgeService pairing', () => {
   it('ignores incorrect codes', async () => {
     const config: ChannelBridgeConfig = {
       enabled: true,
-      feishu: { appId: 'cli_xxx', appSecret: 'secret' },
+      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }
     await service.setConfig(config)
 
     await service.startPairing()
-    const adapter = (service as unknown as { adapter?: { handleReceiveEvent: (event: FeishuMessageEvent) => Promise<unknown> } }).adapter
+    const adapter = getFeishuAdapter(service)
 
-    const reply = await adapter!.handleReceiveEvent(createEvent('ou_new_user', '000000'))
+    const reply = await adapter.handleReceiveEvent(createEvent('ou_new_user', '000000'))
     expect((reply as { content: string }).content).toContain('白名单')
 
     const currentConfig = await service.getConfig()
@@ -147,7 +166,7 @@ describe('ChannelBridgeService pairing', () => {
   it('cancels pairing on request', async () => {
     const config: ChannelBridgeConfig = {
       enabled: true,
-      feishu: { appId: 'cli_xxx', appSecret: 'secret' },
+      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }

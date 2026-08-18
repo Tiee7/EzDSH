@@ -59,6 +59,8 @@ export interface Logger {
 /** Every adapter must implement this interface. */
 export interface ChannelAdapter {
   readonly name: string
+  /** Register the handler that will process incoming messages from the platform. */
+  onMessage(handler: (message: ChannelMessage) => Promise<ChannelReply | undefined>): void
   start(): Promise<void>
   stop(): Promise<void>
   send(reply: ChannelReply): Promise<void>
