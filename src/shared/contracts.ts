@@ -25,6 +25,7 @@ import type {
   TestConnectionResult,
   TestProviderInput
 } from './providers.js'
+import type { ChannelBridgeConfig } from './channel-bridge.js'
 
 export interface EzDSHBridge {
   app: {
@@ -79,6 +80,11 @@ export interface EzDSHBridge {
     download(): Promise<UpdateState>
     install(): Promise<UpdateState>
     onStateChange(listener: (state: UpdateState) => void): () => void
+  }
+  channelBridge: {
+    getConfig(): Promise<ChannelBridgeConfig>
+    setConfig(config: ChannelBridgeConfig): Promise<void>
+    getConfigPath(): Promise<string>
   }
 }
 

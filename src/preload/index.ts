@@ -85,6 +85,11 @@ const bridge: EzDSHBridge = {
       ipcRenderer.on('updates:state-change', handler)
       return () => ipcRenderer.removeListener('updates:state-change', handler)
     }
+  },
+  channelBridge: {
+    getConfig: () => invoke('channel-bridge:get-config'),
+    setConfig: (config) => invoke('channel-bridge:set-config', config),
+    getConfigPath: () => invoke('channel-bridge:get-config-path')
   }
 }
 

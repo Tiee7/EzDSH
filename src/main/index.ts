@@ -33,6 +33,7 @@ import { ProviderService } from './providers/provider-service.js'
 import { UpdateManager } from './update/update-manager.js'
 import { getApplicationMenuTemplate } from './application-menu.js'
 import { LocaleService, writeDshLocale } from './locale/locale-service.js'
+import { ChannelBridgeService } from './channel-bridge/index.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
@@ -41,6 +42,7 @@ let localeService: LocaleService | undefined
 let updateManager: UpdateManager | undefined
 let userDataLayout: UserDataLayout | undefined
 let storeService: StoreService | undefined
+let channelBridgeService: ChannelBridgeService | undefined
 let isQuitting = false
 let updateDialogOpen = false
 const require = createRequire(import.meta.url)
@@ -360,6 +362,25 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+
+  ipcMain.handle('channel-bridge:get-config', async (): Promise<IpcResult<Awaited<ReturnType<ChannelBridgeService['getConfig']>>>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      return success(await channelBridgeService.getConfig())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+
+  ipcMain.handle('channel-bridge:set-config', async (_event, config: Awaited<ReturnType<ChannelBridgeService['getConfig']>>): Promise<IpcResult<void>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      await channelBridgeService.setConfig(config)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
 }
 
 registerIpcHandlers()
@@ -436,21 +457,29 @@ if (!singleInstance) {
     userDataLayout = layout
     localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
     await localeService.start()
+    const runtimeEntryPath = resolveRuntimeEntryPath({
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      isPackaged: app.isPackaged,
+      developmentSourceRoot: process.env.EZDSH_DSH_SOURCE?.trim() || undefined
+    })
+    const runtimeCommandPath = resolveRuntimeCommandPath({
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+      isPackaged: app.isPackaged,
+      arch: process.arch
+    })
     runtimeManager = new RuntimeManager({
       layout,
-      runtimeEntryPath: resolveRuntimeEntryPath({
-        appPath: app.getAppPath(),
-        resourcesPath: process.resourcesPath,
-        isPackaged: app.isPackaged,
-        developmentSourceRoot: process.env.EZDSH_DSH_SOURCE?.trim() || undefined
-      }),
-      command: resolveRuntimeCommandPath({
-        appPath: app.getAppPath(),
-        resourcesPath: process.resourcesPath,
-        isPackaged: app.isPackaged,
-        arch: process.arch
-      })
+      runtimeEntryPath,
+      command: runtimeCommandPath
     })
+    channelBridgeService = new ChannelBridgeService({
+      layout,
+      runtimeEntryPath,
+      runtimeCommandPath
+    })
+    await channelBridgeService.initialize()
     providerService = new ProviderService(layout)
     await providerService.initialize()
     storeService = new StoreService({
@@ -528,7 +557,10 @@ if (!singleInstance) {
     if (isQuitting || runtimeManager === undefined) return
     event.preventDefault()
     isQuitting = true
-    void runtimeManager.stop().finally(() => {
+    void Promise.all([
+      runtimeManager.stop(),
+      channelBridgeService?.stop() ?? Promise.resolve(),
+    ]).finally(() => {
       localeService?.stop()
       app.quit()
     })

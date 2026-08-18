@@ -5,6 +5,7 @@ import { STORE_API_BASE_URL } from '../../shared/store.js'
 import { ProviderSection } from './ProviderSection.js'
 import { UpdateSection } from './UpdateSection.js'
 import { RuntimeSection } from './RuntimeSection.js'
+import { ChannelBridgeSection } from './ChannelBridgeSection.js'
 import './settings.css'
 
 interface SettingsPageProps {
@@ -33,6 +34,9 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
       <ProviderSection copy={copy} />
       <section className="settings-card">
         <RuntimeSection copy={copy} runtime={runtime} />
+      </section>
+      <section className="settings-card">
+        <ChannelBridgeSection copy={copy} />
       </section>
       <section className="settings-card">
         <UpdateSection copy={copy} />

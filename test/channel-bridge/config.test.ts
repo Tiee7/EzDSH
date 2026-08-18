@@ -1,0 +1,35 @@
+import { describe, expect, it } from 'vitest'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createConfigStorage } from '../../src/main/channel-bridge/config.js'
+import type { ChannelBridgeConfig } from '../../src/shared/channel-bridge.js'
+
+describe('channel bridge config storage', () => {
+  it('loads defaults when file is missing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-cb-'))
+    const storage = createConfigStorage(dir)
+    const config = await storage.loadConfig()
+    expect(config.enabled).toBe(false)
+    expect(config.port).toBe(17891)
+    expect(config.allowList).toEqual([])
+    expect(config.timeoutMs).toBe(120_000)
+  })
+
+  it('round-trips custom config', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-cb-'))
+    const storage = createConfigStorage(dir)
+    const custom: ChannelBridgeConfig = {
+      enabled: true,
+      port: 18000,
+      feishu: { appId: 'app-id', appSecret: 'app-secret' },
+      allowList: ['user-1', 'user-2'],
+      workspace: '/tmp',
+      timeoutMs: 60_000,
+    }
+    await storage.saveConfig(custom)
+    const loaded = await storage.loadConfig()
+    expect(loaded).toEqual(custom)
+    expect(storage.getConfigPath()).toBe(join(dir, 'channel-bridge.json'))
+  })
+})

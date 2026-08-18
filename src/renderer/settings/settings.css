@@ -421,3 +421,78 @@
   font-weight: 500;
 }
 
+.settings-item-column {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+}
+
+.bridge-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ezdsh-text-body);
+  font-size: 13px;
+}
+
+.bridge-row > span {
+  flex: 0 0 160px;
+  color: var(--ezdsh-text-muted);
+  font-size: 12px;
+}
+
+.bridge-row > input[type='text'],
+.bridge-row > input[type='password'],
+.bridge-row > input[type='number'] {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-body);
+  font: inherit;
+}
+
+.bridge-row > input:focus {
+  outline: none;
+  border-color: var(--ezdsh-active-border);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ezdsh-active-border) 15%, transparent);
+}
+
+.bridge-row-block {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.bridge-row-block > span {
+  flex: none;
+}
+
+.bridge-row-block > textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-body);
+  font: inherit;
+}
+
+.bridge-row-block > textarea:focus {
+  outline: none;
+  border-color: var(--ezdsh-active-border);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ezdsh-active-border) 15%, transparent);
+}
+
+.bridge-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--ezdsh-code-background);
+}
+
