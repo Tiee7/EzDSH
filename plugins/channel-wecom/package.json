@@ -1,0 +1,17 @@
+{
+  "name": "@ezdsh/channel-wecom",
+  "version": "0.1.0",
+  "description": "WeCom (Enterprise WeChat) channel adapter for EzDSH remote control.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": { "default": "./src/index.js" },
+    "./package.json": "./package.json"
+  },
+  "ezdsh": {
+    "channelAdapter": {
+      "name": "wecom",
+      "entry": "./src/index.js"
+    }
+  }
+}
