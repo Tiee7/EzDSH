@@ -24,7 +24,7 @@ title: 国内免费获取 Tokens 攻略
 - **新人**：注册实名送 2000 万 token（一次性）
 - **永久免费层**：GLM‑4‑Flash、GLM‑4.7‑Flash 永久免费，128K‑200K 上下文，并发 30
 - **有效期**：新人包永久；Flash 系列长期免费
-- **入口**：[open.bigmodel.cn](https://open.bigmodel.cn) 控制台
+- **入口**：[open.bigmodel.cn 控制台](https://www.bigmodel.cn/invite?icode=hkDSGlyffuqBtQ2NdN5TFJmwcr074zMJTpgMb8zZZvg%3D)
 
 ### 2. 火山引擎 · 火山方舟（字节豆包 API）
 
@@ -49,6 +49,7 @@ title: 国内免费获取 Tokens 攻略
 - **福利**：每个独立模型 100 万 token 免费额度，多模型可分别领取
 - **有效期**：开通起 90 天
 - **可调用**：通义千问、DeepSeek、GLM、MiniMax、Kimi 等大量第三方模型
+- **入口**：[aliyun.com](https://www.aliyun.com/minisite/goods?userCode=r4vwouni)
 
 ### 2. 腾讯云 TokenHub（混元）
 
@@ -66,6 +67,7 @@ title: 国内免费获取 Tokens 攻略
 - 新用户赠送 2000 万 token + 14 元体验金
 - 9B 及以下开源小模型永久免费调用（Qwen、GLM 小参数量版本）
 - OpenAI 兼容接口，国内低延迟
+- **入口**：[cloud.siliconflow.cn](https://cloud.siliconflow.cn/i/KfLlviZo)
 
 ## 三、公共开发者平台
 
