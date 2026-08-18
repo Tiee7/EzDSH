@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useState } from 'react'
-import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../../shared/locale.js'
-import type { AppTab } from '../../shared/navigation.js'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { DEFAULT_APP_LOCALE, getAppCopy, type AppCopy, type AppLocale } from '../../shared/locale.js'
+import {
+  getDefaultNavConfig,
+  isBuiltinNavItem,
+  isCustomNavItem,
+  visibleNavItems,
+  type AppTab,
+  type NavConfig
+} from '../../shared/navigation.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import type { UpdateState } from '../../shared/update.js'
 import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
+import { WebPane } from './WebPane.js'
 import { StorePage } from '../store/StorePage.js'
 import { PresetPage } from '../store/PresetPage.js'
 import { DocsPage } from '../docs/DocsPage.js'
@@ -12,13 +20,29 @@ import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import logoUrl from '../../../assets/logo.png'
 import './app.css'
 
+function builtinTabLabel(id: AppTab, copy: AppCopy): string {
+  switch (id) {
+    case 'harness':
+      return copy.tabHarness
+    case 'store':
+      return copy.tabStore
+    case 'presets':
+      return copy.tabPresets
+    case 'docs':
+      return copy.tabDocs
+    case 'settings':
+      return copy.tabSettings
+  }
+}
+
 export function App() {
   const [locale, setLocale] = useState<AppLocale>(DEFAULT_APP_LOCALE)
   const copy = getAppCopy(locale)
   const [runtime, setRuntime] = useState<RuntimeSnapshot>()
   const [update, setUpdate] = useState<UpdateState>()
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<AppTab>('harness')
+  const [navConfig, setNavConfig] = useState<NavConfig>(() => getDefaultNavConfig())
+  const [activeTab, setActiveTab] = useState<string>('harness')
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
   const isMac = window.EzDSH.app.platform === 'darwin'
 
@@ -49,6 +73,9 @@ export function App() {
     const unsubscribeUpdate = window.EzDSH.updates.onStateChange((snapshot) => {
       if (active) setUpdate(snapshot)
     })
+    const unsubscribeNav = window.EzDSH.navigation.onStateChange((config) => {
+      if (active) setNavConfig(config)
+    })
     void window.EzDSH.locale.get()
       .then((nextLocale) => {
         if (!active) return
@@ -67,12 +94,20 @@ export function App() {
       .catch(() => {
         // Ignore update status errors; the settings page handles its own error state.
       })
+    void window.EzDSH.navigation.getConfig()
+      .then((config) => {
+        if (active) setNavConfig(config)
+      })
+      .catch(() => {
+        // Keep defaults if navigation config cannot be read.
+      })
     return () => {
       active = false
       unsubscribe()
       unsubscribeNavigate()
       unsubscribeLocale()
       unsubscribeUpdate()
+      unsubscribeNav()
     }
   }, [ensureRuntime])
 
@@ -80,47 +115,71 @@ export function App() {
     void ensureRuntime()
   }, [ensureRuntime])
 
+  const visibleItems = useMemo(() => visibleNavItems(navConfig), [navConfig])
+  const visibleIds = useMemo(() => visibleItems.map((item) => item.id), [visibleItems])
+
+  useEffect(() => {
+    if (!visibleIds.includes(activeTab)) {
+      setActiveTab(visibleIds[0] ?? 'harness')
+    }
+  }, [visibleIds, activeTab])
+
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {
-    const tabs: Array<{ id: AppTab; label: string }> = [
-      { id: 'harness', label: copy.tabHarness },
-      { id: 'store', label: copy.tabStore },
-      { id: 'presets', label: copy.tabPresets },
-      { id: 'docs', label: copy.tabDocs },
-      { id: 'settings', label: copy.tabSettings }
-    ]
     return (
       <main className="workspace">
         <nav className={`tab-bar ${isMac ? 'tab-bar-mac' : ''}`} aria-label={copy.menuNavigate}>
           <div className="tab-bar-drag-region" aria-hidden="true" />
           <div className="tab-bar-tabs" role="tablist">
-            {tabs.map((tab) => (
+            {visibleItems.map((item) => (
               <button
-                key={tab.id}
+                key={item.id}
                 role="tab"
-                aria-selected={activeTab === tab.id}
-                className={`tab-bar-item ${activeTab === tab.id ? 'tab-bar-item-active' : ''}`}
-                onClick={() => setActiveTab(tab.id)}
+                aria-selected={activeTab === item.id}
+                className={`tab-bar-item ${activeTab === item.id ? 'tab-bar-item-active' : ''}`}
+                onClick={() => setActiveTab(item.id)}
               >
-                {tab.label}
+                {isBuiltinNavItem(item) ? builtinTabLabel(item.id, copy) : item.label}
               </button>
             ))}
           </div>
         </nav>
         <div className="workspace-content">
-          <div className={`workspace-pane ${activeTab === 'harness' ? 'workspace-pane-active' : ''}`}>
-            <iframe
-              title="EzDSH Runtime"
-              src={runtime.url}
-              allow={RUNTIME_IFRAME_ALLOW}
-              sandbox={RUNTIME_IFRAME_SANDBOX}
-            />
-          </div>
-          {activeTab === 'store' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section> : null}
-          {activeTab === 'presets' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section> : null}
-          <div className={`workspace-pane ${activeTab === 'docs' ? 'workspace-pane-active' : ''}`}>
-            <DocsPage locale={locale} />
-          </div>
-          {activeTab === 'settings' ? <section className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} /></section> : null}
+          {visibleItems.map((item) => {
+            if (isCustomNavItem(item)) {
+              return <WebPane key={item.id} item={item} active={activeTab === item.id} copy={copy} />
+            }
+            switch (item.id) {
+              case 'harness':
+                return (
+                  <div key="harness" className={`workspace-pane ${activeTab === 'harness' ? 'workspace-pane-active' : ''}`}>
+                    <iframe
+                      title="EzDSH Runtime"
+                      src={runtime.url}
+                      allow={RUNTIME_IFRAME_ALLOW}
+                      sandbox={RUNTIME_IFRAME_SANDBOX}
+                    />
+                  </div>
+                )
+              case 'store':
+                return activeTab === 'store'
+                  ? <section key="store" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} /></section>
+                  : null
+              case 'presets':
+                return activeTab === 'presets'
+                  ? <section key="presets" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section>
+                  : null
+              case 'docs':
+                return (
+                  <div key="docs" className={`workspace-pane ${activeTab === 'docs' ? 'workspace-pane-active' : ''}`}>
+                    <DocsPage locale={locale} />
+                  </div>
+                )
+              case 'settings':
+                return activeTab === 'settings'
+                  ? <section key="settings" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} /></section>
+                  : null
+            }
+          })}
         </div>
         {update ? <UpdateCenter state={update} copy={copy} /> : null}
       </main>

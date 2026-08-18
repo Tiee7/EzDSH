@@ -312,3 +312,46 @@ h1 {
   display: block;
   border: 0;
 }
+.web-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.web-pane-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ezdsh-panel-border);
+  background: var(--ezdsh-tab-bar-background);
+  -webkit-app-region: no-drag;
+}
+
+.web-pane-url {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ezdsh-text-muted);
+  font-size: 12px;
+}
+
+.web-pane-reload {
+  border: 1px solid var(--ezdsh-button-border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--ezdsh-button-text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.web-pane iframe {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: auto;
+  border: 0;
+}
