@@ -14,6 +14,8 @@ export interface ChannelBridgeConfig {
   timeoutMs: number
   /** How long to wait for the DSH session to finish a turn (ms). */
   sessionTimeoutMs?: number
+  /** How often to send a progress update while a turn is running (ms). */
+  statusIntervalMs?: number
 }
 
 export interface DshSessionSummary {

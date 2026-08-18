@@ -30,6 +30,17 @@ export interface DshSessionSummary {
   blank?: boolean
 }
 
+export interface TurnTrackerCallbacks {
+  /** Called after the prompt has been queued in DSH. */
+  onAcknowledged(): void
+  /** Called every `statusIntervalMs` while the turn is still running. */
+  onProgress(elapsedMs: number): void
+  /** Called once the turn ends and a final text answer is available. */
+  onComplete(text: string): void
+  /** Called when the turn exceeds `timeoutMs` without completing. */
+  onError(error: string): void
+}
+
 interface SessionCreateRequest {
   sessionId?: string
   cwd?: string
@@ -119,6 +130,34 @@ export class DshSessionClient {
   }
 
   async sendPrompt(sessionId: string, text: string): Promise<DshSendResult> {
+    return new Promise((resolve, reject) => {
+      void this.sendPromptAsync(
+        sessionId,
+        text,
+        {
+          onAcknowledged: () => {},
+          onProgress: () => {},
+          onComplete: (answer) => {
+            resolve({ text: answer })
+          },
+          onError: (error) => {
+            reject(new Error(error))
+          },
+        },
+        {
+          timeoutMs: this.options.timeoutMs,
+          statusIntervalMs: this.options.timeoutMs,
+        },
+      )
+    })
+  }
+
+  async sendPromptAsync(
+    sessionId: string,
+    text: string,
+    callbacks: TurnTrackerCallbacks,
+    options: { timeoutMs: number; statusIntervalMs: number },
+  ): Promise<void> {
     const sinceSeq = await this.getCurrentMaxSeq(sessionId)
 
     const promptBody: SessionPromptRequest = {
@@ -128,22 +167,11 @@ export class DshSessionClient {
     }
 
     await this.post<SessionPromptResponse>('/api/session.prompt', promptBody)
+    callbacks.onAcknowledged()
 
-    const answer = await this.waitForAssistantText(sessionId, sinceSeq)
-    return { text: answer }
-  }
-
-  private async getCurrentMaxSeq(sessionId: string): Promise<number> {
-    const history = await this.post<SessionHistoryResponse>('/api/session.history', {
-      sessionId,
-    } as SessionHistoryRequest)
-
-    if (history.events.length === 0) return -1
-    return Math.max(...history.events.map((entry) => entry.event.seq))
-  }
-
-  private async waitForAssistantText(sessionId: string, sinceSeq: number): Promise<string> {
-    const deadline = Date.now() + this.options.timeoutMs
+    const startTime = Date.now()
+    const deadline = startTime + options.timeoutMs
+    let nextStatusTime = startTime + options.statusIntervalMs
     const collectedEvents: SessionEvent[] = []
     const seenSeqs = new Set<number>()
 
@@ -162,13 +190,29 @@ export class DshSessionClient {
 
       const turnEnd = collectedEvents.find((event) => event.type === 'turn/end')
       if (turnEnd !== undefined) {
-        return extractAssistantText(collectedEvents)
+        callbacks.onComplete(extractAssistantText(collectedEvents))
+        return
+      }
+
+      const now = Date.now()
+      if (now >= nextStatusTime) {
+        callbacks.onProgress(now - startTime)
+        nextStatusTime = now + options.statusIntervalMs
       }
 
       await sleep(this.pollIntervalMs)
     }
 
-    throw new Error('DSH session turn timed out')
+    callbacks.onError('DSH session turn timed out')
+  }
+
+  private async getCurrentMaxSeq(sessionId: string): Promise<number> {
+    const history = await this.post<SessionHistoryResponse>('/api/session.history', {
+      sessionId,
+    } as SessionHistoryRequest)
+
+    if (history.events.length === 0) return -1
+    return Math.max(...history.events.map((entry) => entry.event.seq))
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {

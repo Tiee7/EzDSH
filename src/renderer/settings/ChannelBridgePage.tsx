@@ -7,6 +7,7 @@ const DEFAULT_CONFIG: ChannelBridgeConfig = {
   allowList: [],
   timeoutMs: 120_000,
   sessionTimeoutMs: 300_000,
+  statusIntervalMs: 60_000,
 }
 
 interface ChannelBridgePageProps {
@@ -174,6 +175,15 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
             type="number"
             value={config.sessionTimeoutMs}
             onChange={(e) => { update({ sessionTimeoutMs: Number(e.target.value) }) }}
+          />
+        </label>
+
+        <label className="bridge-row">
+          <span>{copy.channelBridgeStatusInterval}</span>
+          <input
+            type="number"
+            value={config.statusIntervalMs}
+            onChange={(e) => { update({ statusIntervalMs: Number(e.target.value) }) }}
           />
         </label>
 

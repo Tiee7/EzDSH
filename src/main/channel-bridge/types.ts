@@ -63,4 +63,5 @@ export const DEFAULT_CHANNEL_BRIDGE_CONFIG: ChannelBridgeConfig = {
   allowList: [],
   timeoutMs: 120_000,
   sessionTimeoutMs: 300_000,
+  statusIntervalMs: 60_000,
 }

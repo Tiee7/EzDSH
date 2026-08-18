@@ -129,6 +129,7 @@ export interface AppCopy {
   channelBridgeSessionId: string
   channelBridgeSessionIdPlaceholder: string
   channelBridgeSessionTimeout: string
+  channelBridgeStatusInterval: string
   channelBridgeListSessions: string
   channelBridgeListingSessions: string
   channelBridgeSessionRunning: string
@@ -264,6 +265,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeSessionId: 'DSH 会话 ID',
     channelBridgeSessionIdPlaceholder: '留空则首次使用时自动创建',
     channelBridgeSessionTimeout: '单轮等待超时（毫秒）',
+    channelBridgeStatusInterval: '状态更新间隔（毫秒）',
     channelBridgeListSessions: '查看现有会话',
     channelBridgeListingSessions: '正在加载会话…',
     channelBridgeSessionRunning: '运行中',
@@ -397,6 +399,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeSessionId: 'DSH session ID',
     channelBridgeSessionIdPlaceholder: 'Leave empty to create a session on first use',
     channelBridgeSessionTimeout: 'Turn wait timeout (ms)',
+    channelBridgeStatusInterval: 'Status update interval (ms)',
     channelBridgeListSessions: 'List existing sessions',
     channelBridgeListingSessions: 'Loading sessions…',
     channelBridgeSessionRunning: 'Running',

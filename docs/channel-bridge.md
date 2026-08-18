@@ -31,6 +31,14 @@ EzDSH uses the official `@larksuiteoapi/node-sdk` **WebSocket long connection** 
 
 Unlike the earlier one-shot prototype, messages are now routed into a **real DSH session**. That session uses whichever model is already selected in the session, and the GUI and the remote control share the same session state.
 
+Long-running tasks run **asynchronously**:
+
+1. You send a command from Feishu.
+2. The bot immediately replies: "任务已收到，正在 DSH 会话中执行。"
+3. While the turn is running, the bot sends a progress update every configured interval (e.g. every 60 seconds).
+4. When the turn finishes, the bot sends the final answer (reasoning/thinking blocks are filtered out).
+5. Only one command per session can run at a time; new messages are rejected until the current turn ends.
+
 ---
 
 ## Setup
@@ -67,7 +75,8 @@ Open EzDSH → **Settings → 远程控制**.
 |---|---|
 | Enable remote control | On |
 | DSH session ID | Optional. Leave empty to create a new session on first use, or paste an existing session ID to share it with the GUI. |
-| Turn wait timeout | `300000` (ms) — how long to wait for one DSH turn to finish. |
+| Turn wait timeout | `300000` (ms) — maximum time to wait for one DSH turn. |
+| Status update interval | `60000` (ms) — how often to send a progress update while the turn is running. |
 | Whitelist | Your Feishu `open_id` (one per line). |
 | Feishu App ID | From step 1 |
 | Feishu App Secret | From step 1 |
@@ -89,7 +98,7 @@ In a Feishu group or private chat where the bot is present, send:
 what is 2+2
 ```
 
-The bot will forward the message to the configured DSH session and reply with the final answer (reasoning/thinking content is filtered out).
+The bot will immediately acknowledge the task, execute it in the configured DSH session, and reply with the final answer once the turn completes. Progress updates are sent periodically based on the **Status update interval** setting.
 
 ---
 
@@ -113,6 +122,7 @@ The config is stored in EzDSH state directory as `channel-bridge.json`:
   "enabled": true,
   "sessionId": "your-session-id",
   "sessionTimeoutMs": 300000,
+  "statusIntervalMs": 60000,
   "allowList": ["ou_xxxxxxxx"],
   "timeoutMs": 120000,
   "feishu": {
@@ -126,5 +136,5 @@ The config is stored in EzDSH state directory as `channel-bridge.json`:
 
 ## Future work
 
-- Session picker UI that lists existing DSH sessions instead of asking for an ID.
 - Support for more platforms (WeChat, QQ, DingTalk) using the same adapter protocol.
+- Cancel a running turn from Feishu.

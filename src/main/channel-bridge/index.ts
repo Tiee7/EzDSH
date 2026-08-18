@@ -18,9 +18,16 @@ export class ChannelBridgeService {
   private configStorage: ConfigStorage
   private adapter?: FeishuAdapter
   private running = false
+  private activeTurns = new Map<string, boolean>()
 
   constructor(private readonly options: ChannelBridgeOptions) {
-    this.config = { enabled: false, allowList: [], timeoutMs: 120_000, sessionTimeoutMs: 300_000 }
+    this.config = {
+      enabled: false,
+      allowList: [],
+      timeoutMs: 120_000,
+      sessionTimeoutMs: 300_000,
+      statusIntervalMs: 60_000,
+    }
     this.configStorage = createConfigStorage(this.options.layout.state)
   }
 
@@ -85,6 +92,7 @@ export class ChannelBridgeService {
     await this.adapter?.stop()
     this.adapter = undefined
     this.running = false
+    this.activeTurns.clear()
   }
 
   get isRunning(): boolean {
@@ -113,37 +121,81 @@ export class ChannelBridgeService {
 
     console.log(`[channel-bridge] ${message.adapter} message from ${message.from.id}: ${text}`)
 
+    const runtimeUrl = this.options.getRuntimeUrl()
+    if (runtimeUrl === undefined) {
+      return this.buildReply(message, '执行失败：DSH Runtime 尚未启动')
+    }
+
+    let sessionId: string
     try {
-      const runtimeUrl = this.options.getRuntimeUrl()
-      if (runtimeUrl === undefined) {
-        throw new Error('DSH Runtime 尚未启动')
-      }
-
-      const sessionId = await this.ensureSession(runtimeUrl)
-      const client = new DshSessionClient({
-        baseUrl: runtimeUrl,
-        timeoutMs: this.config.sessionTimeoutMs ?? 300_000,
-      })
-
-      const result = await client.sendPrompt(sessionId, text)
-
-      return {
-        to: {
-          userId: message.chat?.type === 'private' ? message.from.id : undefined,
-          chatId: message.chat?.type === 'group' ? message.chat.id : undefined,
-        },
-        content: result.text.length > 0 ? result.text : 'DSH 没有返回任何输出。',
-      }
+      sessionId = await this.ensureSession(runtimeUrl)
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
-      return {
-        to: {
-          userId: message.chat?.type === 'private' ? message.from.id : undefined,
-          chatId: message.chat?.type === 'group' ? message.chat.id : undefined,
-        },
-        content: `执行失败：${messageText}`,
-      }
+      return this.buildReply(message, `执行失败：${messageText}`)
     }
+
+    if (this.activeTurns.has(sessionId)) {
+      return this.buildReply(message, '当前会话已有任务在执行，请等待完成后再发送新消息。')
+    }
+
+    this.activeTurns.set(sessionId, true)
+
+    const client = new DshSessionClient({
+      baseUrl: runtimeUrl,
+      timeoutMs: this.config.sessionTimeoutMs ?? 300_000,
+    })
+
+    const recipient: ChannelReply['to'] = {
+      userId: message.chat?.type === 'private' ? message.from.id : undefined,
+      chatId: message.chat?.type === 'group' ? message.chat.id : undefined,
+    }
+
+    void client
+      .sendPromptAsync(
+        sessionId,
+        text,
+        {
+          onAcknowledged: () => {
+            void this.safeSend(adapter, {
+              to: recipient,
+              content: '任务已收到，正在 DSH 会话中执行。完成后会回复结果。',
+            })
+          },
+          onProgress: (elapsedMs) => {
+            const seconds = Math.round(elapsedMs / 1000)
+            void this.safeSend(adapter, {
+              to: recipient,
+              content: `任务仍在执行中，已运行 ${seconds} 秒…`,
+            })
+          },
+          onComplete: (answer) => {
+            this.activeTurns.delete(sessionId)
+            void this.safeSend(adapter, {
+              to: recipient,
+              content: answer.length > 0 ? answer : 'DSH 没有返回任何输出。',
+            })
+          },
+          onError: (error) => {
+            this.activeTurns.delete(sessionId)
+            void this.safeSend(adapter, {
+              to: recipient,
+              content: `执行失败：${error}`,
+            })
+          },
+        },
+        {
+          timeoutMs: this.config.sessionTimeoutMs ?? 300_000,
+          statusIntervalMs: this.config.statusIntervalMs ?? 60_000,
+        },
+      )
+      .catch((error: unknown) => {
+        this.activeTurns.delete(sessionId)
+        const messageText = error instanceof Error ? error.message : String(error)
+        void this.safeSend(adapter, { to: recipient, content: `执行失败：${messageText}` })
+      })
+
+    // Return immediately so Feishu gets a fast acknowledgement.
+    return undefined
   }
 
   private async ensureSession(runtimeUrl: string): Promise<string> {
@@ -153,7 +205,7 @@ export class ChannelBridgeService {
 
     const client = new DshSessionClient({
       baseUrl: runtimeUrl,
-      timeoutMs: this.config.sessionTimeoutMs ?? 300_000,
+      timeoutMs: 10_000,
     })
     const session = await client.createSession({ cwd: this.config.workspace })
 
@@ -162,5 +214,24 @@ export class ChannelBridgeService {
     console.log(`[channel-bridge] created remote-control session ${session.sessionId}`)
 
     return session.sessionId
+  }
+
+  private buildReply(message: ChannelMessage, content: string): ChannelReply {
+    return {
+      to: {
+        userId: message.chat?.type === 'private' ? message.from.id : undefined,
+        chatId: message.chat?.type === 'group' ? message.chat.id : undefined,
+      },
+      content,
+    }
+  }
+
+  private async safeSend(adapter: FeishuAdapter, reply: ChannelReply): Promise<void> {
+    try {
+      await adapter.send(reply)
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error)
+      console.error('[channel-bridge] failed to send Feishu reply:', messageText)
+    }
   }
 }
