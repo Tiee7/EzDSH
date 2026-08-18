@@ -105,6 +105,7 @@ interface SessionEvent {
 }
 
 interface RpcRequestEnvelope<T> {
+  type: 'client-request'
   rpcId: string
   method: string
   payload: T
@@ -232,6 +233,7 @@ export class DshSessionClient {
     const url = `${this.options.baseUrl.replace(/\/$/u, '')}${path}`
     const method = path.replace(/^\/api\//u, '')
     const envelope: RpcRequestEnvelope<unknown> = {
+      type: 'client-request',
       rpcId: randomUUID(),
       method,
       payload: body,
