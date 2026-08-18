@@ -139,14 +139,15 @@ export interface AppCopy {
   channelBridgeHint: string
   channelBridgeEnabled: string
   channelBridgeAllowList: string
-  channelBridgeAdapters: string
-  channelBridgeAdapterName: string
-  channelBridgeAdapterConfig: string
-  channelBridgeAddAdapter: string
-  channelBridgeRemoveAdapter: string
-  channelBridgeNoAdapters: string
-  channelBridgeAdapterConfigInvalid: string
   channelBridgeSessionId: string
+  remoteControlFeishuTitle: string
+  remoteControlFeishuHint: string
+  remoteControlFeishuAppId: string
+  remoteControlFeishuAppIdPlaceholder: string
+  remoteControlFeishuAppSecret: string
+  remoteControlFeishuAppSecretPlaceholder: string
+  remoteControlFeishuEncryptKey: string
+  remoteControlFeishuIncomplete: string
   channelBridgeSessionIdPlaceholder: string
   channelBridgeSessionTimeout: string
   channelBridgeStatusInterval: string
@@ -286,7 +287,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimePort: '端口',
     settingsRestartRuntime: '重启 Runtime',
     settingsTabGeneral: '通用',
-    settingsTabRemoteControl: '飞书控制',
+    settingsTabRemoteControl: '远程控制',
     settingsTabNavigation: '导航管理',
     navSectionHint: '选择要在标签栏显示的页面，拖动调整顺序；也可以添加自定义链接标签。',
     navSystemBadge: '系统',
@@ -303,16 +304,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     navInvalidUrl: '请输入有效的 http/https 链接地址',
     navSaveFailed: '保存失败，请重试',
     channelBridgeTitle: '远程控制',
-    channelBridgeHint: '通过 IM Adapter 远程向 DSH 发送命令。消息会进入下方指定的 DSH 会话。',
+    channelBridgeHint: '开启后，可以通过 IM 机器人远程向 EzDSH 发送消息，机器人的回复会进入下方指定的 DSH 会话。',
     channelBridgeEnabled: '启用远程控制',
     channelBridgeAllowList: '白名单用户 ID（每行一个）',
-    channelBridgeAdapters: '已配置的 Adapter',
-    channelBridgeAdapterName: 'Adapter 名称',
-    channelBridgeAdapterConfig: '配置 (JSON)',
-    channelBridgeAddAdapter: '添加 Adapter',
-    channelBridgeRemoveAdapter: '移除',
-    channelBridgeNoAdapters: '尚未配置任何 adapter。',
-    channelBridgeAdapterConfigInvalid: '配置 JSON 格式错误',
     channelBridgeSessionId: 'DSH 会话 ID',
     channelBridgeSessionIdPlaceholder: '留空则首次使用时自动创建',
     channelBridgeSessionTimeout: '单轮等待超时（毫秒）',
@@ -325,16 +319,24 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeUseSession: '使用此会话',
     channelBridgeSaved: '已保存',
     channelBridgePairTitle: '用户配对',
-    channelBridgePairHint: '把验证码发给任意已启用 adapter 的机器人，即可自动将你的用户 ID 加入白名单。',
+    channelBridgePairHint: '点击开始后，把验证码发给已接入的机器人，即可自动完成配对。',
     channelBridgeStartPairing: '开始配对',
     channelBridgeCancelPairing: '取消配对',
     channelBridgePairing: '正在配对…',
     channelBridgePairingCode: '验证码',
     channelBridgePairingCodeHint: (code: string, secondsLeft: number) =>
-      `请在 ${secondsLeft} 秒内把验证码「${code}」发给飞书机器人完成配对。`,
+      `请在 ${secondsLeft} 秒内把验证码「${code}」发给机器人完成配对。`,
     channelBridgePairingExpired: '验证码已过期，请重新生成。',
     channelBridgePairingSuccess: '配对成功，已加入白名单。',
     channelBridgePairingFailed: '配对失败',
+    remoteControlFeishuTitle: '飞书 / Lark',
+    remoteControlFeishuHint: '在飞书开放平台创建企业自建应用，把应用的凭证填写到下面即可接入。',
+    remoteControlFeishuAppId: 'App ID',
+    remoteControlFeishuAppIdPlaceholder: 'cli_xxx',
+    remoteControlFeishuAppSecret: 'App Secret',
+    remoteControlFeishuAppSecretPlaceholder: 'xxx',
+    remoteControlFeishuEncryptKey: '事件订阅 Encrypt Key（可选）',
+    remoteControlFeishuIncomplete: '已启用远程控制，但飞书的 App ID 和 App Secret 尚未填写完整。',
   },
   en: {
     loadingConfig: 'Reading EzDSH configuration…',
@@ -452,7 +454,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimePort: 'Port',
     settingsRestartRuntime: 'Restart runtime',
     settingsTabGeneral: 'General',
-    settingsTabRemoteControl: 'Feishu control',
+    settingsTabRemoteControl: 'Remote control',
     settingsTabNavigation: 'Navigation',
     navSectionHint: 'Choose which pages appear in the tab bar, drag to reorder, or add custom link tabs.',
     navSystemBadge: 'System',
@@ -469,16 +471,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     navInvalidUrl: 'Enter a valid http/https URL',
     navSaveFailed: 'Save failed. Try again.',
     channelBridgeTitle: 'Remote control',
-    channelBridgeHint: 'Send commands to DSH remotely through an IM adapter. Messages enter the DSH session specified below.',
+    channelBridgeHint: 'When enabled, send messages to EzDSH remotely through an IM bot. Replies go to the DSH session selected below.',
     channelBridgeEnabled: 'Enable remote control',
     channelBridgeAllowList: 'Whitelisted user IDs (one per line)',
-    channelBridgeAdapters: 'Configured adapters',
-    channelBridgeAdapterName: 'Adapter name',
-    channelBridgeAdapterConfig: 'Config (JSON)',
-    channelBridgeAddAdapter: 'Add adapter',
-    channelBridgeRemoveAdapter: 'Remove',
-    channelBridgeNoAdapters: 'No adapters configured.',
-    channelBridgeAdapterConfigInvalid: 'Adapter config JSON is invalid',
     channelBridgeSessionId: 'DSH session ID',
     channelBridgeSessionIdPlaceholder: 'Leave empty to create a session on first use',
     channelBridgeSessionTimeout: 'Turn wait timeout (ms)',
@@ -491,16 +486,24 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeUseSession: 'Use this session',
     channelBridgeSaved: 'Saved',
     channelBridgePairTitle: 'User pairing',
-    channelBridgePairHint: 'Send the verification code to any enabled adapter bot to add your user ID to the allowlist automatically.',
+    channelBridgePairHint: 'Click start, then send the code to any connected bot to pair automatically.',
     channelBridgeStartPairing: 'Start pairing',
     channelBridgeCancelPairing: 'Cancel pairing',
     channelBridgePairing: 'Pairing…',
     channelBridgePairingCode: 'Verification code',
     channelBridgePairingCodeHint: (code: string, secondsLeft: number) =>
-      `Send the code "${code}" to the Feishu bot within ${secondsLeft} seconds to complete pairing.`,
+      `Send the code "${code}" to the bot within ${secondsLeft} seconds to complete pairing.`,
     channelBridgePairingExpired: 'The verification code has expired. Generate a new one.',
     channelBridgePairingSuccess: 'Pairing successful. Your Open ID has been added to the allowlist.',
     channelBridgePairingFailed: 'Pairing failed',
+    remoteControlFeishuTitle: 'Feishu / Lark',
+    remoteControlFeishuHint: 'Create a custom app on the Feishu Open Platform, then paste its credentials below.',
+    remoteControlFeishuAppId: 'App ID',
+    remoteControlFeishuAppIdPlaceholder: 'cli_xxx',
+    remoteControlFeishuAppSecret: 'App Secret',
+    remoteControlFeishuAppSecretPlaceholder: 'xxx',
+    remoteControlFeishuEncryptKey: 'Event subscription Encrypt Key (optional)',
+    remoteControlFeishuIncomplete: 'Remote control is enabled, but the Feishu App ID and App Secret are not filled in yet.',
   },
 }
 

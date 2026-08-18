@@ -11,11 +11,35 @@ const DEFAULT_CONFIG: ChannelBridgeConfig = {
   statusIntervalMs: 60_000,
 }
 
+interface FeishuConfig {
+  appId: string
+  appSecret: string
+  encryptKey: string
+}
+
+function getFeishuConfig(adapters: Record<string, unknown>): FeishuConfig {
+  const raw = adapters.feishu
+  if (raw !== undefined && typeof raw === 'object') {
+    const cfg = raw as Record<string, unknown>
+    return {
+      appId: String(cfg.appId ?? ''),
+      appSecret: String(cfg.appSecret ?? ''),
+      encryptKey: String(cfg.encryptKey ?? ''),
+    }
+  }
+  return { appId: '', appSecret: '', encryptKey: '' }
+}
+
+function isFeishuReady(config: ChannelBridgeConfig): boolean {
+  const feishu = getFeishuConfig(config.adapters)
+  return feishu.appId.trim() !== '' && feishu.appSecret.trim() !== ''
+}
+
 interface ChannelBridgePageProps {
   copy: AppCopy
 }
 
-/** Remote-control settings page: configure IM adapters generically. */
+/** Remote-control settings page: one friendly form per supported IM platform. */
 export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element {
   const [config, setConfig] = useState<ChannelBridgeConfig>(DEFAULT_CONFIG)
   const [loading, setLoading] = useState(true)
@@ -27,24 +51,12 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
   const [pairing, setPairing] = useState<PairingState>({ active: false })
   const [pairingError, setPairingError] = useState<string>()
   const [pairingSuccess, setPairingSuccess] = useState(false)
-  const [selectedAdapter, setSelectedAdapter] = useState<string>()
-  const [newAdapterName, setNewAdapterName] = useState('')
-  const [adapterConfigJson, setAdapterConfigJson] = useState<Record<string, string>>({})
 
   useEffect(() => {
     window.EzDSH.channelBridge
       .getConfig()
       .then((loaded) => {
         setConfig(loaded)
-        const json: Record<string, string> = {}
-        for (const [name, value] of Object.entries(loaded.adapters)) {
-          json[name] = JSON.stringify(value, null, 2)
-        }
-        setAdapterConfigJson(json)
-        const adapterNames = Object.keys(loaded.adapters)
-        if (adapterNames.length > 0) {
-          setSelectedAdapter(adapterNames[0])
-        }
         setLoading(false)
       })
       .catch((reason) => {
@@ -65,11 +77,6 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
               .getConfig()
               .then((loaded) => {
                 setConfig(loaded)
-                const json: Record<string, string> = {}
-                for (const [name, value] of Object.entries(loaded.adapters)) {
-                  json[name] = JSON.stringify(value, null, 2)
-                }
-                setAdapterConfigJson(json)
               })
               .catch(() => {})
             setPairingSuccess(true)
@@ -99,72 +106,22 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
     setSaved(false)
   }
 
-  const updateAdapterJson = (name: string, json: string): void => {
-    setAdapterConfigJson((prev) => ({ ...prev, [name]: json }))
-    setSaved(false)
-  }
-
-  const parseAdaptersFromJson = (): Record<string, unknown> | undefined => {
-    const adapters: Record<string, unknown> = {}
-    for (const [name, json] of Object.entries(adapterConfigJson)) {
-      if (json.trim() === '') {
-        adapters[name] = {}
-        continue
-      }
-      try {
-        adapters[name] = JSON.parse(json) as unknown
-      } catch {
-        setError(copy.channelBridgeAdapterConfigInvalid)
-        return undefined
-      }
-    }
-    return adapters
-  }
-
-  const addAdapter = (): void => {
-    const name = newAdapterName.trim().toLowerCase()
-    if (name === '' || config.adapters[name] !== undefined) return
-    setConfig((prev) => ({
-      ...prev,
-      adapters: { ...prev.adapters, [name]: {} },
-    }))
-    setAdapterConfigJson((prev) => ({ ...prev, [name]: '{}' }))
-    setSelectedAdapter(name)
-    setNewAdapterName('')
-    setSaved(false)
-  }
-
-  const removeAdapter = (name: string): void => {
-    setConfig((prev) => {
-      const next = { ...prev.adapters }
-      delete next[name]
-      return { ...prev, adapters: next }
+  const updateFeishu = (patch: Partial<FeishuConfig>): void => {
+    const current = getFeishuConfig(config.adapters)
+    const next = { ...current, ...patch }
+    update({
+      adapters: {
+        ...config.adapters,
+        feishu: next,
+      },
     })
-    setAdapterConfigJson((prev) => {
-      const next = { ...prev }
-      delete next[name]
-      return next
-    })
-    setSelectedAdapter((current) => {
-      if (current !== name) return current
-      const remaining = Object.keys(config.adapters).filter((n) => n !== name)
-      return remaining[0]
-    })
-    setSaved(false)
   }
 
   const save = async (): Promise<void> => {
     setSaving(true)
     setError(undefined)
     try {
-      const adapters = parseAdaptersFromJson()
-      if (adapters === undefined) {
-        setSaving(false)
-        return
-      }
-      const nextConfig = { ...config, adapters }
-      await window.EzDSH.channelBridge.setConfig(nextConfig)
-      setConfig(nextConfig)
+      await window.EzDSH.channelBridge.setConfig(config)
       setSaved(true)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -217,8 +174,8 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
     return left
   }
 
-  const adapterNames = Object.keys(config.adapters)
-  const hasAdapters = adapterNames.length > 0
+  const feishu = getFeishuConfig(config.adapters)
+  const feishuReady = isFeishuReady(config)
 
   if (loading) {
     return (
@@ -233,12 +190,12 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
 
   return (
     <div className="settings-card">
-      <div className="settings-item settings-item-column">
-        <div>
-          <p className="settings-label">{copy.channelBridgeTitle}</p>
-          <p className="settings-hint">{copy.channelBridgeHint}</p>
-        </div>
+      <div className="settings-card-header">
+        <h2 className="settings-card-title">{copy.channelBridgeTitle}</h2>
+        <p className="settings-card-description">{copy.channelBridgeHint}</p>
+      </div>
 
+      <div className="settings-card-content">
         <label className="bridge-row">
           <span>{copy.channelBridgeEnabled}</span>
           <input
@@ -248,73 +205,52 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
           />
         </label>
 
-        <div className="bridge-row bridge-row-block">
-          <span className="settings-label">{copy.channelBridgeAdapters}</span>
+        {config.enabled && !feishuReady ? (
+          <p className="settings-error">{copy.remoteControlFeishuIncomplete}</p>
+        ) : null}
+      </div>
 
-          {!hasAdapters ? (
-            <p className="settings-hint">{copy.channelBridgeNoAdapters}</p>
-          ) : (
-            <>
-              <div className="bridge-adapter-tabs">
-                {adapterNames.map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    className={`bridge-adapter-tab ${selectedAdapter === name ? 'bridge-adapter-tab-active' : ''}`}
-                    onClick={() => { setSelectedAdapter(name) }}
-                  >
-                    {name}
-                  </button>
-                ))}
-              </div>
+      <div className="settings-card-content">
+        <div className="bridge-subsection">
+          <div className="bridge-subsection-header">
+            <span className="settings-label">{copy.remoteControlFeishuTitle}</span>
+            <p className="settings-hint">{copy.remoteControlFeishuHint}</p>
+          </div>
 
-              {selectedAdapter !== undefined && (
-                <div className="bridge-adapter-editor">
-                  <label className="bridge-row bridge-row-block">
-                    <span>{copy.channelBridgeAdapterConfig}</span>
-                    <textarea
-                      rows={10}
-                      value={adapterConfigJson[selectedAdapter] ?? '{}'}
-                      onChange={(e) => { updateAdapterJson(selectedAdapter, e.target.value) }}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="settings-action settings-action-small settings-action-secondary"
-                    onClick={() => { removeAdapter(selectedAdapter) }}
-                  >
-                    {copy.channelBridgeRemoveAdapter}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-
-          <div className="bridge-add-adapter">
+          <label className="bridge-row">
+            <span>{copy.remoteControlFeishuAppId}</span>
             <input
               type="text"
-              value={newAdapterName}
-              placeholder={copy.channelBridgeAdapterName}
-              onChange={(e) => { setNewAdapterName(e.target.value) }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  addAdapter()
-                }
-              }}
+              value={feishu.appId}
+              placeholder={copy.remoteControlFeishuAppIdPlaceholder}
+              onChange={(e) => { updateFeishu({ appId: e.target.value }) }}
             />
-            <button
-              type="button"
-              className="settings-action settings-action-secondary"
-              disabled={newAdapterName.trim() === ''}
-              onClick={() => { addAdapter() }}
-            >
-              {copy.channelBridgeAddAdapter}
-            </button>
-          </div>
-        </div>
+          </label>
 
-        <div className="bridge-row bridge-row-block bridge-pairing-box">
+          <label className="bridge-row">
+            <span>{copy.remoteControlFeishuAppSecret}</span>
+            <input
+              type="password"
+              value={feishu.appSecret}
+              placeholder={copy.remoteControlFeishuAppSecretPlaceholder}
+              onChange={(e) => { updateFeishu({ appSecret: e.target.value }) }}
+            />
+          </label>
+
+          <label className="bridge-row">
+            <span>{copy.remoteControlFeishuEncryptKey}</span>
+            <input
+              type="text"
+              value={feishu.encryptKey}
+              placeholder={copy.optional}
+              onChange={(e) => { updateFeishu({ encryptKey: e.target.value }) }}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="settings-card-content">
+        <div className="bridge-subsection">
           <div className="bridge-pairing-header">
             <span className="settings-label">{copy.channelBridgePairTitle}</span>
             <p className="settings-hint">{copy.channelBridgePairHint}</p>
@@ -336,7 +272,7 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
           ) : (
             <button
               className="settings-action settings-action-secondary"
-              disabled={!config.enabled || !hasAdapters}
+              disabled={!config.enabled || !feishuReady}
               onClick={() => { void startPairing() }}
             >
               {copy.channelBridgeStartPairing}
@@ -346,7 +282,9 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
           {pairingSuccess ? <p className="settings-hint">{copy.channelBridgePairingSuccess}</p> : null}
           {pairingError ? <p className="settings-error">{copy.channelBridgePairingFailed}: {pairingError}</p> : null}
         </div>
+      </div>
 
+      <div className="settings-card-content">
         <label className="bridge-row">
           <span>{copy.channelBridgeSessionId}</span>
           <input
@@ -392,7 +330,9 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
             </div>
           ) : null}
         </div>
+      </div>
 
+      <div className="settings-card-content">
         <label className="bridge-row">
           <span>{copy.channelBridgeSessionTimeout}</span>
           <input

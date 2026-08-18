@@ -613,14 +613,6 @@
   font-size: 11px;
 }
 
-.bridge-pairing-box {
-  border: 1px solid var(--ezdsh-panel-border);
-  border-radius: 12px;
-  padding: 14px 16px;
-  background: var(--ezdsh-code-background);
-  gap: 12px;
-}
-
 .bridge-pairing-header {
   display: flex;
   flex-direction: column;
@@ -799,62 +791,13 @@
   font-size: 12px;
 }
 
-.bridge-adapter-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.bridge-adapter-tab {
-  border: 1px solid var(--ezdsh-panel-border);
-  border-radius: 8px;
-  padding: 6px 12px;
-  background: var(--ezdsh-panel-background);
-  color: var(--ezdsh-text-muted);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
-}
-
-.bridge-adapter-tab:hover {
-  border-color: var(--ezdsh-active-border);
-  color: var(--ezdsh-text-body);
-}
-
-.bridge-adapter-tab-active {
-  border-color: var(--ezdsh-active-border);
-  background: var(--ezdsh-active-background);
-  color: var(--ezdsh-text-heading);
-}
-
-.bridge-adapter-editor {
+.bridge-subsection-header {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
+  gap: 4px;
+  margin-bottom: 4px;
 }
 
-.bridge-add-adapter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.bridge-add-adapter input[type='text'] {
-  flex: 1 1 auto;
-  min-width: 0;
-  border: 1px solid var(--ezdsh-panel-border-strong);
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: var(--ezdsh-input-background);
-  color: var(--ezdsh-text-body);
-  font: inherit;
-}
-
-.bridge-add-adapter input[type='text']:focus {
-  outline: none;
-  border-color: var(--ezdsh-active-border);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ezdsh-active-border) 15%, transparent);
+.bridge-subsection-header .settings-label {
+  font-weight: 600;
 }
