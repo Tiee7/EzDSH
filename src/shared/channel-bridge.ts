@@ -23,4 +23,5 @@ export interface DshSessionSummary {
   updatedAt: number
   running: boolean
   blank?: boolean
+  title?: string
 }

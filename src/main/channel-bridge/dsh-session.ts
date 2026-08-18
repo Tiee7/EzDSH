@@ -30,6 +30,7 @@ export interface DshSessionSummary {
   updatedAt: number
   running: boolean
   blank?: boolean
+  title?: string
 }
 
 export interface TurnTrackerCallbacks {
@@ -135,12 +136,39 @@ export class DshSessionClient {
 
   async listSessions(): Promise<DshSessionSummary[]> {
     const response = await this.post<SessionListResponse>('/api/session.list', {})
-    return response.items.map((item) => ({
+    const items = response.items.map((item) => ({
       sessionId: item.sessionId,
       updatedAt: item.updatedAt,
       running: item.running,
       blank: item.blank,
     }))
+
+    const titles = await Promise.all(
+      items.map((item) => this.getSessionTitle(item.sessionId).catch(() => undefined)),
+    )
+
+    return items.map((item, index) => ({
+      ...item,
+      title: titles[index],
+    }))
+  }
+
+  async getSessionTitle(sessionId: string): Promise<string | undefined> {
+    const history = await this.post<SessionHistoryResponse>('/api/session.history', {
+      sessionId,
+      maxMessages: 100,
+    } as SessionHistoryRequest)
+
+    const titleEvents = history.events
+      .map((entry) => entry.event)
+      .filter((event) => event.type === 'session/title')
+
+    if (titleEvents.length === 0) return undefined
+
+    const latest = titleEvents.reduce((a, b) => (a.seq > b.seq ? a : b))
+    const data = latest.data as { title?: string } | undefined
+    const title = data?.title
+    return typeof title === 'string' && title.length > 0 ? title : undefined
   }
 
   async sendPrompt(sessionId: string, text: string): Promise<DshSendResult> {

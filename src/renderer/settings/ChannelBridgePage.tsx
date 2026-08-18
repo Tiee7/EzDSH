@@ -151,9 +151,14 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
             <div className="bridge-session-list">
               {sessions.map((session) => (
                 <div key={session.sessionId} className="bridge-session-item">
-                  <code className="bridge-session-id" title={session.sessionId}>
-                    {session.sessionId}
-                  </code>
+                  <div className="bridge-session-info">
+                    <span className="bridge-session-title" title={session.title ?? session.sessionId}>
+                      {session.title ?? copy.channelBridgeUntitledSession}
+                    </span>
+                    <code className="bridge-session-id" title={session.sessionId}>
+                      {session.sessionId}
+                    </code>
+                  </div>
                   <span className="bridge-session-meta">
                     {session.running ? copy.channelBridgeSessionRunning : copy.channelBridgeSessionIdle}
                   </span>

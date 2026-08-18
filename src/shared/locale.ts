@@ -134,6 +134,7 @@ export interface AppCopy {
   channelBridgeListingSessions: string
   channelBridgeSessionRunning: string
   channelBridgeSessionIdle: string
+  channelBridgeUntitledSession: string
   channelBridgeUseSession: string
   channelBridgeSaved: string
 }
@@ -270,6 +271,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeListingSessions: '正在加载会话…',
     channelBridgeSessionRunning: '运行中',
     channelBridgeSessionIdle: '空闲',
+    channelBridgeUntitledSession: '未命名会话',
     channelBridgeUseSession: '使用此会话',
     channelBridgeSaved: '已保存',
   },
@@ -404,6 +406,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeListingSessions: 'Loading sessions…',
     channelBridgeSessionRunning: 'Running',
     channelBridgeSessionIdle: 'Idle',
+    channelBridgeUntitledSession: 'Untitled session',
     channelBridgeUseSession: 'Use this session',
     channelBridgeSaved: 'Saved',
   },

@@ -32,7 +32,7 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
-  it('lists sessions', async () => {
+  it('lists sessions with titles', async () => {
     const mockFetch = createMockFetch([
       ok({
         items: [
@@ -40,14 +40,27 @@ describe('DshSessionClient', () => {
           { sessionId: 'session-2', updatedAt: 2, running: false, blank: true },
         ],
       }),
+      ok({
+        events: [
+          { event: { type: 'session/title', seq: 1, time: 1, data: { title: 'Project Alpha' } } },
+        ],
+        hasMore: false,
+      }),
+      ok({
+        events: [
+          { event: { type: 'session/title', seq: 2, time: 2, data: { title: 'Old' } } },
+          { event: { type: 'session/title', seq: 5, time: 5, data: { title: 'Project Beta' } } },
+        ],
+        hasMore: false,
+      }),
     ])()
     const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
     vi.stubGlobal('fetch', mockFetch)
 
     const sessions = await client.listSessions()
     expect(sessions).toHaveLength(2)
-    expect(sessions[0]).toEqual({ sessionId: 'session-1', updatedAt: 1, running: true })
-    expect(sessions[1]).toEqual({ sessionId: 'session-2', updatedAt: 2, running: false, blank: true })
+    expect(sessions[0]).toEqual({ sessionId: 'session-1', updatedAt: 1, running: true, title: 'Project Alpha' })
+    expect(sessions[1]).toEqual({ sessionId: 'session-2', updatedAt: 2, running: false, blank: true, title: 'Project Beta' })
 
     vi.unstubAllGlobals()
   })
