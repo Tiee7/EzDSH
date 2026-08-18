@@ -4,9 +4,25 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ChannelBridgeService } from '../../src/main/channel-bridge/index.js'
 import { AdapterRegistry } from '../../src/main/channel-bridge/adapter-registry.js'
-import { feishuAdapterFactory } from '../../src/main/channel-bridge/adapters/feishu/index.js'
-import type { FeishuMessageEvent } from '../../src/main/channel-bridge/adapters/feishu/index.js'
+import { feishuAdapterFactory } from '../../plugins/channel-feishu/src/index.js'
 import type { ChannelBridgeConfig } from '../../src/shared/channel-bridge.js'
+
+interface FeishuMessageEvent {
+  sender?: {
+    sender_id?: {
+      open_id?: string
+      name?: string
+    }
+    sender_type?: string
+    tenant_key?: string
+  }
+  message?: {
+    message_id: string
+    chat_id: string
+    chat_type: string
+    content: string
+  }
+}
 
 vi.mock('@larksuiteoapi/node-sdk', () => {
   return {

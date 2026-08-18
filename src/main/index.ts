@@ -37,7 +37,7 @@ import { ChannelBridgeService } from './channel-bridge/index.js'
 import { NavigationService } from './navigation/navigation-service.js'
 import type { NavConfig } from '../shared/navigation.js'
 import { AdapterRegistry } from './channel-bridge/adapter-registry.js'
-import { feishuAdapterFactory } from './channel-bridge/adapters/feishu/index.js'
+import { ChannelAdapterLoader } from './channel-bridge/adapter-loader.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
@@ -536,7 +536,13 @@ if (!singleInstance) {
       command: runtimeCommandPath
     })
     const channelBridgeRegistry = new AdapterRegistry()
-    channelBridgeRegistry.register(feishuAdapterFactory)
+    const adapterLoader = new ChannelAdapterLoader({ registry: channelBridgeRegistry, logger: console })
+    const builtinAdaptersDir = join(app.getAppPath(), 'plugins')
+    const userAdaptersDir = join(layout.harness, 'channel-adapters')
+    await adapterLoader.loadFromDirectories([builtinAdaptersDir, userAdaptersDir]).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('[channel-bridge] failed to load adapters:', message)
+    })
     channelBridgeService = new ChannelBridgeService({
       layout,
       getRuntimeUrl: () => runtimeManager?.snapshot().url,

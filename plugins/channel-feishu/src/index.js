@@ -1,48 +1,45 @@
 import * as lark from '@larksuiteoapi/node-sdk'
-import type {
-  ChannelAdapter,
-  ChannelAdapterCreateOptions,
-  ChannelAdapterFactory,
-  ChannelMessage,
-  ChannelMessageStatus,
-  ChannelReply,
-  Logger,
-} from '../../types.js'
-import type { FeishuConfig, FeishuMessageEvent } from './types.js'
-
-export * from './types.js'
-
-export interface FeishuAdapterOptions extends ChannelAdapterCreateOptions {
-  config: FeishuConfig
-}
 
 const PROCESSING_EMOJI = 'RUNNING'
 const ERROR_EMOJI = 'CROSS'
 
-export class FeishuAdapter implements ChannelAdapter {
-  readonly name = 'feishu'
+/**
+ * Feishu / Lark channel adapter for EzDSH.
+ *
+ * Implements the runtime ChannelAdapter contract:
+ *   name, onMessage, start, stop, send, updateAllowList, setStatus
+ */
+export class FeishuAdapter {
+  name = 'feishu'
 
-  private readonly config: FeishuConfig
-  private allowList: Set<string>
-  private readonly logger: Logger
-  private messageHandler?: (message: ChannelMessage) => Promise<ChannelReply | undefined>
-  private client?: lark.Client
-  private wsClient?: lark.WSClient
-  private eventDispatcher?: lark.EventDispatcher
-  /** Tracks reaction_id for each (messageId, emojiType) so we can delete it later. */
-  private reactionIds = new Map<string, string>()
-
-  constructor(private readonly options: FeishuAdapterOptions) {
+  /**
+   * @param {object} options
+   * @param {import('./types.js').FeishuConfig} options.config
+   * @param {string[]} options.allowList
+   * @param {import('./types.js').Logger} options.logger
+   * @param {(message: import('./types.js').ChannelMessage) => Promise<import('./types.js').ChannelReply | undefined>} [options.onUnauthorizedMessage]
+   */
+  constructor(options) {
+    this.options = options
     this.config = options.config
     this.allowList = new Set(options.allowList)
     this.logger = options.logger
+    this.messageHandler = undefined
+    this.client = undefined
+    this.wsClient = undefined
+    this.eventDispatcher = undefined
+    /** @type {Map<string, string>} */
+    this.reactionIds = new Map()
   }
 
-  onMessage(handler: (message: ChannelMessage) => Promise<ChannelReply | undefined>): void {
+  /**
+   * @param {(message: import('./types.js').ChannelMessage) => Promise<import('./types.js').ChannelReply | undefined>} handler
+   */
+  onMessage(handler) {
     this.messageHandler = handler
   }
 
-  async start(): Promise<void> {
+  async start() {
     await this.stop()
 
     this.client = new lark.Client({
@@ -56,7 +53,7 @@ export class FeishuAdapter implements ChannelAdapter {
       loggerLevel: lark.LoggerLevel.warn,
     }).register({
       'im.message.receive_v1': async (data) => {
-        const reply = await this.handleReceiveEvent(data as FeishuMessageEvent)
+        const reply = await this.handleReceiveEvent(data)
         if (reply !== undefined) {
           await this.send(reply)
         }
@@ -85,18 +82,25 @@ export class FeishuAdapter implements ChannelAdapter {
     await this.wsClient.start({ eventDispatcher: this.eventDispatcher })
   }
 
-  async stop(): Promise<void> {
+  async stop() {
     this.wsClient?.close({ force: false })
     this.wsClient = undefined
     this.eventDispatcher = undefined
     this.client = undefined
+    this.reactionIds.clear()
   }
 
-  updateAllowList(allowList: string[]): void {
+  /**
+   * @param {string[]} allowList
+   */
+  updateAllowList(allowList) {
     this.allowList = new Set(allowList)
   }
 
-  async send(reply: ChannelReply): Promise<void> {
+  /**
+   * @param {import('./types.js').ChannelReply} reply
+   */
+  async send(reply) {
     if (this.client === undefined) {
       throw new Error('Feishu adapter is not started')
     }
@@ -122,7 +126,11 @@ export class FeishuAdapter implements ChannelAdapter {
     }
   }
 
-  async setStatus(messageId: string, status: ChannelMessageStatus): Promise<void> {
+  /**
+   * @param {string} messageId
+   * @param {import('./types.js').ChannelMessageStatus} status
+   */
+  async setStatus(messageId, status) {
     if (this.client === undefined) {
       throw new Error('Feishu adapter is not started')
     }
@@ -142,11 +150,11 @@ export class FeishuAdapter implements ChannelAdapter {
     // 'received' does not need a visible reaction.
   }
 
-  private reactionKey(messageId: string, emojiType: string): string {
-    return `${messageId}:${emojiType}`
-  }
-
-  async handleReceiveEvent(event: FeishuMessageEvent): Promise<ChannelReply | undefined> {
+  /**
+   * @param {import('./types.js').FeishuMessageEvent} event
+   * @returns {Promise<import('./types.js').ChannelReply | undefined>}
+   */
+  async handleReceiveEvent(event) {
     const message = this.normalizeMessage(event)
     if (message === undefined || message.chat === undefined) {
       return undefined
@@ -175,7 +183,11 @@ export class FeishuAdapter implements ChannelAdapter {
     return await handler(message)
   }
 
-  private normalizeMessage(event: FeishuMessageEvent): ChannelMessage | undefined {
+  /**
+   * @param {import('./types.js').FeishuMessageEvent} event
+   * @returns {import('./types.js').ChannelMessage | undefined}
+   */
+  normalizeMessage(event) {
     const senderId = event.sender?.sender_id
     const message = event.message
     if (senderId === undefined || message === undefined) {
@@ -201,13 +213,25 @@ export class FeishuAdapter implements ChannelAdapter {
     }
   }
 
-  private async addReaction(messageId: string, emojiType: string): Promise<void> {
+  /**
+   * @param {string} messageId
+   * @param {string} emojiType
+   */
+  reactionKey(messageId, emojiType) {
+    return `${messageId}:${emojiType}`
+  }
+
+  /**
+   * @param {string} messageId
+   * @param {string} emojiType
+   */
+  async addReaction(messageId, emojiType) {
     if (this.client === undefined) return
     try {
-      const response = (await this.client.im.messageReaction.create({
+      const response = await this.client.im.messageReaction.create({
         path: { message_id: messageId },
         data: { reaction_type: { emoji_type: emojiType } },
-      })) as { code: number; msg?: string; data?: { reaction_id?: string } }
+      })
       if (response.code !== 0) {
         this.logger.warn(`[channel-bridge:feishu] add reaction failed: ${response.code} ${response.msg}`)
         return
@@ -222,18 +246,21 @@ export class FeishuAdapter implements ChannelAdapter {
     }
   }
 
-  private async removeReaction(messageId: string, emojiType: string): Promise<void> {
+  /**
+   * @param {string} messageId
+   * @param {string} emojiType
+   */
+  async removeReaction(messageId, emojiType) {
     if (this.client === undefined) return
     const key = this.reactionKey(messageId, emojiType)
     const reactionId = this.reactionIds.get(key)
     if (reactionId === undefined) {
-      // We can only delete a reaction if we previously recorded its reaction_id.
       return
     }
     try {
-      const response = (await this.client.im.messageReaction.delete({
+      const response = await this.client.im.messageReaction.delete({
         path: { message_id: messageId, reaction_id: reactionId },
-      })) as { code: number; msg?: string }
+      })
       if (response.code !== 0) {
         this.logger.warn(`[channel-bridge:feishu] remove reaction failed: ${response.code} ${response.msg}`)
         return
@@ -246,19 +273,32 @@ export class FeishuAdapter implements ChannelAdapter {
   }
 }
 
-function parseFeishuContent(raw: unknown): string {
+/**
+ * @param {unknown} raw
+ * @returns {string}
+ */
+function parseFeishuContent(raw) {
   if (typeof raw !== 'string') return ''
   try {
-    const parsed = JSON.parse(raw) as Record<string, string>
+    const parsed = JSON.parse(raw)
     return parsed.text ?? ''
   } catch {
     return raw
   }
 }
 
-export const feishuAdapterFactory: ChannelAdapterFactory = {
+/**
+ * @param {import('./types.js').ChannelAdapterCreateOptions} options
+ * @returns {FeishuAdapter}
+ */
+function createFeishuAdapter(options) {
+  return new FeishuAdapter({ ...options, config: options.config })
+}
+
+/**
+ * Channel adapter factory exported for EzDSH loader.
+ */
+export const feishuAdapterFactory = {
   name: 'feishu',
-  create(options: ChannelAdapterCreateOptions): ChannelAdapter {
-    return new FeishuAdapter({ ...options, config: options.config as FeishuConfig })
-  },
+  create: createFeishuAdapter,
 }

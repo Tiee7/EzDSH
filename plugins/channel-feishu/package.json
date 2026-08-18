@@ -1,0 +1,20 @@
+{
+  "name": "@ezdsh/channel-feishu",
+  "version": "0.1.0",
+  "description": "Feishu/Lark channel adapter for EzDSH remote control.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": { "default": "./src/index.js" },
+    "./package.json": "./package.json"
+  },
+  "ezdsh": {
+    "channelAdapter": {
+      "name": "feishu",
+      "entry": "./src/index.js"
+    }
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.73.0"
+  }
+}
