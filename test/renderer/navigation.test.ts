@@ -7,6 +7,7 @@ import {
   isVisibleNavItem,
   isValidWebUrl,
   normalizeNavConfig,
+  pinFixedTabs,
   validateNavConfig,
   visibleNavItems
 } from '../../src/shared/navigation'
@@ -64,9 +65,16 @@ describe('navigation config', () => {
       ]
     })
     const ids = normalized.items.map((i) => i.id)
-    expect(ids).toEqual(['store', 'c1', 'harness', 'presets', 'docs', 'settings'])
-    expect(isVisibleNavItem(normalized.items[0])).toBe(false)
-    expect(isVisibleNavItem(normalized.items[2])).toBe(true) // harness restored and locked visible
+    expect(ids).toEqual(['harness', 'store', 'c1', 'presets', 'docs', 'settings'])
+    expect(isVisibleNavItem(normalized.items[1])).toBe(false)
+    expect(isVisibleNavItem(normalized.items[0])).toBe(true) // harness pinned first and locked visible
+  })
+
+  it('pins harness first and settings last regardless of stored order', () => {
+    const config = getDefaultNavConfig()
+    const scrambled = [config.items[4], config.items[1], config.items[2], config.items[0], config.items[3]]
+    const pinned = pinFixedTabs(scrambled)
+    expect(pinned.map((i) => i.id)).toEqual(['harness', 'store', 'presets', 'docs', 'settings'])
   })
 
   it('rejects invalid set-config payloads', () => {

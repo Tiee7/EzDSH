@@ -675,12 +675,20 @@
   opacity: 0.5;
 }
 
+.nav-drag-handle,
+.nav-drag-spacer {
+  flex: none;
+  width: 16px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .nav-drag-handle {
   cursor: grab;
   color: var(--ezdsh-text-faint);
-  letter-spacing: -2px;
-  -webkit-user-select: none;
-  user-select: none;
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
 }
 
 .nav-label {
@@ -773,7 +781,11 @@
   font-size: 13px;
 }
 
-.settings-error {
+.nav-section {
+  padding: 16px 20px;
+}
+
+.nav-error {
   margin: 10px 0 0;
   color: var(--ezdsh-accent-red);
   font-size: 12px;

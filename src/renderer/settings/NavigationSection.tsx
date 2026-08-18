@@ -3,6 +3,7 @@ import type { AppCopy } from '../../shared/locale.js'
 import {
   isBuiltinNavItem,
   isValidWebUrl,
+  pinFixedTabs,
   validateNavConfig,
   type AppTab,
   type CustomNavItem,
@@ -62,7 +63,8 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
   }, [copy.navSaveFailed])
 
   const persist = async (next: NavItem[]): Promise<void> => {
-    const error = validateNavConfig({ items: next })
+    const pinned = pinFixedTabs(next)
+    const error = validateNavConfig({ items: pinned })
     if (error !== undefined) {
       setSaveError(error)
       return
@@ -70,8 +72,8 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
     setBusy(true)
     setSaveError(undefined)
     try {
-      await window.EzDSH.navigation.setConfig({ items: next })
-      setItems(next)
+      await window.EzDSH.navigation.setConfig({ items: pinned })
+      setItems(pinned)
     } catch {
       setSaveError(copy.navSaveFailed)
     } finally {
@@ -130,6 +132,11 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
       setDragIndex(undefined)
       return
     }
+    const target = items[targetIndex]
+    if (isBuiltinNavItem(target) && target.locked) {
+      setDragIndex(undefined)
+      return
+    }
     const next = [...items]
     const [moved] = next.splice(dragIndex, 1)
     next.splice(targetIndex, 0, moved)
@@ -142,65 +149,68 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
   }
 
   return (
-    <>
+    <div className="nav-section">
       <p className="settings-hint">{copy.navSectionHint}</p>
       <ul className="nav-list">
-        {items.map((item, index) => (
-          <li
-            key={item.id}
-            className={`nav-row ${dragIndex === index ? 'nav-row-dragging' : ''} ${editingId === item.id ? 'nav-row-editing' : ''}`}
-            draggable
-            onDragStart={() => setDragIndex(index)}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={() => onDrop(index)}
-            onDragEnd={() => setDragIndex(undefined)}
-          >
-            <span className="nav-drag-handle" aria-hidden="true">⋮⋮</span>
-            {isBuiltinNavItem(item) ? (
-              <>
-                <span className="nav-label">{builtinLabel(item.id, copy)}</span>
-                <span className="nav-badge">{copy.navSystemBadge}</span>
-                {item.locked ? <span className="nav-badge nav-badge-locked">{copy.navFixedBadge}</span> : null}
-                <button
-                  type="button"
-                  className={`nav-toggle ${item.visible ? 'nav-toggle-on' : ''}`}
-                  disabled={item.locked || busy}
-                  aria-pressed={item.visible}
-                  onClick={() => toggleBuiltin(item.id)}
-                >
-                  {item.visible ? copy.navShow : copy.navHide}
-                </button>
-              </>
-            ) : editingId === item.id ? (
-              <>
-                <input
-                  className="nav-input"
-                  value={draft.label}
-                  placeholder={copy.navName}
-                  onChange={(event) => setDraft({ ...draft, label: event.target.value })}
-                />
-                <input
-                  className="nav-input nav-input-url"
-                  value={draft.url}
-                  placeholder={copy.navUrlPlaceholder}
-                  onChange={(event) => setDraft({ ...draft, url: event.target.value })}
-                />
-                <button type="button" className="nav-action" disabled={busy} onClick={() => saveEdit(item)}>{copy.navSave}</button>
-                <button type="button" className="nav-action" disabled={busy} onClick={() => cancelEdit(item)}>{copy.navCancel}</button>
-              </>
-            ) : (
-              <>
-                <span className="nav-label">{item.label}</span>
-                <code className="nav-url">{item.url}</code>
-                <button type="button" className="nav-action" disabled={busy} onClick={() => startEdit(item)}>{copy.navEdit}</button>
-                <button type="button" className="nav-action nav-action-danger" disabled={busy} onClick={() => deleteItem(item.id)}>{copy.navDelete}</button>
-              </>
-            )}
-          </li>
-        ))}
+        {items.map((item, index) => {
+          const movable = !(isBuiltinNavItem(item) && item.locked)
+          return (
+            <li
+              key={item.id}
+              className={`nav-row ${dragIndex === index ? 'nav-row-dragging' : ''} ${editingId === item.id ? 'nav-row-editing' : ''}`}
+              draggable={movable}
+              onDragStart={movable ? () => setDragIndex(index) : undefined}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={() => onDrop(index)}
+              onDragEnd={movable ? () => setDragIndex(undefined) : undefined}
+            >
+              {movable ? <span className="nav-drag-handle" aria-hidden="true">⋮⋮</span> : <span className="nav-drag-spacer" aria-hidden="true" />}
+              {isBuiltinNavItem(item) ? (
+                <>
+                  <span className="nav-label">{builtinLabel(item.id, copy)}</span>
+                  <span className="nav-badge">{copy.navSystemBadge}</span>
+                  {item.locked ? <span className="nav-badge nav-badge-locked">{copy.navFixedBadge}</span> : null}
+                  <button
+                    type="button"
+                    className={`nav-toggle ${item.visible ? 'nav-toggle-on' : ''}`}
+                    disabled={item.locked || busy}
+                    aria-pressed={item.visible}
+                    onClick={() => toggleBuiltin(item.id)}
+                  >
+                    {item.visible ? copy.navHide : copy.navShow}
+                  </button>
+                </>
+              ) : editingId === item.id ? (
+                <>
+                  <input
+                    className="nav-input"
+                    value={draft.label}
+                    placeholder={copy.navName}
+                    onChange={(event) => setDraft({ ...draft, label: event.target.value })}
+                  />
+                  <input
+                    className="nav-input nav-input-url"
+                    value={draft.url}
+                    placeholder={copy.navUrlPlaceholder}
+                    onChange={(event) => setDraft({ ...draft, url: event.target.value })}
+                  />
+                  <button type="button" className="nav-action" disabled={busy} onClick={() => saveEdit(item)}>{copy.navSave}</button>
+                  <button type="button" className="nav-action" disabled={busy} onClick={() => cancelEdit(item)}>{copy.navCancel}</button>
+                </>
+              ) : (
+                <>
+                  <span className="nav-label">{item.label}</span>
+                  <code className="nav-url">{item.url}</code>
+                  <button type="button" className="nav-action" disabled={busy} onClick={() => startEdit(item)}>{copy.navEdit}</button>
+                  <button type="button" className="nav-action nav-action-danger" disabled={busy} onClick={() => deleteItem(item.id)}>{copy.navDelete}</button>
+                </>
+              )}
+            </li>
+          )
+        })}
       </ul>
       <button type="button" className="nav-add" disabled={busy} onClick={startAdd}>{copy.navAddLink}</button>
-      {saveError !== undefined ? <p className="settings-error" role="alert">{saveError}</p> : null}
-    </>
+      {saveError !== undefined ? <p className="nav-error" role="alert">{saveError}</p> : null}
+    </div>
   )
 }

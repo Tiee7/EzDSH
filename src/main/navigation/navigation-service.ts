@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import {
   getDefaultNavConfig,
   normalizeNavConfig,
+  pinFixedTabs,
   validateNavConfig,
   type NavConfig,
   type NavItem
@@ -44,7 +45,7 @@ export class NavigationService {
   async setConfig(config: NavConfig): Promise<void> {
     const error = validateNavConfig(config)
     if (error !== undefined) throw new Error(error)
-    this.config = { items: cloneItems(config.items) }
+    this.config = { items: pinFixedTabs(cloneItems(config.items)) }
     await writeFile(this.configPath, `${JSON.stringify(this.config, null, 2)}\n`, { mode: 0o600 })
   }
 }

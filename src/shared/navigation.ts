@@ -64,6 +64,20 @@ export function visibleNavItems(config: NavConfig): NavItem[] {
   return config.items.filter(isVisibleNavItem)
 }
 
+/** Ensure fixed tabs stay anchored: harness first, settings last. */
+export function pinFixedTabs(items: NavItem[]): NavItem[] {
+  const harness = items.find((item) => isBuiltinNavItem(item) && item.id === 'harness')
+  const settings = items.find((item) => isBuiltinNavItem(item) && item.id === 'settings')
+  const rest = items.filter(
+    (item) => !(isBuiltinNavItem(item) && (item.id === 'harness' || item.id === 'settings'))
+  )
+  const pinned: NavItem[] = []
+  if (harness !== undefined) pinned.push(harness)
+  pinned.push(...rest)
+  if (settings !== undefined) pinned.push(settings)
+  return pinned
+}
+
 /** Whether `value` is an absolute `http:` or `https:` URL. */
 export function isValidWebUrl(value: string): boolean {
   try {
@@ -104,7 +118,7 @@ export function normalizeNavConfig(raw: unknown): NavConfig {
       items.push({ kind: 'builtin', id, locked: LOCKED_NAV_TABS.includes(id), visible: true })
     }
   }
-  return { items }
+  return { items: pinFixedTabs(items) }
 }
 
 /** Validate a user-supplied config; returns an error message, or `undefined` when valid. */
