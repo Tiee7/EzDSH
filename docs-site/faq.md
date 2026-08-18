@@ -26,7 +26,7 @@ API key 是向模型服务商申请到的私密凭证字符串，相当于「调
 - **DeepSeek**：在 [platform.deepseek.com](https://platform.deepseek.com) 注册并创建 API key；
 - 其他供应商：到各自官网的开发者平台创建。
 
-EzDSH 不限定供应商，支持 DeepSeek、OpenAI、Anthropic、Google Gemini、Moonshot/Kimi、Kimi Code、MiniMax、Z.AI/GLM、Mistral、OpenRouter、Groq、Together AI、火山引擎等。你申请的 key 只会用于你选择的这家供应商。
+<strong style="color: red;">EzDSH 不限定供应商</strong>，支持 DeepSeek、OpenAI、Anthropic、Google Gemini、Moonshot/Kimi、Kimi Code、MiniMax、Z.AI/GLM、Mistral、OpenRouter、Groq、Together AI、火山引擎等。你申请的 key 只会用于你选择的这家供应商。EzDSH 本身不是大模型服务商，与上述供应商没有利益相关。
 
 ### EzDSH 是什么？我能用它做什么？
 
