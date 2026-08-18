@@ -123,7 +123,6 @@ export interface AppCopy {
   settingsTabNavigation: string
   navSectionHint: string
   navSystemBadge: string
-  navFixedBadge: string
   navAddLink: string
   navEdit: string
   navDelete: string
@@ -287,7 +286,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsTabNavigation: '导航管理',
     navSectionHint: '选择要在标签栏显示的页面，拖动调整顺序；也可以添加自定义链接标签。',
     navSystemBadge: '系统',
-    navFixedBadge: '固定',
     navAddLink: '添加链接',
     navEdit: '编辑',
     navDelete: '删除',
@@ -450,7 +448,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsTabNavigation: 'Navigation',
     navSectionHint: 'Choose which pages appear in the tab bar, drag to reorder, or add custom link tabs.',
     navSystemBadge: 'System',
-    navFixedBadge: 'Fixed',
     navAddLink: 'Add link',
     navEdit: 'Edit',
     navDelete: 'Delete',

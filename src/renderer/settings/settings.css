@@ -704,11 +704,6 @@
   font-size: 11px;
 }
 
-.nav-badge-locked {
-  background: var(--ezdsh-active-background);
-  color: var(--ezdsh-brand);
-}
-
 .nav-toggle {
   margin-left: auto;
   border: 1px solid var(--ezdsh-button-border);

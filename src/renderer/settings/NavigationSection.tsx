@@ -169,7 +169,6 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
                 <>
                   <span className="nav-label">{builtinLabel(item.id, copy)}</span>
                   <span className="nav-badge">{copy.navSystemBadge}</span>
-                  {item.locked ? <span className="nav-badge nav-badge-locked">{copy.navFixedBadge}</span> : null}
                   <button
                     type="button"
                     className={`nav-toggle ${item.visible ? 'nav-toggle-on' : ''}`}
