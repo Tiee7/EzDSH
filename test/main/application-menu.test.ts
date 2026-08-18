@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getApplicationMenuTemplate } from '../../src/main/application-menu'
+import { getDefaultNavConfig, isBuiltinNavItem } from '../../src/shared/navigation'
 
 function findMenu(label: string): { label?: string; submenu?: Electron.MenuItemConstructorOptions[] } | undefined {
   return getApplicationMenuTemplate({ locale: 'zh' }).find((item) => item.label === label)
@@ -34,5 +35,22 @@ describe('application menu navigate section', () => {
     const navigate = template.find((item) => item.label === 'Go')
     const labels = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item).map((item) => item.label)
     expect(labels).toEqual(['DeepSeek Harness', 'Skills', 'Preset', 'Docs', 'Settings'])
+  })
+
+  it('disables menu items for hidden tabs while keeping locked tabs enabled', () => {
+    const navConfig = getDefaultNavConfig()
+    navConfig.items = navConfig.items.map((i) =>
+      isBuiltinNavItem(i) && i.id === 'docs' ? { ...i, visible: false } : i
+    )
+    const template = getApplicationMenuTemplate({ locale: 'zh', navConfig })
+    const navigate = template.find((item) => item.label === '前往')
+    const items = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item) as Array<{
+      label?: string
+      enabled?: boolean
+    }>
+    const byLabel = (label: string) => items.find((item) => item.label === label)
+    expect(byLabel('DeepSeek Harness')?.enabled).toBe(true)
+    expect(byLabel('使用手册')?.enabled).toBe(false)
+    expect(byLabel('设置')?.enabled).toBe(true)
   })
 })
