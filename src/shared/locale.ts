@@ -122,7 +122,6 @@ export interface AppCopy {
   channelBridgeTitle: string
   channelBridgeHint: string
   channelBridgeEnabled: string
-  channelBridgePort: string
   channelBridgeAllowList: string
   channelBridgeAppId: string
   channelBridgeAppSecret: string
@@ -247,9 +246,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsTabGeneral: '通用',
     settingsTabRemoteControl: '远程控制',
     channelBridgeTitle: '远程控制',
-    channelBridgeHint: '通过飞书机器人远程向 DSH 发送命令。',
+    channelBridgeHint: '通过飞书机器人远程向 DSH 发送命令。使用飞书官方长连接，无需公网地址。',
     channelBridgeEnabled: '启用远程控制',
-    channelBridgePort: '本地端口',
     channelBridgeAllowList: '白名单用户 Open ID（每行一个）',
     channelBridgeAppId: 'App ID',
     channelBridgeAppSecret: 'App Secret',
@@ -372,9 +370,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsTabGeneral: 'General',
     settingsTabRemoteControl: 'Remote control',
     channelBridgeTitle: 'Remote control',
-    channelBridgeHint: 'Send commands to DSH remotely through a Feishu bot.',
+    channelBridgeHint: 'Send commands to DSH remotely through a Feishu bot. Uses the official Feishu long connection; no public URL is required.',
     channelBridgeEnabled: 'Enable remote control',
-    channelBridgePort: 'Local port',
     channelBridgeAllowList: 'Whitelisted user Open IDs (one per line)',
     channelBridgeAppId: 'App ID',
     channelBridgeAppSecret: 'App Secret',

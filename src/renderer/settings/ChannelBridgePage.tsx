@@ -4,7 +4,6 @@ import type { AppCopy } from '../../shared/locale.js'
 
 const DEFAULT_CONFIG: ChannelBridgeConfig = {
   enabled: false,
-  port: 17891,
   allowList: [],
   timeoutMs: 120_000,
 }
@@ -104,15 +103,6 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
             type="password"
             value={config.feishu?.appSecret ?? ''}
             onChange={(e) => { updateFeishu({ appSecret: e.target.value }) }}
-          />
-        </label>
-
-        <label className="bridge-row">
-          <span>{copy.channelBridgePort}</span>
-          <input
-            type="number"
-            value={config.port}
-            onChange={(e) => { update({ port: Number(e.target.value) }) }}
           />
         </label>
 

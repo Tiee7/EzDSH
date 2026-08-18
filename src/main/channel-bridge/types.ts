@@ -60,7 +60,6 @@ import type { ChannelBridgeConfig } from '../../shared/channel-bridge.js'
 
 export const DEFAULT_CHANNEL_BRIDGE_CONFIG: ChannelBridgeConfig = {
   enabled: false,
-  port: 17891,
   allowList: [],
   timeoutMs: 120_000,
 }

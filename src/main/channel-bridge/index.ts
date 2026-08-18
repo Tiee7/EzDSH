@@ -2,7 +2,6 @@ import type { UserDataLayout } from '../../shared/state.js'
 import { createConfigStorage, type ConfigStorage } from './config.js'
 import { runDshHeadless } from './dsh.js'
 import { FeishuAdapter } from './feishu.js'
-import { ChannelBridgeServer } from './server.js'
 import type { ChannelBridgeConfig, ChannelMessage, ChannelReply } from './types.js'
 
 export type { ChannelBridgeConfig }
@@ -16,12 +15,12 @@ export interface ChannelBridgeOptions {
 export class ChannelBridgeService {
   private config: ChannelBridgeConfig
   private configStorage: ConfigStorage
-  private server: ChannelBridgeServer
+  private adapter?: FeishuAdapter
+  private running = false
 
   constructor(private readonly options: ChannelBridgeOptions) {
-    this.config = { enabled: false, port: 17891, allowList: [], timeoutMs: 120_000 }
+    this.config = { enabled: false, allowList: [], timeoutMs: 120_000 }
     this.configStorage = createConfigStorage(this.options.layout.state)
-    this.server = new ChannelBridgeServer({ port: 0, adapters: new Map() })
   }
 
   getConfigPath(): string {
@@ -40,7 +39,7 @@ export class ChannelBridgeService {
   }
 
   async setConfig(config: ChannelBridgeConfig): Promise<void> {
-    const wasRunning = this.config.enabled
+    const wasRunning = this.running
     const willRun = config.enabled
 
     this.config = { ...config }
@@ -50,7 +49,8 @@ export class ChannelBridgeService {
       await this.stop()
     } else if (!wasRunning && willRun) {
       await this.start()
-    } else if (willRun && this.config.port !== this.server.port) {
+    } else if (willRun && wasRunning) {
+      // Restart so credential/allowlist changes take effect.
       await this.stop()
       await this.start()
     }
@@ -59,37 +59,32 @@ export class ChannelBridgeService {
   async start(): Promise<void> {
     await this.stop()
 
-    const adapters = this.buildAdapters()
-    this.server = new ChannelBridgeServer({ port: this.config.port, adapters })
-    await this.server.start()
-
-    for (const adapter of adapters.values()) {
-      await adapter.start()
+    if (this.config.feishu === undefined) {
+      throw new Error('Feishu configuration is missing')
     }
 
-    console.log(`[channel-bridge] listening on http://127.0.0.1:${this.config.port}`)
+    this.adapter = new FeishuAdapter({
+      config: this.config.feishu,
+      allowList: this.config.allowList,
+      logger: console,
+    })
+    this.adapter.onMessage(async (message: ChannelMessage): Promise<ChannelReply | undefined> => {
+      return this.handleMessage(this.adapter!, message)
+    })
+
+    await this.adapter.start()
+    this.running = true
+    console.log('[channel-bridge] Feishu long connection started')
   }
 
   async stop(): Promise<void> {
-    await this.server.stop()
+    await this.adapter?.stop()
+    this.adapter = undefined
+    this.running = false
   }
 
   get isRunning(): boolean {
-    return this.server.port !== 0
-  }
-
-  private buildAdapters(): Map<string, FeishuAdapter> {
-    const adapters = new Map<string, FeishuAdapter>()
-
-    if (this.config.feishu !== undefined) {
-      const adapter = new FeishuAdapter(this.config.feishu, this.config.allowList)
-      adapter.onMessage(async (message: ChannelMessage): Promise<ChannelReply | undefined> => {
-        return this.handleMessage(adapter, message)
-      })
-      adapters.set(adapter.name, adapter)
-    }
-
-    return adapters
+    return this.running
   }
 
   private async handleMessage(

@@ -39,7 +39,6 @@ export function createConfigStorage(stateDir: string): ConfigStorage {
 function mergeConfig(override: Partial<ChannelBridgeConfig>): ChannelBridgeConfig {
   return {
     enabled: override.enabled ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.enabled,
-    port: override.port ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.port,
     feishu: override.feishu,
     allowList: override.allowList ?? [...DEFAULT_CHANNEL_BRIDGE_CONFIG.allowList],
     workspace: override.workspace ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.workspace,

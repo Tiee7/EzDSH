@@ -479,7 +479,10 @@ if (!singleInstance) {
       runtimeEntryPath,
       runtimeCommandPath
     })
-    await channelBridgeService.initialize()
+    await channelBridgeService.initialize().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('[channel-bridge] failed to initialize:', message)
+    })
     providerService = new ProviderService(layout)
     await providerService.initialize()
     storeService = new StoreService({
