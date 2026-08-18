@@ -7,7 +7,11 @@ export interface FeishuConfig {
 export interface ChannelBridgeConfig {
   enabled: boolean
   feishu?: FeishuConfig
+  /** Target DSH session ID. If empty, a new session is created on first message. */
+  sessionId?: string
   allowList: string[]
   workspace?: string
   timeoutMs: number
+  /** How long to wait for the DSH session to finish a turn (ms). */
+  sessionTimeoutMs?: number
 }

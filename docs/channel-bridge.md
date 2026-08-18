@@ -12,19 +12,24 @@ EzDSH 远程控制功能让你通过即时通讯平台向 DSH 发送命令。当
 Phone / Feishu
        │
        ▼
-Feishu server ──long connection (WebSocket)──▶ EzDSH desktop app
+Feishu server ──WebSocket long connection──▶ EzDSH desktop app
                                                     │
                                                     ▼
-                                        FeishuAdapter → ChannelBridgeService
+                                              FeishuAdapter
                                                     │
                                                     ▼
-                                          DSH --profile headless
+                                          EzDSH DSH Runtime
                                                     │
                                                     ▼
-                             Result sent back via Feishu OpenAPI (REST)
+                              Target session (shared with the GUI)
+                                                    │
+                                                    ▼
+                                    Result sent back via Feishu OpenAPI
 ```
 
-EzDSH uses the official `@larksuiteoapi/node-sdk` **WebSocket long connection** to receive Feishu events. This follows the OpenClaw channel-plugin design, but removes the need for a public webhook URL or ngrok: the desktop app only needs outbound access to the internet.
+EzDSH uses the official `@larksuiteoapi/node-sdk` **WebSocket long connection** to receive Feishu events, so no public webhook URL or ngrok is required. The desktop app only needs outbound internet access.
+
+Unlike the earlier one-shot prototype, messages are now routed into a **real DSH session**. That session uses whichever model is already selected in the session, and the GUI and the remote control share the same session state.
 
 ---
 
@@ -37,8 +42,8 @@ EzDSH uses the official `@larksuiteoapi/node-sdk` **WebSocket long connection** 
 3. Enable **Bot** capability.
 4. Grant these permissions:
    - `im:message:send_as_bot`
-   - `im:message.group_msg`
-   - `im:message.p2p_msg` (if you want private chat)
+   - `im:message.p2p_msg:readonly` (for private chat)
+   - `im:message.group_msg:readonly` (for group chat, optional)
 5. Publish the app to your tenant.
 6. Copy the **App ID** and **App Secret**.
 
@@ -61,11 +66,12 @@ Open EzDSH → **Settings → 远程控制**.
 | Field | Value |
 |---|---|
 | Enable remote control | On |
-| Timeout | `120000` (ms) |
-| Whitelist | Your Feishu `open_id` (one per line) |
+| DSH session ID | Optional. Leave empty to create a new session on first use, or paste an existing session ID to share it with the GUI. |
+| Turn wait timeout | `300000` (ms) — how long to wait for one DSH turn to finish. |
+| Whitelist | Your Feishu `open_id` (one per line). |
 | Feishu App ID | From step 1 |
 | Feishu App Secret | From step 1 |
-| Encrypt Key | Leave empty unless you enabled encryption in Feishu |
+| Encrypt Key | Leave empty unless you enabled encryption in Feishu. |
 
 Click **Save**.
 
@@ -83,7 +89,7 @@ In a Feishu group or private chat where the bot is present, send:
 what is 2+2
 ```
 
-The bot will reply with DSH's answer.
+The bot will forward the message to the configured DSH session and reply with the final answer (reasoning/thinking content is filtered out).
 
 ---
 
@@ -91,10 +97,10 @@ The bot will reply with DSH's answer.
 
 - Events are received over an outbound WebSocket to Feishu; no local port is exposed to the internet.
 - Only Feishu user IDs in the whitelist can trigger commands.
-- Every command runs in a fresh `dsh --profile headless` session, isolated from the GUI session.
+- Commands run in the configured DSH session, sharing state with the GUI session.
 - The credentials file is saved with mode `0o600`.
 
-**Warning**: whitelisted users can run arbitrary shell commands through DSH. Only add trusted users.
+**Warning**: whitelisted users can execute anything the DSH session can do. Only add trusted users.
 
 ---
 
@@ -105,6 +111,8 @@ The config is stored in EzDSH state directory as `channel-bridge.json`:
 ```json
 {
   "enabled": true,
+  "sessionId": "your-session-id",
+  "sessionTimeoutMs": 300000,
   "allowList": ["ou_xxxxxxxx"],
   "timeoutMs": 120000,
   "feishu": {
@@ -118,8 +126,5 @@ The config is stored in EzDSH state directory as `channel-bridge.json`:
 
 ## Future work
 
-This MVP implements the OpenClaw-style adapter pattern inside EzDSH's Electron main process using Feishu's official long connection. Later it can be refactored into:
-
-- A proper DSH Cordis host plugin (`@ezdsh/channel-gateway`).
-- Standalone adapter packages for WeChat, QQ, DingTalk, etc.
-- A shared adapter protocol so third parties can contribute new platforms.
+- Session picker UI that lists existing DSH sessions instead of asking for an ID.
+- Support for more platforms (WeChat, QQ, DingTalk) using the same adapter protocol.

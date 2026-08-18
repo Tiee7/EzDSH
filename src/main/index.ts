@@ -476,8 +476,7 @@ if (!singleInstance) {
     })
     channelBridgeService = new ChannelBridgeService({
       layout,
-      runtimeEntryPath,
-      runtimeCommandPath
+      getRuntimeUrl: () => runtimeManager?.snapshot().url,
     })
     await channelBridgeService.initialize().catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)

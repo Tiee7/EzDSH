@@ -1,6 +1,6 @@
 import type { UserDataLayout } from '../../shared/state.js'
 import { createConfigStorage, type ConfigStorage } from './config.js'
-import { runDshHeadless } from './dsh.js'
+import { DshSessionClient } from './dsh-session.js'
 import { FeishuAdapter } from './feishu.js'
 import type { ChannelBridgeConfig, ChannelMessage, ChannelReply } from './types.js'
 
@@ -8,8 +8,8 @@ export type { ChannelBridgeConfig }
 
 export interface ChannelBridgeOptions {
   layout: UserDataLayout
-  runtimeEntryPath: string
-  runtimeCommandPath: string | undefined
+  /** Returns the current DSH Runtime URL, or undefined if it is not running. */
+  getRuntimeUrl(): string | undefined
 }
 
 export class ChannelBridgeService {
@@ -19,7 +19,7 @@ export class ChannelBridgeService {
   private running = false
 
   constructor(private readonly options: ChannelBridgeOptions) {
-    this.config = { enabled: false, allowList: [], timeoutMs: 120_000 }
+    this.config = { enabled: false, allowList: [], timeoutMs: 120_000, sessionTimeoutMs: 300_000 }
     this.configStorage = createConfigStorage(this.options.layout.state)
   }
 
@@ -30,7 +30,10 @@ export class ChannelBridgeService {
   async initialize(): Promise<void> {
     this.config = await this.configStorage.loadConfig()
     if (this.config.enabled) {
-      await this.start()
+      await this.start().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('[channel-bridge] failed to initialize:', message)
+      })
     }
   }
 
@@ -50,7 +53,7 @@ export class ChannelBridgeService {
     } else if (!wasRunning && willRun) {
       await this.start()
     } else if (willRun && wasRunning) {
-      // Restart so credential/allowlist changes take effect.
+      // Restart so credential/allowlist/session changes take effect.
       await this.stop()
       await this.start()
     }
@@ -97,24 +100,25 @@ export class ChannelBridgeService {
     console.log(`[channel-bridge] ${message.adapter} message from ${message.from.id}: ${text}`)
 
     try {
-      const result = await runDshHeadless(text, {
-        nodeCommand: this.options.runtimeCommandPath ?? process.execPath,
-        runtimeEntryPath: this.options.runtimeEntryPath,
-        cwd: this.config.workspace,
-        timeoutMs: this.config.timeoutMs,
+      const runtimeUrl = this.options.getRuntimeUrl()
+      if (runtimeUrl === undefined) {
+        throw new Error('DSH Runtime 尚未启动')
+      }
+
+      const sessionId = await this.ensureSession(runtimeUrl)
+      const client = new DshSessionClient({
+        baseUrl: runtimeUrl,
+        timeoutMs: this.config.sessionTimeoutMs ?? 300_000,
       })
 
-      let replyText = result.answer
-      if (replyText.length === 0) {
-        replyText = 'DSH 没有返回任何输出。'
-      }
+      const result = await client.sendPrompt(sessionId, text)
 
       return {
         to: {
           userId: message.chat?.type === 'private' ? message.from.id : undefined,
           chatId: message.chat?.type === 'group' ? message.chat.id : undefined,
         },
-        content: replyText,
+        content: result.text.length > 0 ? result.text : 'DSH 没有返回任何输出。',
       }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
@@ -126,5 +130,23 @@ export class ChannelBridgeService {
         content: `执行失败：${messageText}`,
       }
     }
+  }
+
+  private async ensureSession(runtimeUrl: string): Promise<string> {
+    if (this.config.sessionId !== undefined && this.config.sessionId.length > 0) {
+      return this.config.sessionId
+    }
+
+    const client = new DshSessionClient({
+      baseUrl: runtimeUrl,
+      timeoutMs: this.config.sessionTimeoutMs ?? 300_000,
+    })
+    const session = await client.createSession({ cwd: this.config.workspace })
+
+    this.config = { ...this.config, sessionId: session.sessionId }
+    await this.configStorage.saveConfig(this.config)
+    console.log(`[channel-bridge] created remote-control session ${session.sessionId}`)
+
+    return session.sessionId
   }
 }

@@ -6,6 +6,7 @@ const DEFAULT_CONFIG: ChannelBridgeConfig = {
   enabled: false,
   allowList: [],
   timeoutMs: 120_000,
+  sessionTimeoutMs: 300_000,
 }
 
 interface ChannelBridgePageProps {
@@ -103,6 +104,25 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
             type="password"
             value={config.feishu?.appSecret ?? ''}
             onChange={(e) => { updateFeishu({ appSecret: e.target.value }) }}
+          />
+        </label>
+
+        <label className="bridge-row">
+          <span>{copy.channelBridgeSessionId}</span>
+          <input
+            type="text"
+            value={config.sessionId ?? ''}
+            placeholder={copy.channelBridgeSessionIdPlaceholder}
+            onChange={(e) => { update({ sessionId: e.target.value }) }}
+          />
+        </label>
+
+        <label className="bridge-row">
+          <span>{copy.channelBridgeSessionTimeout}</span>
+          <input
+            type="number"
+            value={config.sessionTimeoutMs}
+            onChange={(e) => { update({ sessionTimeoutMs: Number(e.target.value) }) }}
           />
         </label>
 

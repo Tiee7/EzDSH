@@ -13,6 +13,7 @@ describe('channel bridge config storage', () => {
     expect(config.enabled).toBe(false)
     expect(config.allowList).toEqual([])
     expect(config.timeoutMs).toBe(120_000)
+    expect(config.sessionTimeoutMs).toBe(300_000)
     expect(config.feishu).toBeUndefined()
   })
 
@@ -22,9 +23,11 @@ describe('channel bridge config storage', () => {
     const custom: ChannelBridgeConfig = {
       enabled: true,
       feishu: { appId: 'app-id', appSecret: 'app-secret' },
+      sessionId: 'session-1',
       allowList: ['user-1', 'user-2'],
       workspace: '/tmp',
       timeoutMs: 60_000,
+      sessionTimeoutMs: 120_000,
     }
     await storage.saveConfig(custom)
     const loaded = await storage.loadConfig()
@@ -48,5 +51,6 @@ describe('channel bridge config storage', () => {
     expect(loaded.feishu).toEqual(legacy.feishu)
     expect(loaded.allowList).toEqual(['user-1'])
     expect(loaded.timeoutMs).toBe(60_000)
+    expect(loaded.sessionTimeoutMs).toBe(300_000)
   })
 })

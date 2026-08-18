@@ -126,6 +126,9 @@ export interface AppCopy {
   channelBridgeAllowList: string
   channelBridgeAppId: string
   channelBridgeAppSecret: string
+  channelBridgeSessionId: string
+  channelBridgeSessionIdPlaceholder: string
+  channelBridgeSessionTimeout: string
   channelBridgeSaved: string
 }
 
@@ -248,11 +251,14 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsTabGeneral: '通用',
     settingsTabRemoteControl: '远程控制',
     channelBridgeTitle: '远程控制',
-    channelBridgeHint: '通过飞书机器人远程向 DSH 发送命令。使用飞书官方长连接，无需公网地址。',
+    channelBridgeHint: '通过飞书机器人远程向 DSH 发送命令。使用飞书官方长连接，无需公网地址。消息会进入下方指定的 DSH 会话。',
     channelBridgeEnabled: '启用远程控制',
     channelBridgeAllowList: '白名单用户 Open ID（每行一个）',
     channelBridgeAppId: 'App ID',
     channelBridgeAppSecret: 'App Secret',
+    channelBridgeSessionId: 'DSH 会话 ID',
+    channelBridgeSessionIdPlaceholder: '留空则首次使用时自动创建',
+    channelBridgeSessionTimeout: '单轮等待超时（毫秒）',
     channelBridgeSaved: '已保存',
   },
   en: {
@@ -373,11 +379,14 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsTabGeneral: 'General',
     settingsTabRemoteControl: 'Remote control',
     channelBridgeTitle: 'Remote control',
-    channelBridgeHint: 'Send commands to DSH remotely through a Feishu bot. Uses the official Feishu long connection; no public URL is required.',
+    channelBridgeHint: 'Send commands to DSH remotely through a Feishu bot. Uses the official Feishu long connection; no public URL is required. Messages are sent to the DSH session specified below.',
     channelBridgeEnabled: 'Enable remote control',
     channelBridgeAllowList: 'Whitelisted user Open IDs (one per line)',
     channelBridgeAppId: 'App ID',
     channelBridgeAppSecret: 'App Secret',
+    channelBridgeSessionId: 'DSH session ID',
+    channelBridgeSessionIdPlaceholder: 'Leave empty to create a session on first use',
+    channelBridgeSessionTimeout: 'Turn wait timeout (ms)',
     channelBridgeSaved: 'Saved',
   },
 }

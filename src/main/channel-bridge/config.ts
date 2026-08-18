@@ -40,9 +40,11 @@ function mergeConfig(override: Partial<ChannelBridgeConfig>): ChannelBridgeConfi
   return {
     enabled: override.enabled ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.enabled,
     feishu: override.feishu,
+    sessionId: override.sessionId,
     allowList: override.allowList ?? [...DEFAULT_CHANNEL_BRIDGE_CONFIG.allowList],
     workspace: override.workspace ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.workspace,
     timeoutMs: override.timeoutMs ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.timeoutMs,
+    sessionTimeoutMs: override.sessionTimeoutMs ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.sessionTimeoutMs,
   }
 }
 
