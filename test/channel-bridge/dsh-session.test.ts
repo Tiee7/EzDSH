@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DshSessionClient } from '../../src/main/channel-bridge/dsh-session.js'
 
+function ok<T>(value: T): { result: { ok: true; value: T } } {
+  return { result: { ok: true, value } }
+}
+
 function createMockFetch(responses: unknown[]): () => typeof fetch {
   return () => {
     let index = 0
@@ -18,7 +22,7 @@ function createMockFetch(responses: unknown[]): () => typeof fetch {
 
 describe('DshSessionClient', () => {
   it('creates a session', async () => {
-    const mockFetch = createMockFetch([{ sessionId: 'session-1' }])()
+    const mockFetch = createMockFetch([ok({ sessionId: 'session-1' })])()
     const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
     vi.stubGlobal('fetch', mockFetch)
 
@@ -28,10 +32,30 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
+  it('lists sessions', async () => {
+    const mockFetch = createMockFetch([
+      ok({
+        items: [
+          { sessionId: 'session-1', updatedAt: 1, running: true },
+          { sessionId: 'session-2', updatedAt: 2, running: false, blank: true },
+        ],
+      }),
+    ])()
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const sessions = await client.listSessions()
+    expect(sessions).toHaveLength(2)
+    expect(sessions[0]).toEqual({ sessionId: 'session-1', updatedAt: 1, running: true })
+    expect(sessions[1]).toEqual({ sessionId: 'session-2', updatedAt: 2, running: false, blank: true })
+
+    vi.unstubAllGlobals()
+  })
+
   it('sends a prompt and extracts assistant text', async () => {
-    const historyBefore = { events: [] }
-    const promptResponse = { accepted: true }
-    const historyDuring = {
+    const historyBefore = ok({ events: [] })
+    const promptResponse = ok({ accepted: true })
+    const historyDuring = ok({
       events: [
         { event: { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } } },
         { event: { type: 'user/message', seq: 1, time: 2, data: { content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } } } },
@@ -55,7 +79,7 @@ describe('DshSessionClient', () => {
         { event: { type: 'turn/end', seq: 5, time: 6, data: { turn: 1, reason: { kind: 'completed' } } } },
       ],
       hasMore: false,
-    }
+    })
 
     const mockFetch = createMockFetch([historyBefore, promptResponse, historyDuring])()
     vi.stubGlobal('fetch', mockFetch)
@@ -68,9 +92,9 @@ describe('DshSessionClient', () => {
   })
 
   it('filters out reasoning blocks', async () => {
-    const historyBefore = { events: [] }
-    const promptResponse = { accepted: true }
-    const historyDuring = {
+    const historyBefore = ok({ events: [] })
+    const promptResponse = ok({ accepted: true })
+    const historyDuring = ok({
       events: [
         {
           event: {
@@ -91,7 +115,7 @@ describe('DshSessionClient', () => {
         { event: { type: 'turn/end', seq: 5, time: 6, data: {} } },
       ],
       hasMore: false,
-    }
+    })
 
     const mockFetch = createMockFetch([historyBefore, promptResponse, historyDuring])()
     vi.stubGlobal('fetch', mockFetch)
@@ -104,7 +128,7 @@ describe('DshSessionClient', () => {
   })
 
   it('ignores assistant messages from previous turns', async () => {
-    const historyBefore = {
+    const historyBefore = ok({
       events: [
         {
           event: {
@@ -120,9 +144,9 @@ describe('DshSessionClient', () => {
           },
         },
       ],
-    }
-    const promptResponse = { accepted: true }
-    const historyDuring = {
+    })
+    const promptResponse = ok({ accepted: true })
+    const historyDuring = ok({
       events: [
         {
           event: {
@@ -140,7 +164,7 @@ describe('DshSessionClient', () => {
         { event: { type: 'turn/end', seq: 5, time: 6, data: {} } },
       ],
       hasMore: false,
-    }
+    })
 
     const mockFetch = createMockFetch([historyBefore, promptResponse, historyDuring])()
     vi.stubGlobal('fetch', mockFetch)
@@ -153,9 +177,9 @@ describe('DshSessionClient', () => {
   })
 
   it('throws when the turn times out', async () => {
-    const historyBefore = { events: [] }
-    const promptResponse = { accepted: true }
-    const historyDuring = { events: [] }
+    const historyBefore = ok({ events: [] })
+    const promptResponse = ok({ accepted: true })
+    const historyDuring = ok({ events: [] })
 
     const mockFetch = createMockFetch([historyBefore, promptResponse, historyDuring])()
     vi.stubGlobal('fetch', mockFetch)

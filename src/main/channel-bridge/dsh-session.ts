@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 /**
  * Minimal DSH Runtime session client used by the channel bridge.
  *
@@ -100,6 +102,17 @@ interface SessionEvent {
   sourceEventSeqs?: number[]
   surfaceOp?: unknown
   ignorable?: true
+}
+
+interface RpcRequestEnvelope<T> {
+  rpcId: string
+  method: string
+  payload: T
+}
+
+interface RpcResponseEnvelope<T> {
+  rpcId: string
+  result: { ok: true; value: T } | { ok: false; error: { code: string; message: string; details?: unknown } }
 }
 
 export class DshSessionClient {
@@ -217,10 +230,17 @@ export class DshSessionClient {
 
   private async post<T>(path: string, body: unknown): Promise<T> {
     const url = `${this.options.baseUrl.replace(/\/$/u, '')}${path}`
+    const method = path.replace(/^\/api\//u, '')
+    const envelope: RpcRequestEnvelope<unknown> = {
+      rpcId: randomUUID(),
+      method,
+      payload: body,
+    }
+
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(envelope),
     })
 
     if (!response.ok) {
@@ -228,7 +248,11 @@ export class DshSessionClient {
       throw new Error(`DSH API ${path} failed: ${response.status} ${text}`)
     }
 
-    return (await response.json()) as T
+    const rpcResponse = (await response.json()) as RpcResponseEnvelope<T>
+    if (!rpcResponse.result.ok) {
+      throw new Error(`DSH API ${path} error: ${rpcResponse.result.error.code} ${rpcResponse.result.error.message}`)
+    }
+    return rpcResponse.result.value
   }
 }
 
