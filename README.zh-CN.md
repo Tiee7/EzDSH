@@ -1,12 +1,12 @@
 # EzDSH
 
 <p align="center">
-  <img src="assets/logo.png" alt="EzDSH" width="128" />
+  <img src="assets/logo.png" alt="EzDSH DeepSeek Harness 桌面客户端" width="100%" />
 </p>
 
 <p align="center">
-  <strong>真正开箱即用的 DeepSeek Harness 桌面工作台。</strong><br/>
-  让 DeepSeek Harness 从“开发者工具”变成“开箱即用的本地 AI 工作台”。
+  <strong>适用于 macOS 和 Windows 的 DeepSeek Harness 开箱即用桌面客户端。</strong><br/>
+  内置 Runtime，自动管理运行环境，数据与密钥本地保存，无需 Node.js 或命令行配置。
 </p>
 
 <p align="center">

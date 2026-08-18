@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <strong>The truly out-of-the-box DeepSeek Harness desktop workspace.</strong><br/>
-  Turn DeepSeek Harness from a developer tool into a ready-to-use local AI agent platform.
+  <strong>Out-of-the-box DeepSeek Harness desktop client for macOS and Windows.</strong><br/>
+  Bundled Runtime, automatic lifecycle management, and local-first storage—no Node.js or terminal setup required.
 </p>
 
 <p align="center">
