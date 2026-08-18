@@ -16,7 +16,6 @@ export function WebPane({ item, active, copy }: WebPaneProps): JSX.Element {
     <div className={`workspace-pane ${active ? 'workspace-pane-active' : ''}`}>
       <div className="web-pane">
         <div className="web-pane-toolbar">
-          <code className="web-pane-url">{item.url}</code>
           <button type="button" className="web-pane-reload" onClick={() => setNonce((n) => n + 1)}>
             {copy.navReload}
           </button>

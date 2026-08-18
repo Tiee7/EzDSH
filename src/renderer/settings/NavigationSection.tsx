@@ -44,6 +44,7 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
   const [editingId, setEditingId] = useState<string>()
   const [draft, setDraft] = useState<EditingDraft>({ label: '', url: '' })
   const [dragIndex, setDragIndex] = useState<number>()
+  const [dropBoundary, setDropBoundary] = useState<number>()
 
   useEffect(() => {
     let active = true
@@ -127,21 +128,38 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
     void persist(items.filter((item) => item.id !== id))
   }
 
-  const onDrop = (targetIndex: number): void => {
-    if (dragIndex === undefined || dragIndex === targetIndex) {
-      setDragIndex(undefined)
+  const onListDragOver = (event: React.DragEvent<HTMLUListElement>): void => {
+    event.preventDefault()
+    if (dragIndex === undefined || editingId !== undefined) return
+    const rows = Array.from(event.currentTarget.children) as HTMLLIElement[]
+    let boundary = 0
+    for (let i = 0; i < rows.length; i += 1) {
+      const rect = rows[i].getBoundingClientRect()
+      if (event.clientY < rect.top + rect.height / 2) {
+        boundary = i
+        break
+      }
+      boundary = i + 1
+    }
+    setDropBoundary(Math.min(Math.max(boundary, 1), items.length - 1))
+  }
+
+  const onDrop = (event: React.DragEvent<HTMLUListElement>): void => {
+    event.preventDefault()
+    if (dragIndex === undefined) {
+      setDropBoundary(undefined)
       return
     }
-    const target = items[targetIndex]
-    if (isBuiltinNavItem(target) && target.locked) {
-      setDragIndex(undefined)
-      return
+    let to = dropBoundary ?? dragIndex
+    if (dragIndex < to) to -= 1
+    if (to !== dragIndex) {
+      const next = [...items]
+      const [moved] = next.splice(dragIndex, 1)
+      next.splice(to, 0, moved)
+      void persist(next)
     }
-    const next = [...items]
-    const [moved] = next.splice(dragIndex, 1)
-    next.splice(targetIndex, 0, moved)
     setDragIndex(undefined)
-    void persist(next)
+    setDropBoundary(undefined)
   }
 
   if (!loaded) {
@@ -151,18 +169,19 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
   return (
     <div className="nav-section">
       <p className="settings-hint">{copy.navSectionHint}</p>
-      <ul className="nav-list">
+      <ul className="nav-list" onDragOver={onListDragOver} onDrop={onDrop}>
         {items.map((item, index) => {
-          const movable = !(isBuiltinNavItem(item) && item.locked)
+          const movable = editingId === undefined && !(isBuiltinNavItem(item) && item.locked)
           return (
             <li
               key={item.id}
-              className={`nav-row ${dragIndex === index ? 'nav-row-dragging' : ''} ${editingId === item.id ? 'nav-row-editing' : ''}`}
+              className={`nav-row ${dragIndex === index ? 'nav-row-dragging' : ''} ${editingId === item.id ? 'nav-row-editing' : ''} ${dropBoundary === index ? 'nav-row-drop-above' : ''}`}
               draggable={movable}
               onDragStart={movable ? () => setDragIndex(index) : undefined}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={() => onDrop(index)}
-              onDragEnd={movable ? () => setDragIndex(undefined) : undefined}
+              onDragEnd={movable ? () => {
+                setDragIndex(undefined)
+                setDropBoundary(undefined)
+              } : undefined}
             >
               {movable ? <span className="nav-drag-handle" aria-hidden="true">⋮⋮</span> : <span className="nav-drag-spacer" aria-hidden="true" />}
               {isBuiltinNavItem(item) ? (

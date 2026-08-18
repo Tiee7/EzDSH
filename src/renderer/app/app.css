@@ -321,21 +321,13 @@ h1 {
 .web-pane-toolbar {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 12px;
   flex: none;
   padding: 8px 12px;
   border-bottom: 1px solid var(--ezdsh-panel-border);
   background: var(--ezdsh-tab-bar-background);
   -webkit-app-region: no-drag;
-}
-
-.web-pane-url {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ezdsh-text-muted);
-  font-size: 12px;
 }
 
 .web-pane-reload {

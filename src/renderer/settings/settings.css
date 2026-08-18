@@ -662,6 +662,7 @@
 }
 
 .nav-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -673,6 +674,18 @@
 
 .nav-row-dragging {
   opacity: 0.5;
+}
+
+.nav-row-drop-above::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--ezdsh-brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ezdsh-brand) 25%, transparent);
 }
 
 .nav-drag-handle,
