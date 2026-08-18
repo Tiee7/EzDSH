@@ -37,7 +37,12 @@ export function createConfigStorage(stateDir: string): ConfigStorage {
   }
 }
 
-function mergeConfig(override: Partial<ChannelBridgeConfig> & { feishu?: unknown }): ChannelBridgeConfig {
+interface LegacyConfig extends Partial<ChannelBridgeConfig> {
+  feishu?: unknown
+  enabled?: boolean
+}
+
+function mergeConfig(override: LegacyConfig): ChannelBridgeConfig {
   const adapters: Record<string, AdapterConfig> = {}
 
   for (const [name, cfg] of Object.entries(override.adapters ?? {})) {
@@ -58,10 +63,13 @@ function mergeConfig(override: Partial<ChannelBridgeConfig> & { feishu?: unknown
     if (override.allowList !== undefined && cfg.allowList === undefined) {
       cfg.allowList = override.allowList
     }
+    // Backward compatibility: the legacy top-level `enabled` flag becomes per-adapter.
+    if (override.enabled !== undefined && cfg.enabled === undefined) {
+      cfg.enabled = override.enabled
+    }
   }
 
   return {
-    enabled: override.enabled ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.enabled,
     adapters,
     sessionId: override.sessionId,
     allowList: override.allowList ?? (DEFAULT_CHANNEL_BRIDGE_CONFIG.allowList ?? []),

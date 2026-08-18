@@ -87,7 +87,6 @@ export type { ChannelBridgeConfig } from '../../shared/channel-bridge.js'
 import type { ChannelBridgeConfig } from '../../shared/channel-bridge.js'
 
 export const DEFAULT_CHANNEL_BRIDGE_CONFIG: ChannelBridgeConfig = {
-  enabled: false,
   adapters: {},
   allowList: [],
   timeoutMs: 120_000,

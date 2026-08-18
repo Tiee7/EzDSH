@@ -3,7 +3,6 @@ import type { AdapterConfig, ChannelBridgeConfig, DshSessionSummary, PairingStat
 import type { AppCopy } from '../../shared/locale.js'
 
 const DEFAULT_CONFIG: ChannelBridgeConfig = {
-  enabled: false,
   adapters: {},
   allowList: [],
   timeoutMs: 120_000,
@@ -12,6 +11,7 @@ const DEFAULT_CONFIG: ChannelBridgeConfig = {
 }
 
 interface FeishuConfig {
+  enabled: boolean
   appId: string
   appSecret: string
   encryptKey: string
@@ -32,6 +32,7 @@ function getFeishuConfig(adapters: Record<string, AdapterConfig>): FeishuConfig 
   const raw = adapters.feishu
   if (raw !== undefined) {
     return {
+      enabled: raw.enabled === true,
       appId: String(raw.appId ?? ''),
       appSecret: String(raw.appSecret ?? ''),
       encryptKey: String(raw.encryptKey ?? ''),
@@ -39,12 +40,17 @@ function getFeishuConfig(adapters: Record<string, AdapterConfig>): FeishuConfig 
       allowList: Array.isArray(raw.allowList) ? raw.allowList : [],
     }
   }
-  return { appId: '', appSecret: '', encryptKey: '', allowList: [] }
+  return { enabled: false, appId: '', appSecret: '', encryptKey: '', allowList: [] }
 }
 
 function isFeishuReady(config: ChannelBridgeConfig): boolean {
   const feishu = getFeishuConfig(config.adapters)
   return feishu.appId.trim() !== '' && feishu.appSecret.trim() !== ''
+}
+
+function isFeishuEnabledAndReady(config: ChannelBridgeConfig): boolean {
+  const feishu = getFeishuConfig(config.adapters)
+  return feishu.enabled && feishu.appId.trim() !== '' && feishu.appSecret.trim() !== ''
 }
 
 interface ChannelBridgePageProps {
@@ -212,17 +218,6 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
         <p className="settings-card-description">{copy.channelBridgeHint}</p>
       </div>
 
-      <div className="settings-card-content">
-        <label className="bridge-row">
-          <span>{copy.channelBridgeEnabled}</span>
-          <input
-            type="checkbox"
-            checked={config.enabled}
-            onChange={(e) => { update({ enabled: e.target.checked }) }}
-          />
-        </label>
-      </div>
-
       <div className="settings-card-content bridge-platform-layout">
         <nav className="bridge-platform-nav" aria-label={copy.remoteControlIMPlatforms}>
           <p className="bridge-platform-nav-title">{copy.remoteControlIMPlatforms}</p>
@@ -357,13 +352,23 @@ function FeishuPage({
 }: FeishuPageProps): JSX.Element {
   const feishu = getFeishuConfig(config.adapters)
   const feishuReady = isFeishuReady(config)
+  const feishuEnabledAndReady = isFeishuEnabledAndReady(config)
 
   return (
     <div className="bridge-platform-page">
       <h3 className="bridge-platform-page-title">{copy.remoteControlFeishuTitle}</h3>
       <p className="bridge-platform-page-hint">{copy.remoteControlFeishuHint}</p>
 
-      {config.enabled && !feishuReady ? (
+      <label className="bridge-row">
+        <span>{copy.remoteControlFeishuEnabled}</span>
+        <input
+          type="checkbox"
+          checked={feishu.enabled}
+          onChange={(e) => { updateFeishu({ enabled: e.target.checked }) }}
+        />
+      </label>
+
+      {feishu.enabled && !feishuReady ? (
         <p className="settings-error">{copy.remoteControlFeishuIncomplete}</p>
       ) : null}
 
@@ -481,7 +486,7 @@ function FeishuPage({
         ) : (
           <button
             className="settings-action settings-action-secondary"
-            disabled={!config.enabled || !feishuReady}
+            disabled={!feishuEnabledAndReady}
             onClick={() => { void startPairing() }}
           >
             {copy.channelBridgeStartPairing}

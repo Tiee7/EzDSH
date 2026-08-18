@@ -137,8 +137,8 @@ export interface AppCopy {
   navSaveFailed: string
   channelBridgeTitle: string
   channelBridgeHint: string
-  channelBridgeEnabled: string
   channelBridgeAllowList: string
+  remoteControlFeishuEnabled: string
   channelBridgeSessionId: string
   remoteControlFeishuTitle: string
   remoteControlFeishuHint: string
@@ -311,9 +311,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     navInvalidUrl: '请输入有效的 http/https 链接地址',
     navSaveFailed: '保存失败，请重试',
     channelBridgeTitle: '远程控制',
-    channelBridgeHint: '开启后，可以通过 IM 机器人远程向 EzDSH 发送消息，机器人的回复会进入下方指定的 DSH 会话。',
-    channelBridgeEnabled: '启用远程控制',
+    channelBridgeHint: '为每个 IM 平台配置凭证并启用后，即可通过对应机器人远程向 EzDSH 发送消息。',
     channelBridgeAllowList: '白名单用户 ID（每行一个）',
+    remoteControlFeishuEnabled: '启用飞书',
     channelBridgeSessionId: 'DSH 会话 ID',
     channelBridgeSessionIdPlaceholder: '留空则首次使用时自动创建',
     channelBridgeSessionTimeout: '单轮等待超时（毫秒）',
@@ -336,14 +336,14 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgePairingExpired: '验证码已过期，请重新生成。',
     channelBridgePairingSuccess: '配对成功，已加入白名单。',
     channelBridgePairingFailed: '配对失败',
-    remoteControlFeishuTitle: '飞书 / Lark',
+    remoteControlFeishuTitle: '飞书',
     remoteControlFeishuHint: '在飞书开放平台创建企业自建应用，把应用的凭证填写到下面即可接入。',
     remoteControlFeishuAppId: 'App ID',
     remoteControlFeishuAppIdPlaceholder: 'cli_xxx',
     remoteControlFeishuAppSecret: 'App Secret',
     remoteControlFeishuAppSecretPlaceholder: 'xxx',
     remoteControlFeishuEncryptKey: '事件订阅 Encrypt Key（可选）',
-    remoteControlFeishuIncomplete: '已启用远程控制，但飞书的 App ID 和 App Secret 尚未填写完整。',
+    remoteControlFeishuIncomplete: '已启用飞书，但 App ID 和 App Secret 尚未填写完整。',
     remoteControlFeishuNav: '飞书',
     remoteControlGeneral: '通用',
     remoteControlGeneralHint: '这些设置对所有 IM 平台生效。每个平台还可以单独配置会话和白名单。',
@@ -485,9 +485,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     navInvalidUrl: 'Enter a valid http/https URL',
     navSaveFailed: 'Save failed. Try again.',
     channelBridgeTitle: 'Remote control',
-    channelBridgeHint: 'When enabled, send messages to EzDSH remotely through an IM bot. Replies go to the DSH session selected below.',
-    channelBridgeEnabled: 'Enable remote control',
+    channelBridgeHint: 'Configure credentials and enable each IM platform to send messages to EzDSH remotely via its bot.',
     channelBridgeAllowList: 'Whitelisted user IDs (one per line)',
+    remoteControlFeishuEnabled: 'Enable Lark',
     channelBridgeSessionId: 'DSH session ID',
     channelBridgeSessionIdPlaceholder: 'Leave empty to create a session on first use',
     channelBridgeSessionTimeout: 'Turn wait timeout (ms)',
@@ -517,7 +517,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     remoteControlFeishuAppSecret: 'App Secret',
     remoteControlFeishuAppSecretPlaceholder: 'xxx',
     remoteControlFeishuEncryptKey: 'Event subscription Encrypt Key (optional)',
-    remoteControlFeishuIncomplete: 'Remote control is enabled, but the Lark App ID and App Secret are not filled in yet.',
+    remoteControlFeishuIncomplete: 'Lark is enabled, but the App ID and App Secret are not filled in yet.',
     remoteControlFeishuNav: 'Lark',
     remoteControlGeneral: 'General',
     remoteControlGeneralHint: 'These settings apply to every IM platform. Each platform can also configure its own session and allowlist.',

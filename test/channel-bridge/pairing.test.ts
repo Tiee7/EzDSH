@@ -103,8 +103,7 @@ describe('ChannelBridgeService pairing', () => {
   it('generates a 6-digit code and expires after the TTL', async () => {
     vi.useFakeTimers()
     const config: ChannelBridgeConfig = {
-      enabled: true,
-      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
+      adapters: { feishu: { enabled: true, appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }
@@ -120,8 +119,7 @@ describe('ChannelBridgeService pairing', () => {
 
   it('adds the sender to the allowlist when the correct code is sent in a private chat', async () => {
     const config: ChannelBridgeConfig = {
-      enabled: true,
-      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
+      adapters: { feishu: { enabled: true, appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }
@@ -143,8 +141,7 @@ describe('ChannelBridgeService pairing', () => {
 
   it('ignores correct codes sent in group chats', async () => {
     const config: ChannelBridgeConfig = {
-      enabled: true,
-      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
+      adapters: { feishu: { enabled: true, appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }
@@ -162,8 +159,7 @@ describe('ChannelBridgeService pairing', () => {
 
   it('ignores incorrect codes', async () => {
     const config: ChannelBridgeConfig = {
-      enabled: true,
-      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
+      adapters: { feishu: { enabled: true, appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }
@@ -181,8 +177,7 @@ describe('ChannelBridgeService pairing', () => {
 
   it('cancels pairing on request', async () => {
     const config: ChannelBridgeConfig = {
-      enabled: true,
-      adapters: { feishu: { appId: 'cli_xxx', appSecret: 'secret' } },
+      adapters: { feishu: { enabled: true, appId: 'cli_xxx', appSecret: 'secret' } },
       allowList: [],
       timeoutMs: 120_000,
     }

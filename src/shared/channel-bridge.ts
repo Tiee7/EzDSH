@@ -1,6 +1,8 @@
 export interface AdapterConfig {
   /** Platform-specific settings. */
   [key: string]: unknown
+  /** Whether this adapter is enabled. */
+  enabled?: boolean
   /** Target DSH session ID for this adapter. Falls back to the global sessionId. */
   sessionId?: string
   /** Whitelisted user IDs for this adapter. Falls back to the global allowList. */
@@ -8,7 +10,6 @@ export interface AdapterConfig {
 }
 
 export interface ChannelBridgeConfig {
-  enabled: boolean
   /** Adapter-specific configurations keyed by adapter name. */
   adapters: Record<string, AdapterConfig>
   /** Global fallback target DSH session ID. */

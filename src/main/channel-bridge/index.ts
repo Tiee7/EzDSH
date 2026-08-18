@@ -50,7 +50,7 @@ export class ChannelBridgeService {
 
   async initialize(): Promise<void> {
     this.config = await this.configStorage.loadConfig()
-    if (this.config.enabled) {
+    if (this.hasEnabledAdapter()) {
       await this.start().catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         console.error('[channel-bridge] failed to initialize:', message)
@@ -63,19 +63,13 @@ export class ChannelBridgeService {
   }
 
   async setConfig(config: ChannelBridgeConfig): Promise<void> {
-    const wasRunning = this.running
-    const willRun = config.enabled
-
     this.config = { ...config }
     await this.configStorage.saveConfig(this.config)
 
-    if (wasRunning && !willRun) {
-      await this.stop()
-    } else if (!wasRunning && willRun) {
-      await this.start()
-    } else if (willRun && wasRunning) {
-      // Restart so credential/allowlist/session changes take effect.
-      await this.stop()
+    // Restart whenever the config changes so that enable/credential/session/allowlist
+    // updates take effect immediately.
+    await this.stop()
+    if (this.hasEnabledAdapter()) {
       await this.start()
     }
   }
@@ -83,17 +77,20 @@ export class ChannelBridgeService {
   async start(): Promise<void> {
     await this.stop()
 
-    const configuredAdapters = Object.entries(this.config.adapters).filter(
-      ([, adapterConfig]) => adapterConfig !== undefined && adapterConfig !== null,
+    const enabledAdapters = Object.entries(this.config.adapters).filter(
+      ([, rawConfig]) =>
+        rawConfig !== undefined &&
+        rawConfig !== null &&
+        (rawConfig as AdapterConfig).enabled === true,
     )
 
-    if (configuredAdapters.length === 0) {
-      throw new Error('没有配置任何 IM adapter')
+    if (enabledAdapters.length === 0) {
+      return
     }
 
     const logger: Logger = console
     const results = await Promise.allSettled(
-      configuredAdapters.map(async ([name, rawConfig]) => {
+      enabledAdapters.map(async ([name, rawConfig]) => {
         const adapterConfig = (rawConfig ?? {}) as AdapterConfig
         const adapter = this.options.registry.create(name, {
           config: adapterConfig,
@@ -111,7 +108,7 @@ export class ChannelBridgeService {
     )
 
     const failures = results
-      .map((result, index) => ({ result, name: configuredAdapters[index]?.[0] ?? 'unknown' }))
+      .map((result, index) => ({ result, name: enabledAdapters[index]?.[0] ?? 'unknown' }))
       .filter(({ result }) => result.status === 'rejected')
       .map(({ name, result }) => {
         const reason = result.status === 'rejected' ? (result.reason as Error).message : 'unknown'
@@ -147,6 +144,12 @@ export class ChannelBridgeService {
 
   get isRunning(): boolean {
     return this.running
+  }
+
+  private hasEnabledAdapter(): boolean {
+    return Object.values(this.config.adapters).some(
+      (cfg) => cfg !== undefined && cfg !== null && (cfg as AdapterConfig).enabled === true,
+    )
   }
 
   async listSessions(): Promise<DshSessionSummary[]> {
