@@ -30,6 +30,11 @@ import { webProfilePatchFile } from './install-paths.js'
 import { installSkillBundle, SkillConflictError, uninstallSkill } from './skill-installer.js'
 import { installPresetBundle, PresetConflictError, uninstallPreset } from './preset-installer.js'
 import { installMcpEntry, uninstallMcpEntry } from './mcp-installer.js'
+import {
+  installChannelAdapterBundle,
+  ChannelAdapterConflictError,
+  uninstallChannelAdapter
+} from './channel-adapter-installer.js'
 
 /** Remote catalog source used only by explicit refreshes. */
 export interface RemoteCatalogSource {
@@ -150,10 +155,11 @@ export class StoreService {
    */
   async refresh(): Promise<StoreRefreshResult> {
     await this.ensureCatalog()
-    const [skills, presets, mcps, categories] = await Promise.all([
+    const [skills, presets, mcps, channelAdapters, categories] = await Promise.all([
       this.client.list('skill', {}, { force: true }),
       this.client.list('preset', {}, { force: true }),
       this.client.list('mcp', {}, { force: true }),
+      this.client.list('channel-adapter', {}, { force: true }),
       this.client.categories({ force: true })
     ])
     const catalog: CachedCatalog = {
@@ -162,7 +168,8 @@ export class StoreService {
       byKind: {
         skill: skills.entries,
         preset: presets.entries,
-        mcp: mcps.entries
+        mcp: mcps.entries,
+        'channel-adapter': channelAdapters.entries
       }
     }
     if (this.catalogCachePath !== undefined) await writeCatalogCache(this.catalogCachePath, catalog)
@@ -172,7 +179,8 @@ export class StoreService {
       counts: {
         skill: skills.entries.length,
         preset: presets.entries.length,
-        mcp: mcps.entries.length
+        mcp: mcps.entries.length,
+        'channel-adapter': channelAdapters.entries.length
       }
     }
   }
@@ -278,6 +286,7 @@ export class StoreService {
     try {
       if (kind === 'skill') await uninstallSkill(this.dshHome, id)
       else if (kind === 'preset') await uninstallPreset(this.dshHome, id)
+      else if (kind === 'channel-adapter') await uninstallChannelAdapter(this.dshHome, id)
       else await uninstallMcpEntry(webProfilePatchFile(this.dshHome), id)
       await registry.remove(kind, id)
     } catch (error) {
@@ -299,6 +308,7 @@ export class StoreService {
       if (this.dshHome === undefined) throw new Error('DSH home is not configured')
       if (kind === 'skill') await installSkillBundle(this.dshHome, entry, bundle ?? [])
       else if (kind === 'preset') await installPresetBundle(this.dshHome, entry, bundle ?? [])
+      else if (kind === 'channel-adapter') await installChannelAdapterBundle(this.dshHome, entry, bundle ?? [])
       else await installMcpEntry(webProfilePatchFile(this.dshHome), requireMcp(entry))
       await registry.upsert({
         kind,
@@ -309,7 +319,12 @@ export class StoreService {
         name: entry.name
       })
     } catch (error) {
-      const reason = error instanceof SkillConflictError || error instanceof PresetConflictError ? 'conflict' : 'install'
+      const reason =
+        error instanceof SkillConflictError ||
+        error instanceof PresetConflictError ||
+        error instanceof ChannelAdapterConflictError
+          ? 'conflict'
+          : 'install'
       return this.finish({ kind, id, phase: 'failed', failureReason: reason, audit, message: describe(error) })
     }
     return this.finish({ kind, id, phase: 'done', audit })

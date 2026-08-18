@@ -674,14 +674,84 @@ const PRESET_ENTRIES: readonly StoreEntry[] = PRESET_FILE_ROWS.map((rows, index)
   }
 })
 
+// ---- Channel adapter payloads ----
+
+const CHANNEL_FEISHU_PACKAGE_JSON = JSON.stringify({
+  name: '@ezdsh/channel-feishu',
+  version: '0.1.0',
+  type: 'module',
+  main: 'index.js',
+  ezdsh: {
+    channelAdapter: {
+      name: 'feishu',
+      entry: './index.js'
+    }
+  }
+}, null, 2)
+
+const CHANNEL_FEISHU_INDEX_JS = `export const feishuAdapterFactory = {
+  name: 'feishu',
+  create(options) {
+    return {
+      name: 'feishu',
+      onMessage(handler) { this.handler = handler },
+      async start() {},
+      async stop() {},
+      async send(reply) { console.log('[feishu:demo] send:', reply) },
+      updateAllowList(list) {},
+    }
+  }
+}
+`
+
+interface DemoChannelAdapter {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly category: string
+  readonly auditLevel: 'verified' | 'basic'
+  readonly version: string
+  readonly readme: string
+  readonly files: { readonly path: string; readonly content: string }[]
+}
+
+const DEMO_CHANNEL_ADAPTERS: readonly DemoChannelAdapter[] = [
+  {
+    id: 'channel-feishu',
+    name: 'Feishu / Lark Adapter',
+    description: 'Receive and reply to Feishu messages for EzDSH remote control.',
+    category: 'im',
+    auditLevel: 'verified',
+    version: '0.1.0',
+    readme: 'Connects EzDSH to Feishu (Lark) via the official node-sdk. Supports private and group messages, allowlist pairing, and processing-status reactions.',
+    files: [
+      { path: 'channel-feishu/package.json', content: CHANNEL_FEISHU_PACKAGE_JSON },
+      { path: 'channel-feishu/index.js', content: CHANNEL_FEISHU_INDEX_JS }
+    ]
+  }
+]
+
+const CHANNEL_ADAPTER_ENTRIES: readonly StoreEntry[] = DEMO_CHANNEL_ADAPTERS.map((adapter) => ({
+  id: adapter.id,
+  kind: 'channel-adapter' as const,
+  name: adapter.name,
+  description: adapter.description,
+  category: adapter.category,
+  auditLevel: adapter.auditLevel,
+  version: adapter.version,
+  readme: adapter.readme,
+  files: adapter.files.map((file) => demoFile(adapter.id, file.path, file.content))
+}))
+
 const ENTRIES_BY_KIND: Record<StoreKind, readonly StoreEntry[]> = {
   skill: SKILL_ENTRIES,
   preset: PRESET_ENTRIES,
-  mcp: MCP_ENTRIES
+  mcp: MCP_ENTRIES,
+  'channel-adapter': CHANNEL_ADAPTER_ENTRIES
 }
 
 const ENTRY_BY_KEY = new Map<string, StoreEntry>()
-for (const entry of [...SKILL_ENTRIES, ...PRESET_ENTRIES, ...MCP_ENTRIES]) {
+for (const entry of [...SKILL_ENTRIES, ...PRESET_ENTRIES, ...MCP_ENTRIES, ...CHANNEL_ADAPTER_ENTRIES]) {
   ENTRY_BY_KEY.set(`${entry.kind}:${entry.id}`, entry)
 }
 
@@ -692,6 +762,11 @@ for (const skill of DEMO_SKILLS) {
 for (const rows of PRESET_FILE_ROWS) {
   for (const row of rows) {
     DEMO_FILE_BY_URL.set(`${DEMO_FILE_URL_PREFIX}${row.id}/${row.path}`, row.content)
+  }
+}
+for (const adapter of DEMO_CHANNEL_ADAPTERS) {
+  for (const file of adapter.files) {
+    DEMO_FILE_BY_URL.set(`${DEMO_FILE_URL_PREFIX}${adapter.id}/${file.path}`, file.content)
   }
 }
 
@@ -710,7 +785,8 @@ export function demoCategories(): StoreCategory[] {
     { id: 'research', name: 'Research' },
     { id: 'coding', name: 'Coding' },
     { id: 'analysis', name: 'Analysis' },
-    { id: 'tools', name: 'Tools (MCP)' }
+    { id: 'tools', name: 'Tools (MCP)' },
+    { id: 'im', name: 'Messaging' }
   ]
 }
 
