@@ -421,6 +421,39 @@
   font-weight: 500;
 }
 
+.settings-tab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 12px;
+  background: var(--ezdsh-code-background);
+}
+
+.settings-tab {
+  flex: 1;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--ezdsh-text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.settings-tab:hover {
+  color: var(--ezdsh-text-body);
+}
+
+.settings-tab-active {
+  background: var(--ezdsh-panel-background);
+  color: var(--ezdsh-text-heading);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
 .settings-item-column {
   flex-direction: column;
   align-items: stretch;

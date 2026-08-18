@@ -117,19 +117,16 @@ export interface AppCopy {
   settingsRuntimeSection: string
   settingsRuntimePort: string
   settingsRestartRuntime: string
+  settingsTabGeneral: string
+  settingsTabRemoteControl: string
   channelBridgeTitle: string
   channelBridgeHint: string
   channelBridgeEnabled: string
   channelBridgePort: string
-  channelBridgeTimeout: string
   channelBridgeAllowList: string
-  channelBridgeWorkspace: string
-  channelBridgeFeishu: string
   channelBridgeAppId: string
   channelBridgeAppSecret: string
-  channelBridgeEncryptKey: string
   channelBridgeSaved: string
-  channelBridgeCopyConfigPath: string
 }
 
 const APP_COPY: Record<AppLocale, AppCopy> = {
@@ -247,19 +244,16 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimeSection: '运行状态',
     settingsRuntimePort: '端口',
     settingsRestartRuntime: '重启 Runtime',
+    settingsTabGeneral: '通用',
+    settingsTabRemoteControl: '远程控制',
     channelBridgeTitle: '远程控制',
     channelBridgeHint: '通过飞书机器人远程向 DSH 发送命令。',
     channelBridgeEnabled: '启用远程控制',
     channelBridgePort: '本地端口',
-    channelBridgeTimeout: '超时（毫秒）',
     channelBridgeAllowList: '白名单用户 Open ID（每行一个）',
-    channelBridgeWorkspace: 'DSH 工作目录',
-    channelBridgeFeishu: '飞书机器人',
     channelBridgeAppId: 'App ID',
     channelBridgeAppSecret: 'App Secret',
-    channelBridgeEncryptKey: 'Encrypt Key（可选）',
     channelBridgeSaved: '已保存',
-    channelBridgeCopyConfigPath: '复制配置路径',
   },
   en: {
     loadingConfig: 'Reading EzDSH configuration…',
@@ -375,19 +369,16 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimeSection: 'Runtime status',
     settingsRuntimePort: 'Port',
     settingsRestartRuntime: 'Restart runtime',
+    settingsTabGeneral: 'General',
+    settingsTabRemoteControl: 'Remote control',
     channelBridgeTitle: 'Remote control',
     channelBridgeHint: 'Send commands to DSH remotely through a Feishu bot.',
     channelBridgeEnabled: 'Enable remote control',
     channelBridgePort: 'Local port',
-    channelBridgeTimeout: 'Timeout (ms)',
     channelBridgeAllowList: 'Whitelisted user Open IDs (one per line)',
-    channelBridgeWorkspace: 'DSH working directory',
-    channelBridgeFeishu: 'Feishu bot',
     channelBridgeAppId: 'App ID',
     channelBridgeAppSecret: 'App Secret',
-    channelBridgeEncryptKey: 'Encrypt Key (optional)',
     channelBridgeSaved: 'Saved',
-    channelBridgeCopyConfigPath: 'Copy config path',
   },
 }
 
