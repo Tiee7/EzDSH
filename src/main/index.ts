@@ -390,6 +390,34 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+
+  ipcMain.handle('channel-bridge:start-pairing', async (): Promise<IpcResult<Awaited<ReturnType<ChannelBridgeService['startPairing']>>>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      return success(await channelBridgeService.startPairing())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+
+  ipcMain.handle('channel-bridge:cancel-pairing', async (): Promise<IpcResult<void>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      await channelBridgeService.cancelPairing()
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+
+  ipcMain.handle('channel-bridge:get-pairing-state', async (): Promise<IpcResult<Awaited<ReturnType<ChannelBridgeService['getPairingState']>>>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      return success(channelBridgeService.getPairingState())
+    } catch (error) {
+      return failure(error)
+    }
+  })
 }
 
 registerIpcHandlers()

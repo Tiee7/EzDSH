@@ -25,3 +25,12 @@ export interface DshSessionSummary {
   blank?: boolean
   title?: string
 }
+
+export interface PairingState {
+  /** Whether a pairing challenge is currently active. */
+  active: boolean
+  /** The 6-digit code the user must send to the bot, if active. */
+  code?: string
+  /** ISO timestamp when the challenge expires. */
+  expiresAt?: string
+}

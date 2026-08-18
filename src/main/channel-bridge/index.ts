@@ -3,7 +3,14 @@ import { createConfigStorage, type ConfigStorage } from './config.js'
 import { DshSessionClient } from './dsh-session.js'
 import { FeishuAdapter } from './feishu.js'
 import type { ChannelBridgeConfig, ChannelMessage, ChannelReply } from './types.js'
-import type { DshSessionSummary } from '../../shared/channel-bridge.js'
+import type { DshSessionSummary, PairingState } from '../../shared/channel-bridge.js'
+
+interface PairingChallenge {
+  code: string
+  expiresAt: number
+}
+
+const PAIRING_CODE_TTL_MS = 5 * 60 * 1000
 
 export type { ChannelBridgeConfig }
 
@@ -19,6 +26,8 @@ export class ChannelBridgeService {
   private adapter?: FeishuAdapter
   private running = false
   private activeTurns = new Map<string, boolean>()
+  private pairing?: PairingChallenge
+  private pairingTimer?: NodeJS.Timeout
 
   constructor(private readonly options: ChannelBridgeOptions) {
     this.config = {
@@ -77,6 +86,7 @@ export class ChannelBridgeService {
     this.adapter = new FeishuAdapter({
       config: this.config.feishu,
       allowList: this.config.allowList,
+      onUnauthorizedMessage: (message) => this.handleUnauthorizedMessage(message),
       logger: console,
     })
     this.adapter.onMessage(async (message: ChannelMessage): Promise<ChannelReply | undefined> => {
@@ -93,6 +103,7 @@ export class ChannelBridgeService {
     this.adapter = undefined
     this.running = false
     this.activeTurns.clear()
+    this.cancelPairing()
   }
 
   get isRunning(): boolean {
@@ -110,6 +121,80 @@ export class ChannelBridgeService {
       timeoutMs: 10_000,
     })
     return client.listSessions()
+  }
+
+  getPairingState(): PairingState {
+    if (this.pairing === undefined || Date.now() > this.pairing.expiresAt) {
+      return { active: false }
+    }
+    return {
+      active: true,
+      code: this.pairing.code,
+      expiresAt: new Date(this.pairing.expiresAt).toISOString(),
+    }
+  }
+
+  async startPairing(): Promise<PairingState> {
+    if (this.adapter === undefined) {
+      throw new Error('远程控制未启动，请先保存配置并启用')
+    }
+
+    this.cancelPairing()
+
+    const code = Math.floor(100_000 + Math.random() * 900_000).toString()
+    const expiresAt = Date.now() + PAIRING_CODE_TTL_MS
+    this.pairing = { code, expiresAt }
+    this.pairingTimer = setTimeout(() => {
+      this.cancelPairing()
+    }, PAIRING_CODE_TTL_MS)
+
+    console.log(`[channel-bridge] pairing challenge started: ${code}`)
+    return this.getPairingState()
+  }
+
+  async cancelPairing(): Promise<void> {
+    if (this.pairingTimer !== undefined) {
+      clearTimeout(this.pairingTimer)
+      this.pairingTimer = undefined
+    }
+    this.pairing = undefined
+  }
+
+  private async handleUnauthorizedMessage(message: ChannelMessage): Promise<ChannelReply | undefined> {
+    if (message.chat?.type !== 'private') {
+      return undefined
+    }
+
+    const state = this.getPairingState()
+    if (!state.active || state.code === undefined) {
+      return undefined
+    }
+
+    const text = message.content.text.trim()
+    if (text !== state.code) {
+      return undefined
+    }
+
+    const openId = message.from.id
+    if (this.config.allowList.includes(openId)) {
+      await this.cancelPairing()
+      return {
+        to: { userId: openId },
+        content: '该用户已经在白名单中，无需重复配对。',
+      }
+    }
+
+    const allowList = [...this.config.allowList, openId]
+    this.config = { ...this.config, allowList }
+    await this.configStorage.saveConfig(this.config)
+    this.adapter?.updateAllowList(allowList)
+    await this.cancelPairing()
+
+    console.log(`[channel-bridge] paired with ${openId}`)
+    return {
+      to: { userId: openId },
+      content: '配对成功，你已被加入白名单。现在可以直接发送消息使用远程控制。',
+    }
   }
 
   private async handleMessage(

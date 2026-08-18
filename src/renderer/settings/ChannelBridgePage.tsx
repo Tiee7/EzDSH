@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ChannelBridgeConfig, DshSessionSummary } from '../../shared/channel-bridge.js'
+import type { ChannelBridgeConfig, DshSessionSummary, PairingState } from '../../shared/channel-bridge.js'
 import type { AppCopy } from '../../shared/locale.js'
 
 const DEFAULT_CONFIG: ChannelBridgeConfig = {
@@ -23,6 +23,9 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
   const [saved, setSaved] = useState(false)
   const [sessions, setSessions] = useState<DshSessionSummary[]>([])
   const [listingSessions, setListingSessions] = useState(false)
+  const [pairing, setPairing] = useState<PairingState>({ active: false })
+  const [pairingError, setPairingError] = useState<string>()
+  const [pairingSuccess, setPairingSuccess] = useState(false)
 
   useEffect(() => {
     window.EzDSH.channelBridge
@@ -35,6 +38,44 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
         setError(reason instanceof Error ? reason.message : String(reason))
         setLoading(false)
       })
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const tick = async (): Promise<void> => {
+      try {
+        const state = await window.EzDSH.channelBridge.getPairingState()
+        if (cancelled) return
+        setPairing((prev) => {
+          if (prev.active && !state.active) {
+            // Pairing ended while we thought it was active: refresh config in
+            // case the allowlist was updated, and clear transient UI state.
+            window.EzDSH.channelBridge
+              .getConfig()
+              .then((loaded) => {
+                setConfig(loaded)
+              })
+              .catch(() => {})
+            setPairingSuccess(true)
+            setTimeout(() => {
+              setPairingSuccess(false)
+            }, 5000)
+          }
+          return state
+        })
+      } catch (reason) {
+        // Ignore polling errors.
+      }
+    }
+
+    void tick()
+    const interval = setInterval(() => {
+      void tick()
+    }, 1000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
   }, [])
 
   const update = (patch: Partial<ChannelBridgeConfig>): void => {
@@ -79,6 +120,32 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
 
   const selectSession = (sessionId: string): void => {
     update({ sessionId })
+  }
+
+  const startPairing = async (): Promise<void> => {
+    setPairingError(undefined)
+    setPairingSuccess(false)
+    try {
+      const state = await window.EzDSH.channelBridge.startPairing()
+      setPairing(state)
+    } catch (reason) {
+      setPairingError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+
+  const cancelPairing = async (): Promise<void> => {
+    try {
+      await window.EzDSH.channelBridge.cancelPairing()
+      setPairing({ active: false })
+    } catch (reason) {
+      setPairingError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+
+  const pairingSecondsLeft = (): number => {
+    if (!pairing.active || pairing.expiresAt === undefined) return 0
+    const left = Math.max(0, Math.ceil((new Date(pairing.expiresAt).getTime() - Date.now()) / 1000))
+    return left
   }
 
   if (loading) {
@@ -127,6 +194,39 @@ export function ChannelBridgePage({ copy }: ChannelBridgePageProps): JSX.Element
             onChange={(e) => { updateFeishu({ appSecret: e.target.value }) }}
           />
         </label>
+
+        <div className="bridge-row bridge-row-block bridge-pairing-box">
+          <div className="bridge-pairing-header">
+            <span className="settings-label">{copy.channelBridgePairTitle}</span>
+            <p className="settings-hint">{copy.channelBridgePairHint}</p>
+          </div>
+
+          {pairing.active && pairing.code !== undefined ? (
+            <div className="bridge-pairing-active">
+              <div className="bridge-pairing-code">{pairing.code}</div>
+              <p className="settings-hint">
+                {copy.channelBridgePairingCodeHint(pairing.code, pairingSecondsLeft())}
+              </p>
+              <button
+                className="settings-action settings-action-small"
+                onClick={() => { void cancelPairing() }}
+              >
+                {copy.channelBridgeCancelPairing}
+              </button>
+            </div>
+          ) : (
+            <button
+              className="settings-action settings-action-secondary"
+              disabled={!config.enabled || !config.feishu?.appId || !config.feishu?.appSecret}
+              onClick={() => { void startPairing() }}
+            >
+              {copy.channelBridgeStartPairing}
+            </button>
+          )}
+
+          {pairingSuccess ? <p className="settings-hint">{copy.channelBridgePairingSuccess}</p> : null}
+          {pairingError ? <p className="settings-error">{copy.channelBridgePairingFailed}: {pairingError}</p> : null}
+        </div>
 
         <label className="bridge-row">
           <span>{copy.channelBridgeSessionId}</span>

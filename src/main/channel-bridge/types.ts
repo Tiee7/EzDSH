@@ -53,6 +53,8 @@ export interface ChannelAdapter {
   start(): Promise<void>
   stop(): Promise<void>
   send(reply: ChannelReply): Promise<void>
+  /** Update the runtime allowlist without restarting the adapter. */
+  updateAllowList(allowList: string[]): void
 }
 
 export type { ChannelBridgeConfig, FeishuConfig } from '../../shared/channel-bridge.js'

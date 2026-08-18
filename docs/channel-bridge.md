@@ -84,11 +84,18 @@ Open EzDSH → **Settings → 远程控制**.
 
 Click **Save**.
 
-### 4. Find your Feishu open_id
+### 4. Pair your Feishu account
 
-The easiest way is to send a message to the bot, then check EzDSH logs. The log line prints the sender's `open_id`. Add it to the whitelist and save again.
+Instead of manually finding your `open_id`, use the verification-code pairing:
 
-Alternatively, call Feishu's `contact/v3/users/me` API after logging in.
+1. In EzDSH, go to **Settings → 远程控制**.
+2. Fill in the Feishu **App ID** and **App Secret**.
+3. Click **开始配对**.
+4. EzDSH shows a 6-digit code and starts a 5-minute timer.
+5. Send that code to the Feishu bot in a private chat.
+6. EzDSH automatically adds your `open_id` to the whitelist and replies "配对成功".
+
+Only private chat messages can complete pairing, and the code expires after 5 minutes.
 
 ### 5. Send commands
 

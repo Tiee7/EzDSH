@@ -137,6 +137,16 @@ export interface AppCopy {
   channelBridgeUntitledSession: string
   channelBridgeUseSession: string
   channelBridgeSaved: string
+  channelBridgePairTitle: string
+  channelBridgePairHint: string
+  channelBridgeStartPairing: string
+  channelBridgeCancelPairing: string
+  channelBridgePairing: string
+  channelBridgePairingCode: string
+  channelBridgePairingCodeHint: (code: string, secondsLeft: number) => string
+  channelBridgePairingExpired: string
+  channelBridgePairingSuccess: string
+  channelBridgePairingFailed: string
 }
 
 const APP_COPY: Record<AppLocale, AppCopy> = {
@@ -274,6 +284,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeUntitledSession: '未命名会话',
     channelBridgeUseSession: '使用此会话',
     channelBridgeSaved: '已保存',
+    channelBridgePairTitle: '用户配对',
+    channelBridgePairHint: '把验证码发给飞书机器人，即可自动将你的 Open ID 加入白名单。',
+    channelBridgeStartPairing: '开始配对',
+    channelBridgeCancelPairing: '取消配对',
+    channelBridgePairing: '正在配对…',
+    channelBridgePairingCode: '验证码',
+    channelBridgePairingCodeHint: (code: string, secondsLeft: number) =>
+      `请在 ${secondsLeft} 秒内把验证码「${code}」发给飞书机器人完成配对。`,
+    channelBridgePairingExpired: '验证码已过期，请重新生成。',
+    channelBridgePairingSuccess: '配对成功，已加入白名单。',
+    channelBridgePairingFailed: '配对失败',
   },
   en: {
     loadingConfig: 'Reading EzDSH configuration…',
@@ -409,6 +430,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     channelBridgeUntitledSession: 'Untitled session',
     channelBridgeUseSession: 'Use this session',
     channelBridgeSaved: 'Saved',
+    channelBridgePairTitle: 'User pairing',
+    channelBridgePairHint: 'Send the verification code to the Feishu bot to add your Open ID to the allowlist automatically.',
+    channelBridgeStartPairing: 'Start pairing',
+    channelBridgeCancelPairing: 'Cancel pairing',
+    channelBridgePairing: 'Pairing…',
+    channelBridgePairingCode: 'Verification code',
+    channelBridgePairingCodeHint: (code: string, secondsLeft: number) =>
+      `Send the code "${code}" to the Feishu bot within ${secondsLeft} seconds to complete pairing.`,
+    channelBridgePairingExpired: 'The verification code has expired. Generate a new one.',
+    channelBridgePairingSuccess: 'Pairing successful. Your Open ID has been added to the allowlist.',
+    channelBridgePairingFailed: 'Pairing failed',
   },
 }
 

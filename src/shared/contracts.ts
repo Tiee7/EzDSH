@@ -25,7 +25,7 @@ import type {
   TestConnectionResult,
   TestProviderInput
 } from './providers.js'
-import type { ChannelBridgeConfig, DshSessionSummary } from './channel-bridge.js'
+import type { ChannelBridgeConfig, DshSessionSummary, PairingState } from './channel-bridge.js'
 
 export interface EzDSHBridge {
   app: {
@@ -86,6 +86,12 @@ export interface EzDSHBridge {
     setConfig(config: ChannelBridgeConfig): Promise<void>
     getConfigPath(): Promise<string>
     listSessions(): Promise<DshSessionSummary[]>
+    /** Start a verification-code pairing challenge. Returns the code and expiry. */
+    startPairing(): Promise<PairingState>
+    /** Cancel the active pairing challenge, if any. */
+    cancelPairing(): Promise<void>
+    /** Get the current pairing challenge state. */
+    getPairingState(): Promise<PairingState>
   }
 }
 

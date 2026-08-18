@@ -4,6 +4,8 @@ import type { ChannelAdapter, ChannelMessage, ChannelReply, FeishuConfig } from 
 export interface FeishuAdapterOptions {
   config: FeishuConfig
   allowList: string[]
+  /** Invoked for messages from users not in the allowlist. Return a reply to override the default deny message. */
+  onUnauthorizedMessage?: (message: ChannelMessage) => Promise<ChannelReply | undefined>
   logger?: {
     info(message: string, ...args: unknown[]): void
     error(message: string, ...args: unknown[]): void
@@ -15,7 +17,7 @@ export class FeishuAdapter implements ChannelAdapter {
   readonly name = 'feishu'
 
   private readonly config: FeishuConfig
-  private readonly allowList: Set<string>
+  private allowList: Set<string>
   private readonly logger: NonNullable<FeishuAdapterOptions['logger']>
   private messageHandler?: (message: ChannelMessage) => Promise<ChannelReply | undefined>
   private client?: lark.Client
@@ -82,6 +84,10 @@ export class FeishuAdapter implements ChannelAdapter {
     this.client = undefined
   }
 
+  updateAllowList(allowList: string[]): void {
+    this.allowList = new Set(allowList)
+  }
+
   async send(reply: ChannelReply): Promise<void> {
     if (this.client === undefined) {
       throw new Error('Feishu adapter is not started')
@@ -119,6 +125,10 @@ export class FeishuAdapter implements ChannelAdapter {
     )
 
     if (!this.allowList.has(message.from.id)) {
+      const customReply = await this.options.onUnauthorizedMessage?.(message)
+      if (customReply !== undefined) {
+        return customReply
+      }
       return {
         to: { userId: message.chat.type === 'private' ? message.from.id : undefined },
         content: '你不在白名单中，无法使用远程控制。',

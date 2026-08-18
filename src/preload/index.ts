@@ -90,7 +90,10 @@ const bridge: EzDSHBridge = {
     getConfig: () => invoke('channel-bridge:get-config'),
     setConfig: (config) => invoke('channel-bridge:set-config', config),
     getConfigPath: () => invoke('channel-bridge:get-config-path'),
-    listSessions: () => invoke('channel-bridge:list-sessions')
+    listSessions: () => invoke('channel-bridge:list-sessions'),
+    startPairing: () => invoke('channel-bridge:start-pairing'),
+    cancelPairing: () => invoke('channel-bridge:cancel-pairing'),
+    getPairingState: () => invoke('channel-bridge:get-pairing-state')
   }
 }
 
