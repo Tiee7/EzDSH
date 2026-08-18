@@ -135,10 +135,10 @@ describe('ChannelBridgeService pairing', () => {
     expect((reply as { content: string }).content).toContain('配对成功')
 
     const savedConfig = JSON.parse(await readFile(join(configDir, 'channel-bridge.json'), 'utf-8')) as ChannelBridgeConfig
-    expect(savedConfig.allowList).toContain('ou_new_user')
+    expect(savedConfig.adapters.feishu.allowList).toContain('ou_new_user')
 
     const currentConfig = await service.getConfig()
-    expect(currentConfig.allowList).toContain('ou_new_user')
+    expect(currentConfig.adapters.feishu.allowList).toContain('ou_new_user')
   })
 
   it('ignores correct codes sent in group chats', async () => {
@@ -157,7 +157,7 @@ describe('ChannelBridgeService pairing', () => {
     expect((reply as { content: string }).content).toContain('白名单')
 
     const currentConfig = await service.getConfig()
-    expect(currentConfig.allowList).not.toContain('ou_new_user')
+    expect(currentConfig.adapters.feishu.allowList ?? []).not.toContain('ou_new_user')
   })
 
   it('ignores incorrect codes', async () => {
@@ -176,7 +176,7 @@ describe('ChannelBridgeService pairing', () => {
     expect((reply as { content: string }).content).toContain('白名单')
 
     const currentConfig = await service.getConfig()
-    expect(currentConfig.allowList).not.toContain('ou_new_user')
+    expect(currentConfig.adapters.feishu.allowList ?? []).not.toContain('ou_new_user')
   })
 
   it('cancels pairing on request', async () => {

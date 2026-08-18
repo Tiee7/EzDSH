@@ -23,9 +23,16 @@ describe('channel bridge config storage', () => {
     const storage = createConfigStorage(dir)
     const custom: ChannelBridgeConfig = {
       enabled: true,
-      adapters: { feishu: { appId: 'app-id', appSecret: 'app-secret' } },
-      sessionId: 'session-1',
-      allowList: ['user-1', 'user-2'],
+      adapters: {
+        feishu: {
+          appId: 'app-id',
+          appSecret: 'app-secret',
+          sessionId: 'session-1',
+          allowList: ['user-1', 'user-2'],
+        },
+      },
+      sessionId: undefined,
+      allowList: [],
       workspace: '/tmp',
       timeoutMs: 60_000,
       sessionTimeoutMs: 120_000,
@@ -50,7 +57,11 @@ describe('channel bridge config storage', () => {
     await writeFile(storage.getConfigPath(), JSON.stringify(legacy))
     const loaded = await storage.loadConfig()
     expect(loaded.enabled).toBe(true)
-    expect(loaded.adapters.feishu).toEqual(legacy.feishu)
+    expect(loaded.adapters.feishu).toEqual({
+      appId: 'app-id',
+      appSecret: 'app-secret',
+      allowList: ['user-1'],
+    })
     expect(loaded.allowList).toEqual(['user-1'])
     expect(loaded.timeoutMs).toBe(60_000)
     expect(loaded.sessionTimeoutMs).toBe(300_000)
@@ -69,7 +80,11 @@ describe('channel bridge config storage', () => {
     }
     await writeFile(storage.getConfigPath(), JSON.stringify(legacy))
     const loaded = await storage.loadConfig()
-    expect(loaded.adapters.feishu).toEqual({ appId: 'new-app-id', appSecret: 'new-secret' })
-    expect(loaded.adapters.slack).toEqual({ token: 'xoxb' })
+    expect(loaded.adapters.feishu).toEqual({
+      appId: 'new-app-id',
+      appSecret: 'new-secret',
+      allowList: ['user-1'],
+    })
+    expect(loaded.adapters.slack).toEqual({ token: 'xoxb', allowList: ['user-1'] })
   })
 })

@@ -150,6 +150,7 @@ export interface AppCopy {
   remoteControlFeishuIncomplete: string
   remoteControlFeishuNav: string
   remoteControlGeneral: string
+  remoteControlGeneralHint: string
   remoteControlIMPlatforms: string
   remoteControlQQ: string
   remoteControlWeChat: string
@@ -345,6 +346,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     remoteControlFeishuIncomplete: '已启用远程控制，但飞书的 App ID 和 App Secret 尚未填写完整。',
     remoteControlFeishuNav: '飞书',
     remoteControlGeneral: '通用',
+    remoteControlGeneralHint: '这些设置对所有 IM 平台生效。每个平台还可以单独配置会话和白名单。',
     remoteControlIMPlatforms: 'IM 平台',
     remoteControlQQ: 'QQ',
     remoteControlWeChat: '微信',
@@ -518,6 +520,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     remoteControlFeishuIncomplete: 'Remote control is enabled, but the Feishu App ID and App Secret are not filled in yet.',
     remoteControlFeishuNav: 'Feishu',
     remoteControlGeneral: 'General',
+    remoteControlGeneralHint: 'These settings apply to every IM platform. Each platform can also configure its own session and allowlist.',
     remoteControlIMPlatforms: 'IM platforms',
     remoteControlQQ: 'QQ',
     remoteControlWeChat: 'WeChat',

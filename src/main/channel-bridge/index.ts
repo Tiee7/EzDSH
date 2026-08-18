@@ -11,7 +11,7 @@ import type {
   Logger,
 } from './types.js'
 import { DEFAULT_CHANNEL_BRIDGE_CONFIG } from './types.js'
-import type { DshSessionSummary, PairingState } from '../../shared/channel-bridge.js'
+import type { AdapterConfig, DshSessionSummary, PairingState } from '../../shared/channel-bridge.js'
 
 interface PairingChallenge {
   code: string
@@ -93,11 +93,12 @@ export class ChannelBridgeService {
 
     const logger: Logger = console
     const results = await Promise.allSettled(
-      configuredAdapters.map(async ([name, adapterConfig]) => {
+      configuredAdapters.map(async ([name, rawConfig]) => {
+        const adapterConfig = (rawConfig ?? {}) as AdapterConfig
         const adapter = this.options.registry.create(name, {
           config: adapterConfig,
-          allowList: this.config.allowList,
-          onUnauthorizedMessage: (message) => this.handleUnauthorizedMessage(message),
+          allowList: adapterConfig.allowList ?? this.config.allowList ?? [],
+          onUnauthorizedMessage: (message) => this.handleUnauthorizedMessage(adapter, message),
           logger,
         })
         adapter.onMessage(async (message: ChannelMessage): Promise<ChannelReply | undefined> => {
@@ -198,7 +199,10 @@ export class ChannelBridgeService {
     this.pairing = undefined
   }
 
-  private async handleUnauthorizedMessage(message: ChannelMessage): Promise<ChannelReply | undefined> {
+  private async handleUnauthorizedMessage(
+    adapter: ChannelAdapter,
+    message: ChannelMessage,
+  ): Promise<ChannelReply | undefined> {
     if (message.chat?.type !== 'private') {
       return undefined
     }
@@ -214,7 +218,10 @@ export class ChannelBridgeService {
     }
 
     const openId = message.from.id
-    if (this.config.allowList.includes(openId)) {
+    const adapterConfig = (this.config.adapters[adapter.name] ?? {}) as AdapterConfig
+    const baseAllowList = adapterConfig.allowList ?? this.config.allowList ?? []
+
+    if (baseAllowList.includes(openId)) {
       await this.cancelPairing()
       return {
         to: { userId: openId },
@@ -222,12 +229,14 @@ export class ChannelBridgeService {
       }
     }
 
-    const allowList = [...this.config.allowList, openId]
-    this.config = { ...this.config, allowList }
-    await this.configStorage.saveConfig(this.config)
-    for (const adapter of this.adapters.values()) {
-      adapter.updateAllowList(allowList)
+    const allowList = [...baseAllowList, openId]
+    const nextAdapters = {
+      ...this.config.adapters,
+      [adapter.name]: { ...adapterConfig, allowList },
     }
+    this.config = { ...this.config, adapters: nextAdapters }
+    await this.configStorage.saveConfig(this.config)
+    adapter.updateAllowList(allowList)
     await this.cancelPairing()
 
     console.log(`[channel-bridge] paired with ${openId}`)
@@ -251,9 +260,12 @@ export class ChannelBridgeService {
       return this.buildReply(message, '执行失败：DSH Runtime 尚未启动')
     }
 
+    const adapterConfig = (this.config.adapters[adapter.name] ?? {}) as AdapterConfig
+    const fallbackSessionId = adapterConfig.sessionId ?? this.config.sessionId
+
     let sessionId: string
     try {
-      sessionId = await this.ensureSession(runtimeUrl)
+      sessionId = await this.ensureSession(adapter.name, runtimeUrl, fallbackSessionId)
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
       return this.buildReply(message, `执行失败：${messageText}`)
@@ -330,9 +342,13 @@ export class ChannelBridgeService {
     return undefined
   }
 
-  private async ensureSession(runtimeUrl: string): Promise<string> {
-    if (this.config.sessionId !== undefined && this.config.sessionId.length > 0) {
-      return this.config.sessionId
+  private async ensureSession(
+    adapterName: string,
+    runtimeUrl: string,
+    fallbackSessionId?: string,
+  ): Promise<string> {
+    if (fallbackSessionId !== undefined && fallbackSessionId.length > 0) {
+      return fallbackSessionId
     }
 
     const client = new DshSessionClient({
@@ -341,7 +357,12 @@ export class ChannelBridgeService {
     })
     const session = await client.createSession({ cwd: this.config.workspace })
 
-    this.config = { ...this.config, sessionId: session.sessionId }
+    const adapterConfig = (this.config.adapters[adapterName] ?? {}) as AdapterConfig
+    const nextAdapters = {
+      ...this.config.adapters,
+      [adapterName]: { ...adapterConfig, sessionId: session.sessionId },
+    }
+    this.config = { ...this.config, adapters: nextAdapters }
     await this.configStorage.saveConfig(this.config)
     console.log(`[channel-bridge] created remote-control session ${session.sessionId}`)
 

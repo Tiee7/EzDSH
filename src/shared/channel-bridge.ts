@@ -1,10 +1,20 @@
+export interface AdapterConfig {
+  /** Platform-specific settings. */
+  [key: string]: unknown
+  /** Target DSH session ID for this adapter. Falls back to the global sessionId. */
+  sessionId?: string
+  /** Whitelisted user IDs for this adapter. Falls back to the global allowList. */
+  allowList?: string[]
+}
+
 export interface ChannelBridgeConfig {
   enabled: boolean
   /** Adapter-specific configurations keyed by adapter name. */
-  adapters: Record<string, unknown>
-  /** Target DSH session ID. If empty, a new session is created on first message. */
+  adapters: Record<string, AdapterConfig>
+  /** Global fallback target DSH session ID. */
   sessionId?: string
-  allowList: string[]
+  /** Global fallback whitelist. */
+  allowList?: string[]
   workspace?: string
   timeoutMs: number
   /** How long to wait for the DSH session to finish a turn (ms). */

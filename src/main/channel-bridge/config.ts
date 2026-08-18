@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { AdapterConfig } from '../../shared/channel-bridge.js'
 import type { ChannelBridgeConfig } from './types.js'
 import { DEFAULT_CHANNEL_BRIDGE_CONFIG } from './types.js'
 
@@ -37,18 +38,33 @@ export function createConfigStorage(stateDir: string): ConfigStorage {
 }
 
 function mergeConfig(override: Partial<ChannelBridgeConfig> & { feishu?: unknown }): ChannelBridgeConfig {
-  const adapters: Record<string, unknown> = override.adapters ?? {}
+  const adapters: Record<string, AdapterConfig> = {}
+
+  for (const [name, cfg] of Object.entries(override.adapters ?? {})) {
+    adapters[name] = cfg !== undefined && typeof cfg === 'object' ? ({ ...cfg } as AdapterConfig) : {}
+  }
 
   // Backward compatibility: legacy top-level `feishu` field moves under `adapters.feishu`.
   if (override.feishu !== undefined && adapters.feishu === undefined) {
-    adapters.feishu = override.feishu
+    adapters.feishu = override.feishu as AdapterConfig
+  }
+
+  // Backward compatibility: copy global sessionId/allowList into each adapter config
+  // so that each platform can manage its own session and whitelist independently.
+  for (const cfg of Object.values(adapters)) {
+    if (override.sessionId !== undefined && cfg.sessionId === undefined) {
+      cfg.sessionId = override.sessionId
+    }
+    if (override.allowList !== undefined && cfg.allowList === undefined) {
+      cfg.allowList = override.allowList
+    }
   }
 
   return {
     enabled: override.enabled ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.enabled,
     adapters,
     sessionId: override.sessionId,
-    allowList: override.allowList ?? [...DEFAULT_CHANNEL_BRIDGE_CONFIG.allowList],
+    allowList: override.allowList ?? (DEFAULT_CHANNEL_BRIDGE_CONFIG.allowList ?? []),
     workspace: override.workspace ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.workspace,
     timeoutMs: override.timeoutMs ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.timeoutMs,
     sessionTimeoutMs: override.sessionTimeoutMs ?? DEFAULT_CHANNEL_BRIDGE_CONFIG.sessionTimeoutMs,
