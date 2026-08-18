@@ -97,6 +97,7 @@
     "files": [
       "out/**/*",
       "!out/**/*.map",
+      "plugins/**/*",
       "node_modules/**/*",
       "!**/*.map",
       "!node_modules/node-bin-darwin-arm64/**",
