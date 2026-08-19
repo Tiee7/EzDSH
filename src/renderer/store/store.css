@@ -215,10 +215,10 @@
 
 .entry-installed {
   position: absolute;
-  right: -38px;
-  bottom: 20px;
-  width: 130px;
-  padding: 12px 0;
+  right: -32px;
+  bottom: 12px;
+  width: 116px;
+  padding: 8px 0;
   transform: rotate(-45deg);
   text-align: center;
   white-space: nowrap;
