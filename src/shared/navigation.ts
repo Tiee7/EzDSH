@@ -30,6 +30,9 @@ export interface CustomNavItem {
 
 export type NavItem = BuiltinNavItem | CustomNavItem
 
+/** Any tab ID that can be selected from the navigation bar. */
+export type NavigationTarget = NavItem['id']
+
 /** Ordered list of navigation tabs; array order is display order. */
 export interface NavConfig {
   items: NavItem[]

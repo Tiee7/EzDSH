@@ -112,12 +112,18 @@ export class ProviderService {
       ?.filter((entry): entry is JsonMap => isMap(entry) && typeof entry.id === 'string')
       .map((entry) => ({
         id: String(entry.id),
-        ...(typeof entry.name === 'string' ? { name: entry.name } : {})
+        ...(typeof entry.name === 'string' ? { name: entry.name } : {}),
+        ...(isPositiveInteger(entry.contextWindow) ? { contextWindow: entry.contextWindow } : {}),
+        ...(isPositiveInteger(entry.maxTokens) ? { maxTokens: entry.maxTokens } : {})
       })) ?? []
     return {
       baseUrl: typeof route.baseURL === 'string' ? route.baseURL : undefined,
       modelIds,
-      ...(modelEntries.some((entry) => entry.name !== undefined) ? { models: modelEntries } : {}),
+      ...(modelEntries.some((entry) => entry.name !== undefined
+        || entry.contextWindow !== undefined
+        || entry.maxTokens !== undefined)
+        ? { models: modelEntries }
+        : {}),
       ...(typeof route.displayName === 'string' ? { displayName: route.displayName } : {}),
       ...(isProviderApiProtocol(route.api) ? { api: route.api } : {}),
       ...(PROVIDER_DEFINITIONS.find((definition) => definition.id === providerId) === undefined || route.api !== undefined
@@ -355,18 +361,30 @@ export class ProviderService {
       throw new Error('模型列表格式不符合 OpenAI /models 响应')
     }
     return payload.data
-      .filter((entry): entry is { id: string; name?: string } =>
+      .filter((entry): entry is { id: string; name?: string; contextWindow?: number; maxTokens?: number } =>
         isMap(entry) && typeof entry.id === 'string'
       )
-      .map((entry) => ({ id: entry.id, name: entry.name }))
+      .map((entry) => ({
+        id: entry.id,
+        ...(typeof entry.name === 'string' ? { name: entry.name } : {}),
+        ...(isPositiveInteger(entry.contextWindow) ? { contextWindow: entry.contextWindow } : {}),
+        ...(isPositiveInteger(entry.maxTokens) ? { maxTokens: entry.maxTokens } : {})
+      }))
   }
 
   private getCatalogModels(providerId: string): ProviderModel[] {
     const provider = builtinProviders().find((candidate) => candidate.id === providerId)
     if (provider === undefined) return []
-    const models = (provider as unknown as { getModels?: () => Array<{ id: string; name?: string }> }).getModels?.()
+    const models = (provider as unknown as {
+      getModels?: () => Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number }>
+    }).getModels?.()
     if (!Array.isArray(models)) return []
-    return models.map((model) => ({ id: model.id, name: model.name }))
+    return models.map((model) => ({
+      id: model.id,
+      ...(typeof model.name === 'string' ? { name: model.name } : {}),
+      ...(isPositiveInteger(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
+      ...(isPositiveInteger(model.maxTokens) ? { maxTokens: model.maxTokens } : {})
+    }))
   }
 
   private catalogBaseUrl(providerId: string): string | undefined {
@@ -409,7 +427,9 @@ export class ProviderService {
     const models = modelEntries !== undefined && modelEntries.length > 0
       ? modelEntries.map((model) => ({
         id: model.id,
-        ...(model.name !== undefined && model.name.trim() !== '' ? { name: model.name.trim() } : {})
+        ...(model.name !== undefined && model.name.trim() !== '' ? { name: model.name.trim() } : {}),
+        ...(isPositiveInteger(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
+        ...(isPositiveInteger(model.maxTokens) ? { maxTokens: model.maxTokens } : {})
       }))
       : modelIds !== undefined && modelIds.length > 0
         ? modelIds.map((id) => ({ id }))
@@ -445,6 +465,10 @@ function deriveCredentialKey(providerId: string): string {
 
 function isProviderApiProtocol(value: unknown): value is ProviderApiProtocol {
   return typeof value === 'string' && (PROVIDER_API_PROTOCOLS as readonly string[]).includes(value)
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 export function isMap(value: unknown): value is JsonMap {

@@ -2,7 +2,7 @@ import type { RuntimeSnapshot } from '../main/runtime/runtime-types.js'
 import type { EzDSHError, IpcResult } from './errors.js'
 import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
-import type { AppTab } from './navigation.js'
+import type { NavigationTarget } from './navigation.js'
 import type { NavConfig } from './navigation.js'
 import type { AppPlatform } from './platform.js'
 import type {
@@ -48,7 +48,7 @@ export interface EzDSHBridge {
     onStateChange(listener: (snapshot: RuntimeSnapshot) => void): () => void
   }
   ui: {
-    onNavigate(listener: (tab: AppTab) => void): () => void
+    onNavigate(listener: (tab: NavigationTarget) => void): () => void
     /** Fired when the app is awakened by an `ezdsh://install/...` link. */
     onDeepLinkInstall(listener: (target: DeepLinkInstallTarget) => void): () => void
   }

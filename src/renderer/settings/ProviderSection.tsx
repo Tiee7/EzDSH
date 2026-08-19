@@ -41,6 +41,9 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
   const [addingModel, setAddingModel] = useState(false)
   const [customModelId, setCustomModelId] = useState('')
   const [customModelName, setCustomModelName] = useState('')
+  const [customModelContextWindow, setCustomModelContextWindow] = useState('')
+  const [customModelMaxTokens, setCustomModelMaxTokens] = useState('')
+  const [customModelOptionsOpen, setCustomModelOptionsOpen] = useState(false)
   const [selectedModelIds, setSelectedModelIds] = useState<Set<string>>(new Set())
   const [fetchingModels, setFetchingModels] = useState(false)
   const [modelsMessage, setModelsMessage] = useState<string>()
@@ -120,6 +123,9 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
     setAddingModel(false)
     setCustomModelId('')
     setCustomModelName('')
+    setCustomModelContextWindow('')
+    setCustomModelMaxTokens('')
+    setCustomModelOptionsOpen(false)
     setSelectedModelIds(new Set(savedModels.map((model) => model.id)))
     setModelsMessage(undefined)
     setStatusMessage(undefined)
@@ -147,6 +153,9 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
     setAddingModel(false)
     setCustomModelId('')
     setCustomModelName('')
+    setCustomModelContextWindow('')
+    setCustomModelMaxTokens('')
+    setCustomModelOptionsOpen(false)
     setSelectedModelIds(new Set())
     setModelsMessage(undefined)
     setStatusMessage(undefined)
@@ -242,6 +251,9 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
       setAddingModel(false)
       setCustomModelId('')
       setCustomModelName('')
+      setCustomModelContextWindow('')
+      setCustomModelMaxTokens('')
+      setCustomModelOptionsOpen(false)
       setSelectedModelIds(new Set())
       await load()
     } catch (error) {
@@ -278,6 +290,9 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
     setAddingModel(false)
     setCustomModelId('')
     setCustomModelName('')
+    setCustomModelContextWindow('')
+    setCustomModelMaxTokens('')
+    setCustomModelOptionsOpen(false)
     setSelectedModelIds(new Set())
     setModelsMessage(undefined)
     setStatusMessage(undefined)
@@ -306,9 +321,18 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
       setModelsMessage(copy.settingsProviderModelIdRequired)
       return
     }
+    const contextWindow = parseTokenLimit(customModelContextWindow)
+    const maxTokens = parseTokenLimit(customModelMaxTokens)
+    if ((customModelContextWindow.trim() !== '' && contextWindow === undefined)
+      || (customModelMaxTokens.trim() !== '' && maxTokens === undefined)) {
+      setModelsMessage(copy.settingsProviderModelLimitsInvalid)
+      return
+    }
     const nextModel: ProviderModel = {
       id,
-      ...(customModelName.trim() ? { name: customModelName.trim() } : {})
+      ...(customModelName.trim() ? { name: customModelName.trim() } : {}),
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+      ...(maxTokens !== undefined ? { maxTokens } : {})
     }
     const nextCustomModels = [
       ...customModels.filter((model) => model.id !== id),
@@ -320,6 +344,9 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
     setAddingModel(false)
     setCustomModelId('')
     setCustomModelName('')
+    setCustomModelContextWindow('')
+    setCustomModelMaxTokens('')
+    setCustomModelOptionsOpen(false)
     setModelsMessage(undefined)
   }
 
@@ -332,6 +359,15 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
       next.delete(id)
       return next
     })
+  }
+
+  const cancelCustomModelEditor = (): void => {
+    setAddingModel(false)
+    setCustomModelId('')
+    setCustomModelName('')
+    setCustomModelContextWindow('')
+    setCustomModelMaxTokens('')
+    setCustomModelOptionsOpen(false)
   }
 
   if (definitions === undefined || statuses === undefined) {
@@ -428,7 +464,6 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
             >
               <span className="provider-card-custom-icon" aria-hidden="true">＋</span>
               <span className="provider-card-name">{copy.settingsProviderCustomProvider}</span>
-              <span className="provider-card-url">{copy.settingsProviderCustomProviderHint}</span>
             </button>
           </div>
         </div>
@@ -452,10 +487,7 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
               />
             </label>
             <label htmlFor="provider-base-url">
-              {copy.baseUrl}{' '}
-              {!creatingCustomProvider ? (
-                <span className="provider-optional">{copy.optional}</span>
-              ) : null}
+              {copy.baseUrl}
               <input
                 id="provider-base-url"
                 type="url"
@@ -536,36 +568,83 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
               <button
                 type="button"
                 className="settings-action provider-model-add"
-                onClick={() => { setAddingModel(true); setModelsMessage(undefined) }}
+                onClick={() => { setAddingModel(true); setCustomModelOptionsOpen(false); setModelsMessage(undefined) }}
                 disabled={saving}
               >
                 {copy.settingsProviderAddModel}
               </button>
               {addingModel ? (
                 <div className="provider-model-editor">
-                  <label htmlFor="provider-model-id">
-                    {copy.settingsProviderModelId}
+                  <div className="provider-model-editor-main">
                     <input
-                      id="provider-model-id"
+                      aria-label={copy.settingsProviderModelId}
                       type="text"
                       value={customModelId}
                       onChange={(event) => { setCustomModelId(event.target.value) }}
-                      placeholder="model-id"
+                      placeholder={copy.settingsProviderModelId}
                       autoComplete="off"
                       disabled={saving}
                     />
-                  </label>
-                  <label htmlFor="provider-model-name">
-                    {copy.settingsProviderModelName}
                     <input
-                      id="provider-model-name"
+                      aria-label={copy.settingsProviderModelName}
                       type="text"
                       value={customModelName}
                       onChange={(event) => { setCustomModelName(event.target.value) }}
-                      placeholder={copy.settingsProviderModelNamePlaceholder}
+                      placeholder={copy.settingsProviderModelName}
+                      autoComplete="off"
                       disabled={saving}
                     />
-                  </label>
+                    <button
+                      type="button"
+                      className="provider-model-expand"
+                      aria-label={customModelOptionsOpen ? copy.settingsProviderCustomOptionsOpen : copy.settingsProviderCustomOptions}
+                      aria-expanded={customModelOptionsOpen}
+                      onClick={() => { setCustomModelOptionsOpen((open) => !open) }}
+                      disabled={saving}
+                    >
+                      <span
+                        className={`provider-model-expand-icon ${customModelOptionsOpen ? 'provider-model-expand-icon-open' : ''}`}
+                        aria-hidden="true"
+                      >
+                        {customModelOptionsOpen ? '⌄' : '›'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="provider-model-cancel"
+                      aria-label={copy.storeCancel}
+                      onClick={cancelCustomModelEditor}
+                      disabled={saving}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {customModelOptionsOpen ? (
+                    <div className="provider-model-editor-details">
+                      <label className="provider-model-editor-field">
+                        <span>{copy.settingsProviderModelContextWindow}</span>
+                        <input
+                          type="text"
+                          value={customModelContextWindow}
+                          onChange={(event) => { setCustomModelContextWindow(event.target.value) }}
+                          placeholder={copy.settingsProviderModelContextWindowPlaceholder}
+                          autoComplete="off"
+                          disabled={saving}
+                        />
+                      </label>
+                      <label className="provider-model-editor-field">
+                        <span>{copy.settingsProviderModelMaxTokens}</span>
+                        <input
+                          type="text"
+                          value={customModelMaxTokens}
+                          onChange={(event) => { setCustomModelMaxTokens(event.target.value) }}
+                          placeholder={copy.settingsProviderModelMaxTokensPlaceholder}
+                          autoComplete="off"
+                          disabled={saving}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
                   <div className="settings-actions">
                     <button
                       type="button"
@@ -574,14 +653,6 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
                       disabled={saving}
                     >
                       {copy.settingsProviderAddModel}
-                    </button>
-                    <button
-                      type="button"
-                      className="settings-action"
-                      onClick={() => { setAddingModel(false); setCustomModelId(''); setCustomModelName('') }}
-                      disabled={saving}
-                    >
-                      {copy.storeCancel}
                     </button>
                   </div>
                 </div>
@@ -677,4 +748,13 @@ function mergeModels(primary: readonly ProviderModel[], secondary: readonly Prov
     if (!byId.has(model.id)) byId.set(model.id, model)
   }
   return [...byId.values()]
+}
+
+function parseTokenLimit(raw: string): number | undefined {
+  const normalized = raw.trim().replace(/,/gu, '').toUpperCase()
+  if (normalized === '') return undefined
+  const match = /^(\d+(?:\.\d+)?)\s*([KM])?$/u.exec(normalized)
+  if (match === null) return undefined
+  const value = Number(match[1]) * (match[2] === 'M' ? 1024 * 1024 : match[2] === 'K' ? 1024 : 1)
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined
 }

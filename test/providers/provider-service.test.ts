@@ -146,6 +146,37 @@ describe('ProviderService', () => {
     })
   })
 
+  it('persists model context and output limits', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+
+    await service.save({
+      providerId: 'sized-gateway',
+      apiKey: 'sized-secret',
+      custom: true,
+      api: 'openai-completions',
+      baseUrl: 'https://gateway.example/v1',
+      modelIds: ['sized-model'],
+      models: [{ id: 'sized-model', name: 'Sized Model', contextWindow: 262144, maxTokens: 32768 }]
+    })
+
+    const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
+      'llm-pi-ai': { providers: Record<string, Record<string, unknown>> }
+    }
+    expect(settings['llm-pi-ai'].providers['sized-gateway'].models).toEqual([{
+      id: 'sized-model',
+      name: 'Sized Model',
+      contextWindow: 262144,
+      maxTokens: 32768
+    }])
+    await expect(service.getProfile('sized-gateway')).resolves.toMatchObject({
+      models: [{ id: 'sized-model', name: 'Sized Model', contextWindow: 262144, maxTokens: 32768 }]
+    })
+  })
+
   it('migrates legacy provider IDs before Runtime reads settings', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
     roots.push(root)

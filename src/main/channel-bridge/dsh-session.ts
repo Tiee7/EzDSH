@@ -33,6 +33,15 @@ export interface DshSessionSummary {
   title?: string
 }
 
+export interface DshWorkspaceSummary {
+  workspaceId: string
+  path: string
+  title: string
+  sessionIds: string[]
+  createdAt: string
+  updatedAt: string
+}
+
 export interface TurnTrackerCallbacks {
   /** Called after the prompt has been queued in DSH. */
   onAcknowledged(): void
@@ -47,6 +56,7 @@ export interface TurnTrackerCallbacks {
 interface SessionCreateRequest {
   sessionId?: string
   cwd?: string
+  workspaceId?: string
 }
 
 interface SessionCreateResponse {
@@ -65,6 +75,20 @@ interface SessionPromptResponse {
     kind: 'success'
     text?: string
   }
+}
+
+interface WorkspaceListResponse {
+  items: DshWorkspaceSummary[]
+  archivedSessionIds: string[]
+}
+
+interface WorkspaceCreateResponse {
+  workspace: DshWorkspaceSummary
+  created: boolean
+}
+
+interface WorkspaceRenameResponse {
+  workspace: DshWorkspaceSummary
 }
 
 interface SessionHistoryRequest {
@@ -124,14 +148,28 @@ export class DshSessionClient {
     this.pollIntervalMs = options.pollIntervalMs ?? 500
   }
 
-  async createSession(params?: { sessionId?: string; cwd?: string }): Promise<DshSession> {
+  async createSession(params?: { sessionId?: string; cwd?: string; workspaceId?: string }): Promise<DshSession> {
     const body: SessionCreateRequest = {
       sessionId: params?.sessionId,
       cwd: params?.cwd,
+      workspaceId: params?.workspaceId,
     }
 
     const response = await this.post<SessionCreateResponse>('/api/session.create', body)
     return { sessionId: response.sessionId }
+  }
+
+  async listWorkspaces(): Promise<DshWorkspaceSummary[]> {
+    const response = await this.post<WorkspaceListResponse>('/api/workspace.list', {})
+    return response.items
+  }
+
+  async createWorkspace(path: string): Promise<WorkspaceCreateResponse> {
+    return this.post<WorkspaceCreateResponse>('/api/workspace.create', { path })
+  }
+
+  async renameWorkspace(workspaceId: string, title: string): Promise<WorkspaceRenameResponse> {
+    return this.post<WorkspaceRenameResponse>('/api/workspace.rename', { workspaceId, title })
   }
 
   async listSessions(): Promise<DshSessionSummary[]> {
@@ -194,6 +232,14 @@ export class DshSessionClient {
     })
   }
 
+  async queuePrompt(sessionId: string, text: string): Promise<SessionPromptResponse> {
+    return this.post<SessionPromptResponse>('/api/session.prompt', {
+      sessionId,
+      mode: 'queue',
+      content: [{ type: 'text', text }],
+    } satisfies SessionPromptRequest)
+  }
+
   async sendPromptAsync(
     sessionId: string,
     text: string,
@@ -202,13 +248,7 @@ export class DshSessionClient {
   ): Promise<void> {
     const sinceSeq = await this.getCurrentMaxSeq(sessionId)
 
-    const promptBody: SessionPromptRequest = {
-      sessionId,
-      mode: 'queue',
-      content: [{ type: 'text', text }],
-    }
-
-    await this.post<SessionPromptResponse>('/api/session.prompt', promptBody)
+    await this.queuePrompt(sessionId, text)
     callbacks.onAcknowledged()
 
     const startTime = Date.now()

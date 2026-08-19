@@ -2,20 +2,22 @@ import type { MenuItemConstructorOptions } from 'electron'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppCopy, type AppLocale } from '../shared/locale.js'
 import {
-  APP_TABS,
+  getDefaultNavConfig,
   type AppTab,
   isBuiltinNavItem,
-  isVisibleNavItem,
-  type NavConfig
+  type NavConfig,
+  type NavItem,
+  type NavigationTarget,
+  visibleNavItems
 } from '../shared/navigation.js'
 
 export interface ApplicationMenuOptions {
   onCheckForUpdates?: () => void
-  onNavigate?: (tab: AppTab) => void
+  onNavigate?: (tab: NavigationTarget) => void
   onOpenRuntimeLog?: () => void
   onOpenHarnessDir?: () => void
   locale?: AppLocale
-  /** Current navigation config; hidden built-in tabs have their menu items disabled. */
+  /** Current navigation config; numeric shortcuts follow its visible item order. */
   navConfig?: NavConfig
 }
 
@@ -27,10 +29,27 @@ const TAB_LABELS: Record<AppTab, (copy: AppCopy) => string> = {
   settings: (c) => c.tabSettings
 }
 
-function isTabVisible(options: ApplicationMenuOptions, id: AppTab): boolean {
-  if (options.navConfig === undefined) return true
-  const item = options.navConfig.items.find((candidate) => isBuiltinNavItem(candidate) && candidate.id === id)
-  return item === undefined ? true : isVisibleNavItem(item)
+function tabLabel(item: NavItem, copy: AppCopy): string {
+  return isBuiltinNavItem(item) ? TAB_LABELS[item.id](copy) : item.label
+}
+
+function getNavigateItems(options: ApplicationMenuOptions, copy: AppCopy): MenuItemConstructorOptions[] {
+  const navConfig = options.navConfig ?? getDefaultNavConfig()
+  const visibleItems = visibleNavItems(navConfig)
+  const numberedItems = visibleItems.slice(0, 9).map((item, index) => ({
+    label: tabLabel(item, copy),
+    accelerator: `CmdOrCtrl+${index + 1}`,
+    click: () => options.onNavigate?.(item.id)
+  }))
+
+  return [
+    ...numberedItems,
+    {
+      label: TAB_LABELS.settings(copy),
+      accelerator: 'CmdOrCtrl+0',
+      click: () => options.onNavigate?.('settings')
+    }
+  ]
 }
 
 export function getApplicationMenuTemplate(options: ApplicationMenuOptions = {}): MenuItemConstructorOptions[] {
@@ -51,12 +70,7 @@ export function getApplicationMenuTemplate(options: ApplicationMenuOptions = {})
     {
       label: copy.menuNavigate,
       submenu: [
-        ...APP_TABS.map((id, index) => ({
-          label: TAB_LABELS[id](copy),
-          accelerator: `CmdOrCtrl+${index + 1}`,
-          enabled: isTabVisible(options, id),
-          click: () => options.onNavigate?.(id)
-        })),
+        ...getNavigateItems(options, copy),
         { type: 'separator' },
         { label: copy.menuOpenLog, click: () => options.onOpenRuntimeLog?.() },
         { label: copy.menuOpenHarnessDir, click: () => options.onOpenHarnessDir?.() }

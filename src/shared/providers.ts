@@ -29,6 +29,8 @@ export interface ProviderStatus {
 export interface ProviderModel {
   id: string
   name?: string
+  contextWindow?: number
+  maxTokens?: number
 }
 
 export interface ProviderProfile {

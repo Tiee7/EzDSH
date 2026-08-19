@@ -17,7 +17,7 @@ import type {
 import type { UpdateState } from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale.js'
-import type { AppTab } from '../shared/navigation.js'
+import type { NavigationTarget } from '../shared/navigation.js'
 import { findDeepLinkInArgs, parseDeepLink, type DeepLinkInstall, type ResolvedDeepLinkInstall } from '../shared/deep-link.js'
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
 import type { UserDataLayout } from '../shared/state.js'
@@ -36,6 +36,8 @@ import { getApplicationMenuTemplate } from './application-menu.js'
 import { LocaleService, writeDshLocale } from './locale/locale-service.js'
 import { ChannelBridgeService } from './channel-bridge/index.js'
 import { NavigationService } from './navigation/navigation-service.js'
+import { ExternalApiService } from './external-api/external-api-service.js'
+import { EXTERNAL_API_DEFAULT_PORT } from '../shared/external-api.js'
 import type { NavConfig } from '../shared/navigation.js'
 import { AdapterRegistry } from './channel-bridge/adapter-registry.js'
 import { ChannelAdapterLoader } from './channel-bridge/adapter-loader.js'
@@ -49,6 +51,7 @@ let userDataLayout: UserDataLayout | undefined
 let storeService: StoreService | undefined
 let channelBridgeService: ChannelBridgeService | undefined
 let navigationService: NavigationService | undefined
+let externalApiService: ExternalApiService | undefined
 let isQuitting = false
 let updateDialogOpen = false
 let pendingDeepLinkInstall: DeepLinkInstall | undefined
@@ -56,6 +59,15 @@ const require = createRequire(import.meta.url)
 
 const LIGHT_WINDOW_BACKGROUND = '#f9fafb'
 const DARK_WINDOW_BACKGROUND = '#151517'
+
+function resolveExternalApiPort(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return EXTERNAL_API_DEFAULT_PORT
+  const port = Number(raw)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`EZDSH_EXTERNAL_API_PORT must be an integer from 1 to 65535, got ${raw}`)
+  }
+  return port
+}
 
 function getWindowBackgroundColor(): string {
   return nativeTheme.shouldUseDarkColors ? DARK_WINDOW_BACKGROUND : LIGHT_WINDOW_BACKGROUND
@@ -128,7 +140,7 @@ async function handleUpdateCheck(interactive: boolean): Promise<void> {
   }
 }
 
-function navigateToTab(tab: AppTab): void {
+function navigateToTab(tab: NavigationTarget): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('ui:navigate', tab)
   }
@@ -608,6 +620,12 @@ if (!singleInstance) {
       runtimeEntryPath,
       command: runtimeCommandPath
     })
+    externalApiService = new ExternalApiService({
+      getRuntimeUrl: () => runtimeManager?.snapshot().url,
+      port: resolveExternalApiPort(process.env.EZDSH_EXTERNAL_API_PORT),
+    })
+    await externalApiService.start()
+    console.log(`[external-api] listening at ${externalApiService.url}`)
     const channelBridgeRegistry = new AdapterRegistry()
     const adapterLoader = new ChannelAdapterLoader({ registry: channelBridgeRegistry, logger: console })
     const builtinAdaptersDir = join(app.getAppPath(), 'plugins')
@@ -725,6 +743,7 @@ if (!singleInstance) {
     void Promise.all([
       runtimeManager.stop(),
       channelBridgeService?.stop() ?? Promise.resolve(),
+      externalApiService?.stop() ?? Promise.resolve(),
     ]).finally(() => {
       localeService?.stop()
       app.quit()

@@ -97,7 +97,6 @@ export interface AppCopy {
   settingsProvidersHint: string
   settingsProviderAdd: string
   settingsProviderCustomProvider: string
-  settingsProviderCustomProviderHint: string
   settingsProviderUsable: string
   settingsProviderConfigured: string
   settingsProviderSave: string
@@ -116,6 +115,11 @@ export interface AppCopy {
   settingsProviderModelIdRequired: string
   settingsProviderModelName: string
   settingsProviderModelNamePlaceholder: string
+  settingsProviderModelContextWindow: string
+  settingsProviderModelContextWindowPlaceholder: string
+  settingsProviderModelMaxTokens: string
+  settingsProviderModelMaxTokensPlaceholder: string
+  settingsProviderModelLimitsInvalid: string
   settingsProviderApiKey: string
   settingsProviderCustomOptions: string
   settingsProviderCustomOptionsOpen: string
@@ -288,7 +292,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProvidersHint: '管理预设供应商的 API Key，与首次运行的配置流程一致',
     settingsProviderAdd: '添加供应商',
     settingsProviderCustomProvider: '自定义供应商',
-    settingsProviderCustomProviderHint: '填写供应商的全部连接和模型信息',
     settingsProviderUsable: '可用',
     settingsProviderConfigured: '已配置',
     settingsProviderSave: '保存',
@@ -307,6 +310,11 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProviderModelIdRequired: '请输入模型 ID',
     settingsProviderModelName: '显示名称（可选）',
     settingsProviderModelNamePlaceholder: '留空则使用模型 ID',
+    settingsProviderModelContextWindow: '上下文窗口',
+    settingsProviderModelContextWindowPlaceholder: '例如 256K',
+    settingsProviderModelMaxTokens: '最大输出 token',
+    settingsProviderModelMaxTokensPlaceholder: '例如 32K',
+    settingsProviderModelLimitsInvalid: '上下文窗口和最大输出 token 必须是正整数，可使用 K/M 后缀',
     settingsProviderApiKey: 'API Key',
     settingsProviderCustomOptions: '自定义选项',
     settingsProviderCustomOptionsOpen: '收起自定义选项',
@@ -478,7 +486,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProvidersHint: 'Manage API keys for preset providers, same flow as first-run setup',
     settingsProviderAdd: 'Add provider',
     settingsProviderCustomProvider: 'Custom provider',
-    settingsProviderCustomProviderHint: 'Fill in the connection and model details yourself',
     settingsProviderUsable: 'Usable',
     settingsProviderConfigured: 'Configured',
     settingsProviderSave: 'Save',
@@ -497,6 +504,11 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProviderModelIdRequired: 'Enter a model ID',
     settingsProviderModelName: 'Display name (optional)',
     settingsProviderModelNamePlaceholder: 'Uses the model ID when empty',
+    settingsProviderModelContextWindow: 'Context window',
+    settingsProviderModelContextWindowPlaceholder: 'e.g. 256K',
+    settingsProviderModelMaxTokens: 'Max output tokens',
+    settingsProviderModelMaxTokensPlaceholder: 'e.g. 32K',
+    settingsProviderModelLimitsInvalid: 'Context window and max output tokens must be positive integers; K/M suffixes are supported',
     settingsProviderApiKey: 'API Key',
     settingsProviderCustomOptions: 'Custom options',
     settingsProviderCustomOptionsOpen: 'Hide custom options',

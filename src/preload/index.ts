@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { DeepLinkInstallTarget, EzDSHBridge } from '../shared/contracts.js'
 import type { IpcResult } from '../shared/errors.js'
 import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
-import type { AppTab } from '../shared/navigation.js'
+import type { NavigationTarget } from '../shared/navigation.js'
 import type { AppPlatform } from '../shared/platform.js'
 import type { NavConfig } from '../shared/navigation.js'
 
@@ -34,8 +34,8 @@ const bridge: EzDSHBridge = {
     }
   },
   ui: {
-    onNavigate: (listener: (tab: AppTab) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, tab: AppTab) => listener(tab)
+    onNavigate: (listener: (tab: NavigationTarget) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, tab: NavigationTarget) => listener(tab)
       ipcRenderer.on('ui:navigate', handler)
       return () => ipcRenderer.removeListener('ui:navigate', handler)
     },

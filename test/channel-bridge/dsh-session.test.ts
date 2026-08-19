@@ -32,6 +32,53 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
+  it('lists native DSH workspaces', async () => {
+    const mockFetch = createMockFetch([
+      ok({
+        items: [
+          {
+            workspaceId: 'workspace-1',
+            path: '/work',
+            title: 'Work',
+            sessionIds: ['session-1'],
+            createdAt: '2026-01-01',
+            updatedAt: '2026-01-02',
+          },
+        ],
+        archivedSessionIds: [],
+      }),
+    ])()
+    vi.stubGlobal('fetch', mockFetch)
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await expect(client.listWorkspaces()).resolves.toEqual([
+      {
+        workspaceId: 'workspace-1',
+        path: '/work',
+        title: 'Work',
+        sessionIds: ['session-1'],
+        createdAt: '2026-01-01',
+        updatedAt: '2026-01-02',
+      },
+    ])
+
+    vi.unstubAllGlobals()
+  })
+
+  it('creates a session inside a DSH workspace and queues a prompt', async () => {
+    const mockFetch = createMockFetch([
+      ok({ sessionId: 'session-2' }),
+      ok({ accepted: true }),
+    ])()
+    vi.stubGlobal('fetch', mockFetch)
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await expect(client.createSession({ workspaceId: 'workspace-1' })).resolves.toEqual({ sessionId: 'session-2' })
+    await expect(client.queuePrompt('session-2', '完成任务')).resolves.toEqual({ accepted: true })
+
+    vi.unstubAllGlobals()
+  })
+
   it('lists sessions with titles', async () => {
     const mockFetch = createMockFetch([
       ok({
