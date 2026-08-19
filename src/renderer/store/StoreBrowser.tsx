@@ -60,6 +60,9 @@ function EntryCard({ entry, installed, copy, selected, onSelect }: {
 }): JSX.Element {
   return (
     <button className={`entry-card ${selected ? 'entry-card-selected' : ''}`} onClick={onSelect}>
+      {installed !== undefined
+        ? <span className="entry-installed">{updateAvailable(installed, entry) ? copy.storeUpdate : copy.storeInstalled}</span>
+        : null}
       <div className="entry-card-head">
         <span className="entry-name">{entry.name}</span>
         <AuditBadge entry={entry} copy={copy} />
@@ -67,9 +70,6 @@ function EntryCard({ entry, installed, copy, selected, onSelect }: {
       <p className="entry-description">{entry.description}</p>
       <div className="entry-meta">
         <span>v{entry.version}</span>
-        {installed !== undefined
-          ? <span className="entry-installed">{updateAvailable(installed, entry) ? copy.storeUpdate : copy.storeInstalled}</span>
-          : null}
       </div>
     </button>
   )

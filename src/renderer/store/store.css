@@ -160,6 +160,7 @@
 }
 
 .entry-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -212,7 +213,18 @@
 }
 
 .entry-installed {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: color-mix(in srgb, var(--ezdsh-accent-green) 18%, transparent);
   color: var(--ezdsh-accent-green);
+  border: 1px solid color-mix(in srgb, var(--ezdsh-accent-green) 35%, transparent);
+  pointer-events: none;
 }
 
 .badge {
