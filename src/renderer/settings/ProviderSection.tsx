@@ -1,12 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import type {
+  ProviderApiProtocol,
   ProviderDefinition,
   ProviderModel,
   ProviderProfile,
   ProviderStatus
 } from '../../shared/providers.js'
+import { PROVIDER_API_PROTOCOLS } from '../../shared/providers.js'
 import { providerBadge } from './settings-display.js'
+
+const CUSTOM_PROVIDER_DEFINITION: ProviderDefinition = {
+  id: '__custom__',
+  displayName: '',
+  category: 'aggregator',
+  credentialKey: '',
+  supportsConnectionTest: true,
+  modelCatalogSource: 'custom',
+  isCustom: true
+}
 
 /** Provider management: preset card grid with an inline add/replace key form and model selection. */
 export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
@@ -15,19 +27,27 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
   const [loadError, setLoadError] = useState(false)
   const [adding, setAdding] = useState(false)
   const [editingProviderId, setEditingProviderId] = useState<string>()
+  const [formDefinition, setFormDefinition] = useState<ProviderDefinition>()
+  const [creatingCustomProvider, setCreatingCustomProvider] = useState(false)
   const [providerId, setProviderId] = useState('')
+  const [providerDisplayName, setProviderDisplayName] = useState('')
+  const [apiProtocol, setApiProtocol] = useState<ProviderApiProtocol>('openai-completions')
+  const [customOptionsOpen, setCustomOptionsOpen] = useState(false)
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [models, setModels] = useState<ProviderModel[]>([])
+  const [availableModels, setAvailableModels] = useState<ProviderModel[]>([])
+  const [customModels, setCustomModels] = useState<ProviderModel[]>([])
+  const [addingModel, setAddingModel] = useState(false)
+  const [customModelId, setCustomModelId] = useState('')
+  const [customModelName, setCustomModelName] = useState('')
   const [selectedModelIds, setSelectedModelIds] = useState<Set<string>>(new Set())
   const [fetchingModels, setFetchingModels] = useState(false)
   const [modelsMessage, setModelsMessage] = useState<string>()
-  const [testMessage, setTestMessage] = useState<string>()
   const [statusMessage, setStatusMessage] = useState<string>()
-  const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  const effectiveProviderId = editingProviderId ?? providerId
+  const effectiveProviderId = providerId
   const isEditing = editingProviderId !== undefined
 
   const statusById = useMemo(() => {
@@ -37,8 +57,14 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
   }, [statuses])
 
   const definition = useMemo(
-    () => definitions?.find((candidate) => candidate.id === effectiveProviderId),
-    [definitions, effectiveProviderId]
+    () => definitions?.find((candidate) => candidate.id === effectiveProviderId)
+      ?? formDefinition,
+    [definitions, effectiveProviderId, formDefinition]
+  )
+
+  const presetDefinitions = useMemo(
+    () => (definitions ?? []).filter((candidate) => candidate.isCustom !== true),
+    [definitions]
   )
 
   const configuredStatuses = useMemo(
@@ -71,6 +97,8 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
   }, [])
 
   const openForm = (next: ProviderDefinition, profile?: ProviderProfile): void => {
+    setFormDefinition(next)
+    setCreatingCustomProvider(false)
     if (profile === undefined) {
       setAdding(true)
       setEditingProviderId(undefined)
@@ -82,16 +110,46 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
     }
     setApiKey('')
     setBaseUrl(profile?.baseUrl ?? next.defaultBaseUrl ?? '')
-    setModels([])
-    setSelectedModelIds(new Set(profile?.modelIds ?? []))
+    setProviderDisplayName(profile?.displayName ?? next.displayName)
+    setApiProtocol(profile?.api ?? defaultApiProtocol(next))
+    setCustomOptionsOpen(profile?.isCustom === true)
+    const savedModels = profile?.models ?? (profile?.modelIds ?? []).map((id) => ({ id }))
+    setModels(savedModels)
+    setAvailableModels([])
+    setCustomModels(savedModels)
+    setAddingModel(false)
+    setCustomModelId('')
+    setCustomModelName('')
+    setSelectedModelIds(new Set(savedModels.map((model) => model.id)))
     setModelsMessage(undefined)
-    setTestMessage(undefined)
     setStatusMessage(undefined)
   }
 
   const startAdd = (): void => {
-    const first = definitions?.[0]
+    const first = presetDefinitions[0]
     if (first !== undefined) openForm(first)
+  }
+
+  const openCustomProviderForm = (): void => {
+    setFormDefinition(CUSTOM_PROVIDER_DEFINITION)
+    setCreatingCustomProvider(true)
+    setAdding(true)
+    setEditingProviderId(undefined)
+    setProviderId('')
+    setProviderDisplayName('')
+    setApiProtocol('openai-completions')
+    setCustomOptionsOpen(true)
+    setApiKey('')
+    setBaseUrl('')
+    setModels([])
+    setAvailableModels([])
+    setCustomModels([])
+    setAddingModel(false)
+    setCustomModelId('')
+    setCustomModelName('')
+    setSelectedModelIds(new Set())
+    setModelsMessage(undefined)
+    setStatusMessage(undefined)
   }
 
   const startEdit = async (id: string): Promise<void> => {
@@ -114,24 +172,23 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
       const result = await window.EzDSH.providers.listModels({
         providerId: effectiveProviderId,
         apiKey,
-        ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {})
+        ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+        ...(customOptionsOpen ? { api: apiProtocol } : {})
       })
       if (result.length === 0) {
-        setModels([])
-        setSelectedModelIds(new Set())
+        setAvailableModels([])
+        setModels(mergeModels(customModels, []))
         setModelsMessage(copy.settingsProviderModelsEmpty)
         return
       }
-      setModels(result)
-      const nextSelected = new Set<string>()
-      for (const model of result) {
-        if (selectedModelIds.size === 0 || selectedModelIds.has(model.id)) {
-          nextSelected.add(model.id)
-        }
-      }
-      setSelectedModelIds(nextSelected)
+      setAvailableModels(result)
+      setModels(mergeModels(customModels, result))
+      setSelectedModelIds((previous) => previous.size === 0
+        ? new Set(result.map((model) => model.id))
+        : new Set(previous))
     } catch (error) {
-      setModels([])
+      setAvailableModels([])
+      setModels(mergeModels(customModels, []))
       setSelectedModelIds(new Set())
       setModelsMessage(error instanceof Error ? error.message : copy.settingsProviderFetchFailed)
     } finally {
@@ -139,25 +196,16 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
     }
   }
 
-  const testConnection = async (): Promise<void> => {
-    setTesting(true)
-    setTestMessage(undefined)
-    try {
-      const result = await window.EzDSH.providers.testConnection({
-        providerId: effectiveProviderId,
-        apiKey,
-        ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {})
-      })
-      setTestMessage(result.message)
-    } catch (error) {
-      setTestMessage(error instanceof Error ? error.message : copy.connectionTestFailed)
-    } finally {
-      setTesting(false)
-    }
-  }
-
   const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
+    if (effectiveProviderId.trim() === '') {
+      setStatusMessage(copy.settingsProviderIdRequired)
+      return
+    }
+    if (creatingCustomProvider && baseUrl.trim() === '') {
+      setStatusMessage(copy.settingsProviderBaseUrlRequired)
+      return
+    }
     if (selectedModelIds.size === 0) {
       setStatusMessage(copy.settingsProviderModelsRequired)
       return
@@ -166,17 +214,34 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
     setStatusMessage(undefined)
     try {
       await window.EzDSH.providers.save({
-        providerId: effectiveProviderId,
+        providerId: effectiveProviderId.trim(),
         apiKey,
         ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
-        modelIds: [...selectedModelIds]
+        modelIds: [...selectedModelIds],
+        models: models.filter((model) => selectedModelIds.has(model.id)),
+        ...(isEditing && editingProviderId !== effectiveProviderId
+          ? { previousProviderId: editingProviderId }
+          : {}),
+        ...(customOptionsOpen
+          ? { custom: true, displayName: providerDisplayName.trim(), api: apiProtocol }
+          : {})
       })
       setApiKey('')
       setAdding(false)
       setEditingProviderId(undefined)
+      setFormDefinition(undefined)
+      setCreatingCustomProvider(false)
       setProviderId('')
+      setProviderDisplayName('')
+      setApiProtocol('openai-completions')
+      setCustomOptionsOpen(false)
       setBaseUrl('')
       setModels([])
+      setAvailableModels([])
+      setCustomModels([])
+      setAddingModel(false)
+      setCustomModelId('')
+      setCustomModelName('')
       setSelectedModelIds(new Set())
       await load()
     } catch (error) {
@@ -199,13 +264,22 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
   const cancel = (): void => {
     setAdding(false)
     setEditingProviderId(undefined)
+    setFormDefinition(undefined)
+    setCreatingCustomProvider(false)
     setProviderId('')
+    setProviderDisplayName('')
+    setApiProtocol('openai-completions')
+    setCustomOptionsOpen(false)
     setApiKey('')
     setBaseUrl('')
     setModels([])
+    setAvailableModels([])
+    setCustomModels([])
+    setAddingModel(false)
+    setCustomModelId('')
+    setCustomModelName('')
     setSelectedModelIds(new Set())
     setModelsMessage(undefined)
-    setTestMessage(undefined)
     setStatusMessage(undefined)
   }
 
@@ -224,6 +298,40 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
 
   const deselectAll = (): void => {
     setSelectedModelIds(new Set())
+  }
+
+  const addCustomModel = (): void => {
+    const id = customModelId.trim()
+    if (id === '') {
+      setModelsMessage(copy.settingsProviderModelIdRequired)
+      return
+    }
+    const nextModel: ProviderModel = {
+      id,
+      ...(customModelName.trim() ? { name: customModelName.trim() } : {})
+    }
+    const nextCustomModels = [
+      ...customModels.filter((model) => model.id !== id),
+      nextModel
+    ]
+    setCustomModels(nextCustomModels)
+    setModels(mergeModels(nextCustomModels, availableModels))
+    setSelectedModelIds((previous) => new Set(previous).add(id))
+    setAddingModel(false)
+    setCustomModelId('')
+    setCustomModelName('')
+    setModelsMessage(undefined)
+  }
+
+  const removeCustomModel = (id: string): void => {
+    const nextCustomModels = customModels.filter((model) => model.id !== id)
+    setCustomModels(nextCustomModels)
+    setModels(mergeModels(nextCustomModels, availableModels))
+    setSelectedModelIds((previous) => {
+      const next = new Set(previous)
+      next.delete(id)
+      return next
+    })
   }
 
   if (definitions === undefined || statuses === undefined) {
@@ -293,7 +401,7 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
       {adding && editingProviderId === undefined ? (
         <div className="settings-card-content">
           <div className="provider-card-grid" aria-label={copy.settingsProviderAdd}>
-            {definitions.map((candidate) => {
+            {presetDefinitions.map((candidate) => {
               const badge = providerBadge(statusById.get(candidate.id))
               return (
                 <button
@@ -313,6 +421,15 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
                 </button>
               )
             })}
+            <button
+              type="button"
+              className={`provider-card provider-card-custom ${creatingCustomProvider ? 'provider-card-active' : ''}`}
+              onClick={openCustomProviderForm}
+            >
+              <span className="provider-card-custom-icon" aria-hidden="true">＋</span>
+              <span className="provider-card-name">{copy.settingsProviderCustomProvider}</span>
+              <span className="provider-card-url">{copy.settingsProviderCustomProviderHint}</span>
+            </button>
           </div>
         </div>
       ) : null}
@@ -322,7 +439,7 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
             <label htmlFor="provider-api-key">
               {copy.settingsProviderApiKey}
               {isEditing ? (
-                <span className="provider-optional"> ({copy.optional})</span>
+                <span className="provider-optional"> {copy.optional}</span>
               ) : null}
               <input
                 id="provider-api-key"
@@ -336,75 +453,191 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
             </label>
             <label htmlFor="provider-base-url">
               {copy.baseUrl}{' '}
-              <span className="provider-optional">({copy.optional})</span>
+              {!creatingCustomProvider ? (
+                <span className="provider-optional">{copy.optional}</span>
+              ) : null}
               <input
                 id="provider-base-url"
                 type="url"
                 value={baseUrl}
                 onChange={(event) => { setBaseUrl(event.target.value) }}
                 placeholder={definition.defaultBaseUrl ?? copy.baseUrlPlaceholder}
+                required={creatingCustomProvider}
                 disabled={saving}
               />
             </label>
-            <div className="settings-actions">
+            <fieldset className="provider-model-fieldset">
+              <legend className="provider-model-legend">
+                <span>{copy.settingsProviderModelList}</span>
+                <span className="provider-model-count">{selectedModelIds.size}/{models.length}</span>
+                <button
+                  type="button"
+                  className="settings-action provider-model-fetch"
+                  onClick={() => { void fetchModels() }}
+                  disabled={saving || fetchingModels || effectiveProviderId === '' || (!isEditing && apiKey.trim() === '')}
+                >
+                  {fetchingModels ? copy.loading : copy.settingsProviderListModels}
+                </button>
+              </legend>
+              {models.length > 0 ? (
+                <>
+                  <div className="provider-model-actions">
+                    <button
+                      type="button"
+                      className="settings-action provider-model-action"
+                      onClick={selectAll}
+                      disabled={selectedModelIds.size === models.length}
+                    >
+                      {copy.settingsProviderSelectAll}
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-action provider-model-action"
+                      onClick={deselectAll}
+                      disabled={selectedModelIds.size === 0}
+                    >
+                      {copy.settingsProviderDeselectAll}
+                    </button>
+                  </div>
+                  <ul className="provider-model-list">
+                    {models.map((model) => {
+                      const isCustomModel = customModels.some((candidate) => candidate.id === model.id)
+                      return (
+                        <li key={model.id} className="provider-model-item">
+                          <label className="provider-model-label">
+                            <input
+                              type="checkbox"
+                              checked={selectedModelIds.has(model.id)}
+                              onChange={() => { toggleModel(model.id) }}
+                              disabled={saving}
+                            />
+                            <span className="provider-model-name">{model.name ?? model.id}</span>
+                            <span className="provider-model-id">{model.id}</span>
+                          </label>
+                          {isCustomModel ? (
+                            <button
+                              type="button"
+                              className="provider-model-remove"
+                              onClick={() => { removeCustomModel(model.id) }}
+                              disabled={saving}
+                              aria-label={`${copy.settingsProviderDelete} ${model.id}`}
+                            >
+                              ×
+                            </button>
+                          ) : null}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </>
+              ) : (
+                <p className="provider-model-empty">{copy.settingsProviderModelsEmptyHint}</p>
+              )}
               <button
-                className="settings-action"
                 type="button"
-                onClick={() => { void fetchModels() }}
-                disabled={saving || fetchingModels || effectiveProviderId === '' || (!isEditing && apiKey.trim() === '')}
+                className="settings-action provider-model-add"
+                onClick={() => { setAddingModel(true); setModelsMessage(undefined) }}
+                disabled={saving}
               >
-                {fetchingModels ? copy.testing : copy.settingsProviderListModels}
+                {copy.settingsProviderAddModel}
               </button>
-              <button
-                className="settings-action"
-                type="button"
-                onClick={() => { void testConnection() }}
-                disabled={saving || testing || fetchingModels || effectiveProviderId === '' || (!isEditing && apiKey.trim() === '')}
-              >
-                {testing ? copy.testing : copy.testConnection}
-              </button>
-            </div>
-            {models.length > 0 ? (
-              <fieldset className="provider-model-fieldset">
-                <legend className="provider-model-legend">
-                  {copy.settingsProviderModelList}
-                  <span className="provider-model-count">{selectedModelIds.size}/{models.length}</span>
-                </legend>
-                <div className="provider-model-actions">
-                  <button
-                    type="button"
-                    className="settings-action provider-model-action"
-                    onClick={selectAll}
-                    disabled={selectedModelIds.size === models.length}
-                  >
-                    {copy.settingsProviderSelectAll}
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-action provider-model-action"
-                    onClick={deselectAll}
-                    disabled={selectedModelIds.size === 0}
-                  >
-                    {copy.settingsProviderDeselectAll}
-                  </button>
+              {addingModel ? (
+                <div className="provider-model-editor">
+                  <label htmlFor="provider-model-id">
+                    {copy.settingsProviderModelId}
+                    <input
+                      id="provider-model-id"
+                      type="text"
+                      value={customModelId}
+                      onChange={(event) => { setCustomModelId(event.target.value) }}
+                      placeholder="model-id"
+                      autoComplete="off"
+                      disabled={saving}
+                    />
+                  </label>
+                  <label htmlFor="provider-model-name">
+                    {copy.settingsProviderModelName}
+                    <input
+                      id="provider-model-name"
+                      type="text"
+                      value={customModelName}
+                      onChange={(event) => { setCustomModelName(event.target.value) }}
+                      placeholder={copy.settingsProviderModelNamePlaceholder}
+                      disabled={saving}
+                    />
+                  </label>
+                  <div className="settings-actions">
+                    <button
+                      type="button"
+                      className="settings-action"
+                      onClick={addCustomModel}
+                      disabled={saving}
+                    >
+                      {copy.settingsProviderAddModel}
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-action"
+                      onClick={() => { setAddingModel(false); setCustomModelId(''); setCustomModelName('') }}
+                      disabled={saving}
+                    >
+                      {copy.storeCancel}
+                    </button>
+                  </div>
                 </div>
-                <ul className="provider-model-list">
-                  {models.map((model) => (
-                    <li key={model.id} className="provider-model-item">
-                      <label className="provider-model-label">
-                        <input
-                          type="checkbox"
-                          checked={selectedModelIds.has(model.id)}
-                          onChange={() => { toggleModel(model.id) }}
-                          disabled={saving}
-                        />
-                        <span className="provider-model-name">{model.name ?? model.id}</span>
-                        <span className="provider-model-id">{model.id}</span>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              </fieldset>
+              ) : null}
+            </fieldset>
+            <button
+              className="settings-action provider-custom-toggle"
+              type="button"
+              aria-expanded={customOptionsOpen}
+              onClick={() => { setCustomOptionsOpen((open) => !open) }}
+              disabled={saving}
+            >
+              <span aria-hidden="true">{customOptionsOpen ? '▾' : '▸'}</span>
+              {customOptionsOpen ? copy.settingsProviderCustomOptionsOpen : copy.settingsProviderCustomOptions}
+            </button>
+            {customOptionsOpen ? (
+              <div className="provider-custom-options">
+                <label htmlFor="provider-id">
+                  {copy.settingsProviderId}
+                  <input
+                    id="provider-id"
+                    type="text"
+                    value={providerId}
+                    onChange={(event) => { setProviderId(event.target.value) }}
+                    placeholder="openai-custom"
+                    autoComplete="off"
+                    required={customOptionsOpen}
+                    disabled={saving}
+                  />
+                  <span className="provider-custom-hint">{copy.settingsProviderIdHint}</span>
+                </label>
+                <label htmlFor="provider-display-name">
+                  {copy.settingsProviderDisplayName}
+                  <input
+                    id="provider-display-name"
+                    type="text"
+                    value={providerDisplayName}
+                    onChange={(event) => { setProviderDisplayName(event.target.value) }}
+                    placeholder={providerId}
+                    disabled={saving}
+                  />
+                </label>
+                <label htmlFor="provider-api-protocol">
+                  {copy.settingsProviderApiProtocol}
+                  <select
+                    id="provider-api-protocol"
+                    value={apiProtocol}
+                    onChange={(event) => { setApiProtocol(event.target.value as ProviderApiProtocol) }}
+                    disabled={saving}
+                  >
+                    {PROVIDER_API_PROTOCOLS.map((protocol) => (
+                      <option key={protocol} value={protocol}>{protocol}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             ) : null}
             {modelsMessage ? <p className="settings-error">{modelsMessage}</p> : null}
             <div className="settings-actions">
@@ -424,11 +657,24 @@ export function ProviderSection({ copy }: { copy: AppCopy }): JSX.Element {
                 {copy.storeCancel}
               </button>
             </div>
-            {testMessage ? <p className="settings-success">{testMessage}</p> : null}
             {statusMessage ? <p className="settings-error">{statusMessage}</p> : null}
           </form>
         </div>
       ) : null}
     </section>
   )
+}
+
+function defaultApiProtocol(definition: ProviderDefinition): ProviderApiProtocol {
+  return definition.id === 'anthropic' || definition.id === 'minimax'
+    ? 'anthropic-messages'
+    : 'openai-completions'
+}
+
+function mergeModels(primary: readonly ProviderModel[], secondary: readonly ProviderModel[]): ProviderModel[] {
+  const byId = new Map<string, ProviderModel>()
+  for (const model of [...primary, ...secondary]) {
+    if (!byId.has(model.id)) byId.set(model.id, model)
+  }
+  return [...byId.values()]
 }

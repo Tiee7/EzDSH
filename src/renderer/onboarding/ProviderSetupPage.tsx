@@ -17,8 +17,6 @@ export function ProviderSetupPage({ locale, definitions, onSaved, onSkip }: Prov
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState(firstDefinition?.defaultBaseUrl ?? '')
   const [status, setStatus] = useState<string>()
-  const [testMessage, setTestMessage] = useState<string>()
-  const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
   const definition = useMemo(
     () => definitions.find((candidate) => candidate.id === providerId),
@@ -30,24 +28,6 @@ export function ProviderSetupPage({ locale, definitions, onSaved, onSkip }: Prov
     setProviderId(nextId)
     setBaseUrl(next?.defaultBaseUrl ?? '')
     setStatus(undefined)
-    setTestMessage(undefined)
-  }
-
-  const testConnection = async (): Promise<void> => {
-    setTesting(true)
-    setTestMessage(undefined)
-    try {
-      const result = await window.EzDSH.providers.testConnection({
-        providerId,
-        apiKey,
-        ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {})
-      })
-      setTestMessage(result.message)
-    } catch (error) {
-      setTestMessage(error instanceof Error ? error.message : copy.connectionTestFailed)
-    } finally {
-      setTesting(false)
-    }
   }
 
   const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
@@ -120,14 +100,10 @@ export function ProviderSetupPage({ locale, definitions, onSaved, onSkip }: Prov
           <button className="primary-button" type="submit" disabled={saving || providerId === ''}>
             {saving ? copy.saving : copy.saveAndEnter}
           </button>
-          <button className="secondary-button" type="button" onClick={() => void testConnection()} disabled={saving || testing || apiKey.trim() === ''}>
-            {testing ? copy.testing : copy.testConnection}
-          </button>
-          <button className="skip-button" type="button" onClick={() => void onSkip()} disabled={saving || testing}>
+          <button className="skip-button" type="button" onClick={() => void onSkip()} disabled={saving}>
             {copy.skip}
           </button>
           {status ? <p className="setup-error" role="alert">{status}</p> : null}
-          {testMessage ? <p className="setup-test-result" role="status">{testMessage}</p> : null}
         </form>
       </section>
     </main>

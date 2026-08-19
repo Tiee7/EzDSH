@@ -13,11 +13,6 @@ export function skillsDir(dshHome: string): string {
   return join(dshHome, 'skills')
 }
 
-/** Channel adapter plugins installed for the local user (loaded by EzDSH main process). */
-export function channelAdaptersDir(dshHome: string): string {
-  return join(dshHome, 'channel-adapters')
-}
-
 /** Locally authored agent presets (discovered by dsh-agent-presets on every roster read). */
 export function presetsDir(dshHome: string): string {
   return join(dshHome, '.agent-presets')

@@ -96,6 +96,8 @@ export interface AppCopy {
   settingsProviders: string
   settingsProvidersHint: string
   settingsProviderAdd: string
+  settingsProviderCustomProvider: string
+  settingsProviderCustomProviderHint: string
   settingsProviderUsable: string
   settingsProviderConfigured: string
   settingsProviderSave: string
@@ -106,9 +108,23 @@ export interface AppCopy {
   settingsProviderSelectAll: string
   settingsProviderDeselectAll: string
   settingsProviderModelsEmpty: string
+  settingsProviderModelsEmptyHint: string
   settingsProviderFetchFailed: string
   settingsProviderModelsRequired: string
+  settingsProviderAddModel: string
+  settingsProviderModelId: string
+  settingsProviderModelIdRequired: string
+  settingsProviderModelName: string
+  settingsProviderModelNamePlaceholder: string
   settingsProviderApiKey: string
+  settingsProviderCustomOptions: string
+  settingsProviderCustomOptionsOpen: string
+  settingsProviderId: string
+  settingsProviderIdHint: string
+  settingsProviderDisplayName: string
+  settingsProviderApiProtocol: string
+  settingsProviderIdRequired: string
+  settingsProviderBaseUrlRequired: string
   loading: string
   save: string
   settingsUpdateSection: string
@@ -271,19 +287,35 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProviders: '模型供应商',
     settingsProvidersHint: '管理预设供应商的 API Key，与首次运行的配置流程一致',
     settingsProviderAdd: '添加供应商',
+    settingsProviderCustomProvider: '自定义供应商',
+    settingsProviderCustomProviderHint: '填写供应商的全部连接和模型信息',
     settingsProviderUsable: '可用',
     settingsProviderConfigured: '已配置',
     settingsProviderSave: '保存',
     settingsProviderEdit: '修改',
     settingsProviderDelete: '删除',
-    settingsProviderListModels: '获取模型',
-    settingsProviderModelList: '可用模型',
+    settingsProviderListModels: '获取可用模型',
+    settingsProviderModelList: '模型目录',
     settingsProviderSelectAll: '全选',
     settingsProviderDeselectAll: '取消全选',
     settingsProviderModelsEmpty: '该供应商没有返回可用模型',
+    settingsProviderModelsEmptyHint: '模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。',
     settingsProviderFetchFailed: '获取模型失败',
-    settingsProviderModelsRequired: '请至少选择一个模型',
+    settingsProviderModelsRequired: '请至少添加或选择一个模型',
+    settingsProviderAddModel: '添加模型',
+    settingsProviderModelId: '模型 ID',
+    settingsProviderModelIdRequired: '请输入模型 ID',
+    settingsProviderModelName: '显示名称（可选）',
+    settingsProviderModelNamePlaceholder: '留空则使用模型 ID',
     settingsProviderApiKey: 'API Key',
+    settingsProviderCustomOptions: '自定义选项',
+    settingsProviderCustomOptionsOpen: '收起自定义选项',
+    settingsProviderId: 'Provider ID',
+    settingsProviderIdHint: '修改 ID 后可以为同一个供应商保存多个不同的 API Key',
+    settingsProviderDisplayName: '显示名称',
+    settingsProviderApiProtocol: 'API 协议',
+    settingsProviderIdRequired: '请输入 Provider ID',
+    settingsProviderBaseUrlRequired: '请输入 Base URL',
     loading: '加载中…',
     save: '保存',
     settingsUpdateSection: '应用更新',
@@ -445,19 +477,35 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsProviders: 'Model providers',
     settingsProvidersHint: 'Manage API keys for preset providers, same flow as first-run setup',
     settingsProviderAdd: 'Add provider',
+    settingsProviderCustomProvider: 'Custom provider',
+    settingsProviderCustomProviderHint: 'Fill in the connection and model details yourself',
     settingsProviderUsable: 'Usable',
     settingsProviderConfigured: 'Configured',
     settingsProviderSave: 'Save',
     settingsProviderEdit: 'Edit',
     settingsProviderDelete: 'Delete',
-    settingsProviderListModels: 'Fetch models',
-    settingsProviderModelList: 'Available models',
+    settingsProviderListModels: 'Fetch available models',
+    settingsProviderModelList: 'Model catalog',
     settingsProviderSelectAll: 'Select all',
     settingsProviderDeselectAll: 'Deselect all',
     settingsProviderModelsEmpty: 'No models returned',
+    settingsProviderModelsEmptyHint: 'No models will appear in the model picker; IDs outside the catalog can still be sent directly.',
     settingsProviderFetchFailed: 'Failed to fetch models',
-    settingsProviderModelsRequired: 'Please select at least one model',
+    settingsProviderModelsRequired: 'Add or select at least one model',
+    settingsProviderAddModel: 'Add model',
+    settingsProviderModelId: 'Model ID',
+    settingsProviderModelIdRequired: 'Enter a model ID',
+    settingsProviderModelName: 'Display name (optional)',
+    settingsProviderModelNamePlaceholder: 'Uses the model ID when empty',
     settingsProviderApiKey: 'API Key',
+    settingsProviderCustomOptions: 'Custom options',
+    settingsProviderCustomOptionsOpen: 'Hide custom options',
+    settingsProviderId: 'Provider ID',
+    settingsProviderIdHint: 'Change the ID to save multiple API keys for the same provider',
+    settingsProviderDisplayName: 'Display name',
+    settingsProviderApiProtocol: 'API protocol',
+    settingsProviderIdRequired: 'Enter a Provider ID',
+    settingsProviderBaseUrlRequired: 'Enter a Base URL',
     loading: 'Loading…',
     save: 'Save',
     settingsUpdateSection: 'Application updates',

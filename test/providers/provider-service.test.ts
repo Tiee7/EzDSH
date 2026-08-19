@@ -103,6 +103,49 @@ describe('ProviderService', () => {
     })
   })
 
+  it('saves custom provider IDs with their own display name, protocol, and key', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+
+    await service.save({
+      providerId: 'kimi-work',
+      displayName: 'Kimi Work',
+      api: 'openai-responses',
+      custom: true,
+      apiKey: 'kimi-work-secret',
+      baseUrl: 'https://gateway.example/v1',
+      modelIds: ['kimi-model'],
+      models: [{ id: 'kimi-model', name: 'Kimi Work Model' }]
+    })
+
+    const settings = parse(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')) as {
+      'llm-pi-ai': { providers: Record<string, Record<string, unknown>> }
+    }
+    const credentials = parse(await readFile(join(layout.harness, '.credentials.yaml'), 'utf8')) as Record<string, unknown>
+    expect(settings['llm-pi-ai'].providers['kimi-work']).toEqual({
+      apiKeyEnv: 'EZDSH_KIMI_WORK_API_KEY',
+      displayName: 'Kimi Work',
+      api: 'openai-responses',
+      baseURL: 'https://gateway.example/v1',
+      models: [{ id: 'kimi-model', name: 'Kimi Work Model' }]
+    })
+    expect(credentials.EZDSH_KIMI_WORK_API_KEY).toBe('kimi-work-secret')
+
+    const definitions = await service.listDefinitions()
+    expect(definitions.find((definition) => definition.id === 'kimi-work')).toMatchObject({
+      displayName: 'Kimi Work',
+      isCustom: true
+    })
+    await expect(service.getProfile('kimi-work')).resolves.toMatchObject({
+      displayName: 'Kimi Work',
+      api: 'openai-responses',
+      isCustom: true
+    })
+  })
+
   it('migrates legacy provider IDs before Runtime reads settings', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
     roots.push(root)
@@ -241,7 +284,7 @@ describe('ProviderService', () => {
     const layout = getUserDataLayout(root)
     await ensureUserDataLayout(layout)
     const service = new ProviderService(layout)
-    const definitions = service.listDefinitions()
+    const definitions = await service.listDefinitions()
     const kimi = definitions.find((d) => d.id === 'kimi-coding')
     const volc = definitions.find((d) => d.id === 'volcengine')
     expect(kimi?.modelCatalogSource).toBe('catalog')
@@ -255,7 +298,7 @@ describe('ProviderService', () => {
     await ensureUserDataLayout(layout)
     const service = new ProviderService(layout)
 
-    const kimi = service.listDefinitions().find((d) => d.id === 'kimi-coding')
+    const kimi = (await service.listDefinitions()).find((d) => d.id === 'kimi-coding')
     expect(kimi?.defaultBaseUrl).toBe('https://api.kimi.com/coding')
   })
 

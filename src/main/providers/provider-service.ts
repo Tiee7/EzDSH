@@ -7,6 +7,7 @@ import type {
   DeleteProviderResult,
   ListModelsInput,
   ProviderDefinition,
+  ProviderApiProtocol,
   ProviderModel,
   ProviderProfile,
   ProviderStatus,
@@ -15,7 +16,7 @@ import type {
   TestConnectionResult,
   TestProviderInput
 } from '../../shared/providers.js'
-import { needsProviderSetup } from '../../shared/providers.js'
+import { needsProviderSetup, PROVIDER_API_PROTOCOLS } from '../../shared/providers.js'
 import { findProviderDefinition, PROVIDER_DEFINITIONS } from './provider-definitions.js'
 
 type JsonMap = Record<string, unknown>
@@ -25,6 +26,7 @@ const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   togetherai: 'together',
   'kimi-code': 'kimi-coding'
 }
+const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u
 
 /** Main-process provider persistence; secrets never leave this service. */
 export class ProviderService {
@@ -36,11 +38,40 @@ export class ProviderService {
     this.settingsPath = join(layout.harness, 'settings.yaml')
   }
 
-  listDefinitions() {
-    return PROVIDER_DEFINITIONS.map((definition) => {
+  async listDefinitions(): Promise<ProviderDefinition[]> {
+    const settings = await this.readDocument(this.settingsPath)
+    const definitions = PROVIDER_DEFINITIONS.map((definition) => {
       const baseUrl = definition.defaultBaseUrl ?? this.catalogBaseUrl(definition.id)
-      return baseUrl === undefined ? { ...definition } : { ...definition, defaultBaseUrl: baseUrl }
+      const route = this.readRoute(settings, definition.id)
+      const displayName = typeof route?.displayName === 'string' && route.displayName.trim() !== ''
+        ? route.displayName
+        : definition.displayName
+      return {
+        ...(baseUrl === undefined ? { ...definition } : { ...definition, defaultBaseUrl: baseUrl }),
+        displayName
+      }
     })
+    const knownIds = new Set(definitions.map((definition) => definition.id))
+    const piAi = asMap(settings['llm-pi-ai'])
+    const providers = asMap(piAi?.providers)
+    for (const [providerId, routeValue] of Object.entries(providers ?? {})) {
+      if (knownIds.has(providerId) || !isMap(routeValue)) continue
+      definitions.push({
+        id: providerId,
+        displayName: typeof routeValue.displayName === 'string' && routeValue.displayName.trim() !== ''
+          ? routeValue.displayName
+          : providerId,
+        category: 'aggregator',
+        credentialKey: typeof routeValue.apiKeyEnv === 'string'
+          ? routeValue.apiKeyEnv
+          : deriveCredentialKey(providerId),
+        ...(typeof routeValue.baseURL === 'string' ? { defaultBaseUrl: routeValue.baseURL } : {}),
+        supportsConnectionTest: true,
+        modelCatalogSource: 'custom',
+        isCustom: true
+      })
+    }
+    return definitions
   }
 
   /** Repair provider route IDs written by older EzDSH builds before Runtime starts. */
@@ -54,8 +85,11 @@ export class ProviderService {
   async getStatuses(): Promise<ProviderStatus[]> {
     const credentials = await this.readDocument(this.credentialsPath)
     const settings = await this.readDocument(this.settingsPath)
-    return PROVIDER_DEFINITIONS.map((definition) => {
-      const hasCredential = this.hasCredential(definition.credentialKey, credentials)
+    const definitions = await this.listDefinitions()
+    return definitions.map((definition) => {
+      const route = this.readRoute(settings, definition.id)
+      const credentialKey = typeof route?.apiKeyEnv === 'string' ? route.apiKeyEnv : definition.credentialKey
+      const hasCredential = this.hasCredential(credentialKey, credentials)
       const routeConfigured = this.isRouteConfigured(definition.id, settings)
       return {
         providerId: definition.id,
@@ -74,18 +108,31 @@ export class ProviderService {
     const modelIds = models
       ?.filter((entry): entry is JsonMap => isMap(entry) && typeof entry.id === 'string')
       .map((entry) => String(entry.id)) ?? []
+    const modelEntries = models
+      ?.filter((entry): entry is JsonMap => isMap(entry) && typeof entry.id === 'string')
+      .map((entry) => ({
+        id: String(entry.id),
+        ...(typeof entry.name === 'string' ? { name: entry.name } : {})
+      })) ?? []
     return {
       baseUrl: typeof route.baseURL === 'string' ? route.baseURL : undefined,
-      modelIds
+      modelIds,
+      ...(modelEntries.some((entry) => entry.name !== undefined) ? { models: modelEntries } : {}),
+      ...(typeof route.displayName === 'string' ? { displayName: route.displayName } : {}),
+      ...(isProviderApiProtocol(route.api) ? { api: route.api } : {}),
+      ...(PROVIDER_DEFINITIONS.find((definition) => definition.id === providerId) === undefined || route.api !== undefined
+        ? { isCustom: true }
+        : {})
     }
   }
 
   async listModels(input: ListModelsInput): Promise<ProviderModel[]> {
-    const definition = findProviderDefinition(input.providerId)
+    const definition = PROVIDER_DEFINITIONS.find((candidate) => candidate.id === input.providerId)
+    if (definition === undefined && input.api === undefined) throw new Error(`Unknown provider: ${input.providerId}`)
     try {
       return await this.fetchModels(input)
     } catch (error) {
-      if (definition.modelCatalogSource === 'catalog') {
+      if (definition?.modelCatalogSource === 'catalog') {
         return this.getCatalogModels(definition.id)
       }
       throw error instanceof Error ? error : new Error('无法获取模型列表')
@@ -93,7 +140,8 @@ export class ProviderService {
   }
 
   async testConnection(input: TestProviderInput): Promise<TestConnectionResult> {
-    const definition = findProviderDefinition(input.providerId)
+    const definition = PROVIDER_DEFINITIONS.find((candidate) => candidate.id === input.providerId)
+    if (definition === undefined && input.api === undefined) throw new Error(`Unknown provider: ${input.providerId}`)
     try {
       await this.fetchModels(input)
       return { reachable: true, message: '连接成功' }
@@ -102,7 +150,7 @@ export class ProviderService {
       if (/\bHTTP\s+(401|403)\b/.test(message)) {
         return { reachable: false, message }
       }
-      if (definition.modelCatalogSource === 'catalog') {
+      if (definition?.modelCatalogSource === 'catalog') {
         return { reachable: true, message: '连接成功' }
       }
       return { reachable: false, message }
@@ -110,38 +158,65 @@ export class ProviderService {
   }
 
   async save(input: SaveProviderInput): Promise<SaveProviderResult> {
-    const definition = findProviderDefinition(input.providerId)
+    const providerId = input.providerId.trim()
+    const definition = PROVIDER_DEFINITIONS.find((candidate) => candidate.id === providerId)
+    const isCustom = input.custom === true
+      || definition === undefined
+      || definition.modelCatalogSource === 'custom'
+    if (providerId === '') throw new Error('Provider ID 不能为空')
+    if (isCustom && !PROVIDER_ID_PATTERN.test(providerId)) {
+      throw new Error('Provider ID 只能包含小写字母、数字和连字符，且必须以小写字母开头')
+    }
+    if ((input.custom === true || definition === undefined) && !isProviderApiProtocol(input.api)) {
+      throw new Error('API 协议无效')
+    }
     const apiKey = input.apiKey.trim()
 
+    const settings = await this.readDocument(this.settingsPath)
+    const existingRoute = this.readRoute(settings, providerId)
+    const previousRoute = input.previousProviderId !== undefined && input.previousProviderId !== providerId
+      ? this.readRoute(settings, input.previousProviderId)
+      : undefined
+    const sourceRoute = existingRoute ?? previousRoute
+    const credentialKey = typeof sourceRoute?.apiKeyEnv === 'string'
+      ? sourceRoute.apiKeyEnv
+      : definition?.credentialKey ?? deriveCredentialKey(providerId)
     const credentials = await this.readDocument(this.credentialsPath)
-    const hasStoredKey = typeof credentials[definition.credentialKey] === 'string'
-      && (credentials[definition.credentialKey] as string).trim().length > 0
+    const hasStoredKey = typeof credentials[credentialKey] === 'string'
+      && (credentials[credentialKey] as string).trim().length > 0
     if (apiKey.length === 0 && !hasStoredKey) {
       throw new Error('API Key 不能为空')
     }
-    if (apiKey.length > 0) credentials[definition.credentialKey] = apiKey
+    if (apiKey.length > 0) credentials[credentialKey] = apiKey
     await this.writePrivateDocument(this.credentialsPath, credentials)
 
-    const settings = await this.readDocument(this.settingsPath)
     this.writeRoute(
       settings,
-      definition.id,
-      definition.credentialKey,
+      providerId,
+      credentialKey,
       input.baseUrl,
       input.modelIds,
-      definition.modelCatalogSource === 'custom'
+      isCustom,
+      input.api,
+      input.displayName,
+      input.models
     )
+    if (input.previousProviderId !== undefined && input.previousProviderId !== providerId) {
+      this.removeRoute(settings, input.previousProviderId)
+    }
     await this.writePrivateDocument(this.settingsPath, settings)
 
-    const status = (await this.getStatuses()).find((candidate) => candidate.providerId === input.providerId)
+    const status = (await this.getStatuses()).find((candidate) => candidate.providerId === providerId)
     if (status === undefined) throw new Error('Provider status was not available after saving')
     return { status }
   }
 
   async delete(providerId: string): Promise<DeleteProviderResult> {
-    const definition = findProviderDefinition(providerId)
     const settings = await this.readDocument(this.settingsPath)
     const credentials = await this.readDocument(this.credentialsPath)
+    const definition = PROVIDER_DEFINITIONS.find((candidate) => candidate.id === providerId)
+    const route = this.readRoute(settings, providerId)
+    const credentialKey = typeof route?.apiKeyEnv === 'string' ? route.apiKeyEnv : definition?.credentialKey
     let changed = false
 
     if (providerId === 'deepseek-official') {
@@ -159,8 +234,8 @@ export class ProviderService {
       }
     }
 
-    if (typeof credentials[definition.credentialKey] === 'string') {
-      delete credentials[definition.credentialKey]
+    if (credentialKey !== undefined && typeof credentials[credentialKey] === 'string') {
+      delete credentials[credentialKey]
       await this.writePrivateDocument(this.credentialsPath, credentials)
     }
 
@@ -210,6 +285,18 @@ export class ProviderService {
     return asMap(providers?.[providerId])
   }
 
+  private removeRoute(settings: JsonMap, providerId: string): void {
+    if (providerId === 'deepseek-official') {
+      delete settings['llm-deepseek']
+      return
+    }
+    const piAi = asMap(settings['llm-pi-ai'])
+    const providers = asMap(piAi?.providers)
+    if (providers === undefined || !(providerId in providers)) return
+    delete providers[providerId]
+    settings['llm-pi-ai'] = { ...piAi, providers }
+  }
+
   private migrateLegacyProviderRoutes(settings: JsonMap): boolean {
     const piAi = asMap(settings['llm-pi-ai'])
     const providers = asMap(piAi?.providers)
@@ -228,14 +315,19 @@ export class ProviderService {
   }
 
   private async fetchModels(input: { providerId: string; apiKey: string; baseUrl?: string }): Promise<ProviderModel[]> {
-    const definition = findProviderDefinition(input.providerId)
-    const baseUrl = input.baseUrl?.trim() || definition.defaultBaseUrl
+    const definition = PROVIDER_DEFINITIONS.find((candidate) => candidate.id === input.providerId)
+    const baseUrl = input.baseUrl?.trim() || definition?.defaultBaseUrl
     if (baseUrl === undefined) throw new Error('该供应商需要填写 Base URL')
 
     let apiKey = input.apiKey.trim()
     if (apiKey.length === 0) {
+      const settings = await this.readDocument(this.settingsPath)
+      const route = this.readRoute(settings, input.providerId)
+      const credentialKey = typeof route?.apiKeyEnv === 'string'
+        ? route.apiKeyEnv
+        : definition?.credentialKey ?? deriveCredentialKey(input.providerId)
       const credentials = await this.readDocument(this.credentialsPath)
-      const stored = credentials[definition.credentialKey]
+      const stored = credentials[credentialKey]
       if (typeof stored === 'string' && stored.trim().length > 0) apiKey = stored.trim()
       else throw new Error('API Key 不能为空')
     }
@@ -298,7 +390,10 @@ export class ProviderService {
     credentialKey: string,
     baseUrl?: string,
     modelIds?: string[],
-    isCustom?: boolean
+    isCustom?: boolean,
+    api?: ProviderApiProtocol,
+    displayName?: string,
+    modelEntries?: ProviderModel[]
   ): void {
     if (providerId === 'deepseek-official') {
       settings['llm-deepseek'] = {
@@ -311,8 +406,13 @@ export class ProviderService {
 
     const piAi = asMap(settings['llm-pi-ai']) ?? {}
     const providers = asMap(piAi.providers) ?? {}
-    const models = modelIds !== undefined && modelIds.length > 0
-      ? modelIds.map((id) => ({ id }))
+    const models = modelEntries !== undefined && modelEntries.length > 0
+      ? modelEntries.map((model) => ({
+        id: model.id,
+        ...(model.name !== undefined && model.name.trim() !== '' ? { name: model.name.trim() } : {})
+      }))
+      : modelIds !== undefined && modelIds.length > 0
+        ? modelIds.map((id) => ({ id }))
       : undefined
     const route: JsonMap = {
       ...asMap(providers[providerId]),
@@ -320,11 +420,15 @@ export class ProviderService {
       ...(models !== undefined ? { models } : {})
     }
     if (isCustom) {
-      route.api = 'openai-completions'
+      route.api = api ?? 'openai-completions'
+      const customName = displayName?.trim()
+      if (customName !== undefined && customName !== '') route.displayName = customName
+      else delete route.displayName
       const customBase = this.normalizeBaseUrl(baseUrl)
       if (customBase !== undefined) route.baseURL = customBase
     } else {
       delete route.api
+      delete route.displayName
       const requested = this.normalizeBaseUrl(baseUrl)
       const official = this.normalizeBaseUrl(this.officialBaseUrl(providerId))
       if (requested !== undefined && requested !== official) route.baseURL = requested
@@ -333,6 +437,14 @@ export class ProviderService {
     providers[providerId] = route
     settings['llm-pi-ai'] = { ...piAi, providers }
   }
+}
+
+function deriveCredentialKey(providerId: string): string {
+  return `EZDSH_${providerId.toUpperCase().replace(/[^A-Z0-9]+/gu, '_')}_API_KEY`
+}
+
+function isProviderApiProtocol(value: unknown): value is ProviderApiProtocol {
+  return typeof value === 'string' && (PROVIDER_API_PROTOCOLS as readonly string[]).includes(value)
 }
 
 export function isMap(value: unknown): value is JsonMap {

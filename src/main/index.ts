@@ -255,9 +255,13 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
-  ipcMain.handle('providers:list-definitions', (): IpcResult<ReturnType<ProviderService['listDefinitions']>> => {
-    if (providerService === undefined) return failure(new Error('Provider service is not ready'))
-    return success(providerService.listDefinitions())
+  ipcMain.handle('providers:list-definitions', async (): Promise<IpcResult<Awaited<ReturnType<ProviderService['listDefinitions']>>>> => {
+    try {
+      if (providerService === undefined) throw new Error('Provider service is not ready')
+      return success(await providerService.listDefinitions())
+    } catch (error) {
+      return failure(error)
+    }
   })
   ipcMain.handle('providers:get-status', async (): Promise<IpcResult<Awaited<ReturnType<ProviderService['getStatuses']>>>> => {
     try {

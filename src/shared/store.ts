@@ -9,7 +9,7 @@
  */
 
 /** Installable entry kinds. Skills and presets land in DSH-owned directories; MCP entries patch the runtime profile. */
-export const STORE_KINDS = ['skill', 'preset', 'mcp', 'channel-adapter'] as const
+export const STORE_KINDS = ['skill', 'preset', 'mcp'] as const
 
 /** One installable entry kind. */
 export type StoreKind = (typeof STORE_KINDS)[number]

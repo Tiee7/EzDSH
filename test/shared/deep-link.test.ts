@@ -5,7 +5,10 @@ describe('parseDeepLink', () => {
   it('parses exact kind install links', () => {
     expect(parseDeepLink('ezdsh://install/skill/demo')).toEqual({ action: 'install', kind: 'skill', id: 'demo' })
     expect(parseDeepLink('ezdsh://install/mcp/weather')).toEqual({ action: 'install', kind: 'mcp', id: 'weather' })
-    expect(parseDeepLink('ezdsh://install/channel-adapter/wecom')).toEqual({ action: 'install', kind: 'channel-adapter', id: 'wecom' })
+  })
+
+  it('rejects kinds that are not store-installable', () => {
+    expect(parseDeepLink('ezdsh://install/channel-adapter/wecom')).toBeUndefined()
   })
 
   it('parses plugin shorthand links without a kind', () => {

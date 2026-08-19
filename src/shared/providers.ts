@@ -1,5 +1,11 @@
 export type ProviderCategory = 'vendor' | 'aggregator' | 'inference'
 export type ProviderCatalogSource = 'catalog' | 'custom'
+export const PROVIDER_API_PROTOCOLS = [
+  'openai-completions',
+  'openai-responses',
+  'anthropic-messages'
+] as const
+export type ProviderApiProtocol = (typeof PROVIDER_API_PROTOCOLS)[number]
 
 export interface ProviderDefinition {
   id: string
@@ -9,6 +15,7 @@ export interface ProviderDefinition {
   defaultBaseUrl?: string
   supportsConnectionTest: boolean
   modelCatalogSource: ProviderCatalogSource
+  isCustom?: boolean
 }
 
 export interface ProviderStatus {
@@ -27,12 +34,17 @@ export interface ProviderModel {
 export interface ProviderProfile {
   baseUrl?: string
   modelIds: string[]
+  models?: ProviderModel[]
+  displayName?: string
+  api?: ProviderApiProtocol
+  isCustom?: boolean
 }
 
 export interface ListModelsInput {
   providerId: string
   apiKey: string
   baseUrl?: string
+  api?: ProviderApiProtocol
 }
 
 export interface SaveProviderInput {
@@ -40,12 +52,18 @@ export interface SaveProviderInput {
   apiKey: string
   baseUrl?: string
   modelIds: string[]
+  models?: ProviderModel[]
+  displayName?: string
+  api?: ProviderApiProtocol
+  custom?: boolean
+  previousProviderId?: string
 }
 
 export interface TestProviderInput {
   providerId: string
   apiKey: string
   baseUrl?: string
+  api?: ProviderApiProtocol
 }
 
 export interface TestConnectionResult {

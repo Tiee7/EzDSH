@@ -8,15 +8,15 @@ import {
 } from '../../src/shared/store'
 
 describe('store contract vocabulary', () => {
-  it('keeps the four installable kinds in a stable order', () => {
-    expect([...STORE_KINDS]).toEqual(['skill', 'preset', 'mcp', 'channel-adapter'])
+  it('keeps the three installable kinds in a stable order', () => {
+    expect([...STORE_KINDS]).toEqual(['skill', 'preset', 'mcp'])
   })
 
   it('validates kind strings', () => {
     expect(isStoreKind('skill')).toBe(true)
     expect(isStoreKind('preset')).toBe(true)
     expect(isStoreKind('mcp')).toBe(true)
-    expect(isStoreKind('channel-adapter')).toBe(true)
+    expect(isStoreKind('channel-adapter')).toBe(false)
     expect(isStoreKind('scenario')).toBe(false)
     expect(isStoreKind('')).toBe(false)
   })
