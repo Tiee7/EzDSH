@@ -167,6 +167,7 @@
   border: 1px solid var(--ezdsh-panel-border);
   border-radius: 12px;
   padding: 14px;
+  overflow: hidden;
   background: var(--ezdsh-panel-background);
   color: inherit;
   text-align: left;
@@ -214,16 +215,19 @@
 
 .entry-installed {
   position: absolute;
-  right: 10px;
-  bottom: 10px;
-  border-radius: 999px;
-  padding: 2px 9px;
-  font-size: 10px;
+  right: -38px;
+  bottom: 20px;
+  width: 130px;
+  padding: 12px 0;
+  transform: rotate(-45deg);
+  text-align: center;
+  white-space: nowrap;
+  background: var(--ezdsh-accent-green);
+  color: var(--ezdsh-panel-background);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  background: color-mix(in srgb, var(--ezdsh-accent-green) 18%, transparent);
-  color: var(--ezdsh-accent-green);
-  border: 1px solid color-mix(in srgb, var(--ezdsh-accent-green) 35%, transparent);
+  letter-spacing: 0.04em;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   pointer-events: none;
 }
 
