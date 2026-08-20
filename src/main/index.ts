@@ -61,6 +61,7 @@ import { ExternalServiceManager } from './external-services/external-service-man
 import type { ExternalServiceCreateInput, ExternalServiceUpdateInput } from '../shared/external-services.js'
 import { bindWindowClosedCleanup } from './window-lifecycle.js'
 import { shutdownExternalServicesFirst } from './shutdown.js'
+import { restartApplication, shouldRelaunchWorkspace } from './restart.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
@@ -83,6 +84,9 @@ let pendingDeepLinkInstall: DeepLinkInstall | undefined
 let pendingDeepLinkSession: DeepLinkSession | undefined
 const require = createRequire(import.meta.url)
 const externalServiceWatchers = new Set<number>()
+let stopRuntimeListener: (() => void) | undefined
+let stopLocaleListener: (() => void) | undefined
+let stopExternalServiceWatcher: (() => void) | undefined
 
 const LIGHT_WINDOW_BACKGROUND = '#f9fafb'
 const DARK_WINDOW_BACKGROUND = '#151517'
@@ -151,6 +155,113 @@ async function assertWorkspaceTarget(root: string): Promise<string> {
   return target
 }
 
+function bindWorkspaceServiceListeners(): void {
+  stopRuntimeListener?.()
+  stopRuntimeListener = runtimeManager?.onChange((snapshot) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('runtime:state-change', snapshot)
+    }
+    if (snapshot.phase === 'ready') {
+      void externalServiceManager?.startAutoServices().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('[external-services] failed to start auto services:', message)
+      })
+    }
+  })
+
+  stopLocaleListener?.()
+  stopLocaleListener = localeService?.onChange((locale) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('locale:state-change', locale)
+    }
+    setApplicationMenu(locale)
+  })
+}
+
+/** Construct every service that is rooted in the active workspace. */
+async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void> {
+  userDataLayout = layout
+  developerModePath = join(layout.state, 'developer-mode.json')
+  developerMode = await readDeveloperMode(developerModePath)
+
+  localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
+  await localeService.start()
+
+  const runtimeEntryPath = resolveRuntimeEntryPath({
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+    developmentSourceRoot: process.env.EZDSH_DSH_SOURCE?.trim() || undefined
+  })
+  const runtimeCommandPath = resolveRuntimeCommandPath({
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+    arch: process.arch
+  })
+  runtimeManager = new RuntimeManager({
+    layout,
+    runtimeEntryPath,
+    command: runtimeCommandPath
+  })
+
+  externalServiceManager = new ExternalServiceManager({
+    configPath: join(layout.state, 'external-services.json'),
+    logsDir: join(layout.logs, 'external-services'),
+  })
+  await externalServiceManager.initialize().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[external-services] failed to initialize:', message)
+  })
+  stopExternalServiceWatcher?.()
+  stopExternalServiceWatcher = externalServiceManager.watch(emitExternalServiceState)
+
+  externalApiService = new ExternalApiService({
+    getRuntimeUrl: () => runtimeManager?.snapshot().url,
+    port: resolveExternalApiPort(process.env.EZDSH_EXTERNAL_API_PORT),
+    runStatePath: join(layout.state, 'external-runs.json'),
+  })
+  await externalApiService.start()
+  console.log(`[external-api] listening at ${externalApiService.url}`)
+
+  const channelBridgeRegistry = new AdapterRegistry()
+  const adapterLoader = new ChannelAdapterLoader({ registry: channelBridgeRegistry, logger: console })
+  const builtinAdaptersDir = join(app.getAppPath(), 'plugins')
+  const userAdaptersDir = join(layout.harness, 'channel-adapters')
+  await adapterLoader.loadFromDirectories([builtinAdaptersDir, userAdaptersDir]).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[channel-bridge] failed to load adapters:', message)
+  })
+  channelBridgeService = new ChannelBridgeService({
+    layout,
+    getRuntimeUrl: () => runtimeManager?.snapshot().url,
+    registry: channelBridgeRegistry,
+  })
+  await channelBridgeService.initialize().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[channel-bridge] failed to initialize:', message)
+  })
+
+  providerService = new ProviderService(layout)
+  await providerService.initialize()
+  navigationService = new NavigationService(layout.state)
+  await navigationService.initialize()
+  storeService = new StoreService({
+    client: new StoreClient(),
+    fetchImpl: createDemoFetch(),
+    dshHome: layout.harness,
+    registryPath: join(layout.state, 'installed.json'),
+    catalogCachePath: join(layout.state, 'store-catalog.json'),
+    onStateChange: (state) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('store:state-change', state)
+      }
+    }
+  })
+
+  bindWorkspaceServiceListeners()
+}
+
 async function changeWorkspace(kind: 'migrate' | 'switch', root: string): Promise<void> {
   if (workspaceOperationActive) throw new Error('Another workspace operation is already in progress')
   if (userDataLayout === undefined || workspaceConfigPath === undefined) {
@@ -194,14 +305,30 @@ async function changeWorkspace(kind: 'migrate' | 'switch', root: string): Promis
       message: (getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE)).settingsWorkspaceRestarting
     })
 
-    // Recreating all layout-bound services in-place would leave old watchers and
-    // adapters alive. A clean relaunch gives an empty switch the exact first-run
-    // initialization path and makes the new root authoritative before any write.
-    setTimeout(() => {
-      isQuitting = true
-      app.relaunch({ args: process.argv.slice(1) })
-      app.exit(0)
-    }, 250)
+    // In packaged builds, a clean relaunch gives an empty switch the exact
+    // first-run initialization path. In development, electron-vite owns the
+    // renderer server and exits as soon as this Electron child exits, so a
+    // relaunch would leave the new window pointed at a dead Vite URL.
+    if (shouldRelaunchWorkspace(app.isPackaged)) {
+      setTimeout(() => {
+        isQuitting = true
+        restartApplication(app, process.argv.slice(1))
+      }, 250)
+      return
+    }
+
+    stopRuntimeListener?.()
+    stopRuntimeListener = undefined
+    stopLocaleListener?.()
+    stopLocaleListener = undefined
+    localeService?.stop()
+    await initializeWorkspaceServices(nextLayout)
+    setApplicationMenu()
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+      await loadRenderer(mainWindow)
+    }
+    workspaceOperationActive = false
+    emitWorkspaceState(undefined)
   } catch (error) {
     await Promise.allSettled([
       runtimeManager?.start() ?? Promise.resolve(),
@@ -816,6 +943,13 @@ function registerIpcHandlers(): void {
 
 registerIpcHandlers()
 
+function loadRenderer(window: BrowserWindow): Promise<void> {
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL
+  return rendererUrl !== undefined && rendererUrl !== ''
+    ? window.loadURL(rendererUrl)
+    : window.loadFile(join(__dirname, '../renderer/index.html'))
+}
+
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
@@ -884,12 +1018,10 @@ function createWindow(): BrowserWindow {
     }
   })
 
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL
-  if (rendererUrl) {
-    void window.loadURL(rendererUrl)
-  } else {
-    void window.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  void loadRenderer(window).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[renderer] failed to load:', message)
+  })
 
   mainWindow = window
   return window
@@ -918,77 +1050,7 @@ if (!singleInstance) {
     const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, app.getPath('userData'))
     const layout = getUserDataLayout(workspaceRoot)
     await ensureUserDataLayout(layout)
-    userDataLayout = layout
-    developerModePath = join(layout.state, 'developer-mode.json')
-    developerMode = await readDeveloperMode(developerModePath)
-    localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
-    await localeService.start()
-    const runtimeEntryPath = resolveRuntimeEntryPath({
-      appPath: app.getAppPath(),
-      resourcesPath: process.resourcesPath,
-      isPackaged: app.isPackaged,
-      developmentSourceRoot: process.env.EZDSH_DSH_SOURCE?.trim() || undefined
-    })
-    const runtimeCommandPath = resolveRuntimeCommandPath({
-      appPath: app.getAppPath(),
-      resourcesPath: process.resourcesPath,
-      isPackaged: app.isPackaged,
-      arch: process.arch
-    })
-    runtimeManager = new RuntimeManager({
-      layout,
-      runtimeEntryPath,
-      command: runtimeCommandPath
-    })
-    externalServiceManager = new ExternalServiceManager({
-      configPath: join(layout.state, 'external-services.json'),
-      logsDir: join(layout.logs, 'external-services'),
-    })
-    await externalServiceManager.initialize().catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error('[external-services] failed to initialize:', message)
-    })
-    externalServiceManager.watch(emitExternalServiceState)
-    externalApiService = new ExternalApiService({
-      getRuntimeUrl: () => runtimeManager?.snapshot().url,
-      port: resolveExternalApiPort(process.env.EZDSH_EXTERNAL_API_PORT),
-      runStatePath: join(layout.state, 'external-runs.json'),
-    })
-    await externalApiService.start()
-    console.log(`[external-api] listening at ${externalApiService.url}`)
-    const channelBridgeRegistry = new AdapterRegistry()
-    const adapterLoader = new ChannelAdapterLoader({ registry: channelBridgeRegistry, logger: console })
-    const builtinAdaptersDir = join(app.getAppPath(), 'plugins')
-    const userAdaptersDir = join(layout.harness, 'channel-adapters')
-    await adapterLoader.loadFromDirectories([builtinAdaptersDir, userAdaptersDir]).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error('[channel-bridge] failed to load adapters:', message)
-    })
-    channelBridgeService = new ChannelBridgeService({
-      layout,
-      getRuntimeUrl: () => runtimeManager?.snapshot().url,
-      registry: channelBridgeRegistry,
-    })
-    await channelBridgeService.initialize().catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error('[channel-bridge] failed to initialize:', message)
-    })
-    providerService = new ProviderService(layout)
-    await providerService.initialize()
-    navigationService = new NavigationService(layout.state)
-    await navigationService.initialize()
-    storeService = new StoreService({
-      client: new StoreClient(),
-      fetchImpl: createDemoFetch(),
-      dshHome: layout.harness,
-      registryPath: join(layout.state, 'installed.json'),
-      catalogCachePath: join(layout.state, 'store-catalog.json'),
-      onStateChange: (state) => {
-        for (const window of BrowserWindow.getAllWindows()) {
-          window.webContents.send('store:state-change', state)
-        }
-      }
-    })
+    await initializeWorkspaceServices(layout)
     const configuredUpdateFeedUrl = process.env.EZDSH_UPDATE_FEED_URL?.trim() || undefined
     const updateFeedUrl = resolveUpdateFeedUrl()
     const updateChecksEnabled = app.isPackaged || configuredUpdateFeedUrl !== undefined
@@ -1004,27 +1066,10 @@ if (!singleInstance) {
         await stopApplicationComponents()
       }
     })
-    runtimeManager.onChange((snapshot) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        window.webContents.send('runtime:state-change', snapshot)
-      }
-      if (snapshot.phase === 'ready') {
-        void externalServiceManager?.startAutoServices().catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error)
-          console.error('[external-services] failed to start auto services:', message)
-        })
-      }
-    })
     updateManager.onChange((snapshot) => {
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send('updates:state-change', snapshot)
       }
-    })
-    localeService.onChange((locale) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        window.webContents.send('locale:state-change', locale)
-      }
-      setApplicationMenu(locale)
     })
     setDockIcon()
     createWindow()
