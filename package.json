@@ -1,6 +1,6 @@
 {
   "name": "ezdsh",
-  "version": "1.8.1520",
+  "version": "1.8.1521",
   "description": "Out-of-the-box DeepSeek Harness desktop client with a bundled Runtime for macOS and Windows.",
   "private": true,
   "type": "module",
@@ -154,7 +154,7 @@
       }
     ],
     "extraMetadata": {
-      "version": "1.8.1520"
+      "version": "1.8.1521"
     }
   }
 }
