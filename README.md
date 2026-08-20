@@ -1,7 +1,7 @@
 # EzDSH
 
 <p align="center">
-  <img src="assets/logo.png" alt="EzDSH" width="100%" />
+  <img src="assets/social-preview2.png" alt="EzDSH" width="100%" />
 </p>
 
 <p align="center">
@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="#mission-vision-and-values">Mission & Values</a> •
   <a href="#why-ezdsh">Why EzDSH</a> •
   <a href="#local-use">Local Use</a> •
   <a href="#build-from-source">Build from Source</a> •
@@ -17,6 +18,25 @@
 </p>
 
 ---
+
+## Mission, Vision, and Values
+
+### Mission
+
+> **Make technology equitable.**
+
+### Vision
+
+> **Give everyone an AI entry point for work and life, turning frontier technology into capabilities that are directly usable, composable, and continuously improving.**
+
+### Values
+
+- **Do no harm**: Technology must serve people. We do not profit from information gaps, technical gaps, or user trust, and never at the expense of users' safety, privacy, or autonomy.
+- **Value before technology**: We measure ourselves by the real problems we solve and the real value we create—not by how impressive the technology looks.
+- **Usable by everyone**: Users should not have to become technical experts first. Complex capabilities should feel natural to use.
+- **Open and composable**: Models, plugins, tools, and workflows should be freely connected, replaced, and extended.
+- **Autonomous and trustworthy**: Users retain control over their data, configuration, tools, and final decisions.
+- **Co-build with users**: We grow through real-world use and continuous feedback.
 
 ## Why EzDSH
 
