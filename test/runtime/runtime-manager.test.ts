@@ -120,6 +120,7 @@ describe('RuntimeManager', () => {
     expect(ready.phase).toBe('ready')
     expect(ready.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(spawnedArgs[0]).toBe('--expose-internals')
+    expect(spawnedArgs).toContain('--no-open')
     expect(spawnedOptions?.detached).toBe(process.platform !== 'win32')
 
     await manager.stop()

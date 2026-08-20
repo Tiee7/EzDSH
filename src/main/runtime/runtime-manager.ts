@@ -190,8 +190,8 @@ export class RuntimeManager {
     const processLogStream = this.logStream
     const command = this.config.command ?? process.execPath
     const args = command === process.execPath
-      ? ['--expose-internals', this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port)]
-      : [this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port)]
+      ? ['--expose-internals', this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
+      : [this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
     const inheritedEnvironment = { ...process.env }
     if (command !== process.execPath) delete inheritedEnvironment.ELECTRON_RUN_AS_NODE
     const spawnOptions: SpawnOptions = {
