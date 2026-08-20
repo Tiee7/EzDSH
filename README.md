@@ -1,12 +1,12 @@
 # EzDSH
 
 <p align="center">
-  <img src="assets/social-preview2.png" alt="EzDSH" width="100%" />
+  <img src="assets/social-preview2-en.png" alt="EzDSH — DeepSeek Harness distribution" width="100%" />
 </p>
 
 <p align="center">
-  <strong>Out-of-the-box DeepSeek Harness desktop client for macOS and Windows.</strong><br/>
-  Bundled Runtime, automatic lifecycle management, and local-first storage—no Node.js or terminal setup required.
+  <strong>An open DeepSeek Harness distribution for macOS and Windows.</strong><br/>
+  A personal AI entry point with a bundled Runtime, an extensible plugin ecosystem, remote operation, and integrated workspaces.
 </p>
 
 <p align="center">
@@ -40,9 +40,11 @@
 
 ## Why EzDSH
 
-DeepSeek Harness is powerful, but getting it running locally means installing runtimes, starting services from the terminal, managing ports, editing provider configs, and keeping processes alive. EzDSH wraps all of that into a single desktop app so you can focus on building with AI instead of fighting your environment.
+DeepSeek Harness is a powerful open agent foundation, but using it locally can mean installing runtimes, starting services from the terminal, managing ports, editing provider configs, and keeping processes alive. EzDSH is more than a desktop wrapper: it is a user-facing distribution built around DeepSeek Harness.
 
-> **EzDSH makes DeepSeek Harness feel like a finished product, not a setup tutorial.**
+EzDSH packages the Runtime, curates a plugin ecosystem, connects remote operation and integrated workspaces, and turns complex capabilities into tools people can use in everyday work and life.
+
+> **EzDSH brings DeepSeek Harness out of the repository and into a usable entry point for real life.**
 
 ## What you get
 
@@ -63,6 +65,15 @@ EzDSH is not a browser wrapper. It manages the complete Runtime lifecycle:
 - No orphaned background processes
 
 You see a stable desktop app, not a collection of terminal windows.
+
+### An extensible distribution layer
+
+EzDSH makes DeepSeek Harness more than a runtime. It provides a place to discover, install, combine, and use capabilities built around DSH:
+
+- Plugin marketplace and curated capabilities
+- Remote operation
+- Integrated workspaces for connecting tools, workflows, and services
+- A growing ecosystem that can evolve with users' needs
 
 ### DSH-native configuration
 
@@ -93,9 +104,9 @@ App code, Runtime, and user data are kept separate. Updating EzDSH replaces the 
 
 You do not rebuild your environment every time the app updates.
 
-### A polished front door for Harness
+### A user-facing distribution for Harness
 
-DeepSeek Harness handles the agent runtime, model calls, tool execution, and Web UI. EzDSH adds the product layer it needs:
+DeepSeek Harness provides the agent runtime, model calls, tool execution, and core Web UI. EzDSH adds the distribution and product layer that makes those capabilities approachable:
 
 - Installer and first-run onboarding
 - Visual provider and profile management
@@ -103,16 +114,19 @@ DeepSeek Harness handles the agent runtime, model calls, tool execution, and Web
 - Local data and log management
 - Built-in update delivery
 - Security boundaries
+- Plugin discovery and installation
+- Remote access and integrated workspaces
 
-Harness provides the engine. EzDSH provides the experience.
+Harness provides the core. EzDSH makes it usable, extensible, and accessible.
 
 ## Who it is for
 
 - Developers who want to run DeepSeek Harness locally
 - AI users who prefer not to live in the terminal
+- People who want to use frontier AI without becoming infrastructure experts
 - Users who switch between multiple model providers
 - Anyone who wants API keys and project data kept local
-- Professionals who need a stable desktop entry point for agent, tool, and plugin workflows
+- Professionals who need a stable entry point for agent, tool, plugin, and workspace workflows
 
 ## Local use
 
