@@ -45,6 +45,8 @@ export interface DshWorkspaceSummary {
 export interface TurnTrackerCallbacks {
   /** Called after the prompt has been queued in DSH. */
   onAcknowledged(): void
+  /** Called when a new assistant text block is available. */
+  onDelta?(text: string): void
   /** Called every `statusIntervalMs` while the turn is still running. */
   onProgress(elapsedMs: number): void
   /** Called once the turn ends and a final text answer is available. */
@@ -82,6 +84,10 @@ interface WorkspaceListResponse {
   archivedSessionIds: string[]
 }
 
+interface WorkspaceArchiveResponse {
+  archivedSessionIds: string[]
+}
+
 interface WorkspaceCreateResponse {
   workspace: DshWorkspaceSummary
   created: boolean
@@ -112,6 +118,11 @@ interface SessionSummaryWire {
   updatedAt: number
   running: boolean
   blank?: boolean
+  projections?: {
+    values?: {
+      title?: unknown
+    }
+  }
 }
 
 interface HistoryEntry {
@@ -159,9 +170,21 @@ export class DshSessionClient {
     return { sessionId: response.sessionId }
   }
 
+  async archiveSession(sessionId: string): Promise<WorkspaceArchiveResponse> {
+    return this.post<WorkspaceArchiveResponse>('/api/workspace.archiveSession', { sessionId })
+  }
+
+  async unarchiveSession(sessionId: string): Promise<WorkspaceArchiveResponse> {
+    return this.post<WorkspaceArchiveResponse>('/api/workspace.unarchiveSession', { sessionId })
+  }
+
   async listWorkspaces(): Promise<DshWorkspaceSummary[]> {
     const response = await this.post<WorkspaceListResponse>('/api/workspace.list', {})
-    return response.items
+    const archived = new Set(response.archivedSessionIds)
+    return response.items.map((workspace) => ({
+      ...workspace,
+      sessionIds: workspace.sessionIds.filter((sessionId) => !archived.has(sessionId)),
+    }))
   }
 
   async createWorkspace(path: string): Promise<WorkspaceCreateResponse> {
@@ -179,10 +202,13 @@ export class DshSessionClient {
       updatedAt: item.updatedAt,
       running: item.running,
       blank: item.blank,
+      title: readProjectedTitle(item),
     }))
 
     const titles = await Promise.all(
-      items.map((item) => this.getSessionTitle(item.sessionId).catch(() => undefined)),
+      items.map((item, index) => response.items[index]?.projections === undefined
+        ? this.getSessionTitle(item.sessionId).catch(() => undefined)
+        : item.title),
     )
 
     return items.map((item, index) => ({
@@ -267,6 +293,8 @@ export class DshSessionClient {
         if (event.seq > sinceSeq && !seenSeqs.has(event.seq)) {
           seenSeqs.add(event.seq)
           collectedEvents.push(event)
+          const delta = extractAssistantText([event])
+          if (delta !== '') callbacks.onDelta?.(delta)
         }
       }
 
@@ -324,6 +352,11 @@ export class DshSessionClient {
     }
     return rpcResponse.result.value
   }
+}
+
+function readProjectedTitle(item: SessionSummaryWire): string | undefined {
+  const title = item.projections?.values?.title
+  return typeof title === 'string' && title.length > 0 ? title : undefined
 }
 
 function extractAssistantText(events: SessionEvent[]): string {

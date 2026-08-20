@@ -64,7 +64,7 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
   }
 
   return (
-    <div className="settings-item">
+    <div className="settings-item settings-item-update">
       <div className="settings-item-text">
         <p className="settings-label">{copy.settingsUpdateSection}</p>
         <p className="settings-hint">

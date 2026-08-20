@@ -37,15 +37,14 @@ describe('application menu navigate section', () => {
       'CmdOrCtrl+1',
       'CmdOrCtrl+2',
       'CmdOrCtrl+3',
-      'CmdOrCtrl+4',
-      'CmdOrCtrl+5'
+      'CmdOrCtrl+4'
     ])
-    expect(pageItems.map((item) => item.label)).toEqual(['DeepSeek Harness', '使用手册', 'External', 'Skills', '设置'])
+    expect(pageItems.map((item) => item.label)).toEqual(['DeepSeek Harness', '使用手册', 'External', 'Skills'])
     expect(settingsItem?.label).toBe('设置')
 
     for (const item of pageItems) item.click()
     settingsItem?.click()
-    expect(seen).toEqual(['harness', 'docs', 'external', 'store', 'settings', 'settings'])
+    expect(seen).toEqual(['harness', 'docs', 'external', 'store', 'settings'])
   })
 
   it('limits page shortcuts to 1 through 9 while keeping CmdOrCtrl+0 on settings', () => {
@@ -112,10 +111,9 @@ describe('application menu navigate section', () => {
       'CmdOrCtrl+2',
       'CmdOrCtrl+3',
       'CmdOrCtrl+4',
-      'CmdOrCtrl+5',
       'CmdOrCtrl+0'
     ])
-    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Skills', 'Preset', '使用手册', '设置', '设置'])
+    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Skills', 'Preset', '使用手册', '设置'])
   })
 
   it('invokes onNavigate with the clicked tab', () => {
@@ -128,16 +126,16 @@ describe('application menu navigate section', () => {
     const items = (navigate?.submenu ?? []).filter(
       (item) => 'accelerator' in item && typeof item.click === 'function'
     ) as Array<{ click: () => void }>
-    expect(items.length).toBe(6)
+    expect(items.length).toBe(5)
     for (const item of items) item.click()
-    expect(seen).toEqual(['harness', 'store', 'presets', 'docs', 'settings', 'settings'])
+    expect(seen).toEqual(['harness', 'store', 'presets', 'docs', 'settings'])
   })
 
   it('keeps locale switching consistent for the English menu', () => {
     const template = getApplicationMenuTemplate({ locale: 'en' })
     const navigate = template.find((item) => item.label === 'Go')
     const labels = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item).map((item) => item.label)
-    expect(labels).toEqual(['DeepSeek Harness', 'Skills', 'Preset', 'Docs', 'Settings', 'Settings'])
+    expect(labels).toEqual(['DeepSeek Harness', 'Skills', 'Preset', 'Docs', 'Settings'])
   })
 
   it('omits hidden tabs while preserving the visible page order', () => {
@@ -151,12 +149,11 @@ describe('application menu navigate section', () => {
       label?: string
       accelerator?: string
     }>
-    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Skills', 'Preset', '设置', '设置'])
+    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Skills', 'Preset', '设置'])
     expect(items.map((item) => item.accelerator)).toEqual([
       'CmdOrCtrl+1',
       'CmdOrCtrl+2',
       'CmdOrCtrl+3',
-      'CmdOrCtrl+4',
       'CmdOrCtrl+0'
     ])
   })

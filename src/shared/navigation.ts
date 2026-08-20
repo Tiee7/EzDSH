@@ -12,6 +12,9 @@ export function isAppTab(value: unknown): value is AppTab {
 /** Built-in tabs that must stay visible and cannot be removed. */
 export const LOCKED_NAV_TABS: readonly AppTab[] = ['harness', 'settings']
 
+/** Maximum number of page-position shortcuts; zero is reserved for settings. */
+export const NAVIGATION_SHORTCUT_LIMIT = 9
+
 /** A system-provided tab; `locked` tabs can never be hidden. */
 export interface BuiltinNavItem {
   kind: 'builtin'
@@ -65,6 +68,15 @@ export function isVisibleNavItem(item: NavItem): boolean {
 /** Items that should appear in the tab bar, in display order. */
 export function visibleNavItems(config: NavConfig): NavItem[] {
   return config.items.filter(isVisibleNavItem)
+}
+
+/** Items that receive CmdOrCtrl+1..9, excluding trailing settings which has CmdOrCtrl+0. */
+export function navigationShortcutItems(config: NavConfig): NavItem[] {
+  const visibleItems = visibleNavItems(config)
+  return visibleItems.slice(0, NAVIGATION_SHORTCUT_LIMIT).filter((item, index) => {
+    const isLastVisibleItem = index === visibleItems.length - 1
+    return !(isLastVisibleItem && isBuiltinNavItem(item) && item.id === 'settings')
+  })
 }
 
 /** Ensure fixed tabs stay anchored: harness first, settings last. */

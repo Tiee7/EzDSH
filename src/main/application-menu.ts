@@ -5,10 +5,10 @@ import {
   getDefaultNavConfig,
   type AppTab,
   isBuiltinNavItem,
+  navigationShortcutItems,
   type NavConfig,
   type NavItem,
   type NavigationTarget,
-  visibleNavItems
 } from '../shared/navigation.js'
 
 export interface ApplicationMenuOptions {
@@ -35,8 +35,7 @@ function tabLabel(item: NavItem, copy: AppCopy): string {
 
 function getNavigateItems(options: ApplicationMenuOptions, copy: AppCopy): MenuItemConstructorOptions[] {
   const navConfig = options.navConfig ?? getDefaultNavConfig()
-  const visibleItems = visibleNavItems(navConfig)
-  const numberedItems = visibleItems.slice(0, 9).map((item, index) => ({
+  const numberedItems = navigationShortcutItems(navConfig).map((item, index) => ({
     label: tabLabel(item, copy),
     accelerator: `CmdOrCtrl+${index + 1}`,
     click: () => options.onNavigate?.(item.id)

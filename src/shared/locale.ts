@@ -138,10 +138,46 @@ export interface AppCopy {
   settingsRuntimeSection: string
   settingsRuntimePort: string
   settingsRestartRuntime: string
+  settingsExternalServices: string
+  settingsExternalServicesHint: string
+  externalServicesAdd: string
+  externalServicesEdit: string
+  externalServicesDelete: string
+  externalServicesStart: string
+  externalServicesStop: string
+  externalServicesRestart: string
+  externalServicesSave: string
+  externalServicesCancel: string
+  externalServicesName: string
+  externalServicesCommand: string
+  externalServicesCommandHint: string
+  externalServicesArgs: string
+  externalServicesArgsHint: string
+  externalServicesCwd: string
+  externalServicesEnv: string
+  externalServicesEnvHint: string
+  externalServicesEnabled: string
+  externalServicesAutoStart: string
+  externalServicesAutoStartHint: string
+  externalServicesOnlyManaged: string
+  externalServicesEmpty: string
+  externalServicesLoading: string
+  externalServicesFailed: string
+  externalServicesStateStopped: string
+  externalServicesStateStarting: string
+  externalServicesStateRunning: string
+  externalServicesStateStopping: string
+  externalServicesStateFailed: string
+  externalServicesStateExited: string
+  externalServicesNameRequired: string
+  externalServicesCommandRequired: string
+  externalServicesEnvInvalid: string
+  externalServicesSecurityHint: string
   settingsTabGeneral: string
   settingsTabRemoteControl: string
   settingsTabNavigation: string
   navSectionHint: string
+  navShortcutHint: string
   navSystemBadge: string
   navAddLink: string
   navEdit: string
@@ -333,10 +369,46 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimeSection: '运行状态',
     settingsRuntimePort: '端口',
     settingsRestartRuntime: '重启 Runtime',
+    settingsExternalServices: '外部服务',
+    settingsExternalServicesHint: 'Runtime 就绪后异步启动指定命令；服务失败不会影响 EzDSH。也可以只纳入管理而不自动启动。',
+    externalServicesAdd: '添加服务',
+    externalServicesEdit: '编辑',
+    externalServicesDelete: '删除',
+    externalServicesStart: '开始',
+    externalServicesStop: '停止',
+    externalServicesRestart: '重启',
+    externalServicesSave: '保存',
+    externalServicesCancel: '取消',
+    externalServicesName: '名称',
+    externalServicesCommand: '命令',
+    externalServicesCommandHint: '可填写 npm run dev 等一行命令，也可只填写可执行文件。',
+    externalServicesArgs: '参数',
+    externalServicesArgsHint: '每行一个参数；默认不经过 Shell 解析。',
+    externalServicesCwd: '工作目录（可选）',
+    externalServicesEnv: '环境变量（可选）',
+    externalServicesEnvHint: '每行一个 KEY=VALUE，敏感值不会显示在状态中。',
+    externalServicesEnabled: '纳入管理',
+    externalServicesAutoStart: 'Runtime 就绪后自动启动',
+    externalServicesAutoStartHint: '关闭后仍可在此页面手动开始、停止和重启。',
+    externalServicesOnlyManaged: '仅管理，不自动启动',
+    externalServicesEmpty: '还没有外部服务。',
+    externalServicesLoading: '正在加载外部服务…',
+    externalServicesFailed: '外部服务操作失败',
+    externalServicesStateStopped: '已停止',
+    externalServicesStateStarting: '启动中',
+    externalServicesStateRunning: '运行中',
+    externalServicesStateStopping: '停止中',
+    externalServicesStateFailed: '启动失败',
+    externalServicesStateExited: '已退出',
+    externalServicesNameRequired: '请输入服务名称',
+    externalServicesCommandRequired: '请输入启动命令',
+    externalServicesEnvInvalid: '环境变量格式应为 KEY=VALUE',
+    externalServicesSecurityHint: '外部服务会以当前用户权限运行。只添加你信任的命令。',
     settingsTabGeneral: '通用',
     settingsTabRemoteControl: '远程控制',
     settingsTabNavigation: '导航管理',
     navSectionHint: '选择要在标签栏显示的页面，拖动调整顺序；也可以添加自定义链接标签。',
+    navShortcutHint: '快捷键可以快速跳转标签页，按当前标签顺序：Windows/Linux 使用 Ctrl+1–9，macOS 使用 ⌘1–9；设置页使用 Ctrl+0/⌘0。',
     navSystemBadge: '系统',
     navAddLink: '添加链接',
     navEdit: '编辑',
@@ -527,10 +599,46 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimeSection: 'Runtime status',
     settingsRuntimePort: 'Port',
     settingsRestartRuntime: 'Restart runtime',
+    settingsExternalServices: 'External services',
+    settingsExternalServicesHint: 'Start selected commands asynchronously after Runtime is ready. A service failure never blocks EzDSH; entries can also be managed without auto-starting.',
+    externalServicesAdd: 'Add service',
+    externalServicesEdit: 'Edit',
+    externalServicesDelete: 'Delete',
+    externalServicesStart: 'Start',
+    externalServicesStop: 'Stop',
+    externalServicesRestart: 'Restart',
+    externalServicesSave: 'Save',
+    externalServicesCancel: 'Cancel',
+    externalServicesName: 'Name',
+    externalServicesCommand: 'Command',
+    externalServicesCommandHint: 'You can enter npm run dev as one line or provide only the executable.',
+    externalServicesArgs: 'Arguments',
+    externalServicesArgsHint: 'One argument per line; shell parsing is disabled by default.',
+    externalServicesCwd: 'Working directory (optional)',
+    externalServicesEnv: 'Environment (optional)',
+    externalServicesEnvHint: 'One KEY=VALUE per line; values are not shown in process status.',
+    externalServicesEnabled: 'Managed',
+    externalServicesAutoStart: 'Start automatically after Runtime is ready',
+    externalServicesAutoStartHint: 'When disabled, the service can still be started, stopped, or restarted here.',
+    externalServicesOnlyManaged: 'Managed only; no auto-start',
+    externalServicesEmpty: 'No external services yet.',
+    externalServicesLoading: 'Loading external services…',
+    externalServicesFailed: 'External service operation failed',
+    externalServicesStateStopped: 'Stopped',
+    externalServicesStateStarting: 'Starting',
+    externalServicesStateRunning: 'Running',
+    externalServicesStateStopping: 'Stopping',
+    externalServicesStateFailed: 'Start failed',
+    externalServicesStateExited: 'Exited',
+    externalServicesNameRequired: 'Enter a service name',
+    externalServicesCommandRequired: 'Enter a start command',
+    externalServicesEnvInvalid: 'Environment entries must use KEY=VALUE',
+    externalServicesSecurityHint: 'External services run with your current user permissions. Add only commands you trust.',
     settingsTabGeneral: 'General',
     settingsTabRemoteControl: 'Remote control',
     settingsTabNavigation: 'Navigation',
     navSectionHint: 'Choose which pages appear in the tab bar, drag to reorder, or add custom link tabs.',
+    navShortcutHint: 'Shortcuts follow the current tab order: Ctrl+1–9 on Windows/Linux or ⌘1–9 on macOS; Ctrl+0/⌘0 opens Settings.',
     navSystemBadge: 'System',
     navAddLink: 'Add link',
     navEdit: 'Edit',

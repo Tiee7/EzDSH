@@ -7,9 +7,10 @@ import { UpdateSection } from './UpdateSection.js'
 import { RuntimeSection } from './RuntimeSection.js'
 import { ChannelBridgePage } from './ChannelBridgePage.js'
 import { NavigationSection } from './NavigationSection.js'
+import { ExternalServicesSection } from './ExternalServicesSection.js'
 import './settings.css'
 
-type SettingsTab = 'general' | 'remote-control' | 'navigation'
+type SettingsTab = 'general' | 'remote-control' | 'navigation' | 'external-services'
 
 interface SettingsPageProps {
   copy: AppCopy
@@ -36,6 +37,7 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
     { id: 'general', label: copy.settingsTabGeneral },
     { id: 'remote-control', label: copy.settingsTabRemoteControl },
     { id: 'navigation', label: copy.settingsTabNavigation },
+    { id: 'external-services', label: copy.settingsExternalServices },
   ]
 
   return (
@@ -106,10 +108,12 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
           </>
         ) : activeTab === 'remote-control' ? (
           <ChannelBridgePage copy={copy} />
-        ) : (
+        ) : activeTab === 'navigation' ? (
           <section className="settings-card">
             <NavigationSection copy={copy} />
           </section>
+        ) : (
+          <ExternalServicesSection copy={copy} />
         )}
       </div>
     </div>

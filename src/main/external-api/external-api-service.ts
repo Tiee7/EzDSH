@@ -6,7 +6,9 @@ import type {
   ExternalDispatchResponse,
   ExternalProject,
   ExternalSessionCreateRequest,
+  ExternalRunRequest,
 } from '../../shared/external-api.js'
+import { ExternalRunService, type ExternalRunServiceLike } from './external-run-service.js'
 
 const MAX_BODY_BYTES = 1024 * 1024
 
@@ -23,6 +25,9 @@ export interface ExternalApiOptions {
   getRuntimeUrl(): string | undefined
   port?: number
   createClient?: (runtimeUrl: string) => ExternalApiClient
+  runService?: ExternalRunServiceLike
+  createRunService?: (runtimeUrl: string) => ExternalRunServiceLike
+  runStatePath?: string
 }
 
 class HttpError extends Error {
@@ -34,6 +39,8 @@ class HttpError extends Error {
 export class ExternalApiService {
   private server: ReturnType<typeof createServer> | undefined
   private boundPort: number | undefined
+  private runService: ExternalRunServiceLike | undefined
+  private runServiceRuntimeUrl: string | undefined
 
   constructor(private readonly options: ExternalApiOptions) {}
 
@@ -78,6 +85,7 @@ export class ExternalApiService {
     if (server === undefined) return
     this.server = undefined
     this.boundPort = undefined
+    await this.runService?.flush?.()
     await new Promise<void>((resolve) => {
       server.close(() => resolve())
     })
@@ -92,11 +100,18 @@ export class ExternalApiService {
       return
     }
 
+    const runEventsMatch = request.url?.match(/^\/api\/external\/v1\/runs\/([^/]+)\/events$/u)
+    if (request.method === 'GET' && runEventsMatch !== null && runEventsMatch !== undefined) {
+      await this.handleRunEvents(request, response, decodeURIComponent(runEventsMatch[1] ?? ''))
+      return
+    }
+
     try {
       const url = new URL(request.url ?? '/', this.url)
       const body = request.method === 'POST' ? await readJsonBody(request) : undefined
       const result = await this.route(request.method ?? 'GET', url.pathname, body)
-      sendJson(response, 200, result)
+      const status = request.method === 'POST' && url.pathname === '/api/external/v1/runs' ? 202 : 200
+      sendJson(response, status, result)
     } catch (error) {
       const httpError = error instanceof HttpError
         ? error
@@ -108,6 +123,28 @@ export class ExternalApiService {
   private async route(method: string, pathname: string, body: unknown): Promise<unknown> {
     if (method === 'GET' && pathname === '/api/external/v1/health') {
       return { ok: true, runtimeReady: this.options.getRuntimeUrl() !== undefined }
+    }
+
+    if (method === 'POST' && pathname === '/api/external/v1/runs') {
+      const runService = await this.getRunServiceReady()
+      return runService.create(parseRunRequest(body))
+    }
+
+    const runMatch = pathname.match(/^\/api\/external\/v1\/runs\/([^/]+)$/u)
+    if (runMatch !== null && method === 'GET') {
+      const snapshot = (await this.getRunServiceReady()).get(decodeURIComponent(runMatch[1] ?? ''))
+      if (snapshot === undefined) throw new HttpError(404, 'Run not found')
+      return snapshot
+    }
+
+    const cancelMatch = pathname.match(/^\/api\/external\/v1\/runs\/([^/]+)\/cancel$/u)
+    if (cancelMatch !== null && method === 'POST') {
+      try {
+        return (await this.getRunServiceReady()).cancel(decodeURIComponent(cancelMatch[1] ?? ''))
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Run not found') throw new HttpError(404, error.message)
+        throw error
+      }
     }
 
     const client = this.getClient()
@@ -152,6 +189,82 @@ export class ExternalApiService {
     const runtimeUrl = this.options.getRuntimeUrl()
     if (runtimeUrl === undefined) throw new HttpError(503, 'DSH Runtime 尚未启动')
     return (this.options.createClient ?? ((baseUrl: string) => new DshSessionClient({ baseUrl, timeoutMs: 10_000 })))(runtimeUrl)
+  }
+
+  private getRunService(): ExternalRunServiceLike {
+    if (this.options.runService !== undefined) return this.options.runService
+    const runtimeUrl = this.options.getRuntimeUrl()
+    if (runtimeUrl === undefined) throw new HttpError(503, 'DSH Runtime 尚未启动')
+    if (this.runService === undefined || this.runServiceRuntimeUrl !== runtimeUrl) {
+      this.runService = (this.options.createRunService ?? ((baseUrl: string) => new ExternalRunService({
+        createClient: () => new DshSessionClient({ baseUrl, timeoutMs: 10 * 60 * 1000 }),
+        statePath: this.options.runStatePath,
+      })))(runtimeUrl)
+      this.runServiceRuntimeUrl = runtimeUrl
+    }
+    return this.runService
+  }
+
+  private async getRunServiceReady(): Promise<ExternalRunServiceLike> {
+    const service = this.getRunService()
+    await service.initialize?.()
+    return service
+  }
+
+  private async handleRunEvents(request: IncomingMessage, response: ServerResponse, runId: string): Promise<void> {
+    try {
+      const service = await this.getRunServiceReady()
+      const snapshot = service.get(runId)
+      if (snapshot === undefined) {
+        sendJson(response, 404, { error: 'Run not found' })
+        return
+      }
+
+      const header = request.headers['last-event-id']
+      const parsed = Number(Array.isArray(header) ? header[0] : header ?? '0')
+      const afterEventId = Number.isInteger(parsed) && parsed >= 0 ? parsed : 0
+      response.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      })
+      response.flushHeaders()
+
+      let closed = false
+      let heartbeat: NodeJS.Timeout | undefined
+      let unsubscribe = () => {}
+      const close = (): void => {
+        if (closed) return
+        closed = true
+        unsubscribe()
+        if (heartbeat !== undefined) clearInterval(heartbeat)
+        if (!response.writableEnded) response.end()
+      }
+      request.once('close', close)
+      const writeEvent = (event: { id: number; type: string; data: Record<string, unknown> }): void => {
+        if (closed || response.writableEnded) return
+        response.write(`id: ${String(event.id)}\n`)
+        response.write(`event: ${event.type}\n`)
+        response.write(`data: ${JSON.stringify(event.data)}\n\n`)
+      }
+      unsubscribe = service.subscribe(runId, afterEventId, writeEvent)
+
+      const current = service.get(runId)
+      if (current !== undefined && isTerminalRunStatus(current.status)) {
+        close()
+        return
+      }
+      heartbeat = setInterval(() => {
+        if (!closed && !response.writableEnded) response.write(': keep-alive\n\n')
+      }, 15_000)
+    } catch (error) {
+      if (!response.headersSent) {
+        const status = error instanceof HttpError ? error.status : 500
+        sendJson(response, status, { error: error instanceof Error ? error.message : String(error) })
+      } else if (!response.writableEnded) {
+        response.end()
+      }
+    }
   }
 
   private async listProjects(client: ExternalApiClient): Promise<ExternalProject[]> {
@@ -254,6 +367,41 @@ function optionalString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const result = value.trim()
   return result === '' ? undefined : result
+}
+
+function parseRunRequest(body: unknown): ExternalRunRequest {
+  const input = asRecord(body)
+  const prompt = requiredString(input.prompt, 'prompt')
+  const sessionMode = input.sessionMode
+  if (sessionMode !== undefined && sessionMode !== 'new' && sessionMode !== 'existing') {
+    throw new HttpError(400, 'sessionMode must be new or existing')
+  }
+  const projectId = optionalString(input.projectId)
+  const normalizedSessionMode = sessionMode === undefined ? 'new' : sessionMode
+  if (normalizedSessionMode === 'new' && projectId === undefined) {
+    throw new HttpError(400, 'projectId is required for a new Run')
+  }
+  const output = input.output === undefined ? undefined : asRecord(input.output)
+  const format = output?.format
+  if (format !== undefined && format !== 'text' && format !== 'json') {
+    throw new HttpError(400, 'output.format must be text or json')
+  }
+  const client = input.client === undefined ? undefined : asRecord(input.client)
+  return {
+    projectId,
+    sessionMode: normalizedSessionMode,
+    sessionId: optionalString(input.sessionId),
+    prompt,
+    archiveSession: input.archiveSession === true,
+    output: format === undefined ? undefined : { format },
+    client: client === undefined
+      ? undefined
+      : { name: optionalString(client.name), requestId: optionalString(client.requestId) },
+  }
+}
+
+function isTerminalRunStatus(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {

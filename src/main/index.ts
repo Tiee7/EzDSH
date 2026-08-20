@@ -18,7 +18,7 @@ import type { UpdateState } from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale.js'
 import type { NavigationTarget } from '../shared/navigation.js'
-import { findDeepLinkInArgs, parseDeepLink, type DeepLinkInstall, type ResolvedDeepLinkInstall } from '../shared/deep-link.js'
+import { findDeepLinkInArgs, parseDeepLink, type DeepLinkInstall, type DeepLinkSession, type ResolvedDeepLinkInstall } from '../shared/deep-link.js'
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
 import type { UserDataLayout } from '../shared/state.js'
 import type { StoreKind } from '../shared/store.js'
@@ -35,12 +35,19 @@ import { UpdateManager } from './update/update-manager.js'
 import { getApplicationMenuTemplate } from './application-menu.js'
 import { LocaleService, writeDshLocale } from './locale/locale-service.js'
 import { ChannelBridgeService } from './channel-bridge/index.js'
+import { DshSessionClient } from './channel-bridge/dsh-session.js'
+import { openDeepLinkedSession } from './session-deep-link.js'
 import { NavigationService } from './navigation/navigation-service.js'
+import { getNavigationTargetForInput } from './navigation/navigation-shortcuts.js'
 import { ExternalApiService } from './external-api/external-api-service.js'
 import { EXTERNAL_API_DEFAULT_PORT } from '../shared/external-api.js'
 import type { NavConfig } from '../shared/navigation.js'
 import { AdapterRegistry } from './channel-bridge/adapter-registry.js'
 import { ChannelAdapterLoader } from './channel-bridge/adapter-loader.js'
+import { ExternalServiceManager } from './external-services/external-service-manager.js'
+import type { ExternalServiceCreateInput, ExternalServiceUpdateInput } from '../shared/external-services.js'
+import { bindWindowClosedCleanup } from './window-lifecycle.js'
+import { shutdownExternalServicesFirst } from './shutdown.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
@@ -52,10 +59,13 @@ let storeService: StoreService | undefined
 let channelBridgeService: ChannelBridgeService | undefined
 let navigationService: NavigationService | undefined
 let externalApiService: ExternalApiService | undefined
+let externalServiceManager: ExternalServiceManager | undefined
 let isQuitting = false
 let updateDialogOpen = false
 let pendingDeepLinkInstall: DeepLinkInstall | undefined
+let pendingDeepLinkSession: DeepLinkSession | undefined
 const require = createRequire(import.meta.url)
+const externalServiceWatchers = new Set<number>()
 
 const LIGHT_WINDOW_BACKGROUND = '#f9fafb'
 const DARK_WINDOW_BACKGROUND = '#151517'
@@ -166,6 +176,32 @@ function emitDeepLinkInstall(kind: StoreKind, id: string): void {
   }
 }
 
+function emitDeepLinkSession(sessionId: string): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    window.webContents.send('ui:navigate', 'harness')
+    window.webContents.send('session:deep-link', { sessionId })
+  }
+}
+
+async function openDeepLinkSession(sessionId: string): Promise<void> {
+  await openDeepLinkedSession({
+    sessionId,
+    unarchiveSession: async (targetSessionId) => {
+      if (runtimeManager === undefined) throw new Error('Runtime manager is not ready')
+      const snapshot = runtimeManager.snapshot()
+      const runtime = snapshot.url === undefined ? await runtimeManager.start() : snapshot
+      if (runtime.url === undefined) throw new Error('DSH Runtime URL is not available')
+      const client = new DshSessionClient({ baseUrl: runtime.url, timeoutMs: 10_000 })
+      await client.unarchiveSession(targetSessionId)
+    },
+    emitSession: emitDeepLinkSession,
+    onUnarchiveError: (error) => {
+      console.error(`[deep-link] failed to unarchive session "${sessionId}":`, error.message)
+    },
+  })
+}
+
 async function handleDeepLinkInstall(link: DeepLinkInstall): Promise<void> {
   let kind = link.kind
   const id = link.id
@@ -197,6 +233,20 @@ function consumePendingDeepLinkInstall(): DeepLinkInstall | undefined {
   const link = pendingDeepLinkInstall
   pendingDeepLinkInstall = undefined
   return link
+}
+
+function consumePendingDeepLinkSession(): DeepLinkSession | undefined {
+  const link = pendingDeepLinkSession
+  pendingDeepLinkSession = undefined
+  return link
+}
+
+function handleDeepLinkSession(link: DeepLinkSession): void {
+  pendingDeepLinkSession = link
+  const window = focusMainWindow()
+  if (window.webContents.isLoading()) return
+  const pending = consumePendingDeepLinkSession()
+  if (pending !== undefined) void openDeepLinkSession(pending.sessionId)
 }
 
 function setApplicationMenu(locale: AppLocale = localeService?.snapshot() ?? DEFAULT_APP_LOCALE): void {
@@ -234,6 +284,24 @@ function success<T>(data: T): IpcResult<T> {
 
 function failure<T>(error: unknown): IpcResult<T> {
   return { ok: false, error: toEzDSHError(error, randomUUID()) }
+}
+
+async function stopApplicationComponents(): Promise<void> {
+  await shutdownExternalServicesFirst(
+    () => externalServiceManager?.stopAll() ?? Promise.resolve(),
+    [
+      () => runtimeManager?.stop() ?? Promise.resolve(),
+      () => channelBridgeService?.stop() ?? Promise.resolve(),
+      () => externalApiService?.stop() ?? Promise.resolve(),
+    ],
+  )
+}
+
+function emitExternalServiceState(snapshots: Awaited<ReturnType<ExternalServiceManager['list']>>): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed() || !externalServiceWatchers.has(window.webContents.id)) continue
+    window.webContents.send('external-services:state-change', snapshots)
+  }
 }
 
 function registerIpcHandlers(): void {
@@ -411,6 +479,72 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('external-services:list', async (): Promise<IpcResult<Awaited<ReturnType<ExternalServiceManager['list']>>>> => {
+    try {
+      if (externalServiceManager === undefined) throw new Error('External service manager is not ready')
+      await externalServiceManager.initialize()
+      return success(externalServiceManager.list())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('external-services:create', async (_event, input: ExternalServiceCreateInput): Promise<IpcResult<Awaited<ReturnType<ExternalServiceManager['create']>>>> => {
+    try {
+      if (externalServiceManager === undefined) throw new Error('External service manager is not ready')
+      return success(await externalServiceManager.create(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('external-services:update', async (_event, id: string, input: ExternalServiceUpdateInput): Promise<IpcResult<Awaited<ReturnType<ExternalServiceManager['update']>>>> => {
+    try {
+      if (externalServiceManager === undefined) throw new Error('External service manager is not ready')
+      return success(await externalServiceManager.update(id, input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('external-services:remove', async (_event, id: string): Promise<IpcResult<void>> => {
+    try {
+      if (externalServiceManager === undefined) throw new Error('External service manager is not ready')
+      await externalServiceManager.remove(id)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('external-services:start', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<ExternalServiceManager['start']>>>> => {
+    try {
+      if (externalServiceManager === undefined) throw new Error('External service manager is not ready')
+      return success(await externalServiceManager.start(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('external-services:stop', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<ExternalServiceManager['stop']>>>> => {
+    try {
+      if (externalServiceManager === undefined) throw new Error('External service manager is not ready')
+      return success(await externalServiceManager.stop(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('external-services:restart', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<ExternalServiceManager['restart']>>>> => {
+    try {
+      if (externalServiceManager === undefined) throw new Error('External service manager is not ready')
+      return success(await externalServiceManager.restart(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('external-services:watch', (event): IpcResult<void> => {
+    externalServiceWatchers.add(event.sender.id)
+    return success(undefined)
+  })
+  ipcMain.handle('external-services:unwatch', (event): IpcResult<void> => {
+    externalServiceWatchers.delete(event.sender.id)
+    return success(undefined)
+  })
   ipcMain.handle('updates:get-status', (): IpcResult<UpdateState> => {
     if (updateManager === undefined) return failure(new Error('Update manager is not ready'))
     return success(updateManager.snapshot())
@@ -556,14 +690,26 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  window.webContents.on('before-input-event', (event, input) => {
+    const config = navigationService?.getConfig()
+    if (config === undefined) return
+    const target = getNavigationTargetForInput(input, config, process.platform)
+    if (target === undefined) return
+    // Keep navigation reliable when an embedded page would otherwise consume the key.
+    event.preventDefault()
+    navigateToTab(target)
+  })
+
   window.webContents.on('did-finish-load', () => {
     const link = consumePendingDeepLinkInstall()
     if (link !== undefined) {
       void handleDeepLinkInstall(link)
     }
+    const sessionLink = consumePendingDeepLinkSession()
+    if (sessionLink !== undefined) void openDeepLinkSession(sessionLink.sessionId)
   })
 
-  window.on('closed', () => {
+  bindWindowClosedCleanup(window, externalServiceWatchers, () => {
     if (mainWindow === window) {
       mainWindow = undefined
     }
@@ -592,6 +738,8 @@ if (!singleInstance) {
   const startupLink = parseDeepLink(findDeepLinkInArgs(process.argv) ?? '')
   if (startupLink?.action === 'install') {
     pendingDeepLinkInstall = startupLink
+  } else if (startupLink?.action === 'session') {
+    pendingDeepLinkSession = startupLink
   }
 
   app.whenReady().then(async () => {
@@ -620,9 +768,19 @@ if (!singleInstance) {
       runtimeEntryPath,
       command: runtimeCommandPath
     })
+    externalServiceManager = new ExternalServiceManager({
+      configPath: join(layout.state, 'external-services.json'),
+      logsDir: join(layout.logs, 'external-services'),
+    })
+    await externalServiceManager.initialize().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('[external-services] failed to initialize:', message)
+    })
+    externalServiceManager.watch(emitExternalServiceState)
     externalApiService = new ExternalApiService({
       getRuntimeUrl: () => runtimeManager?.snapshot().url,
       port: resolveExternalApiPort(process.env.EZDSH_EXTERNAL_API_PORT),
+      runStatePath: join(layout.state, 'external-runs.json'),
     })
     await externalApiService.start()
     console.log(`[external-api] listening at ${externalApiService.url}`)
@@ -668,12 +826,18 @@ if (!singleInstance) {
       updater: updateChecksEnabled ? getAutoUpdater() : undefined,
       prepareInstall: async () => {
         isQuitting = true
-        await runtimeManager?.stop()
+        await stopApplicationComponents()
       }
     })
     runtimeManager.onChange((snapshot) => {
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send('runtime:state-change', snapshot)
+      }
+      if (snapshot.phase === 'ready') {
+        void externalServiceManager?.startAutoServices().catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          console.error('[external-services] failed to start auto services:', message)
+        })
       }
     })
     updateManager.onChange((snapshot) => {
@@ -706,6 +870,8 @@ if (!singleInstance) {
       const link = parseDeepLink(url)
       if (link?.action === 'install') {
         void handleDeepLinkInstall(link)
+      } else if (link?.action === 'session') {
+        handleDeepLinkSession(link)
       }
     })
   }).catch((error: unknown) => {
@@ -723,6 +889,10 @@ if (!singleInstance) {
       void handleDeepLinkInstall(link)
       return
     }
+    if (link?.action === 'session') {
+      handleDeepLinkSession(link)
+      return
+    }
 
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
@@ -737,14 +907,10 @@ if (!singleInstance) {
   })
 
   app.on('before-quit', (event) => {
-    if (isQuitting || runtimeManager === undefined) return
+    if (isQuitting) return
     event.preventDefault()
     isQuitting = true
-    void Promise.all([
-      runtimeManager.stop(),
-      channelBridgeService?.stop() ?? Promise.resolve(),
-      externalApiService?.stop() ?? Promise.resolve(),
-    ]).finally(() => {
+    void stopApplicationComponents().finally(() => {
       localeService?.stop()
       app.quit()
     })

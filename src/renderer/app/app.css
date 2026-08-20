@@ -325,3 +325,66 @@ h1 {
   height: auto;
   border: 0;
 }
+
+.web-pane-status {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  padding: 32px;
+  color: var(--ezdsh-page-text);
+  -webkit-app-region: no-drag;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.web-pane-status-card {
+  width: min(440px, 100%);
+  padding: 36px 40px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 18px;
+  background: var(--ezdsh-panel-background);
+  text-align: center;
+  box-shadow: 0 16px 40px rgba(20, 30, 50, 0.08);
+}
+
+.web-pane-status-card h2 {
+  margin: 0;
+  color: var(--ezdsh-text-heading);
+  font-size: 20px;
+}
+
+.web-pane-status-card p {
+  margin: 12px 0 22px;
+  color: var(--ezdsh-text-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.web-pane-status-card button {
+  border: 1px solid var(--ezdsh-button-border);
+  border-radius: 9px;
+  padding: 9px 15px;
+  background: transparent;
+  color: var(--ezdsh-button-text);
+  cursor: pointer;
+}
+
+.web-pane-status-card button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.web-pane-status-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 18px;
+  border: 3px solid var(--ezdsh-panel-border);
+  border-top-color: var(--ezdsh-brand);
+  border-radius: 50%;
+  animation: spinner-rotate 1s linear infinite;
+}
+
+.web-pane-status-spinner-stopped {
+  animation: none;
+  border-top-color: var(--ezdsh-panel-border);
+}

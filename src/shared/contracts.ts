@@ -27,11 +27,21 @@ import type {
   TestProviderInput
 } from './providers.js'
 import type { ChannelBridgeConfig, DshSessionSummary, PairingState } from './channel-bridge.js'
+import type {
+  ExternalServiceCreateInput,
+  ExternalServiceSnapshot,
+  ExternalServiceUpdateInput,
+} from './external-services.js'
 
 /** Payload sent from main to renderer when a deep-link install should begin. */
 export interface DeepLinkInstallTarget {
   kind: StoreKind
   id: string
+}
+
+/** Opaque DSH session target sent from the main process to the renderer. */
+export interface DeepLinkSessionTarget {
+  sessionId: string
 }
 
 export interface EzDSHBridge {
@@ -51,6 +61,8 @@ export interface EzDSHBridge {
     onNavigate(listener: (tab: NavigationTarget) => void): () => void
     /** Fired when the app is awakened by an `ezdsh://install/...` link. */
     onDeepLinkInstall(listener: (target: DeepLinkInstallTarget) => void): () => void
+    /** Fired when the app is awakened by an `ezdsh://session/...` link. */
+    onDeepLinkSession(listener: (target: DeepLinkSessionTarget) => void): () => void
   }
   store: {
     list(kind: StoreKind, query?: { category?: string; search?: string; page?: number }): Promise<StoreListResult>
@@ -69,6 +81,17 @@ export interface EzDSHBridge {
   settings: {
     setLocale(locale: AppLocale): Promise<void>
     openHarnessDir(): Promise<void>
+  }
+  externalServices: {
+    list(): Promise<ExternalServiceSnapshot[]>
+    create(input: ExternalServiceCreateInput): Promise<ExternalServiceSnapshot>
+    update(id: string, input: ExternalServiceUpdateInput): Promise<ExternalServiceSnapshot>
+    remove(id: string): Promise<void>
+    start(id: string): Promise<ExternalServiceSnapshot>
+    stop(id: string): Promise<ExternalServiceSnapshot>
+    restart(id: string): Promise<ExternalServiceSnapshot>
+    /** Subscribe to process snapshots while the management page is mounted. */
+    watch(listener: (snapshots: ExternalServiceSnapshot[]) => void): () => void
   }
   providers: {
     listDefinitions(): Promise<ProviderDefinition[]>

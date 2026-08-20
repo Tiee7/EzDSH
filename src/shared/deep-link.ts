@@ -4,6 +4,7 @@
  * Supported links:
  *   ezdsh://install/{kind}/{id}          - exact install path
  *   ezdsh://install/plugin/{id}          - kind-agnostic install path
+ *   ezdsh://session/{sessionId}          - navigate to an existing DSH session
  *
  * The "plugin" alias is a distribution-friendly shorthand. Because entry ids
  * are currently unique only within a kind, resolving it requires scanning all
@@ -14,7 +15,7 @@
 
 import { isStoreKind, type StoreKind } from './store.js'
 
-export type DeepLinkAction = 'install'
+export type DeepLinkAction = 'install' | 'session'
 
 export interface DeepLinkInstall {
   action: 'install'
@@ -30,7 +31,12 @@ export interface ResolvedDeepLinkInstall {
   id: string
 }
 
-export type DeepLink = DeepLinkInstall
+export interface DeepLinkSession {
+  action: 'session'
+  sessionId: string
+}
+
+export type DeepLink = DeepLinkInstall | DeepLinkSession
 
 /** Parse an `ezdsh://` URL into a structured deep link, or `undefined` if the URL is not ours / malformed. */
 export function parseDeepLink(url: string): DeepLink | undefined {
@@ -41,6 +47,19 @@ export function parseDeepLink(url: string): DeepLink | undefined {
     return undefined
   }
   if (parsed.protocol !== 'ezdsh:') return undefined
+  if (parsed.hostname === 'session') {
+    if (parsed.search !== '' || parsed.hash !== '') return undefined
+    const rawSegments = parsed.pathname.split('/').filter((segment) => segment !== '')
+    if (rawSegments.length !== 1) return undefined
+    let sessionId: string
+    try {
+      sessionId = decodeURIComponent(rawSegments[0] ?? '')
+    } catch {
+      return undefined
+    }
+    if (sessionId === '' || /[\u0000-\u001f\u007f]/u.test(sessionId)) return undefined
+    return { action: 'session', sessionId }
+  }
   if (parsed.hostname !== 'install') return undefined
 
   const segments = parsed.pathname

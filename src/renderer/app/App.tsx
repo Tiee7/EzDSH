@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppCopy, type AppLocale } from '../../shared/locale.js'
 import {
   getDefaultNavConfig,
@@ -10,7 +10,7 @@ import {
 } from '../../shared/navigation.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import type { UpdateState } from '../../shared/update.js'
-import type { DeepLinkInstallTarget } from '../../shared/contracts.js'
+import type { DeepLinkInstallTarget, DeepLinkSessionTarget } from '../../shared/contracts.js'
 import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
 import { WebPane } from './WebPane.js'
 import { StorePage } from '../store/StorePage.js'
@@ -46,6 +46,8 @@ export function App() {
   const [activeTab, setActiveTab] = useState<string>('harness')
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
   const [deepLinkTarget, setDeepLinkTarget] = useState<DeepLinkInstallTarget | undefined>()
+  const [deepLinkSession, setDeepLinkSession] = useState<DeepLinkSessionTarget | undefined>()
+  const harnessFrameRef = useRef<HTMLIFrameElement>(null)
   const isMac = window.EzDSH.app.platform === 'darwin'
 
   useEffect(() => {
@@ -71,6 +73,12 @@ export function App() {
     })
     const unsubscribeDeepLink = window.EzDSH.ui.onDeepLinkInstall((target) => {
       if (active) setDeepLinkTarget(target)
+    })
+    const unsubscribeDeepLinkSession = window.EzDSH.ui.onDeepLinkSession((target) => {
+      if (active) {
+        setActiveTab('harness')
+        setDeepLinkSession(target)
+      }
     })
     const unsubscribeLocale = window.EzDSH.locale.onChange((nextLocale) => {
       if (active) setLocale(nextLocale)
@@ -111,11 +119,26 @@ export function App() {
       unsubscribe()
       unsubscribeNavigate()
       unsubscribeDeepLink()
+      unsubscribeDeepLinkSession()
       unsubscribeLocale()
       unsubscribeUpdate()
       unsubscribeNav()
     }
   }, [ensureRuntime])
+
+  const sendSessionToRuntime = useCallback(() => {
+    const frame = harnessFrameRef.current
+    const runtimeUrl = runtime?.url
+    const sessionId = deepLinkSession?.sessionId
+    if (frame === null || runtimeUrl === undefined || sessionId === undefined) return
+    let origin = '*'
+    try { origin = new URL(runtimeUrl).origin } catch { /* Runtime URL is already validated by the manager. */ }
+    frame.contentWindow?.postMessage({ type: 'ezdsh:open-session', sessionId }, origin)
+  }, [deepLinkSession, runtime?.url])
+
+  useEffect(() => {
+    if (activeTab === 'harness') sendSessionToRuntime()
+  }, [activeTab, sendSessionToRuntime])
 
   useEffect(() => {
     void ensureRuntime()
@@ -159,10 +182,12 @@ export function App() {
                 return (
                   <div key="harness" className={`workspace-pane ${activeTab === 'harness' ? 'workspace-pane-active' : ''}`}>
                     <iframe
+                      ref={harnessFrameRef}
                       title="EzDSH Runtime"
                       src={runtime.url}
                       allow={RUNTIME_IFRAME_ALLOW}
                       sandbox={RUNTIME_IFRAME_SANDBOX}
+                      onLoad={sendSessionToRuntime}
                     />
                   </div>
                 )

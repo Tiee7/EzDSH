@@ -1,10 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { DeepLinkInstallTarget, EzDSHBridge } from '../shared/contracts.js'
+import type { DeepLinkInstallTarget, DeepLinkSessionTarget, EzDSHBridge } from '../shared/contracts.js'
 import type { IpcResult } from '../shared/errors.js'
 import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
 import type { NavigationTarget } from '../shared/navigation.js'
 import type { AppPlatform } from '../shared/platform.js'
 import type { NavConfig } from '../shared/navigation.js'
+import type {
+  ExternalServiceCreateInput,
+  ExternalServiceSnapshot,
+  ExternalServiceUpdateInput,
+} from '../shared/external-services.js'
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>
@@ -43,6 +48,11 @@ const bridge: EzDSHBridge = {
       const handler = (_event: Electron.IpcRendererEvent, target: DeepLinkInstallTarget) => listener(target)
       ipcRenderer.on('store:deep-link-install', handler)
       return () => ipcRenderer.removeListener('store:deep-link-install', handler)
+    },
+    onDeepLinkSession: (listener: (target: DeepLinkSessionTarget) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, target: DeepLinkSessionTarget) => listener(target)
+      ipcRenderer.on('session:deep-link', handler)
+      return () => ipcRenderer.removeListener('session:deep-link', handler)
     }
   },
   store: {
@@ -63,6 +73,26 @@ const bridge: EzDSHBridge = {
   settings: {
     setLocale: (locale) => invoke('settings:set-locale', locale),
     openHarnessDir: () => invoke('settings:open-harness-dir')
+  },
+  externalServices: {
+    list: () => invoke<ExternalServiceSnapshot[]>('external-services:list'),
+    create: (input: ExternalServiceCreateInput) => invoke<ExternalServiceSnapshot>('external-services:create', input),
+    update: (id: string, input: ExternalServiceUpdateInput) => invoke<ExternalServiceSnapshot>('external-services:update', id, input),
+    remove: (id: string) => invoke<void>('external-services:remove', id),
+    start: (id: string) => invoke<ExternalServiceSnapshot>('external-services:start', id),
+    stop: (id: string) => invoke<ExternalServiceSnapshot>('external-services:stop', id),
+    restart: (id: string) => invoke<ExternalServiceSnapshot>('external-services:restart', id),
+    watch: (listener: (snapshots: ExternalServiceSnapshot[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshots: ExternalServiceSnapshot[]) => listener(snapshots)
+      ipcRenderer.on('external-services:state-change', handler)
+      void invoke('external-services:watch').catch(() => {
+        ipcRenderer.removeListener('external-services:state-change', handler)
+      })
+      return () => {
+        ipcRenderer.removeListener('external-services:state-change', handler)
+        void invoke('external-services:unwatch').catch(() => {})
+      }
+    }
   },
   providers: {
     listDefinitions: () => invoke('providers:list-definitions'),

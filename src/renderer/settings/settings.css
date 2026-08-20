@@ -96,6 +96,10 @@
   min-width: 0;
 }
 
+.settings-item-update .settings-item-text {
+  flex: 1 1 auto;
+}
+
 .settings-label {
   margin: 0;
   font-size: 13px;
@@ -109,6 +113,10 @@
   font-size: 12px;
   line-height: 1.5;
   color: var(--ezdsh-text-faint);
+}
+
+.settings-item-update .settings-hint {
+  max-width: none;
 }
 
 .settings-value {
@@ -189,6 +197,146 @@
 .settings-card-header {
   padding: 16px 20px;
   border-bottom: 1px solid var(--ezdsh-hairline);
+}
+
+.settings-card-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.external-service-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.external-service-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.external-service-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.external-service-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--ezdsh-text-body);
+  font-size: 13px;
+}
+
+.external-service-title-row .settings-dot {
+  margin-right: 0;
+}
+
+.external-service-state,
+.external-service-managed-badge,
+.external-service-meta,
+.external-service-field-hint {
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.external-service-managed-badge {
+  border-radius: 6px;
+  padding: 2px 6px;
+  background: var(--ezdsh-code-background);
+}
+
+.external-service-command {
+  display: block;
+  max-width: 100%;
+  margin-top: 7px;
+  overflow: hidden;
+  color: var(--ezdsh-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-service-meta {
+  margin: 6px 0 0;
+}
+
+.external-service-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.external-service-toggle,
+.external-service-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ezdsh-text-muted);
+  font-size: 11px;
+}
+
+.external-service-toggle {
+  margin-right: 4px;
+}
+
+.external-service-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 620px;
+}
+
+.external-service-form > label:not(.external-service-check) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ezdsh-text-body);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.external-service-form input:not([type='checkbox']),
+.external-service-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-body);
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.external-service-form input:not([type='checkbox']):focus,
+.external-service-form textarea:focus {
+  outline: none;
+  border-color: var(--ezdsh-active-border);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ezdsh-active-border) 15%, transparent);
+}
+
+.external-service-field-hint {
+  display: block;
+  line-height: 1.4;
+}
+
+.external-service-security-hint {
+  margin: 0;
+  color: var(--ezdsh-accent-orange);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .settings-card-title {
@@ -1042,6 +1190,14 @@
 
 .nav-section {
   padding: 16px 20px;
+}
+
+.nav-section > .settings-hint {
+  max-width: none;
+}
+
+.nav-shortcut-hint {
+  margin-top: 6px;
 }
 
 .nav-error {

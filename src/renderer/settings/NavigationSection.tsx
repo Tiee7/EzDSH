@@ -169,6 +169,7 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
   return (
     <div className="nav-section">
       <p className="settings-hint">{copy.navSectionHint}</p>
+      <p className="settings-hint nav-shortcut-hint">{copy.navShortcutHint}</p>
       <ul className="nav-list" onDragOver={onListDragOver} onDrop={onDrop}>
         {items.map((item, index) => {
           const movable = editingId === undefined && !(isBuiltinNavItem(item) && item.locked)

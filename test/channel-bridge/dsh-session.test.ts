@@ -40,12 +40,12 @@ describe('DshSessionClient', () => {
             workspaceId: 'workspace-1',
             path: '/work',
             title: 'Work',
-            sessionIds: ['session-1'],
+            sessionIds: ['session-1', 'session-archived'],
             createdAt: '2026-01-01',
             updatedAt: '2026-01-02',
           },
         ],
-        archivedSessionIds: [],
+        archivedSessionIds: ['session-archived'],
       }),
     ])()
     vi.stubGlobal('fetch', mockFetch)
@@ -79,6 +79,18 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
+  it('unarchives a session through the DSH workspace API', async () => {
+    const mockFetch = createMockFetch([
+      ok({ archivedSessionIds: [] }),
+    ])()
+    vi.stubGlobal('fetch', mockFetch)
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await expect(client.unarchiveSession('session-2')).resolves.toEqual({ archivedSessionIds: [] })
+
+    vi.unstubAllGlobals()
+  })
+
   it('lists sessions with titles', async () => {
     const mockFetch = createMockFetch([
       ok({
@@ -108,6 +120,64 @@ describe('DshSessionClient', () => {
     expect(sessions).toHaveLength(2)
     expect(sessions[0]).toEqual({ sessionId: 'session-1', updatedAt: 1, running: true, title: 'Project Alpha' })
     expect(sessions[1]).toEqual({ sessionId: 'session-2', updatedAt: 2, running: false, blank: true, title: 'Project Beta' })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('uses session list title projections without loading session history', async () => {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      requests.push(url)
+      const body = JSON.parse(String(init?.body)) as { method: string; payload: { sessionId?: string } }
+
+      if (body.method === 'session.list') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ok({
+            items: [
+              {
+                sessionId: 'session-projected',
+                updatedAt: 1,
+                running: false,
+                projections: { values: { title: '来自 projection 的标题' } },
+              },
+              {
+                sessionId: 'session-projected-without-title',
+                updatedAt: 2,
+                running: false,
+                projections: { values: { title: null } },
+              },
+              { sessionId: 'session-fallback', updatedAt: 3, running: false },
+            ],
+          }),
+        } as Response
+      }
+
+      if (body.method === 'session.history' && body.payload.sessionId === 'session-fallback') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ok({
+            events: [
+              { event: { type: 'session/title', seq: 1, time: 1, data: { title: '来自 history 的标题' } } },
+            ],
+            hasMore: false,
+          }),
+        } as Response
+      }
+
+      throw new Error(`unexpected request: ${body.method} ${body.payload.sessionId ?? ''}`)
+    })
+
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+    await expect(client.listSessions()).resolves.toEqual([
+      { sessionId: 'session-projected', updatedAt: 1, running: false, title: '来自 projection 的标题' },
+      { sessionId: 'session-projected-without-title', updatedAt: 2, running: false, title: undefined },
+      { sessionId: 'session-fallback', updatedAt: 3, running: false, title: '来自 history 的标题' },
+    ])
+    expect(requests.filter((url) => url.endsWith('/api/session.history'))).toHaveLength(1)
 
     vi.unstubAllGlobals()
   })
@@ -148,6 +218,64 @@ describe('DshSessionClient', () => {
     const result = await client.sendPrompt('session-1', 'hi')
     expect(result.text).toBe('hello world')
 
+    vi.unstubAllGlobals()
+  })
+
+  it('reports assistant text deltas while a turn is running', async () => {
+    const historyBefore = ok({ events: [] })
+    const promptResponse = ok({ accepted: true })
+    const historyDuring = ok({
+      events: [
+        {
+          event: {
+            type: 'assistant/message',
+            seq: 1,
+            time: 1,
+            data: {
+              message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: '第一段' }],
+              },
+            },
+          },
+        },
+        {
+          event: {
+            type: 'assistant/message',
+            seq: 2,
+            time: 2,
+            data: {
+              message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: '第二段' }],
+              },
+            },
+          },
+        },
+        { event: { type: 'turn/end', seq: 3, time: 3, data: {} } },
+      ],
+      hasMore: false,
+    })
+
+    const mockFetch = createMockFetch([historyBefore, promptResponse, historyDuring])()
+    vi.stubGlobal('fetch', mockFetch)
+
+    const deltas: string[] = []
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000, pollIntervalMs: 10 })
+    await client.sendPromptAsync(
+      'session-1',
+      'hi',
+      {
+        onAcknowledged: () => {},
+        onDelta: (text) => deltas.push(text),
+        onProgress: () => {},
+        onComplete: (text) => expect(text).toBe('第一段第二段'),
+        onError: (error) => { throw new Error(error) },
+      },
+      { timeoutMs: 1000, statusIntervalMs: 1000 },
+    )
+
+    expect(deltas).toEqual(['第一段', '第二段'])
     vi.unstubAllGlobals()
   })
 
