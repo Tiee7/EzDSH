@@ -72,7 +72,23 @@ const bridge: EzDSHBridge = {
   },
   settings: {
     setLocale: (locale) => invoke('settings:set-locale', locale),
-    openHarnessDir: () => invoke('settings:open-harness-dir')
+    openHarnessDir: () => invoke('settings:open-harness-dir'),
+    getDeveloperMode: () => invoke<boolean>('settings:get-developer-mode'),
+    setDeveloperMode: (enabled: boolean) => invoke<boolean>('settings:set-developer-mode', enabled),
+    onDeveloperModeChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, enabled: boolean) => listener(enabled)
+      ipcRenderer.on('developer-mode:state-change', handler)
+      return () => ipcRenderer.removeListener('developer-mode:state-change', handler)
+    },
+    getWorkspace: () => invoke('settings:get-workspace'),
+    selectWorkspace: () => invoke<string | undefined>('settings:select-workspace'),
+    migrateWorkspace: (root: string) => invoke('settings:migrate-workspace', root),
+    switchWorkspace: (root: string) => invoke('settings:switch-workspace', root),
+    onWorkspaceChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state)
+      ipcRenderer.on('workspace:state-change', handler)
+      return () => ipcRenderer.removeListener('workspace:state-change', handler)
+    }
   },
   externalServices: {
     list: () => invoke<ExternalServiceSnapshot[]>('external-services:list'),

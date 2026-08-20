@@ -2,6 +2,7 @@ import type { RuntimeSnapshot } from '../main/runtime/runtime-types.js'
 import type { EzDSHError, IpcResult } from './errors.js'
 import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
+import type { WorkspaceOperationState, WorkspaceSnapshot } from './state.js'
 import type { NavigationTarget } from './navigation.js'
 import type { NavConfig } from './navigation.js'
 import type { AppPlatform } from './platform.js'
@@ -81,6 +82,14 @@ export interface EzDSHBridge {
   settings: {
     setLocale(locale: AppLocale): Promise<void>
     openHarnessDir(): Promise<void>
+    getDeveloperMode(): Promise<boolean>
+    setDeveloperMode(enabled: boolean): Promise<boolean>
+    onDeveloperModeChange(listener: (enabled: boolean) => void): () => void
+    getWorkspace(): Promise<WorkspaceSnapshot>
+    selectWorkspace(): Promise<string | undefined>
+    migrateWorkspace(root: string): Promise<void>
+    switchWorkspace(root: string): Promise<void>
+    onWorkspaceChange(listener: (state: WorkspaceOperationState | undefined) => void): () => void
   }
   externalServices: {
     list(): Promise<ExternalServiceSnapshot[]>

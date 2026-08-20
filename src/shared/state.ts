@@ -13,3 +13,14 @@ export interface UserDataLayout {
   /** Backups created before migrations or destructive settings changes. */
   backups: string
 }
+
+export interface WorkspaceSnapshot {
+  root: string
+}
+
+export type WorkspaceOperationPhase = 'moving' | 'switching' | 'restarting'
+
+export interface WorkspaceOperationState {
+  phase: WorkspaceOperationPhase
+  message: string
+}

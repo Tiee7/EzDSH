@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import { STORE_API_BASE_URL } from '../../shared/store.js'
@@ -22,6 +22,46 @@ interface SettingsPageProps {
 export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.Element {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const [busy, setBusy] = useState(false)
+  const [workspaceRoot, setWorkspaceRoot] = useState<string>()
+  const [workspaceTarget, setWorkspaceTarget] = useState<string>()
+  const [workspaceBusy, setWorkspaceBusy] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState<string>()
+  const [developerMode, setDeveloperMode] = useState(false)
+  const [developerModeBusy, setDeveloperModeBusy] = useState(false)
+  const [developerModeError, setDeveloperModeError] = useState<string>()
+  const aboutClickCount = useRef(0)
+  const aboutClickResetTimer = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    let active = true
+    void window.EzDSH.settings.getWorkspace()
+      .then((workspace) => {
+        if (active) setWorkspaceRoot(workspace.root)
+      })
+      .catch(() => {
+        if (active) setWorkspaceError(copy.settingsWorkspaceError)
+      })
+    return () => { active = false }
+  }, [copy.settingsWorkspaceError])
+
+  useEffect(() => {
+    let active = true
+    void window.EzDSH.settings.getDeveloperMode()
+      .then((enabled) => {
+        if (active) setDeveloperMode(enabled)
+      })
+      .catch(() => {
+        if (active) setDeveloperModeError(copy.settingsDeveloperModeError)
+      })
+    const unsubscribe = window.EzDSH.settings.onDeveloperModeChange((enabled) => {
+      if (active) setDeveloperMode(enabled)
+    })
+    return () => {
+      active = false
+      unsubscribe()
+      if (aboutClickResetTimer.current !== undefined) clearTimeout(aboutClickResetTimer.current)
+    }
+  }, [copy.settingsDeveloperModeError])
 
   const pickLocale = async (next: AppLocale): Promise<void> => {
     if (busy || next === locale) return
@@ -31,6 +71,63 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
     } finally {
       setBusy(false)
     }
+  }
+
+  const chooseWorkspace = async (): Promise<void> => {
+    if (workspaceBusy) return
+    setWorkspaceError(undefined)
+    try {
+      const selected = await window.EzDSH.settings.selectWorkspace()
+      if (selected !== undefined) setWorkspaceTarget(selected)
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : copy.settingsWorkspaceError)
+    }
+  }
+
+  const applyWorkspace = async (kind: 'migrate' | 'switch'): Promise<void> => {
+    if (workspaceBusy || workspaceTarget === undefined) return
+    setWorkspaceBusy(true)
+    setWorkspaceError(undefined)
+    try {
+      if (kind === 'migrate') {
+        await window.EzDSH.settings.migrateWorkspace(workspaceTarget)
+      } else {
+        await window.EzDSH.settings.switchWorkspace(workspaceTarget)
+      }
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : copy.settingsWorkspaceError)
+    } finally {
+      setWorkspaceBusy(false)
+    }
+  }
+
+  const changeDeveloperMode = async (enabled: boolean): Promise<void> => {
+    if (developerModeBusy) return
+    setDeveloperModeError(undefined)
+    setDeveloperModeBusy(true)
+    try {
+      setDeveloperMode(await window.EzDSH.settings.setDeveloperMode(enabled))
+    } catch {
+      setDeveloperModeError(copy.settingsDeveloperModeError)
+    } finally {
+      setDeveloperModeBusy(false)
+    }
+  }
+
+  const handleAboutClick = (): void => {
+    if (developerMode || developerModeBusy) return
+    aboutClickCount.current += 1
+    if (aboutClickResetTimer.current !== undefined) clearTimeout(aboutClickResetTimer.current)
+
+    if (aboutClickCount.current >= 5) {
+      aboutClickCount.current = 0
+      void changeDeveloperMode(true)
+      return
+    }
+
+    aboutClickResetTimer.current = setTimeout(() => {
+      aboutClickCount.current = 0
+    }, 1500)
   }
 
   const tabs: Array<{ id: SettingsTab; label: string }> = [
@@ -63,6 +160,40 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
         {activeTab === 'general' ? (
           <>
             <ProviderSection copy={copy} />
+            <section className="settings-card">
+              <div className="settings-card-header">
+                <div className="settings-card-heading-row">
+                  <div>
+                    <p className="settings-label">{copy.settingsWorkspace}</p>
+                    <p className="settings-hint settings-workspace-hint">{copy.settingsWorkspaceHint}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="settings-item settings-workspace-item">
+                <div className="settings-item-text">
+                  <code className="settings-value settings-workspace-path">{workspaceRoot ?? copy.loading}</code>
+                  {workspaceTarget !== undefined ? (
+                    <p className="settings-workspace-target">{workspaceTarget}</p>
+                  ) : null}
+                  {workspaceError ? <p className="settings-error" role="alert">{workspaceError}</p> : null}
+                </div>
+                <div className="settings-actions settings-workspace-actions">
+                  <button className="settings-action" type="button" onClick={() => void chooseWorkspace()} disabled={workspaceBusy}>
+                    {copy.settingsWorkspaceSelect}
+                  </button>
+                  {workspaceTarget !== undefined ? (
+                    <>
+                      <button className="settings-action" type="button" onClick={() => void applyWorkspace('switch')} disabled={workspaceBusy}>
+                        {copy.settingsWorkspaceSwitch}
+                      </button>
+                      <button className="settings-action settings-action-primary" type="button" onClick={() => void applyWorkspace('migrate')} disabled={workspaceBusy}>
+                        {copy.settingsWorkspaceMigrate}
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </section>
             <section className="settings-card">
               <RuntimeSection copy={copy} runtime={runtime} />
             </section>
@@ -100,9 +231,25 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
                 <p className="settings-label">{copy.settingsStoreSource}</p>
                 <code className="settings-value">{STORE_API_BASE_URL}</code>
               </div>
+              {developerMode ? (
+                <div className="settings-item settings-developer-mode-item">
+                  <div className="settings-item-text">
+                    <p className="settings-label">{copy.settingsDeveloperMode}</p>
+                    <p className="settings-hint settings-workspace-hint">{copy.settingsDeveloperModeHint}</p>
+                    {developerModeError ? <p className="settings-error" role="alert">{developerModeError}</p> : null}
+                  </div>
+                  <button className="settings-action" type="button" disabled={developerModeBusy} onClick={() => void changeDeveloperMode(false)}>
+                    {copy.settingsDeveloperModeExit}
+                  </button>
+                </div>
+              ) : developerModeError ? (
+                <p className="settings-error settings-developer-mode-error" role="alert">{developerModeError}</p>
+              ) : null}
               <div className="settings-item">
-                <p className="settings-label">{copy.settingsAbout}</p>
-                <p className="settings-value">{window.EzDSH.app.name} v{window.EzDSH.app.version}</p>
+                <button className="settings-label settings-about-trigger" type="button" onClick={handleAboutClick}>
+                  {copy.settingsAbout}
+                </button>
+                <span className="settings-value">{window.EzDSH.app.name} v{window.EzDSH.app.version}</span>
               </div>
             </section>
           </>

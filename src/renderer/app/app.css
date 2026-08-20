@@ -264,6 +264,36 @@ h1 {
   background: var(--ezdsh-runtime-background);
 }
 
+.workspace-operation-lock {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--ezdsh-runtime-background) 78%, transparent);
+  cursor: wait;
+}
+
+.workspace-operation-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: min(460px, 100%);
+  padding: 20px 24px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 16px;
+  background: var(--ezdsh-panel-background);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
+}
+
+.workspace-operation-card p {
+  margin: 0;
+  color: var(--ezdsh-text-heading);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .workspace-pane {
   position: absolute;
   inset: 0;

@@ -6,6 +6,7 @@ export interface UpdateManagerOptions {
   isPackaged: boolean
   updater?: AppUpdater
   allowDevUpdates?: boolean
+  allowPrerelease?: boolean
   updateFeedUrl?: string
   prepareInstall?: () => Promise<void>
 }
@@ -33,13 +34,12 @@ export class UpdateManager {
 
     if (this.updater === undefined) return
 
+    this.updater.autoDownload = false
+    this.updater.autoInstallOnAppQuit = true
+    this.updater.allowPrerelease = options.allowPrerelease ?? options.currentVersion.includes('-')
     if (options.updateFeedUrl !== undefined) {
       this.updater.setFeedURL({ provider: 'generic', url: options.updateFeedUrl })
     }
-
-    this.updater.autoDownload = false
-    this.updater.autoInstallOnAppQuit = true
-    this.updater.allowPrerelease = options.currentVersion.includes('-')
     this.updater.on('checking-for-update', () => {
       this.publish({ phase: 'checking', message: '正在检查更新' })
     })
@@ -86,6 +86,22 @@ export class UpdateManager {
   onChange(listener: UpdateListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  /** Switch the generic feed at runtime when the user enters or exits developer mode. */
+  setFeedURL(feedUrl: string, allowPrerelease: boolean): UpdateState {
+    if (this.updater === undefined) return this.snapshot()
+
+    this.updater.setFeedURL({ provider: 'generic', url: feedUrl })
+    this.updater.allowPrerelease = allowPrerelease
+    this.publish({
+      phase: 'idle',
+      availableVersion: undefined,
+      percent: undefined,
+      message: undefined,
+      lastCheckedAt: undefined
+    })
+    return this.snapshot()
   }
 
   async check(): Promise<UpdateState> {

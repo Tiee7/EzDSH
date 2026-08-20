@@ -89,8 +89,23 @@ export interface AppCopy {
   storeSurfaceMcp: string
   settingsLanguage: string
   settingsLanguageHint: string
+  settingsWorkspace: string
+  settingsWorkspaceHint: string
+  settingsWorkspaceMigrate: string
+  settingsWorkspaceSwitch: string
+  settingsWorkspaceSelect: string
+  settingsWorkspaceMoving: string
+  settingsWorkspaceSwitching: string
+  settingsWorkspaceRestarting: string
+  settingsWorkspaceMigrateConfirm: string
+  settingsWorkspaceMigrateConfirmDetail: string
+  settingsWorkspaceError: string
   settingsOpenLog: string
   settingsOpenHarnessDir: string
+  settingsDeveloperMode: string
+  settingsDeveloperModeHint: string
+  settingsDeveloperModeExit: string
+  settingsDeveloperModeError: string
   settingsAbout: string
   settingsStoreSource: string
   settingsProviders: string
@@ -320,8 +335,23 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeSurfaceMcp: '工具扩展（MCP）',
     settingsLanguage: '界面语言',
     settingsLanguageHint: '跟随 DeepSeek Harness 的语言设置，切换后各界面同步更新',
+    settingsWorkspace: '默认工作文件夹',
+    settingsWorkspaceHint: 'EzDSH 的配置、会话、插件和日志都保存在这里。迁移会完整移动当前文件夹内容；切换空文件夹会按新安装流程初始化。',
+    settingsWorkspaceMigrate: '迁移到此处',
+    settingsWorkspaceSwitch: '切换到此处',
+    settingsWorkspaceSelect: '选择文件夹',
+    settingsWorkspaceMoving: '正在移动文件，请不要退出 EzDSH…',
+    settingsWorkspaceSwitching: '正在切换工作文件夹，请不要退出 EzDSH…',
+    settingsWorkspaceRestarting: '工作文件夹已更新，正在重新初始化 EzDSH…',
+    settingsWorkspaceMigrateConfirm: '开始迁移',
+    settingsWorkspaceMigrateConfirmDetail: '当前工作文件夹中的所有内容都会移动到所选文件夹，原位置将不再保留。迁移期间请不要退出 EzDSH。',
+    settingsWorkspaceError: '工作文件夹操作失败',
     settingsOpenLog: '打开运行日志',
     settingsOpenHarnessDir: '打开 Harness 数据目录',
+    settingsDeveloperMode: '开发者模式',
+    settingsDeveloperModeHint: '已启用预览更新源，可能会收到尚未完成的版本。',
+    settingsDeveloperModeExit: '退出开发者模式',
+    settingsDeveloperModeError: '开发者模式设置失败，请重试',
     settingsAbout: '关于',
     settingsStoreSource: '商店数据源',
     settingsProviders: '模型供应商',
@@ -550,8 +580,23 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeSurfaceMcp: 'Tool extensions (MCP)',
     settingsLanguage: 'Interface language',
     settingsLanguageHint: 'Follows the DeepSeek Harness language setting; every surface updates together',
+    settingsWorkspace: 'Default workspace folder',
+    settingsWorkspaceHint: 'EzDSH stores configuration, sessions, plugins, and logs here. Migration moves the complete current folder; switching to an empty folder initializes it like a new install.',
+    settingsWorkspaceMigrate: 'Migrate here',
+    settingsWorkspaceSwitch: 'Switch here',
+    settingsWorkspaceSelect: 'Choose folder',
+    settingsWorkspaceMoving: 'Moving files. Please do not quit EzDSH…',
+    settingsWorkspaceSwitching: 'Switching workspace. Please do not quit EzDSH…',
+    settingsWorkspaceRestarting: 'Workspace updated. Reinitializing EzDSH…',
+    settingsWorkspaceMigrateConfirm: 'Start migration',
+    settingsWorkspaceMigrateConfirmDetail: 'All contents of the current workspace will move to the selected folder and will no longer remain at the old location. Please do not quit EzDSH during migration.',
+    settingsWorkspaceError: 'Workspace operation failed',
     settingsOpenLog: 'Open Runtime log',
     settingsOpenHarnessDir: 'Open Harness data directory',
+    settingsDeveloperMode: 'Developer mode',
+    settingsDeveloperModeHint: 'The preview update feed is enabled. It may include unfinished releases.',
+    settingsDeveloperModeExit: 'Exit developer mode',
+    settingsDeveloperModeError: 'Could not update developer mode. Try again.',
     settingsAbout: 'About',
     settingsStoreSource: 'Store source',
     settingsProviders: 'Model providers',

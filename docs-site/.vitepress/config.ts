@@ -24,7 +24,8 @@ const zhSidebar = [
     ]
   },
   { text: '远程控制', link: '/remote-control' },
-  { text: '常见问题', link: '/faq' }
+  { text: '常见问题', link: '/faq' },
+  { text: '鸣谢', link: '/thanks' }
 ]
 
 const enSidebar = [

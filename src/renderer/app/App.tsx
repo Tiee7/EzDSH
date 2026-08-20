@@ -11,6 +11,7 @@ import {
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import type { UpdateState } from '../../shared/update.js'
 import type { DeepLinkInstallTarget, DeepLinkSessionTarget } from '../../shared/contracts.js'
+import type { WorkspaceOperationState } from '../../shared/state.js'
 import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
 import { WebPane } from './WebPane.js'
 import { StorePage } from '../store/StorePage.js'
@@ -47,6 +48,7 @@ export function App() {
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
   const [deepLinkTarget, setDeepLinkTarget] = useState<DeepLinkInstallTarget | undefined>()
   const [deepLinkSession, setDeepLinkSession] = useState<DeepLinkSessionTarget | undefined>()
+  const [workspaceOperation, setWorkspaceOperation] = useState<WorkspaceOperationState | undefined>()
   const harnessFrameRef = useRef<HTMLIFrameElement>(null)
   const isMac = window.EzDSH.app.platform === 'darwin'
 
@@ -89,6 +91,9 @@ export function App() {
     const unsubscribeNav = window.EzDSH.navigation.onStateChange((config) => {
       if (active) setNavConfig(config)
     })
+    const unsubscribeWorkspace = window.EzDSH.settings.onWorkspaceChange((state) => {
+      if (active) setWorkspaceOperation(state)
+    })
     void window.EzDSH.locale.get()
       .then((nextLocale) => {
         if (!active) return
@@ -123,6 +128,7 @@ export function App() {
       unsubscribeLocale()
       unsubscribeUpdate()
       unsubscribeNav()
+      unsubscribeWorkspace()
     }
   }, [ensureRuntime])
 
@@ -152,6 +158,15 @@ export function App() {
       setActiveTab(visibleIds[0] ?? 'harness')
     }
   }, [visibleIds, activeTab])
+
+  const workspaceLock = workspaceOperation === undefined ? null : (
+    <div className="workspace-operation-lock" role="alert" aria-live="assertive">
+      <div className="workspace-operation-card">
+        <div className="loading-spinner" aria-hidden="true" />
+        <p>{workspaceOperation.message}</p>
+      </div>
+    </div>
+  )
 
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {
     return (
@@ -213,6 +228,7 @@ export function App() {
           })}
         </div>
         {update ? <UpdateCenter state={update} copy={copy} /> : null}
+        {workspaceLock}
       </main>
     )
   }
@@ -251,6 +267,7 @@ export function App() {
         </div>
         {runtime?.phase === 'failed' ? <button className="retry-button" onClick={() => void ensureRuntime()}>{copy.retryStart}</button> : null}
       </section>
+      {workspaceLock}
     </main>
   )
 }

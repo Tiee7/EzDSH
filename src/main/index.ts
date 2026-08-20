@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import type { AppUpdater } from 'electron-updater'
@@ -14,13 +14,26 @@ import type {
   SaveProviderInput,
   TestProviderInput
 } from '../shared/providers.js'
-import type { UpdateState } from '../shared/update.js'
+import {
+  PREVIEW_UPDATE_FEED_URL,
+  STABLE_UPDATE_FEED_URL,
+  type UpdateState,
+} from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale.js'
 import type { NavigationTarget } from '../shared/navigation.js'
 import { findDeepLinkInArgs, parseDeepLink, type DeepLinkInstall, type DeepLinkSession, type ResolvedDeepLinkInstall } from '../shared/deep-link.js'
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
-import type { UserDataLayout } from '../shared/state.js'
+import type { UserDataLayout, WorkspaceOperationState, WorkspaceSnapshot } from '../shared/state.js'
+import {
+  getWorkspaceConfigPath,
+  isDirectoryEmpty,
+  isWorkspaceTargetInsideSource,
+  moveWorkspaceContents,
+  readWorkspaceRoot,
+  writeWorkspaceRoot,
+} from './state/workspace-service.js'
+import { readDeveloperMode, writeDeveloperMode } from './state/developer-mode.js'
 import type { StoreKind } from '../shared/store.js'
 import { StoreService } from './store/store-service.js'
 import { StoreClient } from './store/store-client.js'
@@ -55,6 +68,9 @@ let providerService: ProviderService | undefined
 let localeService: LocaleService | undefined
 let updateManager: UpdateManager | undefined
 let userDataLayout: UserDataLayout | undefined
+let workspaceConfigPath: string | undefined
+let developerModePath: string | undefined
+let developerMode = false
 let storeService: StoreService | undefined
 let channelBridgeService: ChannelBridgeService | undefined
 let navigationService: NavigationService | undefined
@@ -62,6 +78,7 @@ let externalApiService: ExternalApiService | undefined
 let externalServiceManager: ExternalServiceManager | undefined
 let isQuitting = false
 let updateDialogOpen = false
+let workspaceOperationActive = false
 let pendingDeepLinkInstall: DeepLinkInstall | undefined
 let pendingDeepLinkSession: DeepLinkSession | undefined
 const require = createRequire(import.meta.url)
@@ -94,9 +111,107 @@ function getAutoUpdater(): AppUpdater {
   return (require('electron-updater') as typeof import('electron-updater')).autoUpdater
 }
 
+function resolveUpdateFeedUrl(): string | undefined {
+  const configured = process.env.EZDSH_UPDATE_FEED_URL?.trim()
+  if (configured !== undefined && configured !== '') return configured
+  if (!app.isPackaged) return undefined
+  return developerMode ? PREVIEW_UPDATE_FEED_URL : STABLE_UPDATE_FEED_URL
+}
+
+function allowPrereleaseUpdates(): boolean {
+  return developerMode || app.getVersion().includes('-')
+}
+
+function emitDeveloperMode(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('developer-mode:state-change', developerMode)
+  }
+}
+
 function showAppMessageBox(options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
   const window = mainWindow !== undefined && !mainWindow.isDestroyed() ? mainWindow : undefined
   return window === undefined ? dialog.showMessageBox(options) : dialog.showMessageBox(window, options)
+}
+
+function emitWorkspaceState(state: WorkspaceOperationState | undefined): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('workspace:state-change', state)
+  }
+}
+
+async function assertWorkspaceTarget(root: string): Promise<string> {
+  const trimmed = root.trim()
+  if (trimmed === '') throw new Error('Workspace target cannot be empty')
+  const target = resolve(trimmed)
+  if (userDataLayout === undefined) throw new Error('User data layout is not ready')
+  if (target === userDataLayout.root) throw new Error('Workspace target must be different from the current workspace')
+  if (isWorkspaceTargetInsideSource(userDataLayout.root, target)) {
+    throw new Error('Workspace target cannot be inside the current workspace')
+  }
+  return target
+}
+
+async function changeWorkspace(kind: 'migrate' | 'switch', root: string): Promise<void> {
+  if (workspaceOperationActive) throw new Error('Another workspace operation is already in progress')
+  if (userDataLayout === undefined || workspaceConfigPath === undefined) {
+    throw new Error('Workspace service is not ready')
+  }
+
+  const target = await assertWorkspaceTarget(root)
+  if (kind === 'migrate') {
+    if (!(await isDirectoryEmpty(target))) throw new Error('Workspace target must be an existing empty folder')
+    const copy = getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE)
+    const confirmation = await showAppMessageBox({
+      type: 'question',
+      title: copy.settingsWorkspaceMigrate,
+      message: copy.settingsWorkspaceMigrate,
+      detail: copy.settingsWorkspaceMigrateConfirmDetail,
+      buttons: [copy.settingsWorkspaceMigrateConfirm, copy.storeCancel],
+      defaultId: 0,
+      cancelId: 1
+    })
+    if (confirmation.response !== 0) return
+  }
+
+  workspaceOperationActive = true
+  emitWorkspaceState({
+    phase: kind === 'migrate' ? 'moving' : 'switching',
+    message: kind === 'migrate'
+      ? (getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE)).settingsWorkspaceMoving
+      : (getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE)).settingsWorkspaceSwitching
+  })
+
+  try {
+    // Stop every process that can write into the old root before touching its contents.
+    await stopApplicationComponents()
+    if (kind === 'migrate') await moveWorkspaceContents(userDataLayout.root, target)
+
+    const nextLayout = getUserDataLayout(target)
+    await ensureUserDataLayout(nextLayout)
+    await writeWorkspaceRoot(workspaceConfigPath, target)
+    emitWorkspaceState({
+      phase: 'restarting',
+      message: (getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE)).settingsWorkspaceRestarting
+    })
+
+    // Recreating all layout-bound services in-place would leave old watchers and
+    // adapters alive. A clean relaunch gives an empty switch the exact first-run
+    // initialization path and makes the new root authoritative before any write.
+    setTimeout(() => {
+      isQuitting = true
+      app.relaunch({ args: process.argv.slice(1) })
+      app.exit(0)
+    }, 250)
+  } catch (error) {
+    await Promise.allSettled([
+      runtimeManager?.start() ?? Promise.resolve(),
+      externalApiService?.start() ?? Promise.resolve(),
+      channelBridgeService?.start() ?? Promise.resolve(),
+    ])
+    workspaceOperationActive = false
+    emitWorkspaceState(undefined)
+    throw error
+  }
 }
 
 async function handleUpdateCheck(interactive: boolean): Promise<void> {
@@ -479,6 +594,56 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('settings:get-developer-mode', (): IpcResult<boolean> => success(developerMode))
+  ipcMain.handle('settings:set-developer-mode', async (_event, enabled: boolean): Promise<IpcResult<boolean>> => {
+    try {
+      if (typeof enabled !== 'boolean') throw new Error('Developer mode must be a boolean')
+      if (developerModePath === undefined) throw new Error('Developer mode is not ready')
+
+      await writeDeveloperMode(developerModePath, enabled)
+      developerMode = enabled
+      updateManager?.setFeedURL(resolveUpdateFeedUrl() ?? STABLE_UPDATE_FEED_URL, allowPrereleaseUpdates())
+      emitDeveloperMode()
+      return success(developerMode)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:get-workspace', (): IpcResult<WorkspaceSnapshot> => {
+    if (userDataLayout === undefined) return failure(new Error('Workspace service is not ready'))
+    return success({ root: userDataLayout.root })
+  })
+  ipcMain.handle('settings:select-workspace', async (): Promise<IpcResult<string | undefined>> => {
+    try {
+      const options: Electron.OpenDialogOptions = {
+        title: (getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE)).settingsWorkspace,
+        properties: ['openDirectory', 'createDirectory']
+      }
+      const window = mainWindow !== undefined && !mainWindow.isDestroyed() ? mainWindow : undefined
+      const result = window === undefined
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(window, options)
+      return success(result.canceled ? undefined : result.filePaths[0])
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:migrate-workspace', async (_event, root: string): Promise<IpcResult<void>> => {
+    try {
+      await changeWorkspace('migrate', root)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:switch-workspace', async (_event, root: string): Promise<IpcResult<void>> => {
+    try {
+      await changeWorkspace('switch', root)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('external-services:list', async (): Promise<IpcResult<Awaited<ReturnType<ExternalServiceManager['list']>>>> => {
     try {
       if (externalServiceManager === undefined) throw new Error('External service manager is not ready')
@@ -677,6 +842,10 @@ function createWindow(): BrowserWindow {
     window.show()
   })
 
+  window.on('close', (event) => {
+    if (workspaceOperationActive && !isQuitting) event.preventDefault()
+  })
+
   window.webContents.setWindowOpenHandler(({ url }) => {
     let protocol = ''
     try {
@@ -745,10 +914,13 @@ if (!singleInstance) {
   app.whenReady().then(async () => {
     app.setName(APP_NAME)
     nativeTheme.on('updated', syncWindowBackgroundColor)
-    const updateFeedUrl = process.env.EZDSH_UPDATE_FEED_URL?.trim() || undefined
-    const layout = getUserDataLayout(app.getPath('userData'))
+    workspaceConfigPath = getWorkspaceConfigPath(app.getPath('appData'))
+    const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, app.getPath('userData'))
+    const layout = getUserDataLayout(workspaceRoot)
     await ensureUserDataLayout(layout)
     userDataLayout = layout
+    developerModePath = join(layout.state, 'developer-mode.json')
+    developerMode = await readDeveloperMode(developerModePath)
     localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
     await localeService.start()
     const runtimeEntryPath = resolveRuntimeEntryPath({
@@ -817,11 +989,14 @@ if (!singleInstance) {
         }
       }
     })
-    const updateChecksEnabled = app.isPackaged || updateFeedUrl !== undefined
+    const configuredUpdateFeedUrl = process.env.EZDSH_UPDATE_FEED_URL?.trim() || undefined
+    const updateFeedUrl = resolveUpdateFeedUrl()
+    const updateChecksEnabled = app.isPackaged || configuredUpdateFeedUrl !== undefined
     updateManager = new UpdateManager({
       currentVersion: app.getVersion(),
       isPackaged: app.isPackaged,
-      allowDevUpdates: !app.isPackaged && updateFeedUrl !== undefined,
+      allowDevUpdates: !app.isPackaged && configuredUpdateFeedUrl !== undefined,
+      allowPrerelease: allowPrereleaseUpdates(),
       updateFeedUrl,
       updater: updateChecksEnabled ? getAutoUpdater() : undefined,
       prepareInstall: async () => {
@@ -907,6 +1082,10 @@ if (!singleInstance) {
   })
 
   app.on('before-quit', (event) => {
+    if (workspaceOperationActive && !isQuitting) {
+      event.preventDefault()
+      return
+    }
     if (isQuitting) return
     event.preventDefault()
     isQuitting = true

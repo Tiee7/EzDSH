@@ -80,4 +80,20 @@ describe('UpdateManager', () => {
     await manager.check()
     expect(manager.snapshot()).toMatchObject({ phase: 'available', availableVersion: '0.2.0' })
   })
+
+  it('can switch the feed and prerelease policy at runtime', () => {
+    const updater = new FakeUpdater()
+    const manager = new UpdateManager({
+      currentVersion: '0.1.0',
+      isPackaged: true,
+      updater: updater as unknown as AppUpdater,
+      updateFeedUrl: 'https://updates.example.test/stable/'
+    })
+
+    manager.setFeedURL('https://updates.example.test/preview/', true)
+
+    expect(updater.feedUrl).toBe('https://updates.example.test/preview/')
+    expect(updater.allowPrerelease).toBe(true)
+    expect(manager.snapshot()).toMatchObject({ phase: 'idle', currentVersion: '0.1.0' })
+  })
 })

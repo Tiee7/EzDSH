@@ -92,6 +92,34 @@
   border-top: 1px solid var(--ezdsh-hairline);
 }
 
+.settings-about-trigger {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ezdsh-text-body);
+  text-align: left;
+  cursor: default;
+}
+
+.settings-about-trigger:hover {
+  color: var(--ezdsh-text-body);
+}
+
+.settings-about-trigger:focus-visible {
+  outline: 2px solid var(--ezdsh-active-border);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.settings-developer-mode-item {
+  align-items: flex-start;
+}
+
+.settings-developer-mode-error {
+  margin: 12px 20px;
+}
+
 .settings-item-text {
   min-width: 0;
 }
@@ -140,6 +168,51 @@
 .settings-action:hover {
   border-color: var(--ezdsh-active-border);
   background: var(--ezdsh-active-background);
+}
+
+.settings-action:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.settings-action-primary {
+  border-color: var(--ezdsh-active-border);
+  background: var(--ezdsh-active-background);
+}
+
+.settings-workspace-hint {
+  max-width: none;
+}
+
+.settings-workspace-item {
+  align-items: flex-start;
+}
+
+.settings-workspace-path,
+.settings-workspace-target {
+  display: block;
+  max-width: min(100%, 560px);
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.settings-workspace-target {
+  margin-bottom: 0;
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+}
+
+.settings-workspace-actions {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.settings-error {
+  margin: 8px 0 0;
+  color: var(--ezdsh-accent-orange);
+  font-size: 12px;
 }
 
 .settings-segment {

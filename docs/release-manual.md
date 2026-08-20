@@ -206,11 +206,19 @@ dist/
 
 ## 9. 自动更新分发
 
-EzDSH 使用 `electron-updater` 的 `generic` 更新源，当前配置地址为：
+EzDSH 使用 `electron-updater` 的 `generic` 更新源，稳定版配置地址为：
 
 ```text
-http://update.ezdsh.com/updates/
+https://update.ezdsh.com/updates/
 ```
+
+开发者模式使用以下预览源：
+
+```text
+https://update.ezdsh.com/updates/preview/
+```
+
+设置中连续点击 5 次“关于”进入开发者模式，退出开发者模式后恢复稳定源。预览源必须由发布流水线单独发布，不要手工复制稳定目录。
 
 发布时需要上传：
 

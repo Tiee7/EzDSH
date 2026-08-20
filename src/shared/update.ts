@@ -1,3 +1,6 @@
+export const STABLE_UPDATE_FEED_URL = 'https://update.ezdsh.com/updates/'
+export const PREVIEW_UPDATE_FEED_URL = 'https://update.ezdsh.com/updates/preview/'
+
 export type UpdatePhase =
   | 'idle'
   | 'checking'

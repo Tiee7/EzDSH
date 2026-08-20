@@ -4,11 +4,19 @@
 
 ## 1. 更新源
 
-EzDSH 使用 `electron-updater` 的 `generic` 更新源。当前暂定地址为：
+EzDSH 使用 `electron-updater` 的 `generic` 更新源。稳定版地址为：
 
 ```text
-http://update.ezdsh.com/updates/
+https://update.ezdsh.com/updates/
 ```
+
+设置中连续点击 5 次“关于”会进入开发者模式。开发者模式只在已打包应用中启用预览更新源：
+
+```text
+https://update.ezdsh.com/updates/preview/
+```
+
+开发者模式状态会保存在 EzDSH 的用户数据中，退出开发者模式后立即切回稳定更新源。普通用户不会访问 `preview/`。
 
 打包时，`electron-builder` 会根据该配置生成平台对应的更新元数据：
 
@@ -28,7 +36,25 @@ EzDSH 统一使用标准三段 SemVer。应用展示、Electron 打包元数据�
 
 这样版本检查仍然由 Vercel 提供，安装包下载则交给更适合大文件和断点续传的存储。若安装包体积较小，也可以直接放在 Vercel 静态资源中，但需要留意平台的静态文件限制和下载流量成本。
 
-## 3. 开发阶段模拟远程检查
+## 3. Electron 自动更新的边界
+
+`electron-updater` 负责读取 `latest-mac.yml` / `latest.yml`、比较版本、下载安装包并调用重启安装，但不会把构建产物同步到服务器，也不会替发布流程生成或校验文件。
+
+当前 EzDSH 的策略是：启动时自动检查，发现更新后由用户确认下载和重启安装。代码中 `autoDownload` 是关闭的，避免应用在后台突然消耗带宽或占用磁盘；`autoInstallOnAppQuit` 是开启的。
+
+## 4. 推荐的 preview 发布方式
+
+不要把稳定版 `updates/` 手工复制到 `updates/preview/`。建议让 CI 根据发布渠道直接生成并发布到对应目录：
+
+1. 稳定标签只发布到 `updates/`；预览标签只发布到 `updates/preview/`。
+2. 每次构建同时生成当前平台的安装包、`latest-mac.yml` 或 `latest.yml` 以及 blockmap 文件。
+3. 先上传带版本号的安装包，再上传更新元数据。元数据最后发布，避免客户端看到尚未可下载的文件。
+4. 发布脚本把“渠道、版本、元数据、安装包”作为同一次构建的产物，并在缺少任一文件时失败。
+5. 预览版本使用递增的 SemVer 预发布版本，例如 `1.8.1522-preview.1`，并保持 macOS 与 Windows 的版本策略一致。
+
+这样 `preview/` 是否更新由 CI 的发布结果决定，不依赖人工同步。更进一步，可以让稳定发布和预览发布使用同一个 CI workflow，只由标签前缀或手动输入选择目标目录。
+
+## 5. 开发阶段模拟远程检查
 
 开发环境默认不访问更新源。临时指定远程源后，Main 进程会启用同一套更新检查逻辑：
 
@@ -38,7 +64,7 @@ EZDSH_UPDATE_FEED_URL=https://your-project.vercel.app/updates/ npm run dev
 
 测试源至少需要提供当前平台对应的 `latest-mac.yml` 或 `latest.yml`。只模拟版本检查时，元数据中的版本可以高于当前版本；要继续测试下载和安装，必须同时提供真实、签名且与元数据哈希一致的安装包。
 
-## 4. 发布约束
+## 6. 发布约束
 
 - 每次发布使用 `npm run version:set -- x.y.z` 同步应用、打包和更新所需的版本号；
 - macOS 发布包必须签名并经过公证，否则安装更新时会被系统安全策略拦截；
