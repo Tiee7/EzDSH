@@ -130,7 +130,7 @@ These steps are for developers who want to run the project locally from a source
    npm ci
    ```
 
-4. `npm ci` installs the pinned published `@deepseek-ai/dsh@0.1.0-rc.7` Runtime and its production dependency closure. No separate DSH workspace install or staging step is required.
+4. `npm ci` installs the pinned published `@deepseek-ai/dsh@0.1.0-rc.8` Runtime and its production dependency closure. No separate DSH workspace install or staging step is required.
 
    To explicitly develop against the vendored DSH source instead, build that source checkout and set `EZDSH_DSH_SOURCE` to its built CLI package:
 
