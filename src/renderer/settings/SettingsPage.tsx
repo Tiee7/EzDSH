@@ -22,6 +22,9 @@ interface SettingsPageProps {
 export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.Element {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const [busy, setBusy] = useState(false)
+  const [languageTagVisible, setLanguageTagVisible] = useState(true)
+  const [languageTagBusy, setLanguageTagBusy] = useState(false)
+  const [languageTagError, setLanguageTagError] = useState<string>()
   const [workspaceRoot, setWorkspaceRoot] = useState<string>()
   const [workspaceTarget, setWorkspaceTarget] = useState<string>()
   const [workspaceBusy, setWorkspaceBusy] = useState(false)
@@ -63,6 +66,24 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
     }
   }, [copy.settingsDeveloperModeError])
 
+  useEffect(() => {
+    let active = true
+    void window.EzDSH.settings.getLanguageTagVisible()
+      .then((visible) => {
+        if (active) setLanguageTagVisible(visible)
+      })
+      .catch(() => {
+        if (active) setLanguageTagError(copy.settingsLanguageTagError)
+      })
+    const unsubscribe = window.EzDSH.settings.onLanguageTagVisibilityChange((visible) => {
+      if (active) setLanguageTagVisible(visible)
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [copy.settingsLanguageTagError])
+
   const pickLocale = async (next: AppLocale): Promise<void> => {
     if (busy || next === locale) return
     setBusy(true)
@@ -70,6 +91,19 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
       await window.EzDSH.settings.setLocale(next)
     } finally {
       setBusy(false)
+    }
+  }
+
+  const toggleLanguageTag = async (visible: boolean): Promise<void> => {
+    if (languageTagBusy) return
+    setLanguageTagBusy(true)
+    setLanguageTagError(undefined)
+    try {
+      setLanguageTagVisible(await window.EzDSH.settings.setLanguageTagVisible(visible))
+    } catch {
+      setLanguageTagError(copy.settingsLanguageTagError)
+    } finally {
+      setLanguageTagBusy(false)
     }
   }
 
@@ -226,6 +260,23 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
                     English
                   </button>
                 </div>
+              </div>
+              <div className="settings-item settings-language-tag-item">
+                <div className="settings-item-text">
+                  <p className="settings-label">{copy.settingsLanguageTag}</p>
+                  <p className="settings-hint">{copy.settingsLanguageTagHint}</p>
+                  {languageTagError ? <p className="settings-error" role="alert">{languageTagError}</p> : null}
+                </div>
+                <label className="settings-language-tag-toggle">
+                  <input
+                    type="checkbox"
+                    checked={languageTagVisible}
+                    disabled={languageTagBusy}
+                    aria-label={copy.settingsLanguageTagToggle}
+                    onChange={(event) => { void toggleLanguageTag(event.target.checked) }}
+                  />
+                  <span>{copy.settingsLanguageTagToggle}</span>
+                </label>
               </div>
               <div className="settings-item">
                 <p className="settings-label">{copy.settingsStoreSource}</p>

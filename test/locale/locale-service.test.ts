@@ -13,14 +13,14 @@ describe('DSH locale configuration', () => {
     await expect(readDshLocale(settingsPath)).resolves.toBe('en')
   })
 
-  it('falls back to Chinese when the preference is absent or invalid', async () => {
+  it('falls back to English when the preference is absent or invalid', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-locale-'))
     const settingsPath = join(root, 'settings.yaml')
     await writeFile(settingsPath, 'permission:\n  defaultPreset: read-only\n', 'utf8')
-    await expect(readDshLocale(settingsPath)).resolves.toBe('zh')
+    await expect(readDshLocale(settingsPath)).resolves.toBe('en')
 
     await writeFile(settingsPath, 'locale:\n  preference: fr\n', 'utf8')
-    await expect(readDshLocale(settingsPath)).resolves.toBe('zh')
+    await expect(readDshLocale(settingsPath)).resolves.toBe('en')
   })
 
   it('updates when DSH settings changes while the app is running', async () => {
@@ -42,7 +42,7 @@ describe('DSH locale configuration', () => {
       }, 10)
     })
 
-    expect(changes).toEqual(['en'])
+    expect(changes).toEqual(['zh', 'en'])
     service.stop()
   })
 })

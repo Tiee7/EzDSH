@@ -1,5 +1,10 @@
 import type { AppUpdater } from 'electron-updater'
-import type { UpdateState } from '../../shared/update.js'
+import type {
+  UpdateChannel,
+  UpdateResolution,
+  UpdateState,
+  UpdateCheckTrigger,
+} from '../../shared/update.js'
 
 export interface UpdateManagerOptions {
   currentVersion: string
@@ -8,6 +13,13 @@ export interface UpdateManagerOptions {
   allowDevUpdates?: boolean
   allowPrerelease?: boolean
   updateFeedUrl?: string
+  updateResolveUrl?: string
+  updatePlatform?: 'mac' | 'win'
+  updateArch?: string
+  updateChannel?: UpdateChannel
+  getUpdateChannel?: () => UpdateChannel
+  getUpdateLanguage?: () => string
+  fetchImpl?: typeof fetch
   prepareInstall?: () => Promise<void>
 }
 
@@ -21,9 +33,11 @@ export class UpdateManager {
   private current: UpdateState
   private checkPromise?: Promise<UpdateState>
   private downloadPromise?: Promise<UpdateState>
+  private readonly fetchImpl?: typeof fetch
 
   constructor(options: UpdateManagerOptions) {
     this.options = options
+    this.fetchImpl = options.fetchImpl
     const updateChecksEnabled = options.isPackaged || options.allowDevUpdates === true
     this.updater = updateChecksEnabled ? options.updater : undefined
     this.current = {
@@ -104,13 +118,14 @@ export class UpdateManager {
     return this.snapshot()
   }
 
-  async check(): Promise<UpdateState> {
+  async check(trigger: UpdateCheckTrigger = 'manual'): Promise<UpdateState> {
     if (this.updater === undefined) return this.snapshot()
     if (this.checkPromise !== undefined) return this.checkPromise
 
     this.checkPromise = (async () => {
       this.publish({ phase: 'checking', message: '正在检查更新' })
       try {
+        await this.resolveDynamicFeed(trigger)
         const result = await this.updater?.checkForUpdates()
         if (this.current.phase === 'checking') {
           const version = result?.updateInfo?.version
@@ -128,6 +143,56 @@ export class UpdateManager {
     })()
 
     return this.checkPromise
+  }
+
+  private async resolveDynamicFeed(trigger: UpdateCheckTrigger): Promise<void> {
+    const resolveUrl = this.options.updateResolveUrl
+    if (resolveUrl === undefined || this.updater === undefined) return
+
+    const fallbackFeedUrl = this.options.updateFeedUrl
+    try {
+      const endpoint = new URL(resolveUrl)
+      const platform = this.options.updatePlatform ?? platformForCurrentProcess()
+      if (platform === undefined) throw new Error(`Unsupported update platform: ${process.platform}`)
+      endpoint.searchParams.set('platform', platform)
+      endpoint.searchParams.set('arch', this.options.updateArch ?? process.arch)
+      endpoint.searchParams.set('version', this.options.currentVersion)
+      endpoint.searchParams.set('trigger', trigger)
+      endpoint.searchParams.set('language', this.options.getUpdateLanguage?.() ?? 'unknown')
+      endpoint.searchParams.set('channel', this.options.getUpdateChannel?.() ?? this.options.updateChannel ?? 'stable')
+
+      const fetchImpl = this.fetchImpl ?? globalThis.fetch
+      if (typeof fetchImpl !== 'function') throw new Error('Fetch is unavailable')
+
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5_000)
+      let response: Response
+      try {
+        response = await fetchImpl(endpoint, {
+          method: 'GET',
+          headers: { accept: 'application/json' },
+          signal: controller.signal
+        })
+      } finally {
+        clearTimeout(timeout)
+      }
+
+      if (!response.ok) throw new Error(`Update resolver returned HTTP ${response.status}`)
+      const resolution = await response.json() as UpdateResolution
+      const feedUrl = validFeedUrl(resolution.feedUrl)
+      if (resolution.success !== true || feedUrl === undefined) {
+        throw new Error('Update resolver returned no usable feed URL')
+      }
+
+      this.updater.setFeedURL({ provider: 'generic', url: feedUrl })
+      return
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[updates] dynamic resolver failed; using static feed: ${message}`)
+      if (fallbackFeedUrl !== undefined) {
+        this.updater.setFeedURL({ provider: 'generic', url: fallbackFeedUrl })
+      }
+    }
   }
 
   async download(): Promise<UpdateState> {
@@ -173,5 +238,22 @@ export class UpdateManager {
     }
     const snapshot = this.snapshot()
     for (const listener of this.listeners) listener(snapshot)
+  }
+}
+
+function platformForCurrentProcess(): 'mac' | 'win' | undefined {
+  if (process.platform === 'darwin') return 'mac'
+  if (process.platform === 'win32') return 'win'
+  return undefined
+}
+
+function validFeedUrl(value: string | undefined): string | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
+    return url.toString()
+  } catch {
+    return undefined
   }
 }

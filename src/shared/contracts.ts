@@ -83,6 +83,9 @@ export interface EzDSHBridge {
   }
   settings: {
     setLocale(locale: AppLocale): Promise<void>
+    getLanguageTagVisible(): Promise<boolean>
+    setLanguageTagVisible(visible: boolean): Promise<boolean>
+    onLanguageTagVisibilityChange(listener: (visible: boolean) => void): () => void
     openHarnessDir(): Promise<void>
     getDeveloperMode(): Promise<boolean>
     setDeveloperMode(enabled: boolean): Promise<boolean>

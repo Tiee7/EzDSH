@@ -224,6 +224,28 @@
   background: var(--ezdsh-code-background);
 }
 
+.settings-language-tag-item {
+  align-items: flex-start;
+}
+
+.settings-language-tag-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 7px;
+  color: var(--ezdsh-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-language-tag-toggle input {
+  accent-color: var(--ezdsh-brand);
+}
+
+.settings-language-tag-toggle input:disabled {
+  cursor: wait;
+}
+
 .segment-option {
   border: 0;
   border-radius: 7px;

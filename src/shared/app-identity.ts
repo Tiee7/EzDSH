@@ -1,2 +1,4 @@
+import packageJson from '../../package.json' with { type: 'json' }
+
 export const APP_NAME = 'EzDSH' as const
-export const APP_VERSION = '1.8.1522' as const
+export const APP_VERSION = packageJson.version

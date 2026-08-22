@@ -221,6 +221,7 @@ h1 {
 
 .tab-bar-drag-region {
   position: absolute;
+  z-index: 0;
   top: 0;
   right: 0;
   width: 180px;
@@ -228,6 +229,8 @@ h1 {
 }
 
 .tab-bar-tabs {
+  position: relative;
+  z-index: 1;
   display: flex;
   gap: 4px;
   height: 100%;
@@ -255,6 +258,92 @@ h1 {
 .tab-bar-item-active {
   color: var(--ezdsh-tab-color-active);
   background: var(--ezdsh-runtime-background);
+}
+
+.language-tag {
+  position: relative;
+  z-index: 2;
+  align-self: center;
+  margin-left: auto;
+}
+
+.language-tag-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: color-mix(in srgb, var(--ezdsh-runtime-background) 62%, transparent);
+  color: var(--ezdsh-tab-color);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.language-tag-trigger:hover,
+.language-tag-trigger[aria-expanded='true'] {
+  border-color: var(--ezdsh-active-border);
+  background: var(--ezdsh-active-background);
+  color: var(--ezdsh-tab-color-active);
+}
+
+.language-tag-trigger:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.language-tag-trigger:focus-visible,
+.language-tag-option:focus-visible {
+  outline: 2px solid var(--ezdsh-active-border);
+  outline-offset: 2px;
+}
+
+.language-tag-glyph {
+  color: var(--ezdsh-brand);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.1em;
+}
+
+.language-tag-chevron {
+  color: var(--ezdsh-text-faint);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.language-tag-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 148px;
+  padding: 5px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 10px;
+  background: var(--ezdsh-panel-background);
+  box-shadow: 0 12px 32px rgba(20, 30, 50, 0.18);
+}
+
+.language-tag-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: transparent;
+  color: var(--ezdsh-text-body);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.language-tag-option:hover,
+.language-tag-option-active {
+  background: var(--ezdsh-active-background);
+  color: var(--ezdsh-text-heading);
 }
 
 .workspace-content {

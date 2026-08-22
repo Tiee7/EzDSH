@@ -37,8 +37,88 @@ function builtinTabLabel(id: AppTab, copy: AppCopy): string {
   }
 }
 
+interface LanguageTagProps {
+  locale: AppLocale
+  copy: AppCopy
+  onSelect: (locale: AppLocale) => Promise<void>
+}
+
+function LanguageTag({ locale, copy, onSelect }: LanguageTagProps): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const closeOnOutsidePointer = (event: MouseEvent): void => {
+      if (containerRef.current !== null && !containerRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  const select = async (nextLocale: AppLocale): Promise<void> => {
+    if (busy) return
+    setOpen(false)
+    if (nextLocale === locale) return
+    setBusy(true)
+    try {
+      await onSelect(nextLocale)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="language-tag" ref={containerRef}>
+      <button
+        type="button"
+        className="language-tag-trigger"
+        aria-label={copy.languageTagLabel}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="language-tag-glyph" aria-hidden="true">文A</span>
+        <span>Language</span>
+        <span>{locale === 'zh' ? '简中' : 'EN'}</span>
+        <span className="language-tag-chevron" aria-hidden="true">{open ? '⌃' : '⌄'}</span>
+      </button>
+      {open ? (
+        <div className="language-tag-menu" role="menu" aria-label={copy.languageTagLabel}>
+          {([
+            { id: 'zh', label: copy.languageTagChinese },
+            { id: 'en', label: copy.languageTagEnglish },
+          ] as const).map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={locale === option.id}
+              className={`language-tag-option ${locale === option.id ? 'language-tag-option-active' : ''}`}
+              onClick={() => { void select(option.id) }}
+            >
+              <span>{option.label}</span>
+              {locale === option.id ? <span aria-hidden="true">✓</span> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function App() {
   const [locale, setLocale] = useState<AppLocale>(DEFAULT_APP_LOCALE)
+  const [languageTagVisible, setLanguageTagVisible] = useState(true)
   const copy = getAppCopy(locale)
   const [runtime, setRuntime] = useState<RuntimeSnapshot>()
   const [update, setUpdate] = useState<UpdateState>()
@@ -85,6 +165,9 @@ export function App() {
     const unsubscribeLocale = window.EzDSH.locale.onChange((nextLocale) => {
       if (active) setLocale(nextLocale)
     })
+    const unsubscribeLanguageTag = window.EzDSH.settings.onLanguageTagVisibilityChange((visible) => {
+      if (active) setLanguageTagVisible(visible)
+    })
     const unsubscribeUpdate = window.EzDSH.updates.onStateChange((snapshot) => {
       if (active) setUpdate(snapshot)
     })
@@ -104,6 +187,13 @@ export function App() {
         if (!active) return
         setErrorKey('config-read')
         setLoading(false)
+      })
+    void window.EzDSH.settings.getLanguageTagVisible()
+      .then((visible) => {
+        if (active) setLanguageTagVisible(visible)
+      })
+      .catch(() => {
+        // Keep the shortcut visible if its optional preference cannot be read.
       })
     void window.EzDSH.updates.getStatus()
       .then((snapshot) => {
@@ -126,11 +216,17 @@ export function App() {
       unsubscribeDeepLink()
       unsubscribeDeepLinkSession()
       unsubscribeLocale()
+      unsubscribeLanguageTag()
       unsubscribeUpdate()
       unsubscribeNav()
       unsubscribeWorkspace()
     }
   }, [ensureRuntime])
+
+  const selectLocale = useCallback(async (nextLocale: AppLocale): Promise<void> => {
+    if (nextLocale === locale) return
+    await window.EzDSH.settings.setLocale(nextLocale)
+  }, [locale])
 
   const sendSessionToRuntime = useCallback(() => {
     const frame = harnessFrameRef.current
@@ -186,6 +282,7 @@ export function App() {
               </button>
             ))}
           </div>
+          {languageTagVisible ? <LanguageTag locale={locale} copy={copy} onSelect={selectLocale} /> : null}
         </nav>
         <div className="workspace-content">
           {visibleItems.map((item) => {

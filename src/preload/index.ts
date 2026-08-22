@@ -73,6 +73,13 @@ const bridge: EzDSHBridge = {
   },
   settings: {
     setLocale: (locale) => invoke('settings:set-locale', locale),
+    getLanguageTagVisible: () => invoke<boolean>('settings:get-language-tag-visible'),
+    setLanguageTagVisible: (visible: boolean) => invoke<boolean>('settings:set-language-tag-visible', visible),
+    onLanguageTagVisibilityChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, visible: boolean) => listener(visible)
+      ipcRenderer.on('language-tag:state-change', handler)
+      return () => ipcRenderer.removeListener('language-tag:state-change', handler)
+    },
     openHarnessDir: () => invoke('settings:open-harness-dir'),
     getDeveloperMode: () => invoke<boolean>('settings:get-developer-mode'),
     setDeveloperMode: (enabled: boolean) => invoke<boolean>('settings:set-developer-mode', enabled),

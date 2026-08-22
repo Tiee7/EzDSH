@@ -42,6 +42,16 @@ EzDSH 统一使用标准三段 SemVer。应用展示、Electron 打包元数据�
 
 当前 EzDSH 的策略是：启动时自动检查，发现更新后由用户确认下载和重启安装。代码中 `autoDownload` 是关闭的，避免应用在后台突然消耗带宽或占用磁盘；`autoInstallOnAppQuit` 是开启的。
 
+启动检查和手动检查都会先请求动态解析接口：
+
+```text
+https://update.ezdsh.com/api/update/resolve
+```
+
+请求会携带 `platform`、`arch`、`version`、`trigger`、`language` 和 `channel`。其中 `trigger` 为 `startup` 或 `manual`。接口返回有效 `feedUrl` 时，客户端使用该地址；接口不可用、超时或返回无效地址时，客户端回退到原有的 `/updates/` 或 `/updates/preview/` 静态源。静态源仍由 `electron-updater` 自动读取 macOS 的 `latest-mac.yml` 或 Windows 的 `latest.yml`。
+
+开发环境可通过 `EZDSH_UPDATE_RESOLVE_URL` 指定解析接口；生产包默认使用上述正式地址。`EZDSH_UPDATE_FEED_URL` 仍然作为 fallback 更新源。
+
 ## 4. 推荐的 preview 发布方式
 
 不要把稳定版 `updates/` 手工复制到 `updates/preview/`。建议让 CI 根据发布渠道直接生成并发布到对应目录：

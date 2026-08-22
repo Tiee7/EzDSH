@@ -96,4 +96,91 @@ describe('UpdateManager', () => {
     expect(updater.allowPrerelease).toBe(true)
     expect(manager.snapshot()).toMatchObject({ phase: 'idle', currentVersion: '0.1.0' })
   })
+
+  it('resolves the dynamic feed with startup and language context before checking', async () => {
+    const updater = new FakeUpdater()
+    const requests: URL[] = []
+    const manager = new UpdateManager({
+      currentVersion: '0.1.0',
+      isPackaged: true,
+      updater: updater as unknown as AppUpdater,
+      updateFeedUrl: 'https://updates.example.test/updates/',
+      updateResolveUrl: 'https://updates.example.test/api/update/resolve',
+      updatePlatform: 'mac',
+      updateArch: 'arm64',
+      updateChannel: 'stable',
+      getUpdateLanguage: () => 'zh',
+      fetchImpl: async (input) => {
+        requests.push(new URL(String(input)))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            success: true,
+            feedUrl: 'https://dynamic.example.test/mac/'
+          })
+        } as Response
+      }
+    })
+
+    await manager.check('startup')
+
+    expect(requests[0].searchParams.get('platform')).toBe('mac')
+    expect(requests[0].searchParams.get('arch')).toBe('arm64')
+    expect(requests[0].searchParams.get('version')).toBe('0.1.0')
+    expect(requests[0].searchParams.get('trigger')).toBe('startup')
+    expect(requests[0].searchParams.get('language')).toBe('zh')
+    expect(updater.feedUrl).toBe('https://dynamic.example.test/mac/')
+  })
+
+  it('falls back to the static feed when the dynamic resolver fails', async () => {
+    const updater = new FakeUpdater()
+    const requests: URL[] = []
+    const manager = new UpdateManager({
+      currentVersion: '0.1.0',
+      isPackaged: true,
+      updater: updater as unknown as AppUpdater,
+      updateFeedUrl: 'https://updates.example.test/updates/',
+      updateResolveUrl: 'https://updates.example.test/api/update/resolve',
+      updatePlatform: 'win',
+      updateArch: 'x64',
+      getUpdateLanguage: () => 'en',
+      fetchImpl: async (input) => {
+        requests.push(new URL(String(input)))
+        throw new Error('resolver unavailable')
+      }
+    })
+
+    await manager.check('manual')
+
+    expect(requests[0].searchParams.get('trigger')).toBe('manual')
+    expect(updater.feedUrl).toBe('https://updates.example.test/updates/')
+  })
+
+  it('reads the current update channel when resolving each check', async () => {
+    const updater = new FakeUpdater()
+    const requests: URL[] = []
+    const manager = new UpdateManager({
+      currentVersion: '0.1.0',
+      isPackaged: true,
+      updater: updater as unknown as AppUpdater,
+      updateFeedUrl: 'https://updates.example.test/updates/',
+      updateResolveUrl: 'https://updates.example.test/api/update/resolve',
+      updatePlatform: 'mac',
+      updateArch: 'arm64',
+      getUpdateChannel: () => 'preview',
+      fetchImpl: async (input) => {
+        requests.push(new URL(String(input)))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ success: true, feedUrl: 'https://dynamic.example.test/preview/' })
+        } as Response
+      }
+    })
+
+    await manager.check('manual')
+
+    expect(requests[0].searchParams.get('channel')).toBe('preview')
+  })
 })

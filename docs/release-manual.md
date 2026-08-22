@@ -42,10 +42,11 @@ npm run version:set -- 0.8.1505
 
 脚本位于 [scripts/set-version.mjs](../scripts/set-version.mjs)，会同步：
 
-- `package.json` 的项目版本；
-- `package.json` 的 Electron 打包版本；
-- `package-lock.json` 的根项目版本；
-- `src/shared/app-identity.ts` 的界面展示版本。
+- `package.json` 的项目版本（唯一版本源）；
+- `package-lock.json` 的根项目版本元数据。
+
+Electron 打包和应用展示版本都会直接读取 `package.json` 的项目版本，
+不再在源码中维护第二份 `APP_VERSION`。
 
 脚本只接受三段数字版本。以下输入会被拒绝：
 
@@ -85,7 +86,7 @@ npm run build
 
 重点确认：
 
-- 版本号与 `APP_VERSION` 一致；
+- 应用展示版本从 `package.json` 正确读取；
 - Runtime 依赖没有重复的 `@deepseek-ai/dsh-tools` 模块；
 - DSH Runtime 能启动、健康检查能通过；
 - Session、Workspace、Plugin 和用户数据目录没有被构建流程写入或删除；

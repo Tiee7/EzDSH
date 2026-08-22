@@ -17,6 +17,7 @@ import type {
 import {
   PREVIEW_UPDATE_FEED_URL,
   STABLE_UPDATE_FEED_URL,
+  UPDATE_RESOLVE_URL,
   type UpdateState,
 } from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
@@ -34,6 +35,7 @@ import {
   writeWorkspaceRoot,
 } from './state/workspace-service.js'
 import { readDeveloperMode, writeDeveloperMode } from './state/developer-mode.js'
+import { readLanguageTagVisible, writeLanguageTagVisible } from './state/language-tag.js'
 import type { StoreKind } from '../shared/store.js'
 import { StoreService } from './store/store-service.js'
 import { StoreClient } from './store/store-client.js'
@@ -72,6 +74,8 @@ let userDataLayout: UserDataLayout | undefined
 let workspaceConfigPath: string | undefined
 let developerModePath: string | undefined
 let developerMode = false
+let languageTagPath: string | undefined
+let languageTagVisible = true
 let storeService: StoreService | undefined
 let channelBridgeService: ChannelBridgeService | undefined
 let navigationService: NavigationService | undefined
@@ -118,8 +122,18 @@ function getAutoUpdater(): AppUpdater {
 function resolveUpdateFeedUrl(): string | undefined {
   const configured = process.env.EZDSH_UPDATE_FEED_URL?.trim()
   if (configured !== undefined && configured !== '') return configured
-  if (!app.isPackaged) return undefined
+  if (!app.isPackaged) {
+    const resolverConfigured = process.env.EZDSH_UPDATE_RESOLVE_URL?.trim()
+    if (resolverConfigured === undefined || resolverConfigured === '') return undefined
+  }
   return developerMode ? PREVIEW_UPDATE_FEED_URL : STABLE_UPDATE_FEED_URL
+}
+
+function resolveUpdateResolverUrl(): string | undefined {
+  const configured = process.env.EZDSH_UPDATE_RESOLVE_URL?.trim()
+  if (configured !== undefined && configured !== '') return configured
+  if (!app.isPackaged) return undefined
+  return UPDATE_RESOLVE_URL
 }
 
 function allowPrereleaseUpdates(): boolean {
@@ -129,6 +143,12 @@ function allowPrereleaseUpdates(): boolean {
 function emitDeveloperMode(): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('developer-mode:state-change', developerMode)
+  }
+}
+
+function emitLanguageTagVisibility(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('language-tag:state-change', languageTagVisible)
   }
 }
 
@@ -183,6 +203,8 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   userDataLayout = layout
   developerModePath = join(layout.state, 'developer-mode.json')
   developerMode = await readDeveloperMode(developerModePath)
+  languageTagPath = join(layout.state, 'language-tag.json')
+  languageTagVisible = await readLanguageTagVisible(languageTagPath)
 
   localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
   await localeService.start()
@@ -346,7 +368,7 @@ async function handleUpdateCheck(interactive: boolean): Promise<void> {
   updateDialogOpen = true
   try {
     const copy = getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE)
-    const state = await updateManager.check()
+    const state = await updateManager.check(interactive ? 'manual' : 'startup')
     if (state.phase === 'available') {
       const downloaded = await updateManager.download()
       if (downloaded.phase !== 'downloaded') {
@@ -719,6 +741,20 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('settings:get-language-tag-visible', (): IpcResult<boolean> => success(languageTagVisible))
+  ipcMain.handle('settings:set-language-tag-visible', async (_event, visible: boolean): Promise<IpcResult<boolean>> => {
+    try {
+      if (typeof visible !== 'boolean') throw new Error('Language tag visibility must be a boolean')
+      if (languageTagPath === undefined) throw new Error('Language tag setting is not ready')
+
+      await writeLanguageTagVisible(languageTagPath, visible)
+      languageTagVisible = visible
+      emitLanguageTagVisibility()
+      return success(languageTagVisible)
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('settings:open-harness-dir', async (): Promise<IpcResult<void>> => {
     try {
       if (userDataLayout === undefined) throw new Error('User data layout is not ready')
@@ -852,7 +888,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('updates:check', async (): Promise<IpcResult<UpdateState>> => {
     try {
       if (updateManager === undefined) throw new Error('Update manager is not ready')
-      return success(await updateManager.check())
+      return success(await updateManager.check('manual'))
     } catch (error) {
       return failure(error)
     }
@@ -1061,13 +1097,20 @@ if (!singleInstance) {
     await initializeWorkspaceServices(layout)
     const configuredUpdateFeedUrl = process.env.EZDSH_UPDATE_FEED_URL?.trim() || undefined
     const updateFeedUrl = resolveUpdateFeedUrl()
-    const updateChecksEnabled = app.isPackaged || configuredUpdateFeedUrl !== undefined
+    const configuredUpdateResolveUrl = process.env.EZDSH_UPDATE_RESOLVE_URL?.trim() || undefined
+    const updateResolveUrl = resolveUpdateResolverUrl()
+    const updateChecksEnabled = app.isPackaged || configuredUpdateFeedUrl !== undefined || configuredUpdateResolveUrl !== undefined
     updateManager = new UpdateManager({
       currentVersion: app.getVersion(),
       isPackaged: app.isPackaged,
-      allowDevUpdates: !app.isPackaged && configuredUpdateFeedUrl !== undefined,
+      allowDevUpdates: !app.isPackaged && (configuredUpdateFeedUrl !== undefined || configuredUpdateResolveUrl !== undefined),
       allowPrerelease: allowPrereleaseUpdates(),
       updateFeedUrl,
+      updateResolveUrl,
+      updatePlatform: process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : undefined,
+      updateArch: process.arch,
+      getUpdateChannel: () => developerMode ? 'preview' : 'stable',
+      getUpdateLanguage: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
       updater: updateChecksEnabled ? getAutoUpdater() : undefined,
       prepareInstall: async () => {
         isQuitting = true

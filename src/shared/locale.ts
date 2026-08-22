@@ -1,7 +1,7 @@
 export const APP_LOCALES = ['zh', 'en'] as const
 export type AppLocale = (typeof APP_LOCALES)[number]
 
-export const DEFAULT_APP_LOCALE: AppLocale = 'zh'
+export const DEFAULT_APP_LOCALE: AppLocale = 'en'
 
 export interface AppCopy {
   loadingConfig: string
@@ -93,8 +93,15 @@ export interface AppCopy {
   phaseFailed: string
   storeSurfaceSkills: string
   storeSurfaceMcp: string
+  languageTagLabel: string
+  languageTagChinese: string
+  languageTagEnglish: string
   settingsLanguage: string
   settingsLanguageHint: string
+  settingsLanguageTag: string
+  settingsLanguageTagHint: string
+  settingsLanguageTagToggle: string
+  settingsLanguageTagError: string
   settingsWorkspace: string
   settingsWorkspaceHint: string
   settingsWorkspaceMigrate: string
@@ -342,8 +349,15 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     phaseFailed: '操作失败',
     storeSurfaceSkills: '技能',
     storeSurfaceMcp: '工具扩展（MCP）',
+    languageTagLabel: '切换界面语言',
+    languageTagChinese: '简体中文',
+    languageTagEnglish: 'English',
     settingsLanguage: '界面语言',
     settingsLanguageHint: '跟随 DeepSeek Harness 的语言设置，切换后各界面同步更新',
+    settingsLanguageTag: '右上角语言标签',
+    settingsLanguageTagHint: '在窗口右上角显示快捷语言选择入口',
+    settingsLanguageTagToggle: '显示右上角语言标签',
+    settingsLanguageTagError: '语言标签设置失败，请重试',
     settingsWorkspace: '默认工作文件夹',
     settingsWorkspaceHint: 'EzDSH 的配置、会话、插件和日志都保存在这里。迁移会完整移动当前文件夹内容；切换空文件夹会按新安装流程初始化。',
     settingsWorkspaceMigrate: '迁移到此处',
@@ -590,8 +604,15 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     phaseFailed: 'Operation failed',
     storeSurfaceSkills: 'Skills',
     storeSurfaceMcp: 'Tool extensions (MCP)',
+    languageTagLabel: 'Change interface language',
+    languageTagChinese: '简体中文',
+    languageTagEnglish: 'English',
     settingsLanguage: 'Interface language',
     settingsLanguageHint: 'Follows the DeepSeek Harness language setting; every surface updates together',
+    settingsLanguageTag: 'Top-right language shortcut',
+    settingsLanguageTagHint: 'Show a quick language selector in the top-right corner',
+    settingsLanguageTagToggle: 'Show the top-right language shortcut',
+    settingsLanguageTagError: 'Could not update the language shortcut. Try again.',
     settingsWorkspace: 'Default workspace folder',
     settingsWorkspaceHint: 'EzDSH stores configuration, sessions, plugins, and logs here. Migration moves the complete current folder; switching to an empty folder initializes it like a new install.',
     settingsWorkspaceMigrate: 'Migrate here',
