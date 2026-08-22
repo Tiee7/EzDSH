@@ -150,7 +150,7 @@ Harness 提供引擎，EzDSH 提供体验。
    npm ci
    ```
 
-4. `npm ci` 会安装锁定版本的已发布 `@deepseek-ai/dsh@0.1.0-rc.8` Runtime 及其生产依赖闭包，不需要额外安装或 staging DSH workspace。
+4. `npm ci` 会安装锁定版本的已发布 `@deepseek-ai/dsh@0.1.1-rc.2` Runtime 及其生产依赖闭包，不需要额外安装或 staging DSH workspace。
 
    如果要显式联调 vendored DSH 源码，请先构建源码，再将 `EZDSH_DSH_SOURCE` 指向构建后的 CLI 包：
 

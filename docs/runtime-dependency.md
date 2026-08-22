@@ -10,8 +10,8 @@ EzDSH 不依赖用户电脑上预先安装的 DSH，也不把用户本机的安�
 
 ```text
 Runtime package:    @deepseek-ai/dsh
-Runtime version:    0.1.0-rc.8
-Checked at:         2026-08-20
+Runtime version:    0.1.1-rc.2
+Checked at:         2026-08-22
 ```
 
 项目依赖最终以 `package.json` 和 lockfile 中的精确版本为准。EzDSH 默认直接消费已经发布的 DSH 包，不再在 `postinstall` 或正式打包前安装完整 upstream workspace。生产入口为 `node_modules/@deepseek-ai/dsh/lib/bin.js`，electron-builder 会把生产依赖随 `node_modules/**/*` 放入安装包。
