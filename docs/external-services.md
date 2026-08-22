@@ -1,13 +1,15 @@
 # External Services
 
 EzDSH can manage optional user-owned processes from Settings → External services.
+Adding a service automatically puts it under management; the only startup choice
+is whether it should start with EzDSH.
 An external service is never part of the EzDSH or DSH Runtime startup success
-path: enabled entries with `autoStart: true` are started asynchronously only
-after the DSH Runtime reports `ready`. A failed or exited service is reported in
-its own state and does not make EzDSH fail.
+path: entries with `autoStart: true` are started asynchronously only after the
+DSH Runtime reports `ready`. A failed or exited service is reported in its own
+state and does not make EzDSH fail.
 
-Entries with `enabled: true` and `autoStart: false` remain available for manual
-Start, Stop, and Restart actions without starting automatically with EzDSH.
+Entries with `autoStart: false` remain available for manual Start, Stop, and
+Restart actions without starting automatically with EzDSH.
 
 ## Execution model
 
@@ -47,7 +49,6 @@ Environment:
   PORT=3456
   EZDSH_API_URL=http://127.0.0.1:53260
   WORKBENCH_DATA_DIR=/path/to/user/workbench-data
-Enabled: on
 Auto-start: on
 ```
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   auditLabel,
   auditTone,
+  categoryLabel,
   compareVersions,
   phaseLabel,
   updateAvailable
@@ -53,5 +54,13 @@ describe('badges and phase labels', () => {
     expect(phaseLabel(en, 'downloading')).toBe('Downloading…')
     expect(phaseLabel(en, 'done')).toBe('Installed')
     expect(phaseLabel(en, 'failed')).toBe('Operation failed')
+  })
+})
+
+describe('category labels', () => {
+  it('uses the Chinese label in Chinese and the category id in English', () => {
+    const category = { id: 'workflow', name: 'Workflow' }
+    expect(categoryLabel(category, 'zh')).toBe('工作流程')
+    expect(categoryLabel(category, 'en')).toBe('workflow')
   })
 })

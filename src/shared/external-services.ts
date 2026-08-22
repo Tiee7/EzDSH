@@ -17,7 +17,6 @@ export interface ExternalServiceDefinition {
   args: string[]
   cwd?: string
   env: Record<string, string>
-  enabled: boolean
   autoStart: boolean
 }
 

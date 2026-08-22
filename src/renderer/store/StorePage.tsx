@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react'
-import type { AppCopy } from '../../shared/locale.js'
+import type { AppCopy, AppLocale } from '../../shared/locale.js'
 import type { DeepLinkInstallTarget } from '../../shared/contracts.js'
 import type { StoreKind } from '../../shared/store.js'
 import { StoreBrowser } from './StoreBrowser.js'
 
 interface StorePageProps {
   copy: AppCopy
+  locale: AppLocale
   deepLinkTarget?: DeepLinkInstallTarget
 }
 
 /** The store tab page: skill bundles and MCP tool extensions side by side. */
-export function StorePage({ copy, deepLinkTarget }: StorePageProps): JSX.Element {
+export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX.Element {
   const [surface, setSurface] = useState<StoreKind>('skill')
   useEffect(() => {
     if (deepLinkTarget !== undefined) {
@@ -37,7 +38,7 @@ export function StorePage({ copy, deepLinkTarget }: StorePageProps): JSX.Element
           {copy.storeSurfaceMcp}
         </button>
       </div>
-      <StoreBrowser key={surface} kind={surface} copy={copy} deepLinkTarget={deepLinkTarget} />
+      <StoreBrowser key={surface} kind={surface} copy={copy} locale={locale} deepLinkTarget={deepLinkTarget} />
     </div>
   )
 }

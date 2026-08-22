@@ -1,7 +1,7 @@
 /** Pure display helpers for the store UI: version comparison and audit badge mapping. */
 
-import type { InstalledRecord, StoreAuditLevel, StoreEntry, InstallPhase } from '../../shared/store.js'
-import type { AppCopy } from '../../shared/locale.js'
+import { STORE_CATEGORY_LABELS_ZH, type InstalledRecord, type StoreAuditLevel, type StoreCategory, type StoreEntry, type InstallPhase } from '../../shared/store.js'
+import type { AppCopy, AppLocale } from '../../shared/locale.js'
 
 /**
  * Compare two dotted version strings numerically part by part.
@@ -36,6 +36,12 @@ export function auditLabel(copy: AppCopy, level: StoreAuditLevel): string {
   if (level === 'verified') return copy.auditVerified
   if (level === 'basic') return copy.auditBasic
   return copy.auditUnaudited
+}
+
+/** Display the Chinese category label in Chinese and the stable id in English. */
+export function categoryLabel(category: StoreCategory, locale: AppLocale): string {
+  if (locale === 'en') return category.id
+  return STORE_CATEGORY_LABELS_ZH[category.id] ?? category.name
 }
 
 /** Progress text for one install phase. */

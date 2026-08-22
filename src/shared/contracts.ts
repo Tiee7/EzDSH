@@ -68,15 +68,17 @@ export interface EzDSHBridge {
   store: {
     list(kind: StoreKind, query?: { category?: string; search?: string; page?: number }): Promise<StoreListResult>
     entry(kind: StoreKind, id: string): Promise<StoreEntry>
-    categories(): Promise<StoreCategory[]>
+    categories(kind: StoreKind): Promise<StoreCategory[]>
     /** Start an install: downloads and audits, then resolves at `confirm-wait` with the audit report. */
     install(kind: StoreKind, id: string): Promise<InstallState>
+    /** Re-run the audit and install once despite a blocking verdict, only after explicit user action. */
+    installAnyway(kind: StoreKind, id: string): Promise<InstallState>
     /** Answer a `confirm-wait` prompt; `accepted: false` cancels with `user-cancelled`. */
     confirmInstall(kind: StoreKind, id: string, accepted: boolean): Promise<InstallState>
     uninstall(kind: StoreKind, id: string): Promise<InstallState>
     listInstalled(): Promise<InstalledListResult>
     /** Explicitly refresh the catalog from the remote source; resolves with the fetch timestamp. */
-    refresh(): Promise<StoreRefreshResult>
+    refresh(kind: StoreKind): Promise<StoreRefreshResult>
     onStateChange(listener: (state: InstallState) => void): () => void
   }
   settings: {

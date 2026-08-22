@@ -11,13 +11,13 @@
  */
 
 import { createHash } from 'node:crypto'
-import type { StoreCategory, StoreEntry, StoreFile, StoreKind, StoreListResult } from '../../shared/store.js'
+import { STORE_CATEGORY_LABELS_ZH, type StoreCategory, type StoreEntry, type StoreFile, type StoreKind, type StoreListResult } from '../../shared/store.js'
 import type { StoreClient, StoreListQuery } from './store-client.js'
 
 /** URL prefix marking a file served from the bundled demo catalog. */
 export const DEMO_FILE_URL_PREFIX = 'https://hub.ezdsh.com/demo-files/'
 
-const DEMO_PAGE_SIZE = 24
+const DEMO_PAGE_SIZE = 12
 
 // ---- Skill payloads ----
 
@@ -703,14 +703,14 @@ export function demoEntries(kind: StoreKind): readonly StoreEntry[] {
 /** Demo category list spanning all surfaces. */
 export function demoCategories(): StoreCategory[] {
   return [
-    { id: 'workflow', name: 'Workflow' },
-    { id: 'quality', name: 'Code Quality' },
-    { id: 'docs', name: 'Documentation' },
-    { id: 'git', name: 'Git' },
-    { id: 'research', name: 'Research' },
-    { id: 'coding', name: 'Coding' },
-    { id: 'analysis', name: 'Analysis' },
-    { id: 'tools', name: 'Tools (MCP)' }
+    { id: 'workflow', name: STORE_CATEGORY_LABELS_ZH.workflow },
+    { id: 'quality', name: STORE_CATEGORY_LABELS_ZH.quality },
+    { id: 'docs', name: STORE_CATEGORY_LABELS_ZH.docs },
+    { id: 'git', name: STORE_CATEGORY_LABELS_ZH.git },
+    { id: 'research', name: STORE_CATEGORY_LABELS_ZH.research },
+    { id: 'coding', name: STORE_CATEGORY_LABELS_ZH.coding },
+    { id: 'analysis', name: STORE_CATEGORY_LABELS_ZH.analysis },
+    { id: 'tools', name: STORE_CATEGORY_LABELS_ZH.tools }
   ]
 }
 
@@ -728,7 +728,7 @@ export function demoList(kind: StoreKind, query: StoreListQuery = {}): StoreList
   const page = Math.max(1, query.page ?? 1)
   const pageCount = Math.max(1, Math.ceil(entries.length / DEMO_PAGE_SIZE))
   const slice = entries.slice((page - 1) * DEMO_PAGE_SIZE, page * DEMO_PAGE_SIZE)
-  return { entries: slice, page, pageCount, source: 'demo' }
+  return { entries: slice, total: entries.length, page, pageCount, source: 'demo' }
 }
 
 /** Fetch one demo entry; rejects for unknown ids like the remote endpoint. */

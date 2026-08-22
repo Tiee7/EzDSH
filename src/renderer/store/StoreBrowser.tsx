@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { AppCopy } from '../../shared/locale.js'
+import type { AppCopy, AppLocale } from '../../shared/locale.js'
 import type {
   AuditReport,
   InstalledRecord,
@@ -8,12 +8,14 @@ import type {
   StoreEntry,
   StoreKind
 } from '../../shared/store.js'
-import { auditLabel, auditTone, phaseLabel, updateAvailable } from './display.js'
+import { auditLabel, auditTone, categoryLabel, phaseLabel, updateAvailable } from './display.js'
+import { MarkdownContent } from './MarkdownContent.js'
 import './store.css'
 
 interface StoreBrowserProps {
   readonly kind: StoreKind
   readonly copy: AppCopy
+  readonly locale: AppLocale
   readonly deepLinkTarget?: import('../../shared/contracts.js').DeepLinkInstallTarget
 }
 
@@ -50,6 +52,20 @@ function AuditReportView({ report, copy }: { report: AuditReport; copy: AppCopy 
   )
 }
 
+export function AuditOverrideActions({ copy, disabled, onInstallAnyway }: {
+  copy: AppCopy
+  disabled: boolean
+  onInstallAnyway: () => void
+}): JSX.Element {
+  return (
+    <div className="confirm-row">
+      <button type="button" className="confirm-accept" disabled={disabled} onClick={onInstallAnyway}>
+        {copy.storeInstallAnyway}
+      </button>
+    </div>
+  )
+}
+
 /** One selectable entry card. */
 function EntryCard({ entry, installed, copy, selected, onSelect }: {
   entry: StoreEntry
@@ -75,12 +91,44 @@ function EntryCard({ entry, installed, copy, selected, onSelect }: {
   )
 }
 
+function Pagination({ page, pageCount, copy, onPageChange }: {
+  page: number
+  pageCount: number
+  copy: AppCopy
+  onPageChange: (page: number) => void
+}): JSX.Element {
+  return (
+    <nav className="store-pagination" aria-label={copy.storePagination}>
+      <button
+        type="button"
+        className="store-page-button"
+        disabled={page <= 1}
+        onClick={() => { onPageChange(page - 1) }}
+      >
+        {copy.storePreviousPage}
+      </button>
+      <span className="store-page-indicator">{copy.storePage(page, pageCount)}</span>
+      <button
+        type="button"
+        className="store-page-button"
+        disabled={page >= pageCount}
+        onClick={() => { onPageChange(page + 1) }}
+      >
+        {copy.storeNextPage}
+      </button>
+    </nav>
+  )
+}
+
 /** Generic catalog browser shared by the skill, preset, and MCP surfaces. */
-export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps): JSX.Element {
+export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowserProps): JSX.Element {
   const [categories, setCategories] = useState<readonly StoreCategory[]>([])
   const [category, setCategory] = useState<string>('')
   const [search, setSearch] = useState('')
   const [entries, setEntries] = useState<readonly StoreEntry[]>([])
+  const [totalCount, setTotalCount] = useState<number | undefined>()
+  const [page, setPage] = useState(1)
+  const [pageCount, setPageCount] = useState(1)
   const [installed, setInstalled] = useState<readonly InstalledRecord[]>([])
   const [selected, setSelected] = useState<StoreEntry | undefined>()
   const [installState, setInstallState] = useState<InstallState | undefined>()
@@ -100,12 +148,16 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
   const reload = useCallback(async (): Promise<void> => {
     setLoading(true)
     setError(false)
+    setTotalCount(undefined)
+    setPageCount(1)
     try {
       const [list, installedList] = await Promise.all([
-        window.EzDSH.store.list(kind, { category: category || undefined, search: search || undefined, page: 1 }),
+        window.EzDSH.store.list(kind, { category: category || undefined, search: search || undefined, page }),
         window.EzDSH.store.listInstalled()
       ])
       setEntries(list.entries)
+      setTotalCount(list.total ?? list.entries.length)
+      setPageCount(Math.max(1, list.pageCount))
       setDemoSource(list.source === 'demo')
       setFetchedAt(list.fetchedAt)
       setInstalled(installedList.records)
@@ -116,7 +168,7 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
     } finally {
       setLoading(false)
     }
-  }, [kind, category, search])
+  }, [kind, category, search, page])
 
   useEffect(() => {
     void reload()
@@ -127,7 +179,7 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
     setRefreshing(true)
     setRefreshError(false)
     try {
-      await window.EzDSH.store.refresh()
+      await window.EzDSH.store.refresh(kind)
       await reload()
     } catch {
       setRefreshError(true)
@@ -137,18 +189,20 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
   }, [reload, refreshing])
 
   useEffect(() => {
-    void window.EzDSH.store.categories()
+    void window.EzDSH.store.categories(kind)
       .then((rows) => { setCategories(rows) })
       .catch(() => { setCategories([]) })
   }, [kind])
 
-  const installById = useCallback(async (id: string): Promise<void> => {
+  const installById = useCallback(async (id: string, allowAuditBlock = false): Promise<void> => {
     setInstallState(undefined)
     try {
       const detail = await window.EzDSH.store.entry(kind, id)
       setSelected(detail)
       setInstallState({ kind, id, phase: 'downloading' })
-      const state = await window.EzDSH.store.install(kind, id)
+      const state = allowAuditBlock
+        ? await window.EzDSH.store.installAnyway(kind, id)
+        : await window.EzDSH.store.install(kind, id)
       setInstallState(state)
       if (state.phase === 'done') void reload()
     } catch (reason) {
@@ -159,6 +213,10 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
 
   const startInstall = useCallback(async (entry: StoreEntry): Promise<void> => {
     await installById(entry.id)
+  }, [installById])
+
+  const installAnyway = useCallback(async (entry: StoreEntry): Promise<void> => {
+    await installById(entry.id, true)
   }, [installById])
 
   useEffect(() => {
@@ -207,7 +265,7 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
       <aside className="store-sidebar">
         <button
           className={`category-item ${category === '' ? 'category-item-active' : ''}`}
-          onClick={() => { setCategory('') }}
+          onClick={() => { setCategory(''); setPage(1) }}
         >
           {copy.storeAllCategories}
         </button>
@@ -215,9 +273,9 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
           <button
             key={row.id}
             className={`category-item ${category === row.id ? 'category-item-active' : ''}`}
-            onClick={() => { setCategory(row.id) }}
+            onClick={() => { setCategory(row.id); setPage(1) }}
           >
-            {row.name}
+            {categoryLabel(row, locale)}
           </button>
         ))}
       </aside>
@@ -232,9 +290,12 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
           <input
             value={search}
             placeholder={copy.storeSearchPlaceholder}
-            onChange={(event) => { setSearch(event.target.value) }}
+            onChange={(event) => { setSearch(event.target.value); setPage(1) }}
           />
           {demoSource ? <span className="store-demo-badge">{copy.storeDemoBadge}</span> : null}
+          {totalCount !== undefined
+            ? <span className="store-count">{copy.storeTotalCount(totalCount)}</span>
+            : null}
           {refreshing
             ? <span className="store-meta">{copy.storeRefreshing}</span>
             : (
@@ -242,7 +303,7 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
                 {fetchedAt !== undefined ? copy.storeLastUpdated(new Date(fetchedAt).toLocaleString()) : copy.storeNeverRefreshed}
               </span>
               )}
-          <button className="store-refresh" disabled={refreshing} onClick={() => { void refreshCatalog() }}>
+          <button type="button" className="store-refresh" disabled={refreshing} onClick={() => { void refreshCatalog() }}>
             {copy.storeRefresh}
           </button>
           {refreshError ? <span className="store-error" role="alert">{copy.storeRefreshFailed}</span> : null}
@@ -265,6 +326,9 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
             />
           ))}
         </div>
+        {!loading && !error && pageCount > 1
+          ? <Pagination page={page} pageCount={pageCount} copy={copy} onPageChange={setPage} />
+          : null}
       </section>
       {selected === undefined ? <aside className="store-detail store-detail-empty" /> : (
         <aside className="store-detail">
@@ -275,7 +339,7 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
           </div>
           <p className="detail-description">{selected.description}</p>
           {selected.readme !== undefined
-            ? <pre className="detail-readme">{selected.readme}</pre>
+            ? <div className="detail-readme"><MarkdownContent markdown={selected.readme} /></div>
             : null}
           {selected.files !== undefined && selected.files.length > 0
             ? (
@@ -320,6 +384,11 @@ export function StoreBrowser({ kind, copy, deepLinkTarget }: StoreBrowserProps):
             : null}
           {installState !== undefined && installState.id === selected.id && installState.phase === 'failed' && installState.failureReason === 'audit-blocked'
             ? <p className="install-blocked">{copy.storeAuditBlocked}</p>
+            : null}
+          {installState !== undefined && installState.id === selected.id && installState.phase === 'failed' && installState.failureReason === 'audit-blocked'
+            ? (
+              <AuditOverrideActions copy={copy} disabled={busy} onInstallAnyway={() => { void installAnyway(selected) }} />
+              )
             : null}
           <div className="detail-actions">
             {installedById.get(selected.id) === undefined

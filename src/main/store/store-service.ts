@@ -3,7 +3,8 @@
  * to the remote client; installs run the pipeline
  * download → audit → confirm-wait → install → registry, publishing every
  * phase transition to renderer windows. One in-flight install per kind+id;
- * `block` verdicts abort before anything touches the DSH home.
+ * `block` verdicts abort before anything touches the DSH home unless the user
+ * explicitly chooses the one-shot override.
  *
  * @module store-service
  */
@@ -31,6 +32,7 @@ import { webProfilePatchFile } from './install-paths.js'
 import { installSkillBundle, SkillConflictError, uninstallSkill } from './skill-installer.js'
 import { installPresetBundle, PresetConflictError, uninstallPreset } from './preset-installer.js'
 import { installMcpEntry, uninstallMcpEntry } from './mcp-installer.js'
+import { InstallErrorReporter, type InstallErrorReport } from './install-reporter.js'
 
 /** Remote catalog source used only by explicit refreshes. */
 export interface RemoteCatalogSource {
@@ -48,6 +50,8 @@ export interface StoreServiceOptions {
   /** Catalog cache file path; enables offline serving of the last refresh. */
   catalogCachePath?: string
   fetchImpl?: typeof fetch
+  /** Best-effort Hub reporter; failures never affect the install result. */
+  installErrorReporter?: Pick<InstallErrorReporter, 'report'>
   /** Sink for install progress events forwarded to renderer windows. */
   onStateChange?: (state: InstallState) => void
 }
@@ -59,8 +63,8 @@ interface PendingInstall {
   readonly bundle?: DownloadedBundle
 }
 
-/** Page size of locally filtered catalog lists; matches the remote default. */
-const CATALOG_PAGE_SIZE = 24
+/** Page size of locally filtered catalog lists. */
+const CATALOG_PAGE_SIZE = 12
 
 /** Store facade owning catalog access and the install pipeline. */
 export class StoreService {
@@ -69,6 +73,7 @@ export class StoreService {
   private readonly registryPath: string | undefined
   private readonly catalogCachePath: string | undefined
   private readonly fetchImpl: typeof fetch
+  private readonly installErrorReporter: Pick<InstallErrorReporter, 'report'>
   private readonly emit: (state: InstallState) => void
   private readonly pending = new Map<string, PendingInstall>()
   private readonly inFlight = new Set<string>()
@@ -82,6 +87,7 @@ export class StoreService {
     this.registryPath = options.registryPath
     this.catalogCachePath = options.catalogCachePath
     this.fetchImpl = options.fetchImpl ?? fetch
+    this.installErrorReporter = options.installErrorReporter ?? new InstallErrorReporter({ fetchImpl: this.fetchImpl })
     this.emit = options.onStateChange ?? (() => undefined)
   }
 
@@ -123,6 +129,7 @@ export class StoreService {
     const snapshot = this.remoteCatalog
     return {
       entries: rows.slice((page - 1) * CATALOG_PAGE_SIZE, page * CATALOG_PAGE_SIZE),
+      total: rows.length,
       page,
       pageCount,
       ...(snapshot === undefined ? { source: 'demo' as const } : { fetchedAt: snapshot.fetchedAt })
@@ -138,42 +145,62 @@ export class StoreService {
     throw new Error(`No catalog entry for ${kind}/${id}`)
   }
 
-  /** List categories from the last refresh, or the bundled set before the first one. */
-  async categories(): Promise<StoreCategory[]> {
+  /** List non-empty categories for one kind from the last refresh or bundled catalog. */
+  async categories(kind: StoreKind): Promise<StoreCategory[]> {
     await this.ensureCatalog()
-    return this.remoteCatalog !== undefined ? [...this.remoteCatalog.categories] : demoCategories()
+    const source = this.remoteCatalog !== undefined ? this.remoteCatalog.categories : demoCategories()
+    const present = new Set(this.mergedEntries(kind).map((entry) => entry.category))
+    const bundled = new Map(demoCategories().map((row) => [row.id, row]))
+    const byId = new Map(source.map((row) => {
+      const known = bundled.get(row.id)
+      return [row.id, known === undefined ? row : { ...row, name: known.name }] as const
+    }))
+    for (const id of present) {
+      if (!byId.has(id)) byId.set(id, bundled.get(id) ?? { id, name: id })
+    }
+    return [...byId.values()].filter((row) => present.has(row.id))
+  }
+
+  /** Fetch every page for one kind so the offline snapshot can paginate locally. */
+  private async fetchAllRemoteEntries(kind: StoreKind): Promise<readonly StoreEntry[]> {
+    const first = await this.client.list(kind, {}, { force: true })
+    const remaining = await Promise.all(
+      Array.from({ length: Math.max(0, first.pageCount - 1) }, (_, index) =>
+        this.client.list(kind, { page: index + 2 }, { force: true }))
+    )
+    return [first.entries, ...remaining.map((page) => page.entries)].flat()
   }
 
   /**
-   * Explicitly refresh the catalog from the remote source, persist the
-   * snapshot, and start serving it. A failure leaves the previous catalog
-   * and cache untouched.
+   * Explicitly refresh one catalog kind from the remote source, persist the
+   * snapshot, and start serving it. Other kinds stay at their previous
+   * snapshot values. A failure leaves the previous catalog and cache untouched.
    */
-  async refresh(): Promise<StoreRefreshResult> {
+  async refresh(kind: StoreKind): Promise<StoreRefreshResult> {
     await this.ensureCatalog()
-    const [skills, presets, mcps, categories] = await Promise.all([
-      this.client.list('skill', {}, { force: true }),
-      this.client.list('preset', {}, { force: true }),
-      this.client.list('mcp', {}, { force: true }),
+    const [entries, categories] = await Promise.all([
+      this.fetchAllRemoteEntries(kind),
       this.client.categories({ force: true })
     ])
+    const byKind: Record<StoreKind, readonly StoreEntry[]> = {
+      skill: this.remoteCatalog?.byKind.skill ?? [],
+      preset: this.remoteCatalog?.byKind.preset ?? [],
+      mcp: this.remoteCatalog?.byKind.mcp ?? []
+    }
+    byKind[kind] = entries
     const catalog: CachedCatalog = {
       fetchedAt: new Date().toISOString(),
       categories,
-      byKind: {
-        skill: skills.entries,
-        preset: presets.entries,
-        mcp: mcps.entries,
-      }
+      byKind
     }
     if (this.catalogCachePath !== undefined) await writeCatalogCache(this.catalogCachePath, catalog)
     this.remoteCatalog = catalog
     return {
       fetchedAt: catalog.fetchedAt,
       counts: {
-        skill: skills.entries.length,
-        preset: presets.entries.length,
-        mcp: mcps.entries.length,
+        skill: catalog.byKind.skill.length,
+        preset: catalog.byKind.preset.length,
+        mcp: catalog.byKind.mcp.length,
       }
     }
   }
@@ -212,14 +239,21 @@ export class StoreService {
     return matches[0]
   }
 
-  /**
-   * Start an install: fetch, download, and audit the entry, then park at
-   * `confirm-wait` for the user's decision on the audit report.
-   * @param kind - the entry kind.
-   * @param id - the entry id.
-   * @returns the `confirm-wait` state with the audit report, or a `failed` state.
-   */
+  /** Start a normal install, stopping when the audit returns a blocking verdict. */
   async install(kind: StoreKind, id: string): Promise<InstallState> {
+    return this.installEntry(kind, id, false)
+  }
+
+  /** Install once despite a blocking audit verdict, at the user's explicit request. */
+  async installAnyway(kind: StoreKind, id: string): Promise<InstallState> {
+    return this.installEntry(kind, id, true)
+  }
+
+  /**
+   * Fetch, download, and audit an entry. Normal installs park at `confirm-wait`;
+   * the explicit override proceeds directly to installation after the same audit.
+   */
+  private async installEntry(kind: StoreKind, id: string, allowAuditBlock: boolean): Promise<InstallState> {
     const key = `${kind}:${id}`
     if (this.inFlight.has(key)) {
       throw new Error(`An install for ${key} is already in progress`)
@@ -238,7 +272,9 @@ export class StoreService {
       try {
         entry = await this.entry(kind, id)
       } catch (error) {
-        return this.finish({ kind, id, phase: 'failed', failureReason: 'download', message: describe(error) })
+        const message = describe(error)
+        this.reportInstallError(kind, id, 'fetch_entry_failed', message, { stage: 'entry' })
+        return this.finish({ kind, id, phase: 'failed', failureReason: 'download', message })
       }
 
       let bundle: DownloadedBundle | undefined
@@ -251,15 +287,25 @@ export class StoreService {
           bundle = await downloadBundle(entry.files ?? [], { fetchImpl: this.fetchImpl })
         } catch (error) {
           const reason = error instanceof DownloadError && /checksum/i.test(error.message) ? 'checksum' : 'download'
-          return this.finish({ kind, id, phase: 'failed', failureReason: reason, message: describe(error) })
+          const errorCode = classifyDownloadError(error)
+          const message = describe(error)
+          this.reportInstallError(kind, id, errorCode, message, { stage: 'download', failureReason: reason })
+          return this.finish({ kind, id, phase: 'failed', failureReason: reason, message })
         }
         this.publish({ kind, id, phase: 'auditing', message: 'Auditing bundle…' })
         audit = auditBundle(entry, bundle)
       }
 
       if (audit.verdict === 'block') {
+        this.reportInstallError(kind, id, 'audit_blocked', 'The audit blocked this entry', {
+          stage: 'audit',
+          findings: audit.findings.map(({ severity, rule, file }) => ({ severity, rule, ...(file === undefined ? {} : { file }) }))
+        })
+      }
+      if (audit.verdict === 'block' && !allowAuditBlock) {
         return this.finish({ kind, id, phase: 'failed', failureReason: 'audit-blocked', audit, message: 'The audit blocked this entry' })
       }
+      if (allowAuditBlock && audit.verdict === 'block') return this.runInstall(entry, audit, bundle)
       this.pending.set(key, { entry, audit, bundle })
       const state: InstallState = { kind, id, phase: 'confirm-wait', audit }
       this.publish(state)
@@ -344,6 +390,9 @@ export class StoreService {
         error instanceof PresetConflictError
           ? 'conflict'
           : 'install'
+      if (reason !== 'conflict') {
+        this.reportInstallError(entry.kind, entry.id, 'write_failed', describe(error), { stage: 'install', failureReason: reason })
+      }
       return this.finish({ kind, id, phase: 'failed', failureReason: reason, audit, message: describe(error) })
     }
     return this.finish({ kind, id, phase: 'done', audit })
@@ -352,6 +401,15 @@ export class StoreService {
   private finish(state: InstallState): InstallState {
     this.publish(state)
     return state
+  }
+
+  private reportInstallError(kind: StoreKind, entryId: string, errorCode: string, errorMessage: string, detail?: Readonly<Record<string, unknown>>): void {
+    const report: InstallErrorReport = { kind, entryId, errorCode, errorMessage, ...(detail === undefined ? {} : { detail }) }
+    try {
+      void Promise.resolve(this.installErrorReporter.report(report)).catch(() => {})
+    } catch {
+      // Reporting must never affect the install result.
+    }
   }
 
   private ensureRegistry(): InstallRegistry {
@@ -382,4 +440,11 @@ function sha256Of(bytes: Buffer): string {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function classifyDownloadError(error: unknown): 'checksum_mismatch' | 'timeout' | 'download_failed' {
+  const message = describe(error)
+  if (/checksum/i.test(message)) return 'checksum_mismatch'
+  if (error instanceof Error && (error.name === 'AbortError' || /abort|timeout/i.test(message))) return 'timeout'
+  return 'download_failed'
 }

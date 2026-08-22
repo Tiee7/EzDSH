@@ -120,6 +120,6 @@ describe('withDemoFallback', () => {
     expect(list.entries.length).toBeGreaterThan(0)
     const entry = await client.entry('mcp', 'context7')
     expect(entry.mcp?.serverName).toBe('context7')
-    expect(await client.categories()).toContainEqual({ id: 'tools', name: 'Tools (MCP)' })
+    expect(await client.categories()).toContainEqual({ id: 'tools', name: '工具' })
   })
 })

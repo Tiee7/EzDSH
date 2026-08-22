@@ -82,12 +82,27 @@ export interface StoreEntry {
 /** One category row from the curation API. */
 export interface StoreCategory {
   readonly id: string
+  /** Chinese display label for the category. */
   readonly name: string
+}
+
+/** Stable Chinese labels for the bundled catalog categories. */
+export const STORE_CATEGORY_LABELS_ZH: Readonly<Record<string, string>> = {
+  workflow: '工作流程',
+  quality: '代码质量',
+  docs: '文档',
+  git: 'Git',
+  research: '研究',
+  coding: '编程',
+  analysis: '数据分析',
+  tools: '工具'
 }
 
 /** List response from `GET /v1/store`. */
 export interface StoreListResult {
   readonly entries: readonly StoreEntry[]
+  /** Number of entries matching the query, before paging. */
+  readonly total?: number
   readonly page: number
   readonly pageCount: number
   /** Present when the list was served by the bundled demo catalog fallback. */
@@ -100,7 +115,7 @@ export interface StoreListResult {
 export interface StoreRefreshResult {
   /** ISO timestamp of the fetch. */
   readonly fetchedAt: string
-  /** Entry counts per kind as fetched from the remote. */
+  /** Entry counts per kind in the remote snapshot after the refresh. */
   readonly counts: Readonly<Record<StoreKind, number>>
 }
 

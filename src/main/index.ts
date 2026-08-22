@@ -653,10 +653,10 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
-  ipcMain.handle('store:categories', async (): Promise<IpcResult<Awaited<ReturnType<StoreService['categories']>>>> => {
+  ipcMain.handle('store:categories', async (_event, kind: StoreKind): Promise<IpcResult<Awaited<ReturnType<StoreService['categories']>>>> => {
     try {
       if (storeService === undefined) throw new Error('Store service is not ready')
-      return success(await storeService.categories())
+      return success(await storeService.categories(kind))
     } catch (error) {
       return failure(error)
     }
@@ -665,6 +665,14 @@ function registerIpcHandlers(): void {
     try {
       if (storeService === undefined) throw new Error('Store service is not ready')
       return success(await storeService.install(kind, id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('store:install-anyway', async (_event, kind: StoreKind, id: string): Promise<IpcResult<Awaited<ReturnType<StoreService['installAnyway']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.installAnyway(kind, id))
     } catch (error) {
       return failure(error)
     }
@@ -693,10 +701,10 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
-  ipcMain.handle('store:refresh', async (): Promise<IpcResult<Awaited<ReturnType<StoreService['refresh']>>>> => {
+  ipcMain.handle('store:refresh', async (_event, kind: StoreKind): Promise<IpcResult<Awaited<ReturnType<StoreService['refresh']>>>> => {
     try {
       if (storeService === undefined) throw new Error('Store service is not ready')
-      return success(await storeService.refresh())
+      return success(await storeService.refresh(kind))
     } catch (error) {
       return failure(error)
     }

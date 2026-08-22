@@ -208,11 +208,11 @@ export function App() {
                 )
               case 'store':
                 return activeTab === 'store'
-                  ? <section key="store" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} deepLinkTarget={deepLinkTarget} /></section>
+                  ? <section key="store" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} locale={locale} deepLinkTarget={deepLinkTarget} /></section>
                   : null
               case 'presets':
                 return activeTab === 'presets'
-                  ? <section key="presets" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} /></section>
+                  ? <section key="presets" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} locale={locale} /></section>
                   : null
               case 'docs':
                 return (

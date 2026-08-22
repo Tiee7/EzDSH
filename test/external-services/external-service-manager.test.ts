@@ -40,7 +40,6 @@ function definition(overrides: Partial<ExternalServiceDefinition> = {}): Externa
     args: ['server.js'],
     cwd: '/tmp/workbench',
     env: { PORT: '3456' },
-    enabled: true,
     autoStart: true,
     ...overrides,
   }
@@ -65,6 +64,17 @@ describe('ExternalServiceManager', () => {
 
     const persisted = JSON.parse(await readFile(join(root, 'external-services.json'), 'utf8')) as unknown[]
     expect(persisted).toHaveLength(2)
+  })
+
+  it('treats every added service as managed and keeps manual start available', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-external-services-'))
+    const manager = new ExternalServiceManager(options(root, () => new FakeChild() as unknown as ChildProcess))
+    await manager.initialize()
+
+    const created = await manager.create(definition({ autoStart: false }))
+    expect(created).not.toHaveProperty('enabled')
+
+    await expect(manager.start('workbench')).resolves.toMatchObject({ state: 'running' })
   })
 
   it('isolates a failed startup to the failing service', async () => {

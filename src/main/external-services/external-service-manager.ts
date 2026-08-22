@@ -120,7 +120,6 @@ export class ExternalServiceManager {
       || JSON.stringify(current.args) !== JSON.stringify(next.args)
       || current.cwd !== next.cwd
       || JSON.stringify(current.env) !== JSON.stringify(next.env)
-      || (current.enabled && !next.enabled)
     if (processChanged && this.children.has(id)) await this.stop(id)
     this.definitions.set(id, next)
     if (!this.runtime.has(id)) this.runtime.set(id, { state: 'stopped' })
@@ -142,7 +141,6 @@ export class ExternalServiceManager {
   async start(id: string): Promise<ExternalServiceSnapshot> {
     await this.initialize()
     const definition = this.requireDefinition(id)
-    if (!definition.enabled) throw new Error(`External service "${id}" is disabled`)
     const existing = this.children.get(id)
     if (existing !== undefined && !existing.closed) return this.snapshot(id)
 
@@ -214,7 +212,7 @@ export class ExternalServiceManager {
     await this.initialize()
     await Promise.allSettled(
       this.list()
-        .filter((service) => service.enabled && service.autoStart)
+        .filter((service) => service.autoStart)
         .map((service) => this.start(service.id)),
     )
   }
@@ -313,8 +311,7 @@ function normalizeDefinition(value: unknown): ExternalServiceDefinition {
     args: normalizedCommand.args,
     ...(cwd === undefined ? {} : { cwd }),
     env,
-    enabled: value.enabled !== false,
-    autoStart: value.autoStart === true,
+    autoStart: value.autoStart === true && value.enabled !== false,
   }
 }
 

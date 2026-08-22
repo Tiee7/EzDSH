@@ -68,10 +68,16 @@ export interface AppCopy {
   storeNeverRefreshed: string
   storeEmpty: string
   storeLoading: string
+  storeTotalCount: (count: number) => string
+  storePagination: string
+  storePreviousPage: string
+  storeNextPage: string
+  storePage: (page: number, pageCount: number) => string
   storeDetailFiles: string
   storeDetailMcp: string
   storeConfirmTitle: string
   storeConfirmInstall: string
+  storeInstallAnyway: string
   storeCancel: string
   storeAuditReport: string
   storeAuditFindingsNone: string
@@ -171,10 +177,7 @@ export interface AppCopy {
   externalServicesCwd: string
   externalServicesEnv: string
   externalServicesEnvHint: string
-  externalServicesEnabled: string
   externalServicesAutoStart: string
-  externalServicesAutoStartHint: string
-  externalServicesOnlyManaged: string
   externalServicesEmpty: string
   externalServicesLoading: string
   externalServicesFailed: string
@@ -314,10 +317,16 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeNeverRefreshed: '内置目录，未更新',
     storeEmpty: '这里还没有内容',
     storeLoading: '加载中…',
+    storeTotalCount: (count) => `共 ${count} 个`,
+    storePagination: '目录分页',
+    storePreviousPage: '上一页',
+    storeNextPage: '下一页',
+    storePage: (page, pageCount) => `第 ${page} / ${pageCount} 页`,
     storeDetailFiles: '包含文件',
     storeDetailMcp: 'MCP 服务器配置',
     storeConfirmTitle: '安全检测报告',
     storeConfirmInstall: '确认安装',
+    storeInstallAnyway: '仍要安装',
     storeCancel: '取消',
     storeAuditReport: '检测结果',
     storeAuditFindingsNone: '未发现问题',
@@ -400,7 +409,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimePort: '端口',
     settingsRestartRuntime: '重启 Runtime',
     settingsExternalServices: '外部服务',
-    settingsExternalServicesHint: 'Runtime 就绪后异步启动指定命令；服务失败不会影响 EzDSH。也可以只纳入管理而不自动启动。',
+    settingsExternalServicesHint: '“跟随启动”表示 DSH Runtime 就绪后自动启动该服务；关闭后仍可手动管理。服务失败不会影响 EzDSH。',
     externalServicesAdd: '添加服务',
     externalServicesEdit: '编辑',
     externalServicesDelete: '删除',
@@ -417,10 +426,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     externalServicesCwd: '工作目录（可选）',
     externalServicesEnv: '环境变量（可选）',
     externalServicesEnvHint: '每行一个 KEY=VALUE，敏感值不会显示在状态中。',
-    externalServicesEnabled: '纳入管理',
-    externalServicesAutoStart: 'Runtime 就绪后自动启动',
-    externalServicesAutoStartHint: '关闭后仍可在此页面手动开始、停止和重启。',
-    externalServicesOnlyManaged: '仅管理，不自动启动',
+    externalServicesAutoStart: '跟随启动',
     externalServicesEmpty: '还没有外部服务。',
     externalServicesLoading: '正在加载外部服务…',
     externalServicesFailed: '外部服务操作失败',
@@ -559,10 +565,16 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeNeverRefreshed: 'Bundled catalog, never refreshed',
     storeEmpty: 'Nothing here yet',
     storeLoading: 'Loading…',
+    storeTotalCount: (count) => `Total ${count}`,
+    storePagination: 'Catalog pagination',
+    storePreviousPage: 'Previous',
+    storeNextPage: 'Next',
+    storePage: (page, pageCount) => `Page ${page} of ${pageCount}`,
     storeDetailFiles: 'Bundled files',
     storeDetailMcp: 'MCP server wiring',
     storeConfirmTitle: 'Security audit report',
     storeConfirmInstall: 'Confirm install',
+    storeInstallAnyway: 'Install anyway',
     storeCancel: 'Cancel',
     storeAuditReport: 'Audit result',
     storeAuditFindingsNone: 'No issues found',
@@ -645,7 +657,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimePort: 'Port',
     settingsRestartRuntime: 'Restart runtime',
     settingsExternalServices: 'External services',
-    settingsExternalServicesHint: 'Start selected commands asynchronously after Runtime is ready. A service failure never blocks EzDSH; entries can also be managed without auto-starting.',
+    settingsExternalServicesHint: '“Follow startup” starts the service after the DSH Runtime is ready. Turning it off keeps manual controls available, and service failures never block EzDSH.',
     externalServicesAdd: 'Add service',
     externalServicesEdit: 'Edit',
     externalServicesDelete: 'Delete',
@@ -662,10 +674,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     externalServicesCwd: 'Working directory (optional)',
     externalServicesEnv: 'Environment (optional)',
     externalServicesEnvHint: 'One KEY=VALUE per line; values are not shown in process status.',
-    externalServicesEnabled: 'Managed',
-    externalServicesAutoStart: 'Start automatically after Runtime is ready',
-    externalServicesAutoStartHint: 'When disabled, the service can still be started, stopped, or restarted here.',
-    externalServicesOnlyManaged: 'Managed only; no auto-start',
+    externalServicesAutoStart: 'Follow startup',
     externalServicesEmpty: 'No external services yet.',
     externalServicesLoading: 'Loading external services…',
     externalServicesFailed: 'External service operation failed',

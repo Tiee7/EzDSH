@@ -58,12 +58,13 @@ const bridge: EzDSHBridge = {
   store: {
     list: (kind, query) => invoke('store:list', kind, query ?? {}),
     entry: (kind, id) => invoke('store:entry', kind, id),
-    categories: () => invoke('store:categories'),
+    categories: (kind) => invoke('store:categories', kind),
     install: (kind, id) => invoke('store:install', kind, id),
+    installAnyway: (kind, id) => invoke('store:install-anyway', kind, id),
     confirmInstall: (kind, id, accepted) => invoke('store:confirm-install', kind, id, accepted),
     uninstall: (kind, id) => invoke('store:uninstall', kind, id),
     listInstalled: () => invoke('store:list-installed'),
-    refresh: () => invoke('store:refresh'),
+    refresh: (kind) => invoke('store:refresh', kind),
     onStateChange: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state)
       ipcRenderer.on('store:state-change', handler)

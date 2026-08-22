@@ -18,7 +18,6 @@ interface Draft {
   args: string
   cwd: string
   env: string
-  enabled: boolean
   autoStart: boolean
 }
 
@@ -28,7 +27,6 @@ const EMPTY_DRAFT: Draft = {
   args: '',
   cwd: '',
   env: '',
-  enabled: true,
   autoStart: false,
 }
 
@@ -39,7 +37,6 @@ function draftFromService(service: ExternalServiceSnapshot): Draft {
     args: service.args.join('\n'),
     cwd: service.cwd ?? '',
     env: Object.entries(service.env).map(([key, value]) => `${key}=${value}`).join('\n'),
-    enabled: service.enabled,
     autoStart: service.autoStart,
   }
 }
@@ -76,7 +73,6 @@ function serviceInput(draft: Draft): ExternalServiceCreateInput | ExternalServic
     args: normalizedCommand.args,
     ...(draft.cwd.trim() === '' ? {} : { cwd: draft.cwd.trim() }),
     env,
-    enabled: draft.enabled,
     autoStart: draft.autoStart,
   }
 }
@@ -200,9 +196,9 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
     }
   }
 
-  const toggle = async (service: ExternalServiceSnapshot, field: 'enabled' | 'autoStart'): Promise<void> => {
+  const toggleAutoStart = async (service: ExternalServiceSnapshot): Promise<void> => {
     await runAction(service.id, () => window.EzDSH.externalServices.update(service.id, {
-      [field]: !service[field],
+      autoStart: !service.autoStart,
     }))
   }
 
@@ -247,15 +243,8 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
               <span className="external-service-field-hint">{copy.externalServicesEnvHint}</span>
             </label>
             <label className="external-service-check">
-              <input type="checkbox" checked={draft.enabled} onChange={(event) => { setField('enabled', event.target.checked) }} />
-              {copy.externalServicesEnabled}
-            </label>
-            <label className="external-service-check">
               <input type="checkbox" checked={draft.autoStart} onChange={(event) => { setField('autoStart', event.target.checked) }} />
-              <span>
-                {copy.externalServicesAutoStart}
-                <span className="external-service-field-hint">{copy.externalServicesAutoStartHint}</span>
-              </span>
+              {copy.externalServicesAutoStart}
             </label>
             <p className="external-service-security-hint">{copy.externalServicesSecurityHint}</p>
             {error ? <p className="settings-error">{error}</p> : null}
@@ -287,7 +276,6 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
                     <span className={`settings-dot ${service.state === 'running' ? 'settings-dot-ready' : ''}`} aria-hidden="true" />
                     <strong>{service.name}</strong>
                     <span className="external-service-state">{stateLabel(copy, service.state)}</span>
-                    {service.autoStart ? null : <span className="external-service-managed-badge">{copy.externalServicesOnlyManaged}</span>}
                   </div>
                   <code className="external-service-command">{commandLabel(service)}</code>
                   {service.error ? <p className="settings-error">{service.error}</p> : null}
@@ -295,14 +283,10 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
                 </div>
                 <div className="external-service-controls">
                   <label className="external-service-toggle">
-                    <input type="checkbox" checked={service.enabled} disabled={busy} onChange={() => { void toggle(service, 'enabled') }} />
-                    {copy.externalServicesEnabled}
-                  </label>
-                  <label className="external-service-toggle">
-                    <input type="checkbox" checked={service.autoStart} disabled={busy} onChange={() => { void toggle(service, 'autoStart') }} />
+                    <input type="checkbox" checked={service.autoStart} disabled={busy} onChange={() => { void toggleAutoStart(service) }} />
                     {copy.externalServicesAutoStart}
                   </label>
-                  {active ? <button type="button" className="settings-action" disabled={busy || service.state !== 'running'} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.stop(service.id)) }}>{copy.externalServicesStop}</button> : <button type="button" className="settings-action" disabled={busy || !service.enabled} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.start(service.id)) }}>{copy.externalServicesStart}</button>}
+                  {active ? <button type="button" className="settings-action external-service-process-action" disabled={busy || service.state !== 'running'} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.stop(service.id)) }}>{copy.externalServicesStop}<span className="external-service-action-icon external-service-action-icon-stop" aria-hidden="true">■</span></button> : <button type="button" className="settings-action external-service-process-action" disabled={busy} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.start(service.id)) }}>{copy.externalServicesStart}<span className="external-service-action-icon external-service-action-icon-start" aria-hidden="true">▶</span></button>}
                   <button type="button" className="settings-action" disabled={busy || service.state !== 'running'} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.restart(service.id)) }}>{copy.externalServicesRestart}</button>
                   <button type="button" className="settings-action" disabled={busy} onClick={() => { beginEdit(service) }}>{copy.externalServicesEdit}</button>
                   <button type="button" className="settings-action" disabled={busy} onClick={() => { void remove(service) }}>{copy.externalServicesDelete}</button>
