@@ -18,7 +18,7 @@ describe('application identity', () => {
   })
 
   it('exposes an update check action in the application menu', () => {
-    const template = getApplicationMenuTemplate({ onCheckForUpdates: () => undefined })
+    const template = getApplicationMenuTemplate({ locale: 'zh', onCheckForUpdates: () => undefined })
     const appMenu = template[0]
     expect(appMenu && 'submenu' in appMenu
       ? appMenu.submenu?.some((item) => 'label' in item && item.label === '检查更新…')
