@@ -43,9 +43,27 @@ If macOS warns "cannot verify the developer" on first open:
 
 ## Windows installation
 
+The Windows installer is not code-signed yet, so Windows will show a security warning. Click **More info** and then **Run anyway** to proceed.
+
 1. Run the downloaded `.exe` installer;
-2. Follow the setup wizard (you can choose a custom install directory);
-3. Open EzDSH from the Start menu.
+
+   ![Windows installation step 1](/en/1.png)
+
+2. When the "Windows protected your PC" prompt appears, click **More info**;
+
+   ![Windows installation step 2](/en/2.png)
+
+3. Click **Run anyway** to continue the installation;
+
+   ![Windows installation step 3](/en/3.png)
+
+4. Follow the setup wizard to complete the installation;
+
+   ![Windows installation step 4](/en/4.png)
+
+5. Choose the installation directory, recommended on the D: drive.
+
+   ![Windows installation step 5](/en/5.png)
 
 ## After installation
 
