@@ -14,6 +14,8 @@ import './store.css'
 
 interface StoreBrowserProps {
   readonly kind: StoreKind
+  /** Keep this browser scoped to one catalog category, e.g. the plugin surface. */
+  readonly fixedCategory?: string
   readonly copy: AppCopy
   readonly locale: AppLocale
   readonly deepLinkTarget?: import('../../shared/contracts.js').DeepLinkInstallTarget
@@ -121,9 +123,9 @@ function Pagination({ page, pageCount, copy, onPageChange }: {
 }
 
 /** Generic catalog browser shared by the skill, preset, and MCP surfaces. */
-export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowserProps): JSX.Element {
+export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget }: StoreBrowserProps): JSX.Element {
   const [categories, setCategories] = useState<readonly StoreCategory[]>([])
-  const [category, setCategory] = useState<string>('')
+  const [category, setCategory] = useState<string>(fixedCategory ?? '')
   const [search, setSearch] = useState('')
   const [entries, setEntries] = useState<readonly StoreEntry[]>([])
   const [totalCount, setTotalCount] = useState<number | undefined>()
@@ -138,6 +140,9 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
   const [fetchedAt, setFetchedAt] = useState<string | undefined>()
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState(false)
+  const [runtimeRestartDeferred, setRuntimeRestartDeferred] = useState(false)
+  const [runtimeRestarting, setRuntimeRestarting] = useState(false)
+  const [runtimeRestartError, setRuntimeRestartError] = useState<string | undefined>()
 
   const installedById = useMemo(() => {
     const map = new Map<string, InstalledRecord>()
@@ -163,12 +168,22 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
       setInstalled(installedList.records)
       setSelected(undefined)
       setInstallState(undefined)
+      setRuntimeRestartDeferred(false)
+      setRuntimeRestartError(undefined)
     } catch {
       setError(true)
     } finally {
       setLoading(false)
     }
-  }, [kind, category, search, page])
+  }, [kind, fixedCategory, category, search, page])
+
+  const refreshInstalled = useCallback(async (): Promise<void> => {
+    try {
+      setInstalled((await window.EzDSH.store.listInstalled()).records)
+    } catch {
+      // The install result remains authoritative even if the list refresh is delayed.
+    }
+  }, [])
 
   useEffect(() => {
     void reload()
@@ -189,13 +204,19 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
   }, [reload, refreshing])
 
   useEffect(() => {
+    if (fixedCategory !== undefined) {
+      setCategories([])
+      return
+    }
     void window.EzDSH.store.categories(kind)
       .then((rows) => { setCategories(rows) })
       .catch(() => { setCategories([]) })
-  }, [kind])
+  }, [kind, fixedCategory])
 
   const installById = useCallback(async (id: string, allowAuditBlock = false): Promise<void> => {
     setInstallState(undefined)
+    setRuntimeRestartDeferred(false)
+    setRuntimeRestartError(undefined)
     try {
       const detail = await window.EzDSH.store.entry(kind, id)
       setSelected(detail)
@@ -204,12 +225,12 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
         ? await window.EzDSH.store.installAnyway(kind, id)
         : await window.EzDSH.store.install(kind, id)
       setInstallState(state)
-      if (state.phase === 'done') void reload()
+      if (state.phase === 'done') void refreshInstalled()
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason)
       setInstallState({ kind, id, phase: 'failed', message })
     }
-  }, [kind, reload])
+  }, [kind, refreshInstalled])
 
   const startInstall = useCallback(async (entry: StoreEntry): Promise<void> => {
     await installById(entry.id)
@@ -232,33 +253,48 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
     void installById(deepLinkTarget.id)
   }, [deepLinkTarget, kind, installById])
 
+  const restartRuntime = useCallback(async (): Promise<void> => {
+    setRuntimeRestarting(true)
+    setRuntimeRestartError(undefined)
+    try {
+      await window.EzDSH.runtime.restart()
+      setRuntimeRestartDeferred(true)
+    } catch (reason) {
+      setRuntimeRestartError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setRuntimeRestarting(false)
+    }
+  }, [])
+
   const confirmInstall = useCallback(async (accepted: boolean): Promise<void> => {
     if (selected === undefined || installState === undefined) return
     try {
       const state = await window.EzDSH.store.confirmInstall(kind, selected.id, accepted)
       setInstallState(state)
-      if (state.phase === 'done') void reload()
+      if (state.phase === 'done') void refreshInstalled()
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason)
       setInstallState({ kind, id: selected.id, phase: 'failed', message })
     }
-  }, [kind, selected, installState, reload])
+  }, [kind, selected, installState, refreshInstalled])
 
   const uninstall = useCallback(async (entry: StoreEntry): Promise<void> => {
+    setRuntimeRestartDeferred(false)
+    setRuntimeRestartError(undefined)
     try {
       setInstallState({ kind, id: entry.id, phase: 'installing', message: copy.storeUninstall })
       const state = await window.EzDSH.store.uninstall(kind, entry.id)
       setInstallState(state)
-      if (state.phase === 'done') void reload()
+      if (state.phase === 'done') void refreshInstalled()
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason)
       setInstallState({ kind, id: entry.id, phase: 'failed', message })
     }
-  }, [kind, copy, reload])
+  }, [kind, copy, refreshInstalled])
 
   const busy = installState !== undefined
     && installState.id === selected?.id
-    && (installState.phase === 'downloading' || installState.phase === 'auditing' || installState.phase === 'installing')
+    && (installState.phase === 'downloading' || installState.phase === 'auditing' || installState.phase === 'installing' || runtimeRestarting)
 
   return (
     <div className="store-layout">
@@ -269,15 +305,17 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
         >
           {copy.storeAllCategories}
         </button>
-        {categories.map((row) => (
-          <button
-            key={row.id}
-            className={`category-item ${category === row.id ? 'category-item-active' : ''}`}
-            onClick={() => { setCategory(row.id); setPage(1) }}
-          >
-            {categoryLabel(row, locale)}
-          </button>
-        ))}
+        {fixedCategory === undefined
+          ? categories.map((row) => (
+            <button
+              key={row.id}
+              className={`category-item ${category === row.id ? 'category-item-active' : ''}`}
+              onClick={() => { setCategory(row.id); setPage(1) }}
+            >
+              {categoryLabel(row, locale)}
+            </button>
+            ))
+          : <span className="category-item category-item-active">{categoryLabel({ id: fixedCategory, name: fixedCategory }, locale)}</span>}
       </aside>
       <section className="store-list">
         <form
@@ -322,7 +360,12 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
               installed={installedById.get(entry.id)}
               copy={copy}
               selected={selected?.id === entry.id}
-              onSelect={() => { setSelected(entry); setInstallState(undefined) }}
+              onSelect={() => {
+                setSelected(entry)
+                setInstallState(undefined)
+                setRuntimeRestartDeferred(false)
+                setRuntimeRestartError(undefined)
+              }}
             />
           ))}
         </div>
@@ -361,6 +404,14 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
               </div>
               )
             : null}
+          {selected.plugin !== undefined
+            ? (
+              <div className="detail-files">
+                <p>{copy.storeDetailPlugin}</p>
+                <pre>{selected.plugin.source}</pre>
+              </div>
+              )
+            : null}
           {installState?.audit !== undefined && installState.id === selected.id
             ? <AuditReportView report={installState.audit} copy={copy} />
             : null}
@@ -369,6 +420,25 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
                 {phaseLabel(copy, installState.phase)}
                 {installState.message !== undefined ? ` — ${installState.message}` : ''}
               </p>
+            : null}
+          {installState?.phase === 'done' && installState.id === selected.id && installState.runtimeRestartRequired && !runtimeRestartDeferred
+            ? (
+              <div className="runtime-restart-notice" role="status">
+                <p>{copy.storeRuntimeRestartRequired}</p>
+                {runtimeRestartError !== undefined ? <p className="runtime-restart-error">{runtimeRestartError || copy.storeRuntimeRestartFailed}</p> : null}
+                <div className="runtime-restart-actions">
+                  <button type="button" className="confirm-accept" disabled={runtimeRestarting} onClick={() => { void restartRuntime() }}>
+                    {runtimeRestarting ? copy.storeRuntimeRestarting : copy.storeRuntimeRestartNow}
+                  </button>
+                  <button type="button" className="confirm-cancel" disabled={runtimeRestarting} onClick={() => { setRuntimeRestartDeferred(true) }}>
+                    {copy.storeRuntimeRestartLater}
+                  </button>
+                </div>
+              </div>
+              )
+            : null}
+          {installState?.phase === 'done' && installState.id === selected.id && installState.runtimeRestartRequired && runtimeRestartDeferred
+            ? <p className="runtime-restart-deferred" role="status">{copy.storeRuntimeRestartDeferred}</p>
             : null}
           {installState?.phase === 'confirm-wait' && installState.id === selected.id
             ? (
@@ -395,7 +465,7 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
               ? (
                 <button
                   className="detail-install"
-                  disabled={busy}
+                  disabled={busy || runtimeRestarting}
                   onClick={() => { void startInstall(selected) }}
                 >
                   {copy.storeInstall}
@@ -405,7 +475,7 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
                 <>
                   {updateAvailable(installedById.get(selected.id), selected)
                     ? (
-                      <button className="detail-install" disabled={busy} onClick={() => {
+                      <button className="detail-install" disabled={busy || runtimeRestarting} onClick={() => {
                         void (async () => {
                           await window.EzDSH.store.uninstall(kind, selected.id)
                           await startInstall(selected)
@@ -415,7 +485,7 @@ export function StoreBrowser({ kind, copy, locale, deepLinkTarget }: StoreBrowse
                       </button>
                       )
                     : null}
-                  <button className="detail-uninstall" disabled={busy} onClick={() => { void uninstall(selected) }}>
+                  <button className="detail-uninstall" disabled={busy || runtimeRestarting} onClick={() => { void uninstall(selected) }}>
                     {copy.storeUninstall}
                   </button>
                 </>

@@ -43,6 +43,22 @@ if (runtimeEntry === undefined) {
   throw new Error(`Bundled DSH Runtime package was not found under ${bundleRoot}`)
 }
 
+// DSH's plugin command invokes pnpm by name. Verify the application ships it
+// so a production install never depends on the shell PATH of the user who
+// launches the desktop app.
+const pnpmExecutableName = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+const pnpmCandidates = isPrePackageVerification
+  ? [join(projectRoot, 'node_modules', '.bin', pnpmExecutableName)]
+  : [
+      join(bundleRoot, 'node_modules', '.bin', pnpmExecutableName),
+      join(bundleRoot, 'app', 'node_modules', '.bin', pnpmExecutableName),
+      join(bundleRoot, 'out', 'pnpm', pnpmExecutableName),
+      join(bundleRoot, 'app', 'out', 'pnpm', pnpmExecutableName)
+    ]
+if (!pnpmCandidates.some((candidate) => existsSync(candidate))) {
+  throw new Error(`Bundled pnpm executable was not found under ${bundleRoot}`)
+}
+
 // Several runtime seams are keyed by Symbols exported from shared packages.
 // A copied root dependency and pnpm's canonical dependency can therefore look
 // identical while being different JavaScript modules. Verify that the tool

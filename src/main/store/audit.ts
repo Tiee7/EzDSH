@@ -10,6 +10,7 @@
 
 import type { DownloadedBundle, DownloadedFile } from './downloader.js'
 import type { AuditFinding, AuditReport, AuditVerdict, StoreEntry, StoreMcpConfig } from '../../shared/store.js'
+import { pluginSourceUrl, validatePluginSource } from './dsh-plugin-installer.js'
 
 export interface AuditOptions {
   /** Additional preset plugin names declared trusted by the server catalog. */
@@ -237,4 +238,31 @@ export function auditMcpConfig(config: StoreMcpConfig): AuditReport {
   }
   const verdict = worst(findings.map((finding) => (finding.severity === 'block' ? 'block' : 'warn')))
   return { verdict, findings, externalUrls: config.transport === 'streamable-http' ? [config.url ?? ''].filter(Boolean) : [] }
+}
+
+/** Audit the package source of a DSH plugin Skill entry. */
+export function auditPluginSource(entry: StoreEntry): AuditReport {
+  const findings: AuditFinding[] = []
+  const source = entry.plugin?.source ?? ''
+  try {
+    if (entry.plugin === undefined) throw new Error('Entry does not declare a DSH plugin source')
+    validatePluginSource(entry.plugin)
+    findings.push({
+      severity: 'warn',
+      rule: 'plugin-external-code',
+      detail: 'Installs and executes third-party host/client code in the selected DSH profile; review the source and package before continuing.'
+    })
+  } catch (error) {
+    findings.push({
+      severity: 'block',
+      rule: 'plugin-source-invalid',
+      detail: error instanceof Error ? error.message : String(error)
+    })
+  }
+  const externalUrls = source === '' ? [] : [pluginSourceUrl(source)]
+  return {
+    verdict: findings.some((finding) => finding.severity === 'block') ? 'block' : findings.length > 0 ? 'warn' : 'pass',
+    findings,
+    externalUrls
+  }
 }

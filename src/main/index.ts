@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, shell } from 'electron'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { readFile } from 'node:fs/promises'
 import type { AppUpdater } from 'electron-updater'
 import type { IpcResult } from '../shared/errors.js'
 import { toEzDSHError } from '../shared/errors.js'
@@ -40,11 +41,18 @@ import type { StoreKind } from '../shared/store.js'
 import { StoreService } from './store/store-service.js'
 import { StoreClient } from './store/store-client.js'
 import { createDemoFetch } from './store/demo-catalog.js'
+import { DshPluginInstaller } from './store/dsh-plugin-installer.js'
+import { createDshPluginCommand } from './store/dsh-plugin-command.js'
 import {
   RuntimeManager,
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath
 } from './runtime/runtime-manager.js'
+import {
+  createRuntimeOwnershipStore,
+  DshRuntimeProcessManager,
+  type RuntimeOwnershipStore,
+} from './runtime/runtime-process-manager.js'
 import { ProviderService } from './providers/provider-service.js'
 import { UpdateManager } from './update/update-manager.js'
 import { getApplicationMenuTemplate } from './application-menu.js'
@@ -64,18 +72,44 @@ import type { ExternalServiceCreateInput, ExternalServiceUpdateInput } from '../
 import { bindWindowClosedCleanup } from './window-lifecycle.js'
 import { shutdownExternalServicesFirst } from './shutdown.js'
 import { restartApplication, shouldRelaunchWorkspace } from './restart.js'
+import {
+  DEFAULT_NOTIFICATION_SETTINGS,
+  normalizeNotificationSettings,
+  type NotificationSettings,
+  type NotificationSignal,
+} from '../shared/notifications.js'
+import { readNotificationSettings, writeNotificationSettings } from './notifications/notification-settings.js'
+import { RuntimeNotificationService } from './notifications/runtime-notification-service.js'
+import { NativeNotificationService, type NativeNotificationLike } from './notifications/native-notification-service.js'
+import {
+  CURRENT_DATA_SCHEMA_VERSION,
+  RecoveryManager,
+  type RecoveryDryRun,
+  type RecoveryDoctorResult,
+  type RecoveryRestoreResult,
+  type RecoveryState,
+} from './recovery/recovery-manager.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
+let runtimeProcessManager: DshRuntimeProcessManager | undefined
+let runtimeOwnershipStore: RuntimeOwnershipStore | undefined
 let providerService: ProviderService | undefined
 let localeService: LocaleService | undefined
 let updateManager: UpdateManager | undefined
+let recoveryManager: RecoveryManager | undefined
 let userDataLayout: UserDataLayout | undefined
 let workspaceConfigPath: string | undefined
 let developerModePath: string | undefined
 let developerMode = false
 let languageTagPath: string | undefined
 let languageTagVisible = true
+let notificationSettingsPath: string | undefined
+let notificationSettings: NotificationSettings = { ...DEFAULT_NOTIFICATION_SETTINGS }
+let notificationSettingsWriteChain: Promise<void> = Promise.resolve()
+let runtimeNotificationService: RuntimeNotificationService | undefined
+let nativeNotificationService: NativeNotificationService | undefined
+let notificationRuntimeUrl: string | undefined
 let storeService: StoreService | undefined
 let channelBridgeService: ChannelBridgeService | undefined
 let navigationService: NavigationService | undefined
@@ -91,6 +125,7 @@ const externalServiceWatchers = new Set<number>()
 let stopRuntimeListener: (() => void) | undefined
 let stopLocaleListener: (() => void) | undefined
 let stopExternalServiceWatcher: (() => void) | undefined
+let stopRecoveryListener: (() => void) | undefined
 
 const LIGHT_WINDOW_BACKGROUND = '#f9fafb'
 const DARK_WINDOW_BACKGROUND = '#151517'
@@ -136,6 +171,19 @@ function resolveUpdateResolverUrl(): string | undefined {
   return UPDATE_RESOLVE_URL
 }
 
+async function readDshRuntimeVersion(runtimeEntryPath: string): Promise<string> {
+  try {
+    const packagePath = join(resolve(runtimeEntryPath, '..', '..'), 'package.json')
+    const parsed: unknown = JSON.parse(await readFile(packagePath, 'utf8'))
+    if (typeof parsed === 'object' && parsed !== null && 'version' in parsed && typeof parsed.version === 'string') {
+      return parsed.version
+    }
+  } catch {
+    // A source checkout may omit package metadata; the recovery manifest still records the app.
+  }
+  return 'unknown'
+}
+
 function allowPrereleaseUpdates(): boolean {
   return developerMode || app.getVersion().includes('-')
 }
@@ -149,6 +197,36 @@ function emitDeveloperMode(): void {
 function emitLanguageTagVisibility(): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('language-tag:state-change', languageTagVisible)
+  }
+}
+
+function emitNotificationSettings(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('notifications:state-change', notificationSettings)
+  }
+}
+
+function handleNotificationSignal(notification: NotificationSignal): void {
+  nativeNotificationService?.notify(notification)
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('notifications:event', notification)
+  }
+}
+
+function syncRuntimeNotifications(snapshot: RuntimeSnapshot): void {
+  const nextUrl = snapshot.phase === 'ready' ? snapshot.url : undefined
+  if (nextUrl === notificationRuntimeUrl) return
+  notificationRuntimeUrl = nextUrl
+  if (nextUrl === undefined) {
+    runtimeNotificationService?.stop()
+  } else {
+    runtimeNotificationService?.start(nextUrl)
+  }
+}
+
+function emitRecoveryState(state: RecoveryState): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('recovery:state-change', state)
   }
 }
 
@@ -182,9 +260,23 @@ function bindWorkspaceServiceListeners(): void {
       if (!window.isDestroyed()) window.webContents.send('runtime:state-change', snapshot)
     }
     if (snapshot.phase === 'ready') {
+      syncRuntimeNotifications(snapshot)
       void externalServiceManager?.startAutoServices().catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         console.error('[external-services] failed to start auto services:', message)
+      })
+    } else {
+      syncRuntimeNotifications(snapshot)
+    }
+    if (snapshot.phase === 'ready') {
+      void recoveryManager?.completeUpdate().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('[recovery] failed to commit update transaction:', message)
+      })
+    } else if (snapshot.phase === 'failed') {
+      void recoveryManager?.markBootFailure(snapshot.message ?? 'DSH Runtime failed to start').catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('[recovery] failed to record boot failure:', message)
       })
     }
   })
@@ -201,10 +293,14 @@ function bindWorkspaceServiceListeners(): void {
 /** Construct every service that is rooted in the active workspace. */
 async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void> {
   userDataLayout = layout
+  stopRecoveryListener?.()
+  stopRecoveryListener = undefined
   developerModePath = join(layout.state, 'developer-mode.json')
   developerMode = await readDeveloperMode(developerModePath)
   languageTagPath = join(layout.state, 'language-tag.json')
   languageTagVisible = await readLanguageTagVisible(languageTagPath)
+  notificationSettingsPath = join(layout.state, 'notifications.json')
+  notificationSettings = await readNotificationSettings(notificationSettingsPath)
 
   localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
   await localeService.start()
@@ -221,10 +317,51 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     isPackaged: app.isPackaged,
     arch: process.arch
   })
+  recoveryManager = new RecoveryManager({
+    layout,
+    appVersion: app.getVersion(),
+    dshRuntimeVersion: await readDshRuntimeVersion(runtimeEntryPath),
+    dataSchemaVersion: CURRENT_DATA_SCHEMA_VERSION,
+    rescueScriptPath: join(app.getAppPath(), 'recovery', 'rescue.mjs'),
+  })
+  await recoveryManager.initialize()
+  stopRecoveryListener = recoveryManager.onChange(emitRecoveryState)
+  runtimeOwnershipStore ??= createRuntimeOwnershipStore(join(app.getPath('appData'), 'ezdsh-runtime-ownership'))
+  runtimeProcessManager ??= new DshRuntimeProcessManager({
+    getCurrentPid: () => runtimeManager?.snapshot().pid,
+    stopCurrent: () => runtimeManager?.stop() ?? Promise.resolve(),
+    ownershipStore: runtimeOwnershipStore,
+  })
+  await runtimeProcessManager.stopOwnedOrphans()
   runtimeManager = new RuntimeManager({
     layout,
     runtimeEntryPath,
-    command: runtimeCommandPath
+    command: runtimeCommandPath,
+    runtimeOwnership: runtimeOwnershipStore,
+  })
+  runtimeNotificationService = new RuntimeNotificationService({ onSignal: handleNotificationSignal })
+  nativeNotificationService = new NativeNotificationService({
+    createNotification: (options) => new Notification({
+      ...options,
+      icon: getAppIconPath(),
+    }) as unknown as NativeNotificationLike,
+    getSettings: () => notificationSettings,
+    getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
+    onReview: (sessionId) => handleDeepLinkSession({ action: 'session', sessionId }),
+  })
+  const pluginInstaller = new DshPluginInstaller({
+    dshHome: layout.harness,
+    runCommand: createDshPluginCommand({
+      appPath: app.getAppPath(),
+      dshHome: layout.harness,
+      launchRoot: layout.launchRoot,
+      runtimeEntryPath,
+      command: runtimeCommandPath
+    }),
+    isRuntimeActive: () => {
+      const phase = runtimeManager?.snapshot().phase
+      return phase === 'ready' || phase === 'starting'
+    }
   })
 
   externalServiceManager = new ExternalServiceManager({
@@ -274,6 +411,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     dshHome: layout.harness,
     registryPath: join(layout.state, 'installed.json'),
     catalogCachePath: join(layout.state, 'store-catalog.json'),
+    pluginInstaller,
     onStateChange: (state) => {
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send('store:state-change', state)
@@ -551,10 +689,13 @@ function failure<T>(error: unknown): IpcResult<T> {
 }
 
 async function stopApplicationComponents(): Promise<void> {
+  notificationRuntimeUrl = undefined
+  runtimeNotificationService?.stop()
+  await notificationSettingsWriteChain.catch(() => undefined)
   await shutdownExternalServicesFirst(
     () => externalServiceManager?.stopAll() ?? Promise.resolve(),
     [
-      () => runtimeManager?.stop() ?? Promise.resolve(),
+      () => runtimeProcessManager?.stopAll() ?? Promise.resolve(),
       () => channelBridgeService?.stop() ?? Promise.resolve(),
       () => externalApiService?.stop() ?? Promise.resolve(),
     ],
@@ -585,6 +726,23 @@ function registerIpcHandlers(): void {
     try {
       if (runtimeManager === undefined) throw new Error('Runtime manager is not ready')
       return success(await runtimeManager.restart())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('runtime:list-processes', async (): Promise<IpcResult<Awaited<ReturnType<DshRuntimeProcessManager['list']>>>> => {
+    try {
+      if (runtimeProcessManager === undefined) throw new Error('Runtime process manager is not ready')
+      return success(await runtimeProcessManager.list())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('runtime:stop-process', async (_event, pid: number): Promise<IpcResult<void>> => {
+    try {
+      if (runtimeProcessManager === undefined) throw new Error('Runtime process manager is not ready')
+      await runtimeProcessManager.stop(pid)
+      return success(undefined)
     } catch (error) {
       return failure(error)
     }
@@ -658,6 +816,24 @@ function registerIpcHandlers(): void {
   ipcMain.handle('locale:get', (): IpcResult<AppLocale> => {
     if (localeService === undefined) return failure(new Error('Locale service is not ready'))
     return success(localeService.snapshot())
+  })
+  ipcMain.handle('notifications:get-settings', (): IpcResult<NotificationSettings> => success(notificationSettings))
+  ipcMain.handle('notifications:set-settings', async (_event, value: unknown): Promise<IpcResult<NotificationSettings>> => {
+    try {
+      const settingsPath = notificationSettingsPath
+      if (settingsPath === undefined) throw new Error('Notification settings are not ready')
+      const next = normalizeNotificationSettings(value)
+      const write = notificationSettingsWriteChain
+        .catch(() => undefined)
+        .then(() => writeNotificationSettings(settingsPath, next))
+      notificationSettingsWriteChain = write.catch(() => undefined)
+      await write
+      notificationSettings = next
+      emitNotificationSettings()
+      return success(notificationSettings)
+    } catch (error) {
+      return failure(error)
+    }
   })
   ipcMain.handle('store:list', async (_event, kind: StoreKind, query: { category?: string; search?: string; page?: number }): Promise<IpcResult<Awaited<ReturnType<StoreService['list']>>>> => {
     try {
@@ -910,6 +1086,77 @@ function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('recovery:get-status', (): IpcResult<RecoveryState> => {
+    if (recoveryManager === undefined) return failure(new Error('Recovery manager is not ready'))
+    return success(recoveryManager.snapshot())
+  })
+  ipcMain.handle('recovery:list', async (): Promise<IpcResult<Awaited<ReturnType<RecoveryManager['listSnapshots']>>>> => {
+    try {
+      if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      return success(await recoveryManager.listSnapshots())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:create-snapshot', async (): Promise<IpcResult<Awaited<ReturnType<RecoveryManager['createSnapshot']>>>> => {
+    try {
+      if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      return success(await recoveryManager.createSnapshot({
+        kind: 'manual',
+        reason: 'Manual backup requested from EzDSH settings',
+      }))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:verify', async (_event, selector: string): Promise<IpcResult<Awaited<ReturnType<RecoveryManager['verify']>>>> => {
+    try {
+      if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      return success(await recoveryManager.verify(selector))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:doctor', async (_event, repair: boolean = false): Promise<IpcResult<RecoveryDoctorResult>> => {
+    try {
+      if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      if (typeof repair !== 'boolean') throw new Error('Invalid recovery doctor input')
+      return success(await recoveryManager.doctor(repair))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:restore', async (_event, selector: string, dryRun: boolean): Promise<IpcResult<RecoveryDryRun | RecoveryRestoreResult>> => {
+    try {
+      if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      if (typeof selector !== 'string' || typeof dryRun !== 'boolean') throw new Error('Invalid recovery restore input')
+      if (dryRun) return success(await recoveryManager.restore(selector, true))
+      await stopApplicationComponents()
+      return success(await recoveryManager.restore(selector, false))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:resolve', async (): Promise<IpcResult<void>> => {
+    try {
+      if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      await recoveryManager.resolveRecovery()
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:open-directory', async (): Promise<IpcResult<void>> => {
+    try {
+      if (userDataLayout === undefined) throw new Error('User data layout is not ready')
+      const error = await shell.openPath(userDataLayout.backups)
+      if (error !== '') throw new Error(error)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+
   ipcMain.handle('channel-bridge:get-config', async (): Promise<IpcResult<Awaited<ReturnType<ChannelBridgeService['getConfig']>>>> => {
     try {
       if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
@@ -1112,7 +1359,9 @@ if (!singleInstance) {
       getUpdateChannel: () => developerMode ? 'preview' : 'stable',
       getUpdateLanguage: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
       updater: updateChecksEnabled ? getAutoUpdater() : undefined,
-      prepareInstall: async () => {
+      prepareInstall: async ({ targetVersion }) => {
+        if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+        await recoveryManager.prepareUpdate({ targetAppVersion: targetVersion })
         isQuitting = true
         await stopApplicationComponents()
       }

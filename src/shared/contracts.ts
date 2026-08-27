@@ -1,4 +1,4 @@
-import type { RuntimeSnapshot } from '../main/runtime/runtime-types.js'
+import type { DshRuntimeProcess, RuntimeSnapshot } from '../main/runtime/runtime-types.js'
 import type { EzDSHError, IpcResult } from './errors.js'
 import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
@@ -28,6 +28,15 @@ import type {
   TestProviderInput
 } from './providers.js'
 import type { ChannelBridgeConfig, DshSessionSummary, PairingState } from './channel-bridge.js'
+import type { NotificationSettings, NotificationSignal } from './notifications.js'
+import type {
+  RecoveryDryRun,
+  RecoveryDoctorResult,
+  RecoveryRestoreResult,
+  RecoverySnapshot,
+  RecoveryState,
+  RecoveryVerifyResult,
+} from '../main/recovery/recovery-manager.js'
 import type {
   ExternalServiceCreateInput,
   ExternalServiceSnapshot,
@@ -55,6 +64,8 @@ export interface EzDSHBridge {
     getStatus(): Promise<RuntimeSnapshot>
     start(): Promise<RuntimeSnapshot>
     restart(): Promise<RuntimeSnapshot>
+    listProcesses(): Promise<DshRuntimeProcess[]>
+    stopProcess(pid: number): Promise<void>
     openLog(): Promise<void>
     onStateChange(listener: (snapshot: RuntimeSnapshot) => void): () => void
   }
@@ -120,12 +131,29 @@ export interface EzDSHBridge {
     get(): Promise<AppLocale>
     onChange(listener: (locale: AppLocale) => void): () => void
   }
+  notifications: {
+    getSettings(): Promise<NotificationSettings>
+    setSettings(settings: NotificationSettings): Promise<NotificationSettings>
+    onSettingsChange(listener: (settings: NotificationSettings) => void): () => void
+    onEvent(listener: (notification: NotificationSignal) => void): () => void
+  }
   updates: {
     getStatus(): Promise<UpdateState>
     check(): Promise<UpdateState>
     download(): Promise<UpdateState>
     install(): Promise<UpdateState>
     onStateChange(listener: (state: UpdateState) => void): () => void
+  }
+  recovery: {
+    getStatus(): Promise<RecoveryState>
+    listSnapshots(): Promise<RecoverySnapshot[]>
+    createSnapshot(): Promise<RecoverySnapshot>
+    verify(selector: string): Promise<RecoveryVerifyResult>
+    doctor(repair?: boolean): Promise<RecoveryDoctorResult>
+    restore(selector: string, dryRun: boolean): Promise<RecoveryDryRun | RecoveryRestoreResult>
+    resolve(): Promise<void>
+    openDirectory(): Promise<void>
+    onStateChange(listener: (state: RecoveryState) => void): () => void
   }
   channelBridge: {
     getConfig(): Promise<ChannelBridgeConfig>

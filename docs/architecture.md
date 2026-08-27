@@ -42,6 +42,8 @@ Main Process 是唯一可以接触 Node.js、文件系统、子进程和更新�
 - 通过 Harness API 保存 Credentials 和 Provider Route；
 - 打开日志文件位置；
 - 检查、下载和安装 EzDSH 更新；
+- 在应用更新前创建用户数据恢复快照，并在 Runtime 启动失败后进入 Recovery Mode；
+- 管理 checksum、rotation、dry-run/atomic restore 和独立 rescue channel；
 - 处理应用退出和单实例唤醒。
 
 ### 2.2 Preload
@@ -68,6 +70,13 @@ interface EzDSHBridge {
     download(): Promise<void>
     install(): Promise<void>
     onStateChange(listener: (state: UpdateState) => void): () => void
+  }
+  recovery: {
+    listSnapshots(): Promise<RecoverySnapshot[]>
+    createSnapshot(): Promise<RecoverySnapshot>
+    verify(selector: string): Promise<RecoveryVerifyResult>
+    doctor(repair?: boolean): Promise<RecoveryDoctorResult>
+    restore(selector: string, dryRun: boolean): Promise<RecoveryDryRun | RecoveryRestoreResult>
   }
   locale: {
     get(): Promise<'zh' | 'en'>
@@ -98,7 +107,7 @@ Renderer 不负责：
 
 ### 2.4 语言同步
 
-EzDSH 与 DSH Runtime 共用 `harness/settings.yaml`。主进程读取其中的 `locale.preference`（`zh` 或 `en`），并通过 Preload IPC 同步给 Renderer；设置文件发生变化时，主进程使用轻量文件轮询通知 Renderer 更新外层页面和应用菜单。Runtime 内部的 Web UI 继续读取同一配置文件，因此内外界面保持同一种语言。配置缺失或值不受支持时，EzDSH 使用中文作为安全默认值，不阻止 Runtime 启动。
+EzDSH 与 DSH Runtime 共用 `harness/settings.yaml`。主进程读取其中的 `locale.preference`（`zh` 或 `en`），并通过 Preload IPC 同步给 Renderer；设置文件发生变化时，主进程使用轻量文件轮询通知 Renderer 更新外层页面和应用菜单。Runtime 内部的 Web UI 继续读取同一配置文件，因此内外界面保持同一种语言。配置缺失或值不受支持时，EzDSH 使用英文作为安全默认值，不阻止 Runtime 启动。
 
 ## 3. Runtime Manager
 
@@ -218,6 +227,7 @@ interface UpdateState {
     | 'available'
     | 'downloading'
     | 'downloaded'
+    | 'preparing'
     | 'installing'
     | 'up-to-date'
     | 'failed'
@@ -240,9 +250,19 @@ interface UpdateState {
 - 更新失败不能破坏当前版本；
 - beta 与 stable 使用不同更新通道。
 
-当前已经实现更新状态、检查、手动下载、下载进度和重启安装的 Main/Preload/Renderer 链路。正式包使用 `generic` 更新源；开发模式默认不访问更新服务，但设置 `EZDSH_UPDATE_FEED_URL` 后可以临时检查远程测试源。打包模式关闭自动下载和退出时自动安装，由 EzDSH 在安装前停止 Runtime。发布前仍需完成 Vercel 更新源部署、签名、公证、更新文件上传和稳定版/beta 通道配置。
+当前已经实现更新状态、检查、手动下载、下载进度和重启安装的 Main/Preload/Renderer 链路。安装动作在 `quitAndInstall` 前先创建 `pre-update` 快照并写入持久化升级事务；新版本启动后如果 Runtime 未通过健康检查，EzDSH 停在 Recovery Mode，不自动覆盖现场。正式包使用 `generic` 更新源；开发模式默认不访问更新服务，但设置 `EZDSH_UPDATE_FEED_URL` 后可以临时检查远程测试源。发布前仍需完成 Vercel 更新源部署、签名、公证、更新文件上传和稳定版/beta 通道配置。
 
-## 6. IPC 错误模型
+## 6. Recovery 与灾难恢复
+
+恢复能力由 EzDSH Main Process 原生实现，不依赖 DSH Runtime 插件。快照包含 `harness/` 与 `state/`，覆盖 Sessions、Settings、Skills、Plugins、Profiles、Presets 和已安装清单；每个快照同时写入 SHA-256、manifest 和插件版本清单。快照按类型轮换：普通手动快照保留最近 7 份，升级前快照保留最近 2 份，恢复前快照保留最近 1 份。
+
+Credential 明文默认不进入 Archive。受限文件（当前包括 `harness/.credentials.yaml`、`.env` 和 QQ Bridge 配置）只复制到 `backups/vault/<snapshot>/`，文件权限为 `0600`；恢复到新机器时 dry-run 会明确列出需要重新输入的 Credential。Archive 的 checksum 不通过时，恢复会拒绝执行。
+
+真实恢复先校验并解包到 staging，再以目录 rename 方式替换 `harness/` 和 `state/`；失败会回滚到恢复前目录。Session Log doctor 默认只读扫描 `harness/sessions`，只允许显式修复最后一条未完成 JSONL 记录，中间已提交损坏不会自动改写。应用完成升级后会清除升级事务；升级启动失败则保留事务并展示“恢复上一份环境”。
+
+每次成功创建快照还会把零依赖的 `rescue.mjs` 和平台 launcher 写入 `backups/`。它可以在 EzDSH 或 DSH Runtime 无法启动时通过 `list`、`verify`、`doctor`、`restore --yes` 或 loopback Web UI 工作。应用二进制本身仍由 electron-updater 管理；当前 rollback 保障的是用户数据与 Runtime 配置，不伪装成应用安装包的二进制回滚。
+
+## 7. IPC 错误模型
 
 所有 IPC 方法使用统一错误格式：
 
@@ -264,7 +284,7 @@ interface EzDSHError {
 
 Renderer 只根据 `code` 和 `retryable` 决定界面行为，不能解析底层异常堆栈。
 
-## 7. 建议目录结构
+## 8. 建议目录结构
 
 ```text
 src/
@@ -280,6 +300,8 @@ src/
 │   ├── update/
 │   │   ├── update-manager.ts
 │   │   └── update-types.ts
+│   ├── recovery/
+│   │   └── recovery-manager.ts
 │   ├── state/
 │   │   ├── user-data.ts
 │   │   └── migrations.ts
@@ -293,7 +315,9 @@ src/
 │   ├── app/
 │   ├── onboarding/
 │   ├── runtime-status/
-│   └── update-center/
+│   ├── update-center/
+│   ├── recovery/
+│   └── settings/RecoverySection.tsx
 └── shared/
     ├── contracts.ts
     ├── errors.ts

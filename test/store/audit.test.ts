@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   auditBundle,
-  auditMcpConfig
+  auditMcpConfig,
+  auditPluginSource
 } from '../../src/main/store/audit'
 import type { DownloadedFile } from '../../src/main/store/downloader'
 import type { StoreEntry, StoreMcpConfig } from '../../src/shared/store'
@@ -194,5 +195,22 @@ describe('auditMcpConfig', () => {
     const report = auditMcpConfig(config)
     expect(report.verdict).toBe('warn')
     expect(report.findings.some((f) => f.rule === 'mcp-inline-credential')).toBe(true)
+  })
+})
+
+describe('auditPluginSource', () => {
+  it('warns before installing third-party host code and exposes its source URL', () => {
+    const report = auditPluginSource(skillEntry({
+      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13' }
+    }))
+    expect(report.verdict).toBe('warn')
+    expect(report.findings.some((finding) => finding.rule === 'plugin-external-code')).toBe(true)
+    expect(report.externalUrls).toEqual(['https://www.npmjs.com/package/@nanmicoder/dsh-agent-teams'])
+  })
+
+  it('blocks an invalid package source', () => {
+    const report = auditPluginSource(skillEntry({ plugin: { source: 'npm:../escape' } }))
+    expect(report.verdict).toBe('block')
+    expect(report.findings.some((finding) => finding.rule === 'plugin-source-invalid')).toBe(true)
   })
 })

@@ -7,6 +7,11 @@ import type { UserDataLayout } from '../../shared/state.js'
 import { ensureUserDataLayout } from '../state/user-data.js'
 import { waitForRuntimeHealthy } from './health-check.js'
 import type { RuntimeSnapshot } from './runtime-types.js'
+import {
+  EZDSH_RUNTIME_OWNER_ENV,
+  EZDSH_RUNTIME_OWNER_VALUE,
+  type RuntimeOwnershipStore,
+} from './runtime-process-manager.js'
 
 export interface RuntimePathOptions {
   appPath: string
@@ -73,6 +78,7 @@ export interface RuntimeManagerOptions {
   spawnProcess?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
   processKill?: (pid: number, signal: NodeJS.Signals) => boolean
   allocatePort?: () => Promise<number>
+  runtimeOwnership?: RuntimeOwnershipStore
 }
 
 type RuntimeListener = (snapshot: RuntimeSnapshot) => void
@@ -104,6 +110,7 @@ export class RuntimeManager {
   private stopPromise: Promise<void> | undefined
   private listeners = new Set<RuntimeListener>()
   private stopping = false
+  private stopRequested = false
 
   constructor(private readonly config: RuntimeManagerOptions) {
     this.options = {
@@ -127,6 +134,8 @@ export class RuntimeManager {
     if (this.current.phase === 'ready') return this.snapshot()
     if (this.startPromise !== undefined) return this.startPromise
 
+    this.stopRequested = false
+    this.stopping = false
     this.startPromise = this.startInternal().finally(() => {
       this.startPromise = undefined
     })
@@ -135,6 +144,25 @@ export class RuntimeManager {
 
   async stop(): Promise<void> {
     if (this.stopPromise !== undefined) return this.stopPromise
+    this.stopRequested = true
+
+    const startup = this.startPromise
+    if (this.child === undefined && startup !== undefined) {
+      this.stopPromise = (async () => {
+        await startup.catch(() => undefined)
+        if (this.child !== undefined) {
+          await this.stopInternal()
+          return
+        }
+        if (this.current.phase !== 'idle' && this.current.phase !== 'stopped') {
+          this.setSnapshot({ phase: 'stopped', pid: undefined, port: undefined, url: undefined })
+        }
+      })().finally(() => {
+        this.stopPromise = undefined
+      })
+      return this.stopPromise
+    }
+
     if (this.child === undefined) {
       if (this.current.phase !== 'idle' && this.current.phase !== 'stopped') {
         this.setSnapshot({ phase: 'stopped', pid: undefined, port: undefined, url: undefined })
@@ -155,13 +183,17 @@ export class RuntimeManager {
 
   private async startInternal(): Promise<RuntimeSnapshot> {
     await ensureUserDataLayout(this.config.layout)
+    if (this.stopRequested) return this.markStopped()
     const firstPort = await (this.config.allocatePort ?? allocateLoopbackPort)()
+    if (this.stopRequested) return this.markStopped()
     const logPath = join(this.config.layout.logs, 'harness.log')
     for (let retry = 0; retry <= this.options.portRetryCount; retry += 1) {
+      if (this.stopRequested) return this.markStopped()
       const port = firstPort + retry
       try {
         return await this.startOnPort(port, logPath)
       } catch (error) {
+        if (this.stopRequested) return this.markStopped()
         if (!(error instanceof RuntimePortOccupiedError) || retry === this.options.portRetryCount) {
           this.fail(error)
           throw error
@@ -172,8 +204,8 @@ export class RuntimeManager {
   }
 
   private async startOnPort(port: number, logPath: string): Promise<RuntimeSnapshot> {
+    if (this.stopRequested) return this.markStopped()
     const url = `http://127.0.0.1:${String(port)}`
-    this.stopping = false
     this.setSnapshot({
       phase: 'starting',
       pid: undefined,
@@ -200,6 +232,7 @@ export class RuntimeManager {
       env: {
         ...inheritedEnvironment,
         DSH_HOME: this.config.layout.harness,
+        [EZDSH_RUNTIME_OWNER_ENV]: EZDSH_RUNTIME_OWNER_VALUE,
         // Electron's executable can run a child as plain Node when this flag is set.
         ...(command === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {})
       },
@@ -215,6 +248,7 @@ export class RuntimeManager {
 
     const child = this.child
     const pid = child.pid
+    if (pid !== undefined) this.config.runtimeOwnership?.register(pid)
     let portOccupied = false
     let rejectChildExit: (error: Error) => void = () => undefined
     const childExit = new Promise<never>((_resolve, reject) => {
@@ -233,6 +267,7 @@ export class RuntimeManager {
     })
     child.once('exit', (code, signal) => {
       this.writeLog(`\n[child process exit] code=${String(code)} signal=${String(signal)}\n`, processLogStream)
+      if (pid !== undefined) this.config.runtimeOwnership?.unregister(pid)
       if (this.child !== child) return
       this.child = undefined
       const error = portOccupied
@@ -261,7 +296,8 @@ export class RuntimeManager {
       this.setSnapshot({ phase: 'ready', message: undefined })
       return this.snapshot()
     } catch (error) {
-      await this.stop()
+      await this.stopInternal()
+      if (this.stopRequested) return this.snapshot()
       if (error instanceof RuntimePortOccupiedError || portOccupied) {
         throw new RuntimePortOccupiedError(port)
       }
@@ -303,6 +339,7 @@ export class RuntimeManager {
       this.closeLog()
       this.setSnapshot({ phase: 'stopped', pid: undefined, port: undefined, url: undefined, message: 'Runtime 已停止' })
     }
+    if (!this.stopRequested) this.stopping = false
   }
 
   private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -321,6 +358,11 @@ export class RuntimeManager {
   private fail(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error)
     this.setSnapshot({ phase: 'failed', message })
+  }
+
+  private markStopped(): RuntimeSnapshot {
+    this.setSnapshot({ phase: 'stopped', pid: undefined, port: undefined, url: undefined, message: 'Runtime 已停止' })
+    return this.snapshot()
   }
 
   private setSnapshot(patch: Partial<RuntimeSnapshot>): void {

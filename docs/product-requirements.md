@@ -11,6 +11,7 @@ EzDSH 不重新实现 Harness 的 Agent 能力，而是解决以下桌面产品�
 - Harness 启动失败时能看到原因并恢复；
 - 用户数据在升级后继续保留；
 - 应用更新不会破坏配置、Session 和 Plugin；
+- 升级失败时可以恢复上一份用户环境；
 - 桌面窗口不能获得不必要的 Node.js 权限；
 - DSH Runtime 与桌面版本之间有明确的兼容关系。
 
@@ -140,11 +141,13 @@ EzDSH 更新采用整包更新：新的 EzDSH 安装包内携带对应版本的 
   ↓
 提示重启
   ↓
+升级前创建 Session/Settings/Plugin/Presets/Runtime 版本快照
+  ↓
 停止 DSH Runtime
   ↓
 退出并安装新版本
   ↓
-重新启动并执行数据兼容检查
+重新启动并执行数据兼容检查；失败时进入 Recovery Mode
 ```
 
 ## 4. 功能需求
@@ -191,7 +194,20 @@ EzDSH 更新采用整包更新：新的 EzDSH 安装包内携带对应版本的 
 | UPD-004 | 下载进度 | 页面显示进度、速度和剩余状态 |
 | UPD-005 | 重启安装 | 下载完成后由用户决定何时重启安装 |
 | UPD-006 | 数据保护 | 更新过程不删除 `userData` 下的用户目录 |
-| UPD-007 | 失败恢复 | 更新失败时保留当前可运行版本，并记录可诊断错误 |
+| UPD-007 | 失败恢复 | 更新失败时保留用户数据快照，进入 Recovery Mode，并提供恢复上一份环境、重试 Runtime 和打开备份目录 |
+| UPD-008 | 升级前清单 | 安装前显示 Sessions、Settings、Plugin、Presets 和当前 Runtime 版本已纳入快照流程 |
+
+### 4.5 备份与恢复
+
+| 编号 | 需求 | 验收标准 |
+| --- | --- | --- |
+| REC-001 | 手动快照 | 设置页可以创建包含 `harness/` 与 `state/` 的带 manifest、SHA-256 和插件清单的快照 |
+| REC-002 | Credential 脱敏 | `.credentials.yaml`、`.env` 等明文 Credential 不进入 Archive，只进入本机受限 vault |
+| REC-003 | 安全恢复 | 恢复前必须通过 checksum 和 archive path 校验；dry-run 不改写现有用户数据 |
+| REC-004 | 原子恢复 | 恢复使用 staging 和目录替换，失败时回滚，并先保留 `pre-restore` 快照 |
+| REC-005 | 升级事务 | 升级前写入 pending transaction；新 Runtime 健康后清除，启动失败则展示 Recovery Mode |
+| REC-006 | Session Log doctor | 默认只读诊断 Session Log；只有用户明确操作时才修复最后一条未完成 JSONL 尾记录 |
+| REC-007 | 独立救援 | 备份目录包含不依赖 Electron/DSH 的 rescue CLI 与 loopback Web UI，可执行 list、verify、doctor、restore |
 
 ## 5. 数据目录约定
 
@@ -206,7 +222,12 @@ EzDSH 更新采用整包更新：新的 EzDSH 安装包内携带对应版本的 
 ├── state/
 │   ├── app-state.json # EzDSH 自身状态，不含 API Key
 │   └── update-state.json
-└── backups/           # 配置迁移前的本地备份
+└── backups/           # 手动、升级前和恢复前快照
+    ├── ezdsh-pre-update-*.tar.gz
+    ├── *.sha256
+    ├── *.manifest.json
+    ├── vault/          # 受限 Credential 明文，不进入 Archive
+    └── rescue.mjs      # 不依赖 DSH 的独立救援通道
 ```
 
 API Key 必须由 Harness Credentials 能力或操作系统安全存储处理。`app-state.json` 只能保存供应商 ID、路由 ID、配置状态和版本信息。
@@ -227,7 +248,8 @@ dataSchemaVersion: 1
 2. 检查用户数据 schema 版本；
 3. 必要时先备份再迁移；
 4. 检查当前 patch 与 Runtime 版本是否匹配；
-5. 失败时阻止进入主界面并提供恢复选项。
+5. 读取升级事务；
+6. 失败时阻止进入主界面并提供恢复选项。
 
 ## 7. 安全要求
 
@@ -252,3 +274,6 @@ dataSchemaVersion: 1
 - [ ] Renderer 没有 Node.js 直接访问能力
 - [ ] 打包版本可以检查更新并完成一次测试升级
 - [ ] 新版本升级后供应商配置、Session 和 Plugin 未被删除
+- [ ] 可以创建快照、验证 checksum，并在 dry-run 后恢复到上一份用户环境
+- [ ] Credential 明文不在 Archive 中，换机恢复会提示重新输入
+- [ ] Runtime 启动失败会进入 Recovery Mode，独立 rescue 通道可以列出并校验快照

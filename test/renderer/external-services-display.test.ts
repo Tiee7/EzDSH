@@ -9,6 +9,13 @@ describe('normalizeExternalServiceCommand', () => {
     })
   })
 
+  it('keeps explicit arguments as separate argv values', () => {
+    expect(normalizeExternalServiceCommand('pnpm', ['run', 'dev', '--port', '3690'])).toEqual({
+      command: 'pnpm',
+      args: ['run', 'dev', '--port', '3690'],
+    })
+  })
+
   it('preserves quoted executable paths and explicit arguments', () => {
     expect(normalizeExternalServiceCommand('"/Applications/My App/bin/tool"', ['--watch'])).toEqual({
       command: '/Applications/My App/bin/tool',

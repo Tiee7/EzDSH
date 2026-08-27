@@ -22,6 +22,7 @@ export function updateAction(phase: UpdatePhase): UpdateAction {
       return 'download'
     case 'checking':
     case 'downloading':
+    case 'preparing':
     case 'installing':
       return 'none'
     case 'downloaded':
@@ -32,4 +33,20 @@ export function updateAction(phase: UpdatePhase): UpdateAction {
     case 'up-to-date':
       return 'check'
   }
+}
+
+/** Badge category for a discovered DSH Runtime process. */
+export function runtimeProcessBadge(current: boolean, ownedByEzDSH: boolean): 'current' | 'owned' | 'external' {
+  if (current) return 'current'
+  return ownedByEzDSH ? 'owned' : 'external'
+}
+
+/** The active Runtime can only be restarted; other discovered processes can be stopped. */
+export function runtimeProcessAction(current: boolean): 'restart' | 'stop' {
+  return current ? 'restart' : 'stop'
+}
+
+/** Render a discovered port without hiding that the socket lookup was inconclusive. */
+export function runtimeProcessPort(port: number | undefined, unavailable: string): string {
+  return port === undefined ? unavailable : String(port)
 }

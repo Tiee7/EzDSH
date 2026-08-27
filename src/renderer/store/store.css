@@ -577,6 +577,38 @@
   font-size: 12px;
 }
 
+.runtime-restart-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--ezdsh-accent-orange);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ezdsh-accent-orange) 10%, transparent);
+  color: var(--ezdsh-text-body);
+  font-size: 12px;
+}
+
+.runtime-restart-notice p,
+.runtime-restart-deferred {
+  margin: 0;
+  font-size: 12px;
+}
+
+.runtime-restart-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.runtime-restart-error {
+  color: var(--ezdsh-accent-red);
+  word-break: break-word;
+}
+
+.runtime-restart-deferred {
+  color: var(--ezdsh-accent-orange);
+}
+
 .confirm-row {
   display: flex;
   gap: 8px;

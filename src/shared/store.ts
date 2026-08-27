@@ -60,6 +60,16 @@ export interface StoreMcpConfig {
   readonly headers?: Readonly<Record<string, string>>
 }
 
+/** DSH profile plugin metadata. Plugin entries are exposed as Skill entries with this field. */
+export interface StorePluginConfig {
+  /** Package-manager source accepted by `dsh plugin`, e.g. npm:pkg@version or github:owner/repo#ref. */
+  readonly source: string
+  /** Optional package name used for deterministic uninstall and update bookkeeping. */
+  readonly packageName?: string
+  /** DSH profile receiving the plugin; defaults to web. */
+  readonly profile?: string
+}
+
 /** One catalog entry served by the remote curation API. */
 export interface StoreEntry {
   /** Stable identifier unique within its kind. */
@@ -77,6 +87,8 @@ export interface StoreEntry {
   readonly files?: readonly StoreFile[]
   /** MCP wiring for the `mcp` kind. */
   readonly mcp?: StoreMcpConfig
+  /** DSH plugin wiring for a Skill entry in the `plugin` category. */
+  readonly plugin?: StorePluginConfig
 }
 
 /** One category row from the curation API. */
@@ -95,7 +107,8 @@ export const STORE_CATEGORY_LABELS_ZH: Readonly<Record<string, string>> = {
   research: '研究',
   coding: '编程',
   analysis: '数据分析',
-  tools: '工具'
+  tools: '工具',
+  plugin: '插件'
 }
 
 /** List response from `GET /v1/store`. */
@@ -165,6 +178,8 @@ export interface InstallState {
   readonly phase: InstallPhase
   /** Human-readable progress/error text for the current phase. */
   readonly message?: string
+  /** A successful DSH plugin mutation needs a user-approved Runtime restart. */
+  readonly runtimeRestartRequired?: boolean
   readonly failureReason?: InstallFailureReason
   /** Present during `confirm-wait` and `failed` phases after an audit ran. */
   readonly audit?: AuditReport
@@ -180,6 +195,10 @@ export interface InstalledRecord {
   readonly installedAt: string
   /** Remote entry name at install time, for display without network access. */
   readonly name: string
+  /** Package name recorded for a DSH plugin install. */
+  readonly pluginPackageName?: string
+  /** Profile recorded for a DSH plugin install. */
+  readonly pluginProfile?: string
 }
 
 /** Result of listing installed entries. */

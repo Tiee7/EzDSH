@@ -14,6 +14,8 @@ class FakeChild extends EventEmitter {
   pid = 9001
   killed = false
   killCalls: string[] = []
+  stdout = new EventEmitter()
+  stderr = new EventEmitter()
 
   kill(signal?: NodeJS.Signals): boolean {
     this.killCalls.push(signal ?? 'SIGTERM')
@@ -93,6 +95,24 @@ describe('ExternalServiceManager', () => {
     expect(manager.list().find((item) => item.id === 'bad')).toMatchObject({
       state: 'failed',
       error: 'not found',
+    })
+  })
+
+  it('keeps non-zero exit results and captured output visible as a failed service', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-external-services-'))
+    const child = new FakeChild()
+    const manager = new ExternalServiceManager(options(root, () => child as unknown as ChildProcess))
+    await manager.initialize()
+    await manager.create(definition({ autoStart: false }))
+
+    await manager.start('workbench')
+    child.stderr.emit('data', 'Port 3690 is already in use\n')
+    child.emit('exit', 1, null)
+
+    expect(manager.list().find((item) => item.id === 'workbench')).toMatchObject({
+      state: 'failed',
+      exitCode: 1,
+      error: expect.stringContaining('Port 3690 is already in use'),
     })
   })
 

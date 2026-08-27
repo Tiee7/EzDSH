@@ -301,6 +301,88 @@
   gap: 16px;
 }
 
+.settings-runtime-instances-error {
+  margin: 12px 20px;
+}
+
+.settings-runtime-instances-empty {
+  margin: 0;
+  padding: 18px 20px;
+  color: var(--ezdsh-text-faint);
+  font-size: 12px;
+}
+
+.settings-runtime-instance-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-runtime-instance {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 20px;
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.settings-runtime-instance-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.settings-runtime-instance-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--ezdsh-text-body);
+  font-size: 13px;
+}
+
+.settings-runtime-instance-title .settings-dot {
+  margin-right: 0;
+}
+
+.settings-runtime-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--ezdsh-code-background);
+  color: var(--ezdsh-text-faint);
+  font-size: 10px;
+}
+
+.settings-runtime-badge-current {
+  background: var(--ezdsh-active-background);
+  color: var(--ezdsh-text-muted);
+}
+
+.settings-runtime-badge-owned {
+  background: color-mix(in srgb, var(--ezdsh-accent-orange) 15%, transparent);
+  color: var(--ezdsh-accent-orange);
+}
+
+.settings-runtime-badge-external {
+  color: var(--ezdsh-text-faint);
+}
+
+.settings-runtime-instance-meta {
+  margin: 6px 0 0;
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+}
+
+.settings-runtime-instance-command {
+  display: block;
+  max-width: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--ezdsh-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .external-service-list {
   display: flex;
   flex-direction: column;
@@ -350,6 +432,12 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.external-service-error {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .external-service-meta {
@@ -475,8 +563,8 @@
 }
 
 .provider-status-list {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -484,6 +572,7 @@
 }
 
 .provider-status-item {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -521,9 +610,16 @@
 
 .provider-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 12px;
+}
+
+@media (max-width: 640px) {
+  .provider-status-list,
+  .provider-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .provider-card {
@@ -1428,4 +1524,139 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--ezdsh-text-faint);
+}
+
+.settings-notifications-hint {
+  max-width: 560px;
+}
+
+.settings-notification-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 7px;
+  color: var(--ezdsh-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-notification-toggle input {
+  accent-color: var(--ezdsh-brand);
+}
+
+.settings-notification-volume-row {
+  align-items: center;
+}
+
+.settings-notification-volume-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: min(280px, 45%);
+}
+
+.settings-notification-volume-control input {
+  width: 100%;
+  accent-color: var(--ezdsh-brand);
+}
+
+.settings-notification-event {
+  align-items: flex-start;
+}
+
+.settings-notification-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.settings-notification-select {
+  min-width: 130px;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-body);
+  font: inherit;
+  font-size: 12px;
+}
+
+.settings-notification-select:focus {
+  outline: none;
+  border-color: var(--ezdsh-active-border);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ezdsh-active-border) 15%, transparent);
+}
+
+.settings-notifications-error {
+  margin: 12px 20px 16px;
+}
+
+.settings-recovery-card {
+  overflow: hidden;
+}
+
+.settings-recovery-hint {
+  max-width: 620px;
+}
+
+.settings-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 20px 16px;
+}
+
+.settings-recovery-message {
+  margin: 0 20px 12px;
+  color: var(--ezdsh-text-muted);
+  font-size: 12px;
+}
+
+.settings-recovery-list {
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.settings-recovery-list > .settings-hint {
+  margin: 16px 20px;
+}
+
+.settings-recovery-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 20px;
+}
+
+.settings-recovery-row + .settings-recovery-row {
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.settings-recovery-name {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .settings-recovery-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-notification-volume-control,
+  .settings-notification-controls {
+    min-width: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .settings-notification-volume-row,
+  .settings-notification-event {
+    flex-direction: column;
+  }
 }

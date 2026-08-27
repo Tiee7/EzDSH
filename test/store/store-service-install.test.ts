@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { InstallErrorReport } from '../../src/main/store/install-reporter'
 import { StoreService } from '../../src/main/store/store-service'
 import type { InstallState, StoreEntry } from '../../src/shared/store'
+import type { StorePluginInstaller } from '../../src/main/store/store-service'
 
 const workdirs: string[] = []
 
@@ -39,7 +40,7 @@ function skillEntry(overrides: Partial<StoreEntry> = {}): StoreEntry {
   }
 }
 
-function makeService(entries: readonly StoreEntry[], root: { dshHome: string; registryPath: string }, events: InstallState[], files: Record<string, Buffer> = { 'demo/SKILL.md': Buffer.from(SKILL_MD) }, installErrorReporter?: { report: (report: InstallErrorReport) => void | Promise<void> }): StoreService {
+function makeService(entries: readonly StoreEntry[], root: { dshHome: string; registryPath: string }, events: InstallState[], files: Record<string, Buffer> = { 'demo/SKILL.md': Buffer.from(SKILL_MD) }, installErrorReporter?: { report: (report: InstallErrorReport) => void | Promise<void> }, pluginInstaller?: StorePluginInstaller): StoreService {
   return new StoreService({
     dshHome: root.dshHome,
     registryPath: root.registryPath,
@@ -50,6 +51,7 @@ function makeService(entries: readonly StoreEntry[], root: { dshHome: string; re
       categories: () => { throw new Error('not needed') }
     } as never,
     installErrorReporter,
+    pluginInstaller,
     fetchImpl: (async (url: RequestInfo | URL) => {
       const path = new URL(String(url)).pathname.replace(/^\/files\//, '')
       const bytes = files[path]
@@ -76,6 +78,44 @@ describe('install state machine', () => {
     expect(installed.records[0]?.id).toBe('demo')
     const onDisk = await readFile(join(root.dshHome, 'skills', 'demo', 'SKILL.md'), 'utf8')
     expect(onDisk).toContain('Be helpful')
+  })
+
+  it('installs a DSH plugin as a Skill category without downloading files and records its package', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const calls: string[] = []
+    const plugin = skillEntry({
+      id: 'agent-teams',
+      name: 'Agent Teams',
+      category: 'plugin',
+      version: '0.1.13',
+      files: undefined,
+      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13', packageName: '@nanmicoder/dsh-agent-teams' }
+    })
+    const service = makeService([plugin], root, events, {}, undefined, {
+      install: async () => {
+        calls.push('install')
+        return { packageName: '@nanmicoder/dsh-agent-teams', profile: 'web', runtimeRestartRequired: true }
+      },
+      uninstall: async () => { calls.push('uninstall'); return { runtimeRestartRequired: true } }
+    })
+
+    const pending = await service.install('skill', 'agent-teams')
+    expect(pending.phase).toBe('confirm-wait')
+    expect(pending.audit?.verdict).toBe('warn')
+    const done = await service.confirmInstall('skill', 'agent-teams', true)
+    expect(done.phase).toBe('done')
+    expect(done.runtimeRestartRequired).toBe(true)
+    expect(calls).toEqual(['install'])
+    expect((await service.listInstalled()).records[0]).toMatchObject({
+      kind: 'skill',
+      id: 'agent-teams',
+      pluginPackageName: '@nanmicoder/dsh-agent-teams',
+      pluginProfile: 'web'
+    })
+
+    expect((await service.uninstall('skill', 'agent-teams')).phase).toBe('done')
+    expect(calls).toEqual(['install', 'uninstall'])
   })
 
   it('fails with audit-blocked and writes nothing when a rule blocks', async () => {

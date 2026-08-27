@@ -25,6 +25,23 @@
   color: #f4b454;
 }
 
+.update-safety-checklist {
+  display: grid;
+  gap: 2px;
+  color: #c9d0db;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.update-safety-checklist strong {
+  color: #f8e9cf;
+  font-size: 12px;
+}
+
+.update-safety-checklist span {
+  color: #a9d5b5;
+}
+
 .update-center progress {
   width: 120px;
   height: 5px;

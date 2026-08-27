@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath,
@@ -17,6 +17,35 @@ afterEach(async () => {
 })
 
 describe('RuntimeManager', () => {
+  it('does not spawn a Runtime after shutdown is requested during startup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-start-stop-race-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    let releasePort: (() => void) | undefined
+    const portReady = new Promise<void>((resolve) => { releasePort = resolve })
+    const spawnProcess = vi.fn(() => {
+      throw new Error('Runtime must not be spawned after shutdown is requested')
+    })
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      command: process.execPath,
+      allocatePort: async () => {
+        await portReady
+        return 4567
+      },
+      spawnProcess,
+    })
+
+    const startPromise = manager.start()
+    const stopPromise = manager.stop()
+    releasePort?.()
+
+    await expect(startPromise).resolves.toMatchObject({ phase: 'stopped' })
+    await stopPromise
+    expect(spawnProcess).not.toHaveBeenCalled()
+  })
+
   it('uses the published Runtime during development when it is available', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-path-'))
     roots.push(root)
@@ -96,6 +125,10 @@ describe('RuntimeManager', () => {
     let spawnedArgs: readonly string[] = []
     let spawnedOptions: import('node:child_process').SpawnOptions | undefined
     const processSignals: Array<[number, NodeJS.Signals]> = []
+    const ownership = {
+      register: vi.fn(),
+      unregister: vi.fn(),
+    }
     const manager = new RuntimeManager({
       layout,
       runtimeEntryPath: '/dev/null',
@@ -104,6 +137,7 @@ describe('RuntimeManager', () => {
       stopTimeoutMs: 1_000,
       allocatePort: async () => 4567,
       waitForHealthy: async () => undefined,
+      runtimeOwnership: ownership,
       spawnProcess: (_command, args, options) => {
         spawnedArgs = args
         spawnedOptions = options
@@ -122,9 +156,12 @@ describe('RuntimeManager', () => {
     expect(spawnedArgs[0]).toBe('--expose-internals')
     expect(spawnedArgs).toContain('--no-open')
     expect(spawnedOptions?.detached).toBe(process.platform !== 'win32')
+    expect(spawnedOptions?.env?.EZDSH_RUNTIME_OWNER).toBe('EzDSH')
+    expect(ownership.register).toHaveBeenCalledWith(12345)
 
     await manager.stop()
     expect(manager.snapshot().phase).toBe('stopped')
+    expect(ownership.unregister).toHaveBeenCalledWith(12345)
     if (process.platform !== 'win32') expect(processSignals).toContainEqual([-12345, 'SIGTERM'])
     await expect(import('node:fs/promises').then(({ access }) => access(layout.harness))).resolves.toBeUndefined()
   })

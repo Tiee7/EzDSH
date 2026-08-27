@@ -40,7 +40,7 @@ export function UpdateSection({ copy }: { copy: AppCopy }): JSX.Element {
 
   const phase = state?.phase ?? 'idle'
   const action = updateAction(phase)
-  const busy = phase === 'checking' || phase === 'downloading' || phase === 'installing'
+  const busy = phase === 'checking' || phase === 'downloading' || phase === 'preparing' || phase === 'installing'
   const message = phase === 'up-to-date'
     ? state?.lastCheckedAt
       ? `${copy.latestVersionDetail(state.currentVersion)}，${copy.latestVersionLastChecked(formatDateTime(state.lastCheckedAt))}`

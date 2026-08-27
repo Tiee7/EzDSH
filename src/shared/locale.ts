@@ -42,6 +42,34 @@ export interface AppCopy {
   latestVersionLastChecked: (time: string) => string
   updateCheckFailed: string
   updateDisabledInDevelopment: string
+  updateSafetyTitle: string
+  updateSafetySessions: string
+  updateSafetySettings: string
+  updateSafetyPlugins: string
+  updateSafetyPresets: string
+  updateSafetyRuntime: string
+  recoveryTitle: string
+  recoveryDetail: string
+  recoveryLastError: string
+  recoveryRestorePrevious: string
+  recoveryRetryRuntime: string
+  recoveryOpenBackups: string
+  recoveryRestoring: string
+  recoveryRestoreFailed: string
+  recoveryDoctor: string
+  recoveryDoctorRunning: string
+  recoveryDoctorDone: (issues: number, repaired: number) => string
+  recoveryRepairSessionTail: string
+  settingsRecovery: string
+  settingsRecoveryHint: string
+  settingsRecoveryCreate: string
+  settingsRecoveryCreating: string
+  settingsRecoveryCheckLogs: string
+  settingsRecoveryOpen: string
+  settingsRecoveryEmpty: string
+  settingsRecoveryCreated: string
+  settingsRecoveryVerified: (ok: boolean) => string
+  settingsRecoveryIssues: (count: number) => string
   tabHarness: string
   tabStore: string
   tabPresets: string
@@ -75,10 +103,17 @@ export interface AppCopy {
   storePage: (page: number, pageCount: number) => string
   storeDetailFiles: string
   storeDetailMcp: string
+  storeDetailPlugin: string
   storeConfirmTitle: string
   storeConfirmInstall: string
   storeInstallAnyway: string
   storeCancel: string
+  storeRuntimeRestartRequired: string
+  storeRuntimeRestartNow: string
+  storeRuntimeRestartLater: string
+  storeRuntimeRestarting: string
+  storeRuntimeRestartDeferred: string
+  storeRuntimeRestartFailed: string
   storeAuditReport: string
   storeAuditFindingsNone: string
   storeAuditExternalUrls: string
@@ -92,6 +127,7 @@ export interface AppCopy {
   phaseDone: string
   phaseFailed: string
   storeSurfaceSkills: string
+  storeSurfacePlugins: string
   storeSurfaceMcp: string
   languageTagLabel: string
   languageTagChinese: string
@@ -123,6 +159,30 @@ export interface AppCopy {
   settingsStoreSource: string
   settingsProviders: string
   settingsProvidersHint: string
+  settingsNotifications: string
+  settingsNotificationsHint: string
+  settingsNotificationsEnable: string
+  settingsNotificationsEnableHint: string
+  settingsNotificationsDesktop: string
+  settingsNotificationsDesktopHint: string
+  settingsNotificationsVolume: string
+  settingsNotificationsPreview: string
+  settingsNotificationsSound: string
+  settingsNotificationsSaveFailed: string
+  settingsNotificationsOn: string
+  settingsNotificationsOff: string
+  settingsNotificationQuestion: string
+  settingsNotificationQuestionHint: string
+  settingsNotificationApproval: string
+  settingsNotificationApprovalHint: string
+  settingsNotificationTask: string
+  settingsNotificationTaskHint: string
+  settingsNotificationJob: string
+  settingsNotificationJobHint: string
+  settingsNotificationSubagent: string
+  settingsNotificationSubagentHint: string
+  settingsNotificationError: string
+  settingsNotificationErrorHint: string
   settingsProviderAdd: string
   settingsProviderCustomProvider: string
   settingsProviderUsable: string
@@ -166,6 +226,20 @@ export interface AppCopy {
   settingsRuntimeSection: string
   settingsRuntimePort: string
   settingsRestartRuntime: string
+  settingsRuntimeInstances: string
+  settingsRuntimeInstancesHint: string
+  settingsRuntimeRefresh: string
+  settingsRuntimeCurrent: string
+  settingsRuntimeOwned: string
+  settingsRuntimeExternal: string
+  settingsRuntimePid: string
+  settingsRuntimeStartedAt: string
+  settingsRuntimeStop: string
+  settingsRuntimeStopping: string
+  settingsRuntimeEmpty: string
+  settingsRuntimeLoading: string
+  settingsRuntimeLoadFailed: string
+  settingsRuntimePortUnavailable: string
   settingsExternalServices: string
   settingsExternalServicesHint: string
   externalServicesAdd: string
@@ -298,6 +372,34 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     latestVersionLastChecked: (time) => `最后检查 ${time}`,
     updateCheckFailed: '检查更新失败',
     updateDisabledInDevelopment: '开发模式不检查更新',
+    updateSafetyTitle: '更新前会自动创建恢复快照',
+    updateSafetySessions: 'Sessions 快照',
+    updateSafetySettings: 'Settings 备份',
+    updateSafetyPlugins: 'Plugin 列表快照',
+    updateSafetyPresets: 'Presets 备份',
+    updateSafetyRuntime: '记录当前 Runtime 版本',
+    recoveryTitle: '需要恢复 EzDSH 环境',
+    recoveryDetail: '上次升级后 DSH Runtime 未能正常启动。你的升级前快照仍然保留，可以恢复上一份用户环境后重试。',
+    recoveryLastError: '失败原因',
+    recoveryRestorePrevious: '恢复上一份环境',
+    recoveryRetryRuntime: '重试 Runtime',
+    recoveryOpenBackups: '打开备份目录',
+    recoveryRestoring: '正在恢复上一份环境…',
+    recoveryRestoreFailed: '恢复失败，请查看备份目录或重试。',
+    recoveryDoctor: '检查 Session Log',
+    recoveryDoctorRunning: '正在检查 Session Log…',
+    recoveryDoctorDone: (issues, repaired) => `检查完成：${issues} 个问题，修复 ${repaired} 个尾记录`,
+    recoveryRepairSessionTail: '修复未完成的尾记录',
+    settingsRecovery: '备份与恢复',
+    settingsRecoveryHint: '备份 sessions、settings、skills、plugins、profiles 和 state。Credential 明文保存在本机受限 vault，不进入 Archive；换机恢复时需要重新输入。',
+    settingsRecoveryCreate: '立即备份',
+    settingsRecoveryCreating: '正在备份…',
+    settingsRecoveryCheckLogs: '检查 Session Log',
+    settingsRecoveryOpen: '打开备份目录',
+    settingsRecoveryEmpty: '还没有可用的恢复快照',
+    settingsRecoveryCreated: '备份已创建',
+    settingsRecoveryVerified: (ok) => ok ? '校验通过' : '校验失败',
+    settingsRecoveryIssues: (count) => String(count) + ' 个 Session Log 问题',
     tabHarness: 'DeepSeek Harness',
     tabStore: 'Skills',
     tabPresets: 'Preset',
@@ -331,10 +433,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storePage: (page, pageCount) => `第 ${page} / ${pageCount} 页`,
     storeDetailFiles: '包含文件',
     storeDetailMcp: 'MCP 服务器配置',
+    storeDetailPlugin: 'DSH 插件来源',
     storeConfirmTitle: '安全检测报告',
     storeConfirmInstall: '确认安装',
     storeInstallAnyway: '仍要安装',
     storeCancel: '取消',
+    storeRuntimeRestartRequired: '插件已安装，需要重启 Runtime 后才能生效。',
+    storeRuntimeRestartNow: '立即重启',
+    storeRuntimeRestartLater: '稍后重启',
+    storeRuntimeRestarting: '正在重启 Runtime…',
+    storeRuntimeRestartDeferred: '插件已安装，稍后重启 Runtime 后生效。',
+    storeRuntimeRestartFailed: 'Runtime 重启失败，请稍后重试。',
     storeAuditReport: '检测结果',
     storeAuditFindingsNone: '未发现问题',
     storeAuditExternalUrls: '外链地址',
@@ -348,6 +457,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     phaseDone: '安装完成',
     phaseFailed: '操作失败',
     storeSurfaceSkills: '技能',
+    storeSurfacePlugins: '插件',
     storeSurfaceMcp: '工具扩展（MCP）',
     languageTagLabel: '切换界面语言',
     languageTagChinese: '简体中文',
@@ -379,6 +489,30 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsStoreSource: '商店数据源',
     settingsProviders: '模型供应商',
     settingsProvidersHint: '管理预设供应商的 API Key，与首次运行的配置流程一致',
+    settingsNotifications: '通知',
+    settingsNotificationsHint: '在 EzDSH 窗口最小化或后台运行时，及时知道 Agent 的重要状态变化。声音通过 WebAudio 在本地生成，不需要音频文件或网络。',
+    settingsNotificationsEnable: '启用通知声音',
+    settingsNotificationsEnableHint: '总开关，关闭后不会播放任何通知声音。',
+    settingsNotificationsDesktop: '桌面通知',
+    settingsNotificationsDesktopHint: '使用系统原生通知，即使 EzDSH 窗口被最小化也能收到。',
+    settingsNotificationsVolume: '声音音量',
+    settingsNotificationsPreview: '试听',
+    settingsNotificationsSound: '声音',
+    settingsNotificationsSaveFailed: '通知设置保存失败，请重试',
+    settingsNotificationsOn: '开启',
+    settingsNotificationsOff: '关闭',
+    settingsNotificationQuestion: 'Questions',
+    settingsNotificationQuestionHint: 'Agent 需要你回答问题时提醒。',
+    settingsNotificationApproval: 'Approval',
+    settingsNotificationApprovalHint: '工具调用等待批准时提醒。',
+    settingsNotificationTask: 'Turn complete',
+    settingsNotificationTaskHint: '当前对话回合完成时提醒。',
+    settingsNotificationJob: 'Background jobs',
+    settingsNotificationJobHint: '后台任务完成或被终止时提醒。',
+    settingsNotificationSubagent: 'Subagents',
+    settingsNotificationSubagentHint: '子 Agent 完成工作时提醒。默认关闭。',
+    settingsNotificationError: 'Errors',
+    settingsNotificationErrorHint: '回合、后台任务或 Agent 出错时提醒。',
     settingsProviderAdd: '添加供应商',
     settingsProviderCustomProvider: '自定义供应商',
     settingsProviderUsable: '可用',
@@ -422,6 +556,20 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimeSection: '运行状态',
     settingsRuntimePort: '端口',
     settingsRestartRuntime: '重启 Runtime',
+    settingsRuntimeInstances: 'DSH Runtime 实例',
+    settingsRuntimeInstancesHint: '查看当前机器上所有 DSH Runtime；多于 1 个时，非当前实例的进程通常是自行启动的或异常退出时遗留的 Runtime。',
+    settingsRuntimeRefresh: '刷新列表',
+    settingsRuntimeCurrent: '当前 EzDSH 启动',
+    settingsRuntimeOwned: 'EzDSH 启动的孤儿实例',
+    settingsRuntimeExternal: '用户或其他进程启动',
+    settingsRuntimePid: 'PID',
+    settingsRuntimeStartedAt: '启动时间',
+    settingsRuntimeStop: '停止',
+    settingsRuntimeStopping: '停止中…',
+    settingsRuntimeEmpty: '当前没有检测到 DSH Runtime',
+    settingsRuntimeLoading: '正在检测 DSH Runtime…',
+    settingsRuntimeLoadFailed: '检测 DSH Runtime 失败，请刷新重试',
+    settingsRuntimePortUnavailable: '未检测到',
     settingsExternalServices: '外部服务',
     settingsExternalServicesHint: '“跟随启动”表示 DSH Runtime 就绪后自动启动该服务；关闭后仍可手动管理。服务失败不会影响 EzDSH。',
     externalServicesAdd: '添加服务',
@@ -436,7 +584,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     externalServicesCommand: '命令',
     externalServicesCommandHint: '可填写 npm run dev 等一行命令，也可只填写可执行文件。',
     externalServicesArgs: '参数',
-    externalServicesArgsHint: '每行一个参数；默认不经过 Shell 解析。',
+    externalServicesArgsHint: '每行一个参数；例如 pnpm run dev --port 3690 应拆为 run、dev、--port、3690 四行。默认不经过 Shell 解析。',
     externalServicesCwd: '工作目录（可选）',
     externalServicesEnv: '环境变量（可选）',
     externalServicesEnvHint: '每行一个 KEY=VALUE，敏感值不会显示在状态中。',
@@ -553,6 +701,34 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     latestVersionLastChecked: (time) => `Last checked ${time}`,
     updateCheckFailed: 'Update check failed',
     updateDisabledInDevelopment: 'Update checks are disabled in development mode',
+    updateSafetyTitle: 'A recovery snapshot will be created before updating',
+    updateSafetySessions: 'Sessions snapshot',
+    updateSafetySettings: 'Settings backup',
+    updateSafetyPlugins: 'Plugin list snapshot',
+    updateSafetyPresets: 'Presets backup',
+    updateSafetyRuntime: 'Current Runtime version recorded',
+    recoveryTitle: 'EzDSH needs recovery',
+    recoveryDetail: 'DSH Runtime did not start after the last update. Your pre-update snapshot is still available; restore the previous user environment and try again.',
+    recoveryLastError: 'Failure reason',
+    recoveryRestorePrevious: 'Restore previous environment',
+    recoveryRetryRuntime: 'Retry Runtime',
+    recoveryOpenBackups: 'Open backup folder',
+    recoveryRestoring: 'Restoring previous environment…',
+    recoveryRestoreFailed: 'Restore failed. Open the backup folder or try again.',
+    recoveryDoctor: 'Check Session Logs',
+    recoveryDoctorRunning: 'Checking Session Logs…',
+    recoveryDoctorDone: (issues, repaired) => `Check complete: ${issues} issue(s), repaired ${repaired} tail record(s)`,
+    recoveryRepairSessionTail: 'Repair incomplete tail record',
+    settingsRecovery: 'Backup & recovery',
+    settingsRecoveryHint: 'Backs up sessions, settings, skills, plugins, profiles, and state. Plaintext Credentials stay in a restricted local vault and never enter the Archive; moving to a new machine requires re-entry.',
+    settingsRecoveryCreate: 'Back up now',
+    settingsRecoveryCreating: 'Backing up…',
+    settingsRecoveryCheckLogs: 'Check Session Logs',
+    settingsRecoveryOpen: 'Open backup folder',
+    settingsRecoveryEmpty: 'No recovery snapshots yet',
+    settingsRecoveryCreated: 'Backup created',
+    settingsRecoveryVerified: (ok) => ok ? 'Checksum OK' : 'Checksum FAILED',
+    settingsRecoveryIssues: (count) => String(count) + ' Session Log issue(s)',
     tabHarness: 'DeepSeek Harness',
     tabStore: 'Skills',
     tabPresets: 'Preset',
@@ -586,10 +762,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storePage: (page, pageCount) => `Page ${page} of ${pageCount}`,
     storeDetailFiles: 'Bundled files',
     storeDetailMcp: 'MCP server wiring',
+    storeDetailPlugin: 'DSH plugin source',
     storeConfirmTitle: 'Security audit report',
     storeConfirmInstall: 'Confirm install',
     storeInstallAnyway: 'Install anyway',
     storeCancel: 'Cancel',
+    storeRuntimeRestartRequired: 'The plugin is installed and will be active after restarting Runtime.',
+    storeRuntimeRestartNow: 'Restart now',
+    storeRuntimeRestartLater: 'Later',
+    storeRuntimeRestarting: 'Restarting Runtime…',
+    storeRuntimeRestartDeferred: 'The plugin is installed and will be active after you restart Runtime.',
+    storeRuntimeRestartFailed: 'Runtime restart failed. Try again later.',
     storeAuditReport: 'Audit result',
     storeAuditFindingsNone: 'No issues found',
     storeAuditExternalUrls: 'External URLs',
@@ -603,6 +786,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     phaseDone: 'Installed',
     phaseFailed: 'Operation failed',
     storeSurfaceSkills: 'Skills',
+    storeSurfacePlugins: 'Plugins',
     storeSurfaceMcp: 'Tool extensions (MCP)',
     languageTagLabel: 'Change interface language',
     languageTagChinese: '简体中文',
@@ -634,6 +818,30 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsStoreSource: 'Store source',
     settingsProviders: 'Model providers',
     settingsProvidersHint: 'Manage API keys for preset providers, same flow as first-run setup',
+    settingsNotifications: 'Notifications',
+    settingsNotificationsHint: 'Stay informed about important Agent state changes while EzDSH is minimized or in the background. Sounds are generated locally with WebAudio—no audio files or network required.',
+    settingsNotificationsEnable: 'Enable notification sounds',
+    settingsNotificationsEnableHint: 'Master switch. Turn it off to silence all notification sounds.',
+    settingsNotificationsDesktop: 'Desktop notifications',
+    settingsNotificationsDesktopHint: 'Use native OS notifications, including when the EzDSH window is minimized.',
+    settingsNotificationsVolume: 'Sound volume',
+    settingsNotificationsPreview: 'Preview',
+    settingsNotificationsSound: 'Sound',
+    settingsNotificationsSaveFailed: 'Could not save notification settings. Try again.',
+    settingsNotificationsOn: 'On',
+    settingsNotificationsOff: 'Off',
+    settingsNotificationQuestion: 'Questions',
+    settingsNotificationQuestionHint: 'Notify when the Agent needs an answer.',
+    settingsNotificationApproval: 'Approval',
+    settingsNotificationApprovalHint: 'Notify when a tool call is waiting for approval.',
+    settingsNotificationTask: 'Turn complete',
+    settingsNotificationTaskHint: 'Notify when the current conversation turn completes.',
+    settingsNotificationJob: 'Background jobs',
+    settingsNotificationJobHint: 'Notify when a background job completes or is killed.',
+    settingsNotificationSubagent: 'Subagents',
+    settingsNotificationSubagentHint: 'Notify when a subagent finishes work. Off by default.',
+    settingsNotificationError: 'Errors',
+    settingsNotificationErrorHint: 'Notify when a turn, background job, or Agent errors.',
     settingsProviderAdd: 'Add provider',
     settingsProviderCustomProvider: 'Custom provider',
     settingsProviderUsable: 'Usable',
@@ -677,6 +885,20 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRuntimeSection: 'Runtime status',
     settingsRuntimePort: 'Port',
     settingsRestartRuntime: 'Restart runtime',
+    settingsRuntimeInstances: 'DSH Runtime instances',
+    settingsRuntimeInstancesHint: 'View every DSH Runtime on this machine. When more than one is present, instances not started by the current EzDSH are usually manually started or left over after an abnormal exit.',
+    settingsRuntimeRefresh: 'Refresh list',
+    settingsRuntimeCurrent: 'Started by current EzDSH',
+    settingsRuntimeOwned: 'Orphaned EzDSH instance',
+    settingsRuntimeExternal: 'Started by user or another process',
+    settingsRuntimePid: 'PID',
+    settingsRuntimeStartedAt: 'Started',
+    settingsRuntimeStop: 'Stop',
+    settingsRuntimeStopping: 'Stopping…',
+    settingsRuntimeEmpty: 'No DSH Runtime processes detected',
+    settingsRuntimeLoading: 'Detecting DSH Runtime processes…',
+    settingsRuntimeLoadFailed: 'Could not detect DSH Runtime processes. Refresh to try again.',
+    settingsRuntimePortUnavailable: 'Unavailable',
     settingsExternalServices: 'External services',
     settingsExternalServicesHint: '“Follow startup” starts the service after the DSH Runtime is ready. Turning it off keeps manual controls available, and service failures never block EzDSH.',
     externalServicesAdd: 'Add service',
@@ -691,7 +913,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     externalServicesCommand: 'Command',
     externalServicesCommandHint: 'You can enter npm run dev as one line or provide only the executable.',
     externalServicesArgs: 'Arguments',
-    externalServicesArgsHint: 'One argument per line; shell parsing is disabled by default.',
+    externalServicesArgsHint: 'One argument per line; for pnpm run dev --port 3690, use four lines: run, dev, --port, 3690. Shell parsing is disabled by default.',
     externalServicesCwd: 'Working directory (optional)',
     externalServicesEnv: 'Environment (optional)',
     externalServicesEnvHint: 'One KEY=VALUE per line; values are not shown in process status.',

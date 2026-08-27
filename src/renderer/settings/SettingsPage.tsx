@@ -5,12 +5,14 @@ import { STORE_API_BASE_URL } from '../../shared/store.js'
 import { ProviderSection } from './ProviderSection.js'
 import { UpdateSection } from './UpdateSection.js'
 import { RuntimeSection } from './RuntimeSection.js'
+import { RuntimeInstancesSection } from './RuntimeInstancesSection.js'
 import { ChannelBridgePage } from './ChannelBridgePage.js'
 import { NavigationSection } from './NavigationSection.js'
 import { ExternalServicesSection } from './ExternalServicesSection.js'
+import { NotificationsSection } from './NotificationsSection.js'
+import { RecoverySection } from './RecoverySection.js'
+import { SETTINGS_TAB_IDS, type SettingsTab } from './settings-navigation.js'
 import './settings.css'
-
-type SettingsTab = 'general' | 'remote-control' | 'navigation' | 'external-services'
 
 interface SettingsPageProps {
   copy: AppCopy
@@ -164,12 +166,14 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
     }, 1500)
   }
 
-  const tabs: Array<{ id: SettingsTab; label: string }> = [
-    { id: 'general', label: copy.settingsTabGeneral },
-    { id: 'remote-control', label: copy.settingsTabRemoteControl },
-    { id: 'navigation', label: copy.settingsTabNavigation },
-    { id: 'external-services', label: copy.settingsExternalServices },
-  ]
+  const tabLabels: Record<SettingsTab, string> = {
+    general: copy.settingsTabGeneral,
+    notifications: copy.settingsNotifications,
+    'remote-control': copy.settingsTabRemoteControl,
+    navigation: copy.settingsTabNavigation,
+    'external-services': copy.settingsExternalServices,
+  }
+  const tabs = SETTINGS_TAB_IDS.map((id) => ({ id, label: tabLabels[id] }))
 
   return (
     <div className="settings-page">
@@ -232,8 +236,12 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
               <RuntimeSection copy={copy} runtime={runtime} />
             </section>
             <section className="settings-card">
+              <RuntimeInstancesSection copy={copy} currentPid={runtime?.pid} />
+            </section>
+            <section className="settings-card">
               <UpdateSection copy={copy} />
             </section>
+            <RecoverySection copy={copy} />
             <section className="settings-card">
               <div className="settings-item">
                 <div className="settings-item-text">
@@ -304,6 +312,8 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
               </div>
             </section>
           </>
+        ) : activeTab === 'notifications' ? (
+          <NotificationsSection copy={copy} />
         ) : activeTab === 'remote-control' ? (
           <ChannelBridgePage copy={copy} />
         ) : activeTab === 'navigation' ? (

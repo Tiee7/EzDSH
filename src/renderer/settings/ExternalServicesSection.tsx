@@ -278,7 +278,7 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
                     <span className="external-service-state">{stateLabel(copy, service.state)}</span>
                   </div>
                   <code className="external-service-command">{commandLabel(service)}</code>
-                  {service.error ? <p className="settings-error">{service.error}</p> : null}
+                  {service.error ? <p className="settings-error external-service-error" role="alert">{service.error}</p> : null}
                   {service.pid !== undefined ? <p className="external-service-meta">PID {service.pid}</p> : null}
                 </div>
                 <div className="external-service-controls">

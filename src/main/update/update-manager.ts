@@ -20,7 +20,12 @@ export interface UpdateManagerOptions {
   getUpdateChannel?: () => UpdateChannel
   getUpdateLanguage?: () => string
   fetchImpl?: typeof fetch
-  prepareInstall?: () => Promise<void>
+  prepareInstall?: (context: UpdateInstallContext) => Promise<void>
+}
+
+export interface UpdateInstallContext {
+  currentVersion: string
+  targetVersion?: string
 }
 
 type UpdateListener = (state: UpdateState) => void
@@ -220,9 +225,13 @@ export class UpdateManager {
   async install(): Promise<UpdateState> {
     if (this.updater === undefined || this.current.phase !== 'downloaded') return this.snapshot()
 
-    this.publish({ phase: 'installing', message: '正在准备安装更新' })
+    this.publish({ phase: 'preparing', message: '正在创建升级前恢复快照' })
     try {
-      await this.options.prepareInstall?.()
+      await this.options.prepareInstall?.({
+        currentVersion: this.options.currentVersion,
+        ...(this.current.availableVersion === undefined ? {} : { targetVersion: this.current.availableVersion }),
+      })
+      this.publish({ phase: 'installing', message: '正在准备安装更新' })
       this.updater.quitAndInstall(false, true)
     } catch (error) {
       this.publish({ phase: 'failed', message: error instanceof Error ? error.message : '安装更新失败' })

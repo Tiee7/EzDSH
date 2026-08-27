@@ -47,12 +47,14 @@ interface ManagedChild {
   child: ChildProcess
   stopping: boolean
   closed: boolean
+  output: string
   logStream?: WriteStream
   exitPromise: Promise<void>
   resolveExit: () => void
 }
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u
+const MAX_CAPTURED_OUTPUT = 16_000
 
 /** Owns user-configured child processes without making them part of EzDSH startup success. */
 export class ExternalServiceManager {
@@ -162,13 +164,19 @@ export class ExternalServiceManager {
       child,
       stopping: false,
       closed: false,
+      output: '',
       exitPromise: new Promise<void>((resolve) => { resolveExit = resolve }),
       resolveExit: () => resolveExit(),
     }
     this.children.set(id, managed)
     managed.logStream = this.createLogStream(id)
-    child.stdout?.on('data', (chunk: Buffer | string) => managed.logStream?.write(chunk))
-    child.stderr?.on('data', (chunk: Buffer | string) => managed.logStream?.write(chunk))
+    const appendOutput = (chunk: Buffer | string): void => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+      managed.output = `${managed.output}${text}`.slice(-MAX_CAPTURED_OUTPUT)
+      managed.logStream?.write(chunk)
+    }
+    child.stdout?.on('data', appendOutput)
+    child.stderr?.on('data', appendOutput)
     child.once('error', (error) => this.finishChild(id, managed, undefined, undefined, error))
     child.once('exit', (code, signal) => this.finishChild(id, managed, code, signal ?? undefined))
 
@@ -261,11 +269,27 @@ export class ExternalServiceManager {
     this.children.delete(id)
     managed.logStream?.end()
     managed.resolveExit()
-    this.setRuntime(id, error !== undefined
-      ? { state: 'failed', error: messageOf(error), pid: undefined }
-      : managed.stopping
-        ? { state: 'stopped', pid: undefined, exitCode, signal }
-        : { state: 'exited', pid: undefined, exitCode, signal })
+    const failed = error !== undefined
+      || (!managed.stopping && exitCode !== undefined && exitCode !== null && exitCode !== 0)
+      || (!managed.stopping && signal !== undefined)
+    if (failed) {
+      const reason = error !== undefined
+        ? messageOf(error)
+        : signal !== undefined
+          ? `External service terminated by ${signal}`
+          : `External service exited with code ${String(exitCode)}`
+      this.setRuntime(id, {
+        state: 'failed',
+        pid: undefined,
+        exitCode,
+        signal,
+        error: appendOutput(reason, managed.output),
+      })
+      return
+    }
+    this.setRuntime(id, managed.stopping
+      ? { state: 'stopped', pid: undefined, exitCode, signal }
+      : { state: 'exited', pid: undefined, exitCode, signal })
   }
 
   private async waitForExit(managed: ManagedChild): Promise<void> {
@@ -344,4 +368,9 @@ function recordOfStrings(value: unknown, field: string): Record<string, string> 
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function appendOutput(reason: string, output: string): string {
+  const trimmed = output.trim()
+  return trimmed === '' ? reason : `${reason}\n${trimmed}`
 }

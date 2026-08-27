@@ -10,3 +10,14 @@ export interface RuntimeSnapshot {
   startedAt?: string
   message?: string
 }
+
+export interface DshRuntimeProcess {
+  pid: number
+  ppid: number
+  pgid?: number
+  port?: number
+  startedAt?: string
+  command: string
+  current: boolean
+  ownedByEzDSH: boolean
+}

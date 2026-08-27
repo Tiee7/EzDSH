@@ -24,6 +24,16 @@ export function UpdateCenter({ state, copy }: UpdateCenterProps) {
         <strong>{state.message ?? copy.settingsUpdateSection}</strong>
         {state.availableVersion ? <span> v{state.availableVersion}</span> : null}
       </div>
+      {state.phase === 'downloaded' || state.phase === 'preparing' ? (
+        <div className="update-safety-checklist" aria-label={copy.updateSafetyTitle}>
+          <strong>{copy.updateSafetyTitle}</strong>
+          <span>✓ {copy.updateSafetySessions}</span>
+          <span>✓ {copy.updateSafetySettings}</span>
+          <span>✓ {copy.updateSafetyPlugins}</span>
+          <span>✓ {copy.updateSafetyPresets}</span>
+          <span>✓ {copy.updateSafetyRuntime}</span>
+        </div>
+      ) : null}
       {state.phase === 'downloading' && state.percent !== undefined ? (
         <progress max="100" value={state.percent} aria-label={copy.settingsDownloadUpdate} />
       ) : null}

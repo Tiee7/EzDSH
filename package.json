@@ -24,12 +24,13 @@
     "stage:dsh:source-runtime": "node scripts/stage-dsh-runtime.mjs",
     "check:published-dsh": "node scripts/check-published-dsh.mjs",
     "stage:node-runtime": "node scripts/stage-node-runtime.mjs",
+    "stage:pnpm": "node scripts/stage-pnpm.mjs",
     "stage:runtime": "npm run stage:node-runtime",
     "verify:runtime": "node scripts/verify-runtime-bundle.mjs",
     "verify:package:mac": "node scripts/verify-runtime-bundle.mjs \"dist/mac-arm64/EzDSH.app/Contents/Resources\"",
     "verify:package:win": "node scripts/verify-runtime-bundle.mjs \"dist/win-unpacked/resources\"",
     "postinstall": "npm run check:runtime && npm run check:published-dsh",
-    "prepare:package": "npm run check:published-dsh && npm run build && npm run stage:runtime && npm run verify:runtime",
+    "prepare:package": "npm run check:published-dsh && npm run build && npm run stage:runtime && npm run stage:pnpm && npm run verify:runtime",
     "package:dir": "npm run prepare:package && electron-builder --dir",
     "package:mac": "npm run prepare:package && electron-builder --mac --publish never && npm run verify:package:mac",
     "package:mac:release": "npm run prepare:package && electron-builder --mac --publish never -c.mac.forceCodeSigning=true -c.mac.notarize=true && npm run verify:package:mac",
@@ -60,8 +61,10 @@
     "@earendil-works/pi-ai": "0.82.1",
     "@larksuiteoapi/node-sdk": "^1.73.0",
     "electron-updater": "^6.8.9",
+    "pnpm": "11.7.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "ws": "^8.21.0",
     "yaml": "^2.8.1"
   },
   "devDependencies": {
@@ -72,7 +75,6 @@
     "electron": "43.4.0",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
-    "pnpm": "11.7.0",
     "typescript": "5.9.3",
     "vite": "^6.3.5",
     "vitest": "^3.1.2"
@@ -103,6 +105,7 @@
       "!node_modules/node-bin-darwin-arm64/**",
       "!node_modules/node-win-x64/**",
       "!docs-site/**",
+      "recovery/**/*",
       "package.json"
     ],
     "extraResources": [

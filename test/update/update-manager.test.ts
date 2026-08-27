@@ -42,13 +42,13 @@ describe('UpdateManager', () => {
 
   it('checks, downloads, and installs a packaged update', async () => {
     const updater = new FakeUpdater()
-    let prepared = false
+    let prepared: { currentVersion: string; targetVersion?: string } | undefined
     const manager = new UpdateManager({
       currentVersion: '0.1.0-beta.1',
       isPackaged: true,
       updater: updater as unknown as AppUpdater,
-      prepareInstall: async () => {
-        prepared = true
+      prepareInstall: async (context) => {
+        prepared = context
       }
     })
 
@@ -62,7 +62,7 @@ describe('UpdateManager', () => {
     expect(manager.snapshot()).toMatchObject({ phase: 'downloaded', percent: 100 })
 
     await manager.install()
-    expect(prepared).toBe(true)
+    expect(prepared).toEqual({ currentVersion: '0.1.0-beta.1', targetVersion: '0.2.0' })
     expect(updater.installed).toBe(true)
   })
 

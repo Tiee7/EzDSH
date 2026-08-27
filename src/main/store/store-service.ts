@@ -16,13 +16,14 @@ import type {
   InstallState,
   StoreCategory,
   StoreEntry,
+  InstalledRecord,
   StoreKind,
   StoreListResult,
   StoreMcpConfig,
   StoreRefreshResult
 } from '../../shared/store.js'
 import { STORE_KINDS } from '../../shared/store.js'
-import { auditBundle, auditMcpConfig } from './audit.js'
+import { auditBundle, auditMcpConfig, auditPluginSource } from './audit.js'
 import { StoreClient, type StoreListQuery } from './store-client.js'
 import { downloadBundle, DownloadError, type DownloadedBundle } from './downloader.js'
 import { InstallRegistry } from './install-registry.js'
@@ -33,6 +34,12 @@ import { installSkillBundle, SkillConflictError, uninstallSkill } from './skill-
 import { installPresetBundle, PresetConflictError, uninstallPreset } from './preset-installer.js'
 import { installMcpEntry, uninstallMcpEntry } from './mcp-installer.js'
 import { InstallErrorReporter, type InstallErrorReport } from './install-reporter.js'
+
+/** Client-side adapter for installing a Skill entry backed by a DSH plugin package. */
+export interface StorePluginInstaller {
+  install(entry: StoreEntry): Promise<{ packageName: string; profile: string; runtimeRestartRequired?: boolean }>
+  uninstall(record: InstalledRecord, entry?: StoreEntry): Promise<{ runtimeRestartRequired?: boolean } | void>
+}
 
 /** Remote catalog source used only by explicit refreshes. */
 export interface RemoteCatalogSource {
@@ -54,6 +61,8 @@ export interface StoreServiceOptions {
   installErrorReporter?: Pick<InstallErrorReporter, 'report'>
   /** Sink for install progress events forwarded to renderer windows. */
   onStateChange?: (state: InstallState) => void
+  /** DSH profile plugin installer; omitted in builds that only support bundles. */
+  pluginInstaller?: StorePluginInstaller
 }
 
 /** One install parked at `confirm-wait` between `install()` and `confirmInstall()`. */
@@ -75,6 +84,7 @@ export class StoreService {
   private readonly fetchImpl: typeof fetch
   private readonly installErrorReporter: Pick<InstallErrorReporter, 'report'>
   private readonly emit: (state: InstallState) => void
+  private readonly pluginInstaller: StorePluginInstaller | undefined
   private readonly pending = new Map<string, PendingInstall>()
   private readonly inFlight = new Set<string>()
   private registry: InstallRegistry | undefined
@@ -89,6 +99,7 @@ export class StoreService {
     this.fetchImpl = options.fetchImpl ?? fetch
     this.installErrorReporter = options.installErrorReporter ?? new InstallErrorReporter({ fetchImpl: this.fetchImpl })
     this.emit = options.onStateChange ?? (() => undefined)
+    this.pluginInstaller = options.pluginInstaller
   }
 
   /** Load the persisted remote snapshot once; catalog reads never touch the network after this. */
@@ -282,6 +293,9 @@ export class StoreService {
       if (kind === 'mcp') {
         this.publish({ kind, id, phase: 'auditing', message: 'Auditing MCP wiring…' })
         audit = auditMcpConfig(requireMcp(entry))
+      } else if (entry.plugin !== undefined) {
+        this.publish({ kind, id, phase: 'auditing', message: 'Auditing DSH plugin source…' })
+        audit = auditPluginSource(entry)
       } else {
         try {
           bundle = await downloadBundle(entry.files ?? [], { fetchImpl: this.fetchImpl })
@@ -351,15 +365,30 @@ export class StoreService {
       return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: `${id} is not installed` })
     }
     this.publish({ kind, id, phase: 'installing', message: 'Removing…' })
+    let pluginUninstall: { runtimeRestartRequired?: boolean } | void = undefined
     try {
-      if (kind === 'skill') await uninstallSkill(this.dshHome, id)
+      if (kind === 'skill' && record.pluginPackageName !== undefined) {
+        if (this.pluginInstaller === undefined) throw new Error('DSH plugin installer is not available in this build')
+        let entry: StoreEntry | undefined
+        try {
+          entry = await this.entry(kind, id)
+        } catch {
+          // The registry keeps the package name so uninstall remains possible offline.
+        }
+        pluginUninstall = await this.pluginInstaller.uninstall(record, entry)
+      } else if (kind === 'skill') await uninstallSkill(this.dshHome, id)
       else if (kind === 'preset') await uninstallPreset(this.dshHome, id)
       else await uninstallMcpEntry(webProfilePatchFile(this.dshHome), id)
       await registry.remove(kind, id)
     } catch (error) {
       return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error) })
     }
-    return this.finish({ kind, id, phase: 'done' })
+    return this.finish({
+      kind,
+      id,
+      phase: 'done',
+      ...(pluginUninstall?.runtimeRestartRequired === true ? { runtimeRestartRequired: true } : {})
+    })
   }
 
   /** Emit an install state event to renderer windows. */
@@ -370,10 +399,14 @@ export class StoreService {
   private async runInstall(entry: StoreEntry, audit: AuditReport, bundle: DownloadedBundle | undefined): Promise<InstallState> {
     const { kind, id } = entry
     this.publish({ kind, id, phase: 'installing', message: 'Installing…' })
+    let pluginInstall: { packageName: string; profile: string; runtimeRestartRequired?: boolean } | undefined
     try {
       const registry = this.ensureRegistry()
       if (this.dshHome === undefined) throw new Error('DSH home is not configured')
-      if (kind === 'skill') await installSkillBundle(this.dshHome, entry, bundle ?? [])
+      if (kind === 'skill' && entry.plugin !== undefined) {
+        if (this.pluginInstaller === undefined) throw new Error('DSH plugin installer is not available in this build')
+        pluginInstall = await this.pluginInstaller.install(entry)
+      } else if (kind === 'skill') await installSkillBundle(this.dshHome, entry, bundle ?? [])
       else if (kind === 'preset') await installPresetBundle(this.dshHome, entry, bundle ?? [])
       else await installMcpEntry(webProfilePatchFile(this.dshHome), requireMcp(entry))
       await registry.upsert({
@@ -382,7 +415,11 @@ export class StoreService {
         version: entry.version,
         sha256: bundleSha256(entry, bundle),
         installedAt: new Date().toISOString(),
-        name: entry.name
+        name: entry.name,
+        ...(pluginInstall === undefined ? {} : {
+          pluginPackageName: pluginInstall.packageName,
+          pluginProfile: pluginInstall.profile
+        })
       })
     } catch (error) {
       const reason =
@@ -395,7 +432,13 @@ export class StoreService {
       }
       return this.finish({ kind, id, phase: 'failed', failureReason: reason, audit, message: describe(error) })
     }
-    return this.finish({ kind, id, phase: 'done', audit })
+    return this.finish({
+      kind,
+      id,
+      phase: 'done',
+      audit,
+      ...(pluginInstall?.runtimeRestartRequired === true ? { runtimeRestartRequired: true } : {})
+    })
   }
 
   private finish(state: InstallState): InstallState {
@@ -428,7 +471,9 @@ function requireMcp(entry: StoreEntry): StoreMcpConfig {
 
 /** Digest stamped into the install registry: concatenated file digests, or the config JSON for MCP. */
 function bundleSha256(entry: StoreEntry, bundle: DownloadedBundle | undefined): string {
-  if (bundle === undefined) return createHash('sha256').update(JSON.stringify(entry.mcp ?? {})).digest('hex')
+  if (bundle === undefined) {
+    return createHash('sha256').update(JSON.stringify(entry.plugin ?? entry.mcp ?? {})).digest('hex')
+  }
   return createHash('sha256')
     .update(bundle.files.map((file) => `${file.path}:${sha256Of(file.bytes)}`).join('\n'))
     .digest('hex')

@@ -12,6 +12,11 @@ import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import type { UpdateState } from '../../shared/update.js'
 import type { DeepLinkInstallTarget, DeepLinkSessionTarget } from '../../shared/contracts.js'
 import type { WorkspaceOperationState } from '../../shared/state.js'
+import type { RecoveryState } from '../../main/recovery/recovery-manager.js'
+import {
+  DEFAULT_NOTIFICATION_SETTINGS,
+  type NotificationSettings,
+} from '../../shared/notifications.js'
 import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
 import { WebPane } from './WebPane.js'
 import { StorePage } from '../store/StorePage.js'
@@ -19,7 +24,9 @@ import { PresetPage } from '../store/PresetPage.js'
 import { DocsPage } from '../docs/DocsPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
 import { UpdateCenter } from '../update-center/UpdateCenter.js'
+import { RecoveryPanel } from '../recovery/RecoveryPanel.js'
 import logoUrl from '../../../assets/logo.png'
+import { ensureAudio, playNotificationSound } from '../notifications/audio.js'
 import './app.css'
 
 function builtinTabLabel(id: AppTab, copy: AppCopy): string {
@@ -129,12 +136,30 @@ export function App() {
   const [deepLinkTarget, setDeepLinkTarget] = useState<DeepLinkInstallTarget | undefined>()
   const [deepLinkSession, setDeepLinkSession] = useState<DeepLinkSessionTarget | undefined>()
   const [workspaceOperation, setWorkspaceOperation] = useState<WorkspaceOperationState | undefined>()
+  const [recovery, setRecovery] = useState<RecoveryState>({ phase: 'idle' })
+  const [recoveryLoaded, setRecoveryLoaded] = useState(false)
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ ...DEFAULT_NOTIFICATION_SETTINGS })
+  const notificationSettingsRef = useRef(notificationSettings)
   const harnessFrameRef = useRef<HTMLIFrameElement>(null)
   const isMac = window.EzDSH.app.platform === 'darwin'
 
   useEffect(() => {
     document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN'
   }, [locale])
+
+  useEffect(() => {
+    notificationSettingsRef.current = notificationSettings
+  }, [notificationSettings])
+
+  useEffect(() => {
+    const unlock = (): void => ensureAudio()
+    window.addEventListener('pointerdown', unlock, { once: true })
+    window.addEventListener('keydown', unlock, { once: true })
+    return () => {
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('keydown', unlock)
+    }
+  }, [])
 
   const ensureRuntime = useCallback(async (): Promise<void> => {
     setErrorKey(undefined)
@@ -171,11 +196,20 @@ export function App() {
     const unsubscribeUpdate = window.EzDSH.updates.onStateChange((snapshot) => {
       if (active) setUpdate(snapshot)
     })
+    const unsubscribeRecovery = window.EzDSH.recovery.onStateChange((snapshot) => {
+      if (active) setRecovery(snapshot)
+    })
     const unsubscribeNav = window.EzDSH.navigation.onStateChange((config) => {
       if (active) setNavConfig(config)
     })
     const unsubscribeWorkspace = window.EzDSH.settings.onWorkspaceChange((state) => {
       if (active) setWorkspaceOperation(state)
+    })
+    const unsubscribeNotificationSettings = window.EzDSH.notifications.onSettingsChange((next) => {
+      if (active) setNotificationSettings(next)
+    })
+    const unsubscribeNotificationEvent = window.EzDSH.notifications.onEvent((notification) => {
+      if (active) playNotificationSound(notification, notificationSettingsRef.current)
     })
     void window.EzDSH.locale.get()
       .then((nextLocale) => {
@@ -202,12 +236,30 @@ export function App() {
       .catch(() => {
         // Ignore update status errors; the settings page handles its own error state.
       })
+    void window.EzDSH.recovery.getStatus()
+      .then((snapshot) => {
+        if (active) {
+          setRecovery(snapshot)
+          setRecoveryLoaded(true)
+        }
+      })
+      .catch(() => {
+        // Keep the normal startup screen if recovery status cannot be read.
+        if (active) setRecoveryLoaded(true)
+      })
     void window.EzDSH.navigation.getConfig()
       .then((config) => {
         if (active) setNavConfig(config)
       })
       .catch(() => {
         // Keep defaults if navigation config cannot be read.
+      })
+    void window.EzDSH.notifications.getSettings()
+      .then((next) => {
+        if (active) setNotificationSettings(next)
+      })
+      .catch(() => {
+        // Keep default notification settings if this optional preference cannot be read.
       })
     return () => {
       active = false
@@ -218,8 +270,11 @@ export function App() {
       unsubscribeLocale()
       unsubscribeLanguageTag()
       unsubscribeUpdate()
+      unsubscribeRecovery()
       unsubscribeNav()
       unsubscribeWorkspace()
+      unsubscribeNotificationSettings()
+      unsubscribeNotificationEvent()
     }
   }, [ensureRuntime])
 
@@ -243,8 +298,9 @@ export function App() {
   }, [activeTab, sendSessionToRuntime])
 
   useEffect(() => {
+    if (!recoveryLoaded || recovery.phase === 'recovery-required') return
     void ensureRuntime()
-  }, [ensureRuntime])
+  }, [ensureRuntime, recovery.phase, recoveryLoaded])
 
   const visibleItems = useMemo(() => visibleNavItems(navConfig), [navConfig])
   const visibleIds = useMemo(() => visibleItems.map((item) => item.id), [visibleItems])
@@ -263,6 +319,10 @@ export function App() {
       </div>
     </div>
   )
+
+  if (recovery.phase === 'recovery-required') {
+    return <RecoveryPanel copy={copy} state={recovery} />
+  }
 
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {
     return (
@@ -300,6 +360,8 @@ export function App() {
                       allow={RUNTIME_IFRAME_ALLOW}
                       sandbox={RUNTIME_IFRAME_SANDBOX}
                       onLoad={sendSessionToRuntime}
+                      onPointerDown={ensureAudio}
+                      onKeyDown={ensureAudio}
                     />
                   </div>
                 )

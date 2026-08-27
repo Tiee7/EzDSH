@@ -62,5 +62,6 @@ describe('category labels', () => {
     const category = { id: 'workflow', name: 'Workflow' }
     expect(categoryLabel(category, 'zh')).toBe('工作流程')
     expect(categoryLabel(category, 'en')).toBe('workflow')
+    expect(categoryLabel({ id: 'plugin', name: 'Plugin' }, 'zh')).toBe('插件')
   })
 })

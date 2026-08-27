@@ -42,6 +42,7 @@ describe('updateAction', () => {
   it('maps busy phases to none', () => {
     expect(updateAction('checking')).toBe('none')
     expect(updateAction('downloading')).toBe('none')
+    expect(updateAction('preparing')).toBe('none')
     expect(updateAction('installing')).toBe('none')
   })
 

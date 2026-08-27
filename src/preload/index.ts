@@ -5,6 +5,15 @@ import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
 import type { NavigationTarget } from '../shared/navigation.js'
 import type { AppPlatform } from '../shared/platform.js'
 import type { NavConfig } from '../shared/navigation.js'
+import type { NotificationSettings } from '../shared/notifications.js'
+import type {
+  RecoveryDryRun,
+  RecoveryDoctorResult,
+  RecoveryRestoreResult,
+  RecoverySnapshot,
+  RecoveryState,
+  RecoveryVerifyResult,
+} from '../main/recovery/recovery-manager.js'
 import type {
   ExternalServiceCreateInput,
   ExternalServiceSnapshot,
@@ -31,6 +40,8 @@ const bridge: EzDSHBridge = {
     getStatus: () => invoke('runtime:get-status'),
     start: () => invoke('runtime:start'),
     restart: () => invoke('runtime:restart'),
+    listProcesses: () => invoke('runtime:list-processes'),
+    stopProcess: (pid: number) => invoke('runtime:stop-process', pid),
     openLog: () => invoke('runtime:open-log'),
     onStateChange: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]) => listener(snapshot)
@@ -135,6 +146,20 @@ const bridge: EzDSHBridge = {
       return () => ipcRenderer.removeListener('locale:state-change', handler)
     }
   },
+  notifications: {
+    getSettings: () => invoke<NotificationSettings>('notifications:get-settings'),
+    setSettings: (settings) => invoke<NotificationSettings>('notifications:set-settings', settings),
+    onSettingsChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, settings: Parameters<typeof listener>[0]) => listener(settings)
+      ipcRenderer.on('notifications:state-change', handler)
+      return () => ipcRenderer.removeListener('notifications:state-change', handler)
+    },
+    onEvent: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, notification: Parameters<typeof listener>[0]) => listener(notification)
+      ipcRenderer.on('notifications:event', handler)
+      return () => ipcRenderer.removeListener('notifications:event', handler)
+    },
+  },
   updates: {
     getStatus: () => invoke('updates:get-status'),
     check: () => invoke('updates:check'),
@@ -144,6 +169,21 @@ const bridge: EzDSHBridge = {
       const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state)
       ipcRenderer.on('updates:state-change', handler)
       return () => ipcRenderer.removeListener('updates:state-change', handler)
+    }
+  },
+  recovery: {
+    getStatus: () => invoke<RecoveryState>('recovery:get-status'),
+    listSnapshots: () => invoke<RecoverySnapshot[]>('recovery:list'),
+    createSnapshot: () => invoke<RecoverySnapshot>('recovery:create-snapshot'),
+    verify: (selector: string) => invoke<RecoveryVerifyResult>('recovery:verify', selector),
+    doctor: (repair = false) => invoke<RecoveryDoctorResult>('recovery:doctor', repair),
+    restore: (selector: string, dryRun: boolean) => invoke<RecoveryDryRun | RecoveryRestoreResult>('recovery:restore', selector, dryRun),
+    resolve: () => invoke<void>('recovery:resolve'),
+    openDirectory: () => invoke<void>('recovery:open-directory'),
+    onStateChange: (listener: (state: RecoveryState) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: RecoveryState) => listener(state)
+      ipcRenderer.on('recovery:state-change', handler)
+      return () => ipcRenderer.removeListener('recovery:state-change', handler)
     }
   },
   channelBridge: {

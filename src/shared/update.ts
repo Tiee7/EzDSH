@@ -24,6 +24,7 @@ export type UpdatePhase =
   | 'available'
   | 'downloading'
   | 'downloaded'
+  | 'preparing'
   | 'installing'
   | 'up-to-date'
   | 'failed'
