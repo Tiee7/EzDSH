@@ -180,6 +180,8 @@ export interface InstallState {
   readonly message?: string
   /** A successful DSH plugin mutation needs a user-approved Runtime restart. */
   readonly runtimeRestartRequired?: boolean
+  /** Recovery transaction guarding a managed DSH profile plugin change. */
+  readonly recoveryTransactionId?: string
   readonly failureReason?: InstallFailureReason
   /** Present during `confirm-wait` and `failed` phases after an audit ran. */
   readonly audit?: AuditReport

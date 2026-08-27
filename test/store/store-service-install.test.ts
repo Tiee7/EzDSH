@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InstallErrorReport } from '../../src/main/store/install-reporter'
 import { StoreService } from '../../src/main/store/store-service'
 import type { InstallState, StoreEntry } from '../../src/shared/store'
@@ -40,7 +40,7 @@ function skillEntry(overrides: Partial<StoreEntry> = {}): StoreEntry {
   }
 }
 
-function makeService(entries: readonly StoreEntry[], root: { dshHome: string; registryPath: string }, events: InstallState[], files: Record<string, Buffer> = { 'demo/SKILL.md': Buffer.from(SKILL_MD) }, installErrorReporter?: { report: (report: InstallErrorReport) => void | Promise<void> }, pluginInstaller?: StorePluginInstaller): StoreService {
+function makeService(entries: readonly StoreEntry[], root: { dshHome: string; registryPath: string }, events: InstallState[], files: Record<string, Buffer> = { 'demo/SKILL.md': Buffer.from(SKILL_MD) }, installErrorReporter?: { report: (report: InstallErrorReport) => void | Promise<void> }, pluginInstaller?: StorePluginInstaller, pluginRecovery?: { run: <T>(input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => Promise<{ value: T; transactionId: string }> }): StoreService {
   return new StoreService({
     dshHome: root.dshHome,
     registryPath: root.registryPath,
@@ -52,13 +52,14 @@ function makeService(entries: readonly StoreEntry[], root: { dshHome: string; re
     } as never,
     installErrorReporter,
     pluginInstaller,
+    pluginRecovery,
     fetchImpl: (async (url: RequestInfo | URL) => {
       const path = new URL(String(url)).pathname.replace(/^\/files\//, '')
       const bytes = files[path]
       if (bytes === undefined) return new Response('not found', { status: 404 })
       return new Response(new Uint8Array(bytes), { status: 200 })
     }) as typeof fetch
-  })
+  } as never)
 }
 
 describe('install state machine', () => {
@@ -116,6 +117,71 @@ describe('install state machine', () => {
 
     expect((await service.uninstall('skill', 'agent-teams')).phase).toBe('done')
     expect(calls).toEqual(['install', 'uninstall'])
+  })
+
+  it('runs a Store-managed DSH plugin install inside the recovery transaction', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const plugin = skillEntry({
+      id: 'agent-teams',
+      category: 'plugin',
+      files: undefined,
+      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13', packageName: '@nanmicoder/dsh-agent-teams' },
+    })
+    const run = vi.fn(async <T>(_input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => {
+      const value = await mutate()
+      await persist(value)
+      return { value, transactionId: 'txn-plugin-install' }
+    })
+    const service = makeService([plugin], root, events, {}, undefined, {
+      install: async () => ({ packageName: '@nanmicoder/dsh-agent-teams', profile: 'web', runtimeRestartRequired: false }),
+      uninstall: async () => ({ runtimeRestartRequired: false }),
+    }, { run })
+
+    await service.install('skill', 'agent-teams')
+    const done = await service.confirmInstall('skill', 'agent-teams', true)
+
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'install', entryId: 'agent-teams', packageName: '@nanmicoder/dsh-agent-teams', profile: 'web' }),
+      expect.any(Function),
+      expect.any(Function),
+    )
+    expect(done).toMatchObject({ phase: 'done', recoveryTransactionId: 'txn-plugin-install' })
+    expect((await service.listInstalled()).records[0]).toMatchObject({ pluginPackageName: '@nanmicoder/dsh-agent-teams' })
+  })
+
+  it('runs a Store-managed DSH plugin uninstall inside the recovery transaction', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const plugin = skillEntry({
+      id: 'agent-teams',
+      category: 'plugin',
+      files: undefined,
+      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13', packageName: '@nanmicoder/dsh-agent-teams' },
+    })
+    let transaction = 0
+    const run = vi.fn(async <T>(_input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => {
+      const value = await mutate()
+      await persist(value)
+      transaction += 1
+      return { value, transactionId: `txn-${String(transaction)}` }
+    })
+    const service = makeService([plugin], root, events, {}, undefined, {
+      install: async () => ({ packageName: '@nanmicoder/dsh-agent-teams', profile: 'web', runtimeRestartRequired: false }),
+      uninstall: async () => ({ runtimeRestartRequired: false }),
+    }, { run })
+
+    await service.install('skill', 'agent-teams')
+    await service.confirmInstall('skill', 'agent-teams', true)
+    const done = await service.uninstall('skill', 'agent-teams')
+
+    expect(run).toHaveBeenLastCalledWith(
+      expect.objectContaining({ action: 'uninstall', entryId: 'agent-teams', packageName: '@nanmicoder/dsh-agent-teams', profile: 'web' }),
+      expect.any(Function),
+      expect.any(Function),
+    )
+    expect(done).toMatchObject({ phase: 'done', recoveryTransactionId: 'txn-2' })
+    expect((await service.listInstalled()).records).toEqual([])
   })
 
   it('fails with audit-blocked and writes nothing when a rule blocks', async () => {

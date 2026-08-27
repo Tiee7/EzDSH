@@ -34,11 +34,21 @@ import { installSkillBundle, SkillConflictError, uninstallSkill } from './skill-
 import { installPresetBundle, PresetConflictError, uninstallPreset } from './preset-installer.js'
 import { installMcpEntry, uninstallMcpEntry } from './mcp-installer.js'
 import { InstallErrorReporter, type InstallErrorReport } from './install-reporter.js'
+import type { PreparePluginChangeInput } from '../recovery/recovery-manager.js'
 
 /** Client-side adapter for installing a Skill entry backed by a DSH plugin package. */
 export interface StorePluginInstaller {
   install(entry: StoreEntry): Promise<{ packageName: string; profile: string; runtimeRestartRequired?: boolean }>
   uninstall(record: InstalledRecord, entry?: StoreEntry): Promise<{ runtimeRestartRequired?: boolean } | void>
+}
+
+/** Transaction boundary for Store-managed DSH profile plugin changes. */
+export interface StorePluginRecovery {
+  run<T>(
+    input: PreparePluginChangeInput,
+    mutate: () => Promise<T>,
+    persist: (value: T) => Promise<void>,
+  ): Promise<{ value: T; transactionId: string }>
 }
 
 /** Remote catalog source used only by explicit refreshes. */
@@ -63,6 +73,8 @@ export interface StoreServiceOptions {
   onStateChange?: (state: InstallState) => void
   /** DSH profile plugin installer; omitted in builds that only support bundles. */
   pluginInstaller?: StorePluginInstaller
+  /** Recovery boundary for DSH profile plugin mutations. */
+  pluginRecovery?: StorePluginRecovery
 }
 
 /** One install parked at `confirm-wait` between `install()` and `confirmInstall()`. */
@@ -85,6 +97,7 @@ export class StoreService {
   private readonly installErrorReporter: Pick<InstallErrorReporter, 'report'>
   private readonly emit: (state: InstallState) => void
   private readonly pluginInstaller: StorePluginInstaller | undefined
+  private readonly pluginRecovery: StorePluginRecovery | undefined
   private readonly pending = new Map<string, PendingInstall>()
   private readonly inFlight = new Set<string>()
   private registry: InstallRegistry | undefined
@@ -100,6 +113,7 @@ export class StoreService {
     this.installErrorReporter = options.installErrorReporter ?? new InstallErrorReporter({ fetchImpl: this.fetchImpl })
     this.emit = options.onStateChange ?? (() => undefined)
     this.pluginInstaller = options.pluginInstaller
+    this.pluginRecovery = options.pluginRecovery
   }
 
   /** Load the persisted remote snapshot once; catalog reads never touch the network after this. */
@@ -366,6 +380,7 @@ export class StoreService {
     }
     this.publish({ kind, id, phase: 'installing', message: 'Removing…' })
     let pluginUninstall: { runtimeRestartRequired?: boolean } | void = undefined
+    let recoveryTransactionId: string | undefined
     try {
       if (kind === 'skill' && record.pluginPackageName !== undefined) {
         if (this.pluginInstaller === undefined) throw new Error('DSH plugin installer is not available in this build')
@@ -375,11 +390,21 @@ export class StoreService {
         } catch {
           // The registry keeps the package name so uninstall remains possible offline.
         }
-        pluginUninstall = await this.pluginInstaller.uninstall(record, entry)
+        if (this.pluginRecovery === undefined) {
+          pluginUninstall = await this.pluginInstaller.uninstall(record, entry)
+        } else {
+          const outcome = await this.pluginRecovery.run(
+            pluginChangeInput(entry, 'uninstall', record),
+            () => this.pluginInstaller?.uninstall(record, entry) ?? Promise.reject(new Error('DSH plugin installer is not available in this build')),
+            async () => { await registry.remove(kind, id) },
+          )
+          pluginUninstall = outcome.value
+          recoveryTransactionId = outcome.transactionId
+        }
       } else if (kind === 'skill') await uninstallSkill(this.dshHome, id)
       else if (kind === 'preset') await uninstallPreset(this.dshHome, id)
       else await uninstallMcpEntry(webProfilePatchFile(this.dshHome), id)
-      await registry.remove(kind, id)
+      if (recoveryTransactionId === undefined) await registry.remove(kind, id)
     } catch (error) {
       return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error) })
     }
@@ -387,6 +412,7 @@ export class StoreService {
       kind,
       id,
       phase: 'done',
+      ...(recoveryTransactionId === undefined ? {} : { recoveryTransactionId }),
       ...(pluginUninstall?.runtimeRestartRequired === true ? { runtimeRestartRequired: true } : {})
     })
   }
@@ -400,27 +426,27 @@ export class StoreService {
     const { kind, id } = entry
     this.publish({ kind, id, phase: 'installing', message: 'Installing…' })
     let pluginInstall: { packageName: string; profile: string; runtimeRestartRequired?: boolean } | undefined
+    let recoveryTransactionId: string | undefined
     try {
       const registry = this.ensureRegistry()
       if (this.dshHome === undefined) throw new Error('DSH home is not configured')
       if (kind === 'skill' && entry.plugin !== undefined) {
         if (this.pluginInstaller === undefined) throw new Error('DSH plugin installer is not available in this build')
-        pluginInstall = await this.pluginInstaller.install(entry)
+        if (this.pluginRecovery === undefined) {
+          pluginInstall = await this.pluginInstaller.install(entry)
+        } else {
+          const outcome = await this.pluginRecovery.run(
+            pluginChangeInput(entry, 'install'),
+            () => this.pluginInstaller?.install(entry) ?? Promise.reject(new Error('DSH plugin installer is not available in this build')),
+            async (result) => registry.upsert(installedRecord(entry, bundle, result)),
+          )
+          pluginInstall = outcome.value
+          recoveryTransactionId = outcome.transactionId
+        }
       } else if (kind === 'skill') await installSkillBundle(this.dshHome, entry, bundle ?? [])
       else if (kind === 'preset') await installPresetBundle(this.dshHome, entry, bundle ?? [])
       else await installMcpEntry(webProfilePatchFile(this.dshHome), requireMcp(entry))
-      await registry.upsert({
-        kind,
-        id,
-        version: entry.version,
-        sha256: bundleSha256(entry, bundle),
-        installedAt: new Date().toISOString(),
-        name: entry.name,
-        ...(pluginInstall === undefined ? {} : {
-          pluginPackageName: pluginInstall.packageName,
-          pluginProfile: pluginInstall.profile
-        })
-      })
+      if (recoveryTransactionId === undefined) await registry.upsert(installedRecord(entry, bundle, pluginInstall))
     } catch (error) {
       const reason =
         error instanceof SkillConflictError ||
@@ -437,6 +463,7 @@ export class StoreService {
       id,
       phase: 'done',
       audit,
+      ...(recoveryTransactionId === undefined ? {} : { recoveryTransactionId }),
       ...(pluginInstall?.runtimeRestartRequired === true ? { runtimeRestartRequired: true } : {})
     })
   }
@@ -467,6 +494,39 @@ export class StoreService {
 function requireMcp(entry: StoreEntry): StoreMcpConfig {
   if (entry.mcp === undefined) throw new Error(`Entry ${entry.id} declares no MCP config`)
   return entry.mcp
+}
+
+function pluginChangeInput(entry: StoreEntry | undefined, action: 'install' | 'update' | 'uninstall', record?: InstalledRecord): PreparePluginChangeInput {
+  const plugin = entry?.plugin
+  const packageName = record?.pluginPackageName ?? plugin?.packageName ?? plugin?.source
+  const entryId = entry?.id ?? record?.id
+  if (packageName === undefined) throw new Error(`Cannot determine the package name for DSH plugin ${entry?.id ?? record?.id ?? 'unknown'}`)
+  if (entryId === undefined) throw new Error('Cannot determine the Store entry id for DSH plugin recovery')
+  return {
+    action,
+    entryId,
+    packageName,
+    profile: record?.pluginProfile ?? plugin?.profile ?? 'web',
+  }
+}
+
+function installedRecord(
+  entry: StoreEntry,
+  bundle: DownloadedBundle | undefined,
+  pluginInstall: { packageName: string; profile: string } | undefined,
+): InstalledRecord {
+  return {
+    kind: entry.kind,
+    id: entry.id,
+    version: entry.version,
+    sha256: bundleSha256(entry, bundle),
+    installedAt: new Date().toISOString(),
+    name: entry.name,
+    ...(pluginInstall === undefined ? {} : {
+      pluginPackageName: pluginInstall.packageName,
+      pluginProfile: pluginInstall.profile,
+    }),
+  }
 }
 
 /** Digest stamped into the install registry: concatenated file digests, or the config JSON for MCP. */

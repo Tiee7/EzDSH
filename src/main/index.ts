@@ -48,6 +48,7 @@ import {
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath
 } from './runtime/runtime-manager.js'
+import { SafeModeController } from './runtime/safe-mode-home.js'
 import {
   createRuntimeOwnershipStore,
   DshRuntimeProcessManager,
@@ -89,6 +90,7 @@ import {
   type RecoveryRestoreResult,
   type RecoveryState,
 } from './recovery/recovery-manager.js'
+import { PluginRecoveryCoordinator } from './recovery/plugin-recovery-coordinator.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
@@ -98,6 +100,8 @@ let providerService: ProviderService | undefined
 let localeService: LocaleService | undefined
 let updateManager: UpdateManager | undefined
 let recoveryManager: RecoveryManager | undefined
+let safeModeController: SafeModeController | undefined
+let pluginRecoveryCoordinator: PluginRecoveryCoordinator | undefined
 let userDataLayout: UserDataLayout | undefined
 let workspaceConfigPath: string | undefined
 let developerModePath: string | undefined
@@ -241,6 +245,15 @@ function emitWorkspaceState(state: WorkspaceOperationState | undefined): void {
   }
 }
 
+async function handleRuntimeBootFailure(snapshot: RuntimeSnapshot): Promise<void> {
+  const recovery = recoveryManager
+  if (recovery === undefined) return
+  const state = await recovery.markBootFailure(snapshot.message ?? 'DSH Runtime failed to start')
+  if (state.phase !== 'recovery-required' || state.pendingTransaction === undefined) return
+  const reason = state.pendingTransaction.kind === 'update' ? 'update-recovery' : 'plugin-recovery'
+  await pluginRecoveryCoordinator?.startSafeMode(reason)
+}
+
 async function assertWorkspaceTarget(root: string): Promise<string> {
   const trimmed = root.trim()
   if (trimmed === '') throw new Error('Workspace target cannot be empty')
@@ -268,13 +281,13 @@ function bindWorkspaceServiceListeners(): void {
     } else {
       syncRuntimeNotifications(snapshot)
     }
-    if (snapshot.phase === 'ready') {
-      void recoveryManager?.completeUpdate().catch((error: unknown) => {
+    if (snapshot.phase === 'ready' && snapshot.mode === 'normal') {
+      void recoveryManager?.completePendingTransaction().catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
-        console.error('[recovery] failed to commit update transaction:', message)
+        console.error('[recovery] failed to commit recovery transaction:', message)
       })
-    } else if (snapshot.phase === 'failed') {
-      void recoveryManager?.markBootFailure(snapshot.message ?? 'DSH Runtime failed to start').catch((error: unknown) => {
+    } else if (snapshot.phase === 'failed' && snapshot.mode === 'normal') {
+      void handleRuntimeBootFailure(snapshot).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         console.error('[recovery] failed to record boot failure:', message)
       })
@@ -338,6 +351,13 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     runtimeEntryPath,
     command: runtimeCommandPath,
     runtimeOwnership: runtimeOwnershipStore,
+  })
+  safeModeController = new SafeModeController({ layout })
+  await safeModeController.initialize()
+  pluginRecoveryCoordinator = new PluginRecoveryCoordinator({
+    runtime: runtimeManager,
+    recovery: recoveryManager,
+    safeMode: safeModeController,
   })
   runtimeNotificationService = new RuntimeNotificationService({ onSignal: handleNotificationSignal })
   nativeNotificationService = new NativeNotificationService({
@@ -412,6 +432,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     registryPath: join(layout.state, 'installed.json'),
     catalogCachePath: join(layout.state, 'store-catalog.json'),
     pluginInstaller,
+    pluginRecovery: pluginRecoveryCoordinator,
     onStateChange: (state) => {
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send('store:state-change', state)
