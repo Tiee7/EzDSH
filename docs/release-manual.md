@@ -236,6 +236,20 @@ EZDSH_UPDATE_FEED_URL=https://your-project.vercel.app/updates/ npm run dev
 
 测试源必须提供当前平台对应的元数据。只测试版本检查时可以使用更高版本的元数据；测试下载和安装时必须提供真实、签名且哈希匹配的安装包。
 
+若本次发行变更了内置 DSH Runtime，动态更新 resolver 的 JSON 还应声明 `dshRuntimeVersion`。EzDSH 会把它与升级前受管插件的兼容性证据一同写入恢复事务；缺少该字段不会阻止更新，但 Recovery Panel 无法在升级前给出目标 Runtime 的精确判断。
+
+## 10.1 Plugin Safe Mode 回归
+
+在发布候选包上执行一次以下演练，使用测试插件和测试工作区，禁止在真实用户配置上故意制造故障：
+
+1. 安装一个 Store 管理的 DSH plugin，确认 `backups/` 出现 `pre-plugin-change` 快照和 manifest；
+2. 确认 manifest 包含插件 package source、兼容性评估和当前 DSH Runtime 版本；
+3. 使用测试插件制造一次正常 Runtime 健康检查失败；
+4. 确认应用进入 Safe Mode，且 Safe Mode 能运行但未加载测试插件；
+5. 在 Recovery Panel 选择“回滚此插件变更”，确认原 profile 和安装清单被恢复，Runtime 能以 normal mode 启动；
+6. 对一个未声明版本范围的测试插件确认 UI 显示兼容性警告；对一个明确不兼容的范围确认安装被拦截；
+7. 确认 Safe Mode 目录只包含必要 credentials，不包含原 `profiles/`、`cordis.patch.yml` 或 `sessions/`。
+
 ## 10. 发布检查清单
 
 - [ ] 使用 `npm run version:set -- x.y.z` 修改版本，且版本只有三段；
@@ -247,6 +261,9 @@ EZDSH_UPDATE_FEED_URL=https://your-project.vercel.app/updates/ npm run dev
 - [ ] 安装包中不包含用户数据、密钥和开发依赖；
 - [ ] 安装后能启动 DSH Runtime 并创建/恢复 Session；
 - [ ] 更新前会停止 Runtime，更新后用户数据仍然存在；
+- [ ] Store 管理插件的变更会创建 `pre-plugin-change` 快照，正常 Runtime 健康检查通过后才提交；
+- [ ] Safe Mode 演练能排除第三方插件并完成一次插件快照回滚；
+- [ ] 变更 DSH Runtime 的更新 resolver 声明了目标 `dshRuntimeVersion`，或发布说明明确该信息未知；
 - [ ] 更新元数据、安装包和哈希来自同一次构建；
 - [ ] 已在测试源验证检查、下载、安装和重启链路；
 - [ ] 发布说明包含 EzDSH 版本、DSH Runtime 版本、平台和已知问题。

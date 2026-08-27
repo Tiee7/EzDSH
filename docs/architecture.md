@@ -126,6 +126,7 @@ type RuntimePhase =
 
 interface RuntimeSnapshot {
   phase: RuntimePhase
+  mode: 'normal' | 'safe'
   pid?: number
   port?: number
   url?: string
@@ -250,17 +251,25 @@ interface UpdateState {
 - 更新失败不能破坏当前版本；
 - beta 与 stable 使用不同更新通道。
 
-当前已经实现更新状态、检查、手动下载、下载进度和重启安装的 Main/Preload/Renderer 链路。安装动作在 `quitAndInstall` 前先创建 `pre-update` 快照并写入持久化升级事务；新版本启动后如果 Runtime 未通过健康检查，EzDSH 停在 Recovery Mode，不自动覆盖现场。正式包使用 `generic` 更新源；开发模式默认不访问更新服务，但设置 `EZDSH_UPDATE_FEED_URL` 后可以临时检查远程测试源。发布前仍需完成 Vercel 更新源部署、签名、公证、更新文件上传和稳定版/beta 通道配置。
+当前已经实现更新状态、检查、手动下载、下载进度和重启安装的 Main/Preload/Renderer 链路。安装动作在 `quitAndInstall` 前先创建 `pre-update` 快照并写入持久化升级事务；动态更新 resolver 可以声明目标分发包的 `dshRuntimeVersion`，该版本会随事务保存。新版本启动后如果 Runtime 未通过健康检查，EzDSH 停在 Recovery Mode，不自动覆盖现场。正式包使用 `generic` 更新源；开发模式默认不访问更新服务，但设置 `EZDSH_UPDATE_FEED_URL` 后可以临时检查远程测试源。发布前仍需完成 Vercel 更新源部署、签名、公证、更新文件上传和稳定版/beta 通道配置。
 
 ## 6. Recovery 与灾难恢复
 
-恢复能力由 EzDSH Main Process 原生实现，不依赖 DSH Runtime 插件。快照包含 `harness/` 与 `state/`，覆盖 Sessions、Settings、Skills、Plugins、Profiles、Presets 和已安装清单；每个快照同时写入 SHA-256、manifest 和插件版本清单。快照按类型轮换：普通手动快照保留最近 7 份，升级前快照保留最近 2 份，恢复前快照保留最近 1 份。
+恢复能力由 EzDSH Main Process 原生实现，不依赖 DSH Runtime 插件。快照包含 `harness/` 与 `state/`，覆盖 Sessions、Settings、Skills、Plugins、Profiles、Presets 和已安装清单；每个快照同时写入 SHA-256、manifest 和插件版本清单。快照按类型轮换：普通手动快照保留最近 7 份，升级前快照保留最近 2 份，插件变更前快照保留最近 7 份，恢复前快照保留最近 1 份。
 
 Credential 明文默认不进入 Archive。受限文件（当前包括 `harness/.credentials.yaml`、`.env` 和 QQ Bridge 配置）只复制到 `backups/vault/<snapshot>/`，文件权限为 `0600`；恢复到新机器时 dry-run 会明确列出需要重新输入的 Credential。Archive 的 checksum 不通过时，恢复会拒绝执行。
 
 真实恢复先校验并解包到 staging，再以目录 rename 方式替换 `harness/` 和 `state/`；失败会回滚到恢复前目录。Session Log doctor 默认只读扫描 `harness/sessions`，只允许显式修复最后一条未完成 JSONL 记录，中间已提交损坏不会自动改写。应用完成升级后会清除升级事务；升级启动失败则保留事务并展示“恢复上一份环境”。
 
 每次成功创建快照还会把零依赖的 `rescue.mjs` 和平台 launcher 写入 `backups/`。它可以在 EzDSH 或 DSH Runtime 无法启动时通过 `list`、`verify`、`doctor`、`restore --yes` 或 loopback Web UI 工作。应用二进制本身仍由 electron-updater 管理；当前 rollback 保障的是用户数据与 Runtime 配置，不伪装成应用安装包的二进制回滚。
+
+### 6.1 Plugin Safe Mode 与受管插件恢复
+
+EzDSH Store 对 DSH profile 插件执行的 install、update 和 uninstall 是同一个事务：先停止正在运行的 Runtime，再创建 `pre-plugin-change` 快照，然后修改 profile 与 `state/installed.json`，最后启动正常 Runtime 并等待健康检查。健康检查成功才清除事务；命令在修改前失败时清除未使用的事务；命令成功但正常 Runtime 失败时保留事务并自动进入 Safe Mode。
+
+Safe Mode 在 `state/safe-mode/harness` 使用新的 DSH_HOME。它只复制 `harness/.credentials.yaml`（权限 `0600`），不复制 `profiles/`、`cordis.patch.yml`、`sessions/` 或第三方依赖。因此它不会改写原 `harness/`，并能在所有第三方插件都被排除时提供恢复入口。Recovery Panel 可以手动进入或退出 Safe Mode，并且在受管插件事务失败时显示插件名和“回滚此插件变更”；回滚会恢复该事务对应的快照后再尝试正常启动。
+
+插件目录可声明 `minDshVersion` 和 `maxDshVersion`。已知不兼容的版本范围在安装前阻止；未声明范围会以警告继续。注册表和 manifest 保存 package source、版本约束、当前 DSH Runtime 评估以及目标更新 Runtime（若 resolver 声明），因此恢复记录可以解释风险。即使有这些证据，EzDSH 仍不承诺回滚应用二进制；它只回滚用户数据和可管理的 DSH 环境。
 
 ## 7. IPC 错误模型
 
