@@ -183,4 +183,30 @@ describe('UpdateManager', () => {
 
     expect(requests[0].searchParams.get('channel')).toBe('preview')
   })
+
+  it('propagates a target DSH Runtime version from the resolver into pre-install recovery', async () => {
+    const updater = new FakeUpdater()
+    let prepared: { targetVersion?: string; targetDshRuntimeVersion?: string } | undefined
+    const manager = new UpdateManager({
+      currentVersion: '0.1.0',
+      isPackaged: true,
+      updater: updater as unknown as AppUpdater,
+      updateResolveUrl: 'https://updates.example.test/api/update/resolve',
+      updatePlatform: 'mac',
+      updateArch: 'arm64',
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, feedUrl: 'https://dynamic.example.test/mac/', dshRuntimeVersion: '0.2.0' }),
+      }) as Response,
+      prepareInstall: async (context) => { prepared = context },
+    })
+
+    await manager.check()
+    await manager.download()
+    await manager.install()
+
+    expect(manager.snapshot()).toMatchObject({ targetDshRuntimeVersion: '0.2.0' })
+    expect(prepared).toMatchObject({ targetVersion: '0.2.0', targetDshRuntimeVersion: '0.2.0' })
+  })
 })

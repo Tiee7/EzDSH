@@ -330,10 +330,11 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     isPackaged: app.isPackaged,
     arch: process.arch
   })
+  const dshRuntimeVersion = await readDshRuntimeVersion(runtimeEntryPath)
   recoveryManager = new RecoveryManager({
     layout,
     appVersion: app.getVersion(),
-    dshRuntimeVersion: await readDshRuntimeVersion(runtimeEntryPath),
+    dshRuntimeVersion,
     dataSchemaVersion: CURRENT_DATA_SCHEMA_VERSION,
     rescueScriptPath: join(app.getAppPath(), 'recovery', 'rescue.mjs'),
   })
@@ -433,6 +434,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     catalogCachePath: join(layout.state, 'store-catalog.json'),
     pluginInstaller,
     pluginRecovery: pluginRecoveryCoordinator,
+    dshRuntimeVersion: () => dshRuntimeVersion,
     onStateChange: (state) => {
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send('store:state-change', state)
@@ -904,6 +906,14 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('store:update', async (_event, kind: StoreKind, id: string): Promise<IpcResult<Awaited<ReturnType<StoreService['update']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.update(kind, id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('store:uninstall', async (_event, kind: StoreKind, id: string): Promise<IpcResult<Awaited<ReturnType<StoreService['uninstall']>>>> => {
     try {
       if (storeService === undefined) throw new Error('Store service is not ready')
@@ -1158,6 +1168,40 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('recovery:enter-safe-mode', async (): Promise<IpcResult<RuntimeSnapshot>> => {
+    try {
+      if (pluginRecoveryCoordinator === undefined || runtimeManager === undefined) throw new Error('Safe Mode is not ready')
+      await pluginRecoveryCoordinator.startSafeMode('manual')
+      return success(runtimeManager.snapshot())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:exit-safe-mode', async (): Promise<IpcResult<RuntimeSnapshot>> => {
+    try {
+      if (safeModeController === undefined || runtimeManager === undefined) throw new Error('Safe Mode is not ready')
+      await runtimeManager.stop()
+      await safeModeController.disable()
+      return success(await runtimeManager.start({ mode: 'normal' }))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:rollback-pending-plugin', async (): Promise<IpcResult<RecoveryRestoreResult>> => {
+    try {
+      if (recoveryManager === undefined || safeModeController === undefined || runtimeManager === undefined) throw new Error('Recovery manager is not ready')
+      const pending = recoveryManager.snapshot().pendingTransaction
+      if (pending?.kind !== 'plugin-change') throw new Error('No pending plugin change can be rolled back')
+      await runtimeManager.stop()
+      const result = await recoveryManager.restore(pending.snapshotName, false)
+      await safeModeController.disable()
+      await runtimeManager.start({ mode: 'normal' })
+      await recoveryManager.resolveRecovery()
+      return success(result)
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('recovery:resolve', async (): Promise<IpcResult<void>> => {
     try {
       if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
@@ -1380,9 +1424,9 @@ if (!singleInstance) {
       getUpdateChannel: () => developerMode ? 'preview' : 'stable',
       getUpdateLanguage: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
       updater: updateChecksEnabled ? getAutoUpdater() : undefined,
-      prepareInstall: async ({ targetVersion }) => {
+      prepareInstall: async ({ targetVersion, targetDshRuntimeVersion }) => {
         if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
-        await recoveryManager.prepareUpdate({ targetAppVersion: targetVersion })
+        await recoveryManager.prepareUpdate({ targetAppVersion: targetVersion, targetDshRuntimeVersion })
         isQuitting = true
         await stopApplicationComponents()
       }

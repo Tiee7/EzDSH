@@ -40,7 +40,7 @@ function skillEntry(overrides: Partial<StoreEntry> = {}): StoreEntry {
   }
 }
 
-function makeService(entries: readonly StoreEntry[], root: { dshHome: string; registryPath: string }, events: InstallState[], files: Record<string, Buffer> = { 'demo/SKILL.md': Buffer.from(SKILL_MD) }, installErrorReporter?: { report: (report: InstallErrorReport) => void | Promise<void> }, pluginInstaller?: StorePluginInstaller, pluginRecovery?: { run: <T>(input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => Promise<{ value: T; transactionId: string }> }): StoreService {
+function makeService(entries: readonly StoreEntry[], root: { dshHome: string; registryPath: string }, events: InstallState[], files: Record<string, Buffer> = { 'demo/SKILL.md': Buffer.from(SKILL_MD) }, installErrorReporter?: { report: (report: InstallErrorReport) => void | Promise<void> }, pluginInstaller?: StorePluginInstaller, pluginRecovery?: { run: <T>(input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => Promise<{ value: T; transactionId: string }> }, dshRuntimeVersion?: () => string | undefined): StoreService {
   return new StoreService({
     dshHome: root.dshHome,
     registryPath: root.registryPath,
@@ -53,6 +53,7 @@ function makeService(entries: readonly StoreEntry[], root: { dshHome: string; re
     installErrorReporter,
     pluginInstaller,
     pluginRecovery,
+    dshRuntimeVersion,
     fetchImpl: (async (url: RequestInfo | URL) => {
       const path = new URL(String(url)).pathname.replace(/^\/files\//, '')
       const bytes = files[path]
@@ -182,6 +183,62 @@ describe('install state machine', () => {
     )
     expect(done).toMatchObject({ phase: 'done', recoveryTransactionId: 'txn-2' })
     expect((await service.listInstalled()).records).toEqual([])
+  })
+
+  it('blocks a plugin whose declared DSH runtime minimum is not met', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const install = vi.fn(async () => ({ packageName: '@nanmicoder/dsh-agent-teams', profile: 'web', runtimeRestartRequired: false }))
+    const plugin = skillEntry({
+      id: 'agent-teams',
+      category: 'plugin',
+      files: undefined,
+      plugin: {
+        source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13',
+        packageName: '@nanmicoder/dsh-agent-teams',
+        compatibility: { minDshVersion: '0.2.0' },
+      },
+    })
+    const service = makeService([plugin], root, events, {}, undefined, {
+      install,
+      uninstall: async () => ({ runtimeRestartRequired: false }),
+    }, undefined, () => '0.1.1-rc.2')
+
+    const outcome = await service.install('skill', 'agent-teams')
+
+    expect(outcome).toMatchObject({ phase: 'failed', failureReason: 'incompatible' })
+    expect(outcome.message).toContain('0.2.0')
+    expect(install).not.toHaveBeenCalled()
+  })
+
+  it('updates an installed DSH plugin without uninstalling its working version first', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const plugin = skillEntry({
+      id: 'agent-teams',
+      category: 'plugin',
+      version: '0.1.14',
+      files: undefined,
+      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.14', packageName: '@nanmicoder/dsh-agent-teams' },
+    })
+    const actions: string[] = []
+    const run = vi.fn(async <T>(input: { action: string }, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => {
+      actions.push(input.action)
+      const value = await mutate()
+      await persist(value)
+      return { value, transactionId: 'txn-update' }
+    })
+    const service = makeService([plugin], root, events, {}, undefined, {
+      install: async () => ({ packageName: '@nanmicoder/dsh-agent-teams', profile: 'web', runtimeRestartRequired: false }),
+      uninstall: async () => { throw new Error('update must not uninstall first') },
+    }, { run })
+
+    await service.install('skill', 'agent-teams')
+    await service.confirmInstall('skill', 'agent-teams', true)
+    const done = await service.update('skill', 'agent-teams')
+
+    expect(actions).toEqual(['install', 'update'])
+    expect(done).toMatchObject({ phase: 'done', recoveryTransactionId: 'txn-update' })
   })
 
   it('fails with audit-blocked and writes nothing when a rule blocks', async () => {

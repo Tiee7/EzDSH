@@ -60,6 +60,19 @@ export interface StoreMcpConfig {
   readonly headers?: Readonly<Record<string, string>>
 }
 
+/** Optional DSH Runtime interval declared by the curated plugin catalog. */
+export interface PluginCompatibilityRequirements {
+  readonly minDshVersion?: string
+  readonly maxDshVersion?: string
+}
+
+/** Compatibility evidence captured at install and snapshot time. */
+export interface PluginCompatibilityAssessment {
+  readonly status: 'compatible' | 'incompatible' | 'unknown'
+  readonly runtimeVersion: string
+  readonly reason: string
+}
+
 /** DSH profile plugin metadata. Plugin entries are exposed as Skill entries with this field. */
 export interface StorePluginConfig {
   /** Package-manager source accepted by `dsh plugin`, e.g. npm:pkg@version or github:owner/repo#ref. */
@@ -68,6 +81,8 @@ export interface StorePluginConfig {
   readonly packageName?: string
   /** DSH profile receiving the plugin; defaults to web. */
   readonly profile?: string
+  /** DSH Runtime versions the plugin has declared support for. */
+  readonly compatibility?: PluginCompatibilityRequirements
 }
 
 /** One catalog entry served by the remote curation API. */
@@ -169,6 +184,7 @@ export type InstallFailureReason =
   | 'user-cancelled'
   | 'install'
   | 'conflict'
+  | 'incompatible'
 
 /** State snapshot of one install/uninstall operation. */
 export interface InstallState {
@@ -182,6 +198,8 @@ export interface InstallState {
   readonly runtimeRestartRequired?: boolean
   /** Recovery transaction guarding a managed DSH profile plugin change. */
   readonly recoveryTransactionId?: string
+  /** Present for DSH profile plugin operations, including an unknown warning. */
+  readonly compatibility?: PluginCompatibilityAssessment
   readonly failureReason?: InstallFailureReason
   /** Present during `confirm-wait` and `failed` phases after an audit ran. */
   readonly audit?: AuditReport
@@ -201,6 +219,12 @@ export interface InstalledRecord {
   readonly pluginPackageName?: string
   /** Profile recorded for a DSH plugin install. */
   readonly pluginProfile?: string
+  /** Package source recorded so backup and recovery can explain the installed plugin. */
+  readonly pluginSource?: string
+  /** DSH Runtime limits declared by the catalog at installation time. */
+  readonly pluginCompatibilityRequirements?: PluginCompatibilityRequirements
+  /** Compatibility assessment against the Runtime present during installation. */
+  readonly pluginCompatibility?: PluginCompatibilityAssessment
 }
 
 /** Result of listing installed entries. */

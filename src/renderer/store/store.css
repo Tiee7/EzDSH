@@ -654,3 +654,24 @@
   opacity: 0.5;
   cursor: default;
 }
+
+.compatibility-warning,
+.compatibility-error {
+  margin: 12px 0;
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.compatibility-warning {
+  border: 1px solid rgba(231, 185, 85, 0.45);
+  background: rgba(231, 185, 85, 0.12);
+  color: #d8b659;
+}
+
+.compatibility-error {
+  border: 1px solid rgba(227, 103, 103, 0.48);
+  background: rgba(227, 103, 103, 0.12);
+  color: #ec9e9e;
+}

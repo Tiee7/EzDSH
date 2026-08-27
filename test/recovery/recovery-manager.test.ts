@@ -71,6 +71,31 @@ describe('RecoveryManager', () => {
       .toContain('do-not-archive')
   })
 
+  it('captures managed plugin compatibility evidence in a recovery snapshot', async () => {
+    const layout = await createFixture()
+    await writeFile(join(layout.state, 'installed.json'), JSON.stringify([{
+      kind: 'skill',
+      id: 'agent-teams',
+      version: '0.1.13',
+      pluginPackageName: '@nanmicoder/dsh-agent-teams',
+      pluginSource: 'npm:@nanmicoder/dsh-agent-teams@0.1.13',
+      pluginCompatibilityRequirements: { minDshVersion: '0.1.0' },
+      pluginCompatibility: { status: 'compatible', runtimeVersion: '0.1.1-rc.2', reason: 'Declared DSH runtime range matches.' },
+    }]))
+    const manager = createManager(layout)
+
+    const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'compatibility evidence' })
+
+    expect(snapshot.manifest.compatibilityInventory).toEqual([
+      expect.objectContaining({
+        entryId: 'agent-teams',
+        packageName: '@nanmicoder/dsh-agent-teams',
+        source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13',
+        assessment: { status: 'compatible', runtimeVersion: '0.1.1-rc.2', reason: 'Declared DSH runtime range matches.' },
+      }),
+    ])
+  })
+
   it('detects archive tampering before restore', async () => {
     const layout = await createFixture()
     const manager = createManager(layout)
@@ -118,11 +143,12 @@ describe('RecoveryManager', () => {
     const manager = createManager(layout)
     await manager.initialize()
 
-    const pending = await manager.prepareUpdate({ targetAppVersion: '1.8.1537' })
+    const pending = await manager.prepareUpdate({ targetAppVersion: '1.8.1537', targetDshRuntimeVersion: '0.2.0' })
     expect(pending).toMatchObject({
       phase: 'prepared',
       fromAppVersion: '1.8.1536',
       targetAppVersion: '1.8.1537',
+      targetDshRuntimeVersion: '0.2.0',
     })
     expect(manager.snapshot().phase).toBe('pending-update')
 

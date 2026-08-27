@@ -16,6 +16,7 @@ import {
 } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { UserDataLayout } from '../../shared/state.js'
+import type { PluginCompatibilityAssessment, PluginCompatibilityRequirements } from '../../shared/store.js'
 
 export const RECOVERY_FORMAT_VERSION = 1
 export const CURRENT_DATA_SCHEMA_VERSION = 1
@@ -35,6 +36,16 @@ export interface RecoveryManifest {
   components: readonly ['harness', 'state']
   redactedFiles: readonly string[]
   pluginInventory: readonly string[]
+  /** Managed DSH plugin evidence captured for compatibility-aware recovery. */
+  compatibilityInventory?: readonly RecoveryCompatibilityInventoryItem[]
+}
+
+export interface RecoveryCompatibilityInventoryItem {
+  entryId: string
+  packageName: string
+  source?: string
+  requirements?: PluginCompatibilityRequirements
+  assessment?: PluginCompatibilityAssessment
 }
 
 export interface RecoverySnapshot {
@@ -111,6 +122,7 @@ export interface RecoveryTransaction {
   snapshotName: string
   fromAppVersion: string
   targetAppVersion?: string
+  targetDshRuntimeVersion?: string
   preparedAt: string
   affectedPlugin?: AffectedPlugin
   error?: string
@@ -160,16 +172,19 @@ export interface RecoveryManagerOptions {
   maxSnapshots?: number
   rescueScriptPath?: string
   pluginInventory?: () => Promise<readonly string[]>
+  compatibilityInventory?: () => Promise<readonly RecoveryCompatibilityInventoryItem[]>
 }
 
 export interface CreateSnapshotInput {
   kind: RecoverySnapshotKind
   reason: string
   pluginInventory?: readonly string[]
+  compatibilityInventory?: readonly RecoveryCompatibilityInventoryItem[]
 }
 
 export interface PrepareUpdateInput {
   targetAppVersion?: string
+  targetDshRuntimeVersion?: string
 }
 
 type RecoveryListener = (state: RecoveryState) => void
@@ -247,6 +262,9 @@ export class RecoveryManager {
       const pluginInventory = input.pluginInventory
         ?? await this.config.pluginInventory?.()
         ?? await readPluginInventory(this.config.layout)
+      const compatibilityInventory = input.compatibilityInventory
+        ?? await this.config.compatibilityInventory?.()
+        ?? await readCompatibilityInventory(this.config.layout)
       const manifest: RecoveryManifest = {
         formatVersion: RECOVERY_FORMAT_VERSION,
         kind: input.kind,
@@ -260,6 +278,7 @@ export class RecoveryManager {
         components: COMPONENTS,
         redactedFiles,
         pluginInventory: [...pluginInventory],
+        compatibilityInventory: compatibilityInventory.map(cloneCompatibilityInventoryItem),
       }
       await writeAtomic(checksumPath, `${sha256}  ${archiveName}\n`, 0o600)
       await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600)
@@ -419,6 +438,7 @@ export class RecoveryManager {
       snapshotName: snapshot.archiveName,
       fromAppVersion: this.config.appVersion,
       ...(input.targetAppVersion === undefined ? {} : { targetAppVersion: input.targetAppVersion }),
+      ...(input.targetDshRuntimeVersion === undefined ? {} : { targetDshRuntimeVersion: input.targetDshRuntimeVersion }),
       preparedAt: this.options.now().toISOString(),
     }
     await this.writePendingTransaction(pending)
@@ -595,6 +615,7 @@ export class RecoveryManager {
           snapshotName: value.snapshotName,
           fromAppVersion: value.fromAppVersion,
           ...(value.targetAppVersion === undefined ? {} : { targetAppVersion: value.targetAppVersion }),
+          ...(value.targetDshRuntimeVersion === undefined ? {} : { targetDshRuntimeVersion: value.targetDshRuntimeVersion }),
           preparedAt: value.preparedAt,
           ...(value.error === undefined ? {} : { error: value.error }),
         }
@@ -649,7 +670,8 @@ function parseManifest(value: unknown): RecoveryManifest {
     || !Array.isArray(value.redactedFiles)
     || !Array.isArray(value.pluginInventory)
     || !value.redactedFiles.every((item) => typeof item === 'string')
-    || !value.pluginInventory.every((item) => typeof item === 'string')) {
+    || !value.pluginInventory.every((item) => typeof item === 'string')
+    || (value.compatibilityInventory !== undefined && (!Array.isArray(value.compatibilityInventory) || !value.compatibilityInventory.every(isCompatibilityInventoryItem)))) {
     throw new Error('Invalid recovery manifest')
   }
   return {
@@ -665,6 +687,37 @@ function parseManifest(value: unknown): RecoveryManifest {
     components: COMPONENTS,
     redactedFiles: [...value.redactedFiles],
     pluginInventory: [...value.pluginInventory],
+    ...(value.compatibilityInventory === undefined ? {} : { compatibilityInventory: value.compatibilityInventory.map(cloneCompatibilityInventoryItem) }),
+  }
+}
+
+function isCompatibilityInventoryItem(value: unknown): value is RecoveryCompatibilityInventoryItem {
+  if (!isRecord(value) || typeof value.entryId !== 'string' || typeof value.packageName !== 'string') return false
+  if (value.source !== undefined && typeof value.source !== 'string') return false
+  if (value.requirements !== undefined && !isCompatibilityRequirements(value.requirements)) return false
+  return value.assessment === undefined || isCompatibilityAssessment(value.assessment)
+}
+
+function isCompatibilityRequirements(value: unknown): value is PluginCompatibilityRequirements {
+  return isRecord(value)
+    && (value.minDshVersion === undefined || typeof value.minDshVersion === 'string')
+    && (value.maxDshVersion === undefined || typeof value.maxDshVersion === 'string')
+}
+
+function isCompatibilityAssessment(value: unknown): value is PluginCompatibilityAssessment {
+  return isRecord(value)
+    && (value.status === 'compatible' || value.status === 'incompatible' || value.status === 'unknown')
+    && typeof value.runtimeVersion === 'string'
+    && typeof value.reason === 'string'
+}
+
+function cloneCompatibilityInventoryItem(item: RecoveryCompatibilityInventoryItem): RecoveryCompatibilityInventoryItem {
+  return {
+    entryId: item.entryId,
+    packageName: item.packageName,
+    ...(item.source === undefined ? {} : { source: item.source }),
+    ...(item.requirements === undefined ? {} : { requirements: { ...item.requirements } }),
+    ...(item.assessment === undefined ? {} : { assessment: { ...item.assessment } }),
   }
 }
 
@@ -681,6 +734,7 @@ function isRecoveryTransaction(value: unknown): value is RecoveryTransaction {
     && typeof value.fromAppVersion === 'string'
     && typeof value.preparedAt === 'string'
     && (value.targetAppVersion === undefined || typeof value.targetAppVersion === 'string')
+    && (value.targetDshRuntimeVersion === undefined || typeof value.targetDshRuntimeVersion === 'string')
     && (value.affectedPlugin === undefined || isAffectedPlugin(value.affectedPlugin))
     && (value.error === undefined || typeof value.error === 'string')
 }
@@ -700,6 +754,7 @@ function isLegacyPendingUpdate(value: unknown): value is Omit<PendingUpdate, 'id
     && typeof value.fromAppVersion === 'string'
     && typeof value.preparedAt === 'string'
     && (value.targetAppVersion === undefined || typeof value.targetAppVersion === 'string')
+    && (value.targetDshRuntimeVersion === undefined || typeof value.targetDshRuntimeVersion === 'string')
     && (value.error === undefined || typeof value.error === 'string')
 }
 
@@ -971,6 +1026,26 @@ async function readPluginInventory(layout: UserDataLayout): Promise<readonly str
     return value.flatMap((item) => {
       if (!isRecord(item) || typeof item.kind !== 'string' || typeof item.id !== 'string' || typeof item.version !== 'string') return []
       return [`${item.kind}:${item.id}@${item.version}`]
+    })
+  } catch {
+    return []
+  }
+}
+
+async function readCompatibilityInventory(layout: UserDataLayout): Promise<readonly RecoveryCompatibilityInventoryItem[]> {
+  try {
+    const value: unknown = JSON.parse(await readFile(join(layout.state, 'installed.json'), 'utf8'))
+    if (!Array.isArray(value)) return []
+    return value.flatMap((item): RecoveryCompatibilityInventoryItem[] => {
+      if (!isRecord(item) || typeof item.id !== 'string' || typeof item.pluginPackageName !== 'string') return []
+      const candidate: RecoveryCompatibilityInventoryItem = {
+        entryId: item.id,
+        packageName: item.pluginPackageName,
+        ...(typeof item.pluginSource === 'string' ? { source: item.pluginSource } : {}),
+        ...(isCompatibilityRequirements(item.pluginCompatibilityRequirements) ? { requirements: item.pluginCompatibilityRequirements } : {}),
+        ...(isCompatibilityAssessment(item.pluginCompatibility) ? { assessment: item.pluginCompatibility } : {}),
+      }
+      return [candidate]
     })
   } catch {
     return []

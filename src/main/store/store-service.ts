@@ -20,6 +20,7 @@ import type {
   StoreKind,
   StoreListResult,
   StoreMcpConfig,
+  PluginCompatibilityAssessment,
   StoreRefreshResult
 } from '../../shared/store.js'
 import { STORE_KINDS } from '../../shared/store.js'
@@ -35,6 +36,7 @@ import { installPresetBundle, PresetConflictError, uninstallPreset } from './pre
 import { installMcpEntry, uninstallMcpEntry } from './mcp-installer.js'
 import { InstallErrorReporter, type InstallErrorReport } from './install-reporter.js'
 import type { PreparePluginChangeInput } from '../recovery/recovery-manager.js'
+import { assessPluginCompatibility } from './compatibility.js'
 
 /** Client-side adapter for installing a Skill entry backed by a DSH plugin package. */
 export interface StorePluginInstaller {
@@ -75,6 +77,8 @@ export interface StoreServiceOptions {
   pluginInstaller?: StorePluginInstaller
   /** Recovery boundary for DSH profile plugin mutations. */
   pluginRecovery?: StorePluginRecovery
+  /** Installed DSH Runtime version used for catalog compatibility checks. */
+  dshRuntimeVersion?: () => string | undefined
 }
 
 /** One install parked at `confirm-wait` between `install()` and `confirmInstall()`. */
@@ -82,6 +86,7 @@ interface PendingInstall {
   readonly entry: StoreEntry
   readonly audit: AuditReport
   readonly bundle?: DownloadedBundle
+  readonly compatibility?: PluginCompatibilityAssessment
 }
 
 /** Page size of locally filtered catalog lists. */
@@ -98,6 +103,7 @@ export class StoreService {
   private readonly emit: (state: InstallState) => void
   private readonly pluginInstaller: StorePluginInstaller | undefined
   private readonly pluginRecovery: StorePluginRecovery | undefined
+  private readonly dshRuntimeVersion: () => string | undefined
   private readonly pending = new Map<string, PendingInstall>()
   private readonly inFlight = new Set<string>()
   private registry: InstallRegistry | undefined
@@ -114,6 +120,7 @@ export class StoreService {
     this.emit = options.onStateChange ?? (() => undefined)
     this.pluginInstaller = options.pluginInstaller
     this.pluginRecovery = options.pluginRecovery
+    this.dshRuntimeVersion = options.dshRuntimeVersion ?? (() => undefined)
   }
 
   /** Load the persisted remote snapshot once; catalog reads never touch the network after this. */
@@ -302,6 +309,20 @@ export class StoreService {
         return this.finish({ kind, id, phase: 'failed', failureReason: 'download', message })
       }
 
+      const compatibility = entry.plugin === undefined
+        ? undefined
+        : assessPluginCompatibility(this.dshRuntimeVersion(), entry.plugin.compatibility)
+      if (compatibility?.status === 'incompatible') {
+        return this.finish({
+          kind,
+          id,
+          phase: 'failed',
+          failureReason: 'incompatible',
+          compatibility,
+          message: compatibility.reason,
+        })
+      }
+
       let bundle: DownloadedBundle | undefined
       let audit: AuditReport
       if (kind === 'mcp') {
@@ -333,9 +354,9 @@ export class StoreService {
       if (audit.verdict === 'block' && !allowAuditBlock) {
         return this.finish({ kind, id, phase: 'failed', failureReason: 'audit-blocked', audit, message: 'The audit blocked this entry' })
       }
-      if (allowAuditBlock && audit.verdict === 'block') return this.runInstall(entry, audit, bundle)
-      this.pending.set(key, { entry, audit, bundle })
-      const state: InstallState = { kind, id, phase: 'confirm-wait', audit }
+      if (allowAuditBlock && audit.verdict === 'block') return this.runInstall(entry, audit, bundle, compatibility)
+      this.pending.set(key, { entry, audit, bundle, compatibility })
+      const state: InstallState = { kind, id, phase: 'confirm-wait', audit, ...(compatibility === undefined ? {} : { compatibility }) }
       this.publish(state)
       return state
     } finally {
@@ -360,7 +381,66 @@ export class StoreService {
     if (!accepted) {
       return this.finish({ kind, id, phase: 'failed', failureReason: 'user-cancelled', audit: parked.audit, message: 'Cancelled' })
     }
-    return this.runInstall(parked.entry, parked.audit, parked.bundle)
+    return this.runInstall(parked.entry, parked.audit, parked.bundle, parked.compatibility)
+  }
+
+  /** Update one already-installed DSH profile plugin as a single recoverable mutation. */
+  async update(kind: StoreKind, id: string): Promise<InstallState> {
+    if (this.dshHome === undefined || this.registryPath === undefined) {
+      throw new Error('Store update is not available in this build')
+    }
+    const registry = this.ensureRegistry()
+    const record = await registry.find(kind, id)
+    if (record === undefined) {
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: `${id} is not installed` })
+    }
+    let entry: StoreEntry
+    try {
+      entry = await this.entry(kind, id)
+    } catch (error) {
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'download', message: describe(error) })
+    }
+    if (kind !== 'skill' || entry.plugin === undefined || record.pluginPackageName === undefined || this.pluginInstaller === undefined) {
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: 'Only Store-managed DSH plugins support in-place updates' })
+    }
+    const compatibility = assessPluginCompatibility(this.dshRuntimeVersion(), entry.plugin.compatibility)
+    if (compatibility.status === 'incompatible') {
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'incompatible', compatibility, message: compatibility.reason })
+    }
+    const audit = auditPluginSource(entry)
+    if (audit.verdict === 'block') {
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'audit-blocked', audit, compatibility, message: 'The audit blocked this entry' })
+    }
+
+    this.publish({ kind, id, phase: 'installing', message: 'Updating…', compatibility })
+    try {
+      let pluginInstall: { packageName: string; profile: string; runtimeRestartRequired?: boolean }
+      let recoveryTransactionId: string | undefined
+      if (this.pluginRecovery === undefined) {
+        pluginInstall = await this.pluginInstaller.install(entry)
+        await registry.upsert(installedRecord(entry, undefined, pluginInstall, compatibility))
+      } else {
+        const outcome = await this.pluginRecovery.run(
+          pluginChangeInput(entry, 'update', record),
+          () => this.pluginInstaller?.install(entry) ?? Promise.reject(new Error('DSH plugin installer is not available in this build')),
+          async (result) => registry.upsert(installedRecord(entry, undefined, result, compatibility)),
+        )
+        pluginInstall = outcome.value
+        recoveryTransactionId = outcome.transactionId
+      }
+      return this.finish({
+        kind,
+        id,
+        phase: 'done',
+        audit,
+        compatibility,
+        ...(recoveryTransactionId === undefined ? {} : { recoveryTransactionId }),
+        ...(pluginInstall.runtimeRestartRequired ? { runtimeRestartRequired: true } : {}),
+      })
+    } catch (error) {
+      this.reportInstallError(kind, id, 'write_failed', describe(error), { stage: 'update', failureReason: 'install' })
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', audit, compatibility, message: describe(error) })
+    }
   }
 
   /**
@@ -422,7 +502,7 @@ export class StoreService {
     this.emit(state)
   }
 
-  private async runInstall(entry: StoreEntry, audit: AuditReport, bundle: DownloadedBundle | undefined): Promise<InstallState> {
+  private async runInstall(entry: StoreEntry, audit: AuditReport, bundle: DownloadedBundle | undefined, compatibility?: PluginCompatibilityAssessment): Promise<InstallState> {
     const { kind, id } = entry
     this.publish({ kind, id, phase: 'installing', message: 'Installing…' })
     let pluginInstall: { packageName: string; profile: string; runtimeRestartRequired?: boolean } | undefined
@@ -438,7 +518,7 @@ export class StoreService {
           const outcome = await this.pluginRecovery.run(
             pluginChangeInput(entry, 'install'),
             () => this.pluginInstaller?.install(entry) ?? Promise.reject(new Error('DSH plugin installer is not available in this build')),
-            async (result) => registry.upsert(installedRecord(entry, bundle, result)),
+            async (result) => registry.upsert(installedRecord(entry, bundle, result, compatibility)),
           )
           pluginInstall = outcome.value
           recoveryTransactionId = outcome.transactionId
@@ -446,7 +526,7 @@ export class StoreService {
       } else if (kind === 'skill') await installSkillBundle(this.dshHome, entry, bundle ?? [])
       else if (kind === 'preset') await installPresetBundle(this.dshHome, entry, bundle ?? [])
       else await installMcpEntry(webProfilePatchFile(this.dshHome), requireMcp(entry))
-      if (recoveryTransactionId === undefined) await registry.upsert(installedRecord(entry, bundle, pluginInstall))
+      if (recoveryTransactionId === undefined) await registry.upsert(installedRecord(entry, bundle, pluginInstall, compatibility))
     } catch (error) {
       const reason =
         error instanceof SkillConflictError ||
@@ -463,6 +543,7 @@ export class StoreService {
       id,
       phase: 'done',
       audit,
+      ...(compatibility === undefined ? {} : { compatibility }),
       ...(recoveryTransactionId === undefined ? {} : { recoveryTransactionId }),
       ...(pluginInstall?.runtimeRestartRequired === true ? { runtimeRestartRequired: true } : {})
     })
@@ -514,6 +595,7 @@ function installedRecord(
   entry: StoreEntry,
   bundle: DownloadedBundle | undefined,
   pluginInstall: { packageName: string; profile: string } | undefined,
+  compatibility: PluginCompatibilityAssessment | undefined,
 ): InstalledRecord {
   return {
     kind: entry.kind,
@@ -525,6 +607,9 @@ function installedRecord(
     ...(pluginInstall === undefined ? {} : {
       pluginPackageName: pluginInstall.packageName,
       pluginProfile: pluginInstall.profile,
+      pluginSource: entry.plugin?.source,
+      ...(entry.plugin?.compatibility === undefined ? {} : { pluginCompatibilityRequirements: entry.plugin.compatibility }),
+      ...(compatibility === undefined ? {} : { pluginCompatibility: compatibility }),
     }),
   }
 }

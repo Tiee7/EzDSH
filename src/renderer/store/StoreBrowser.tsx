@@ -292,6 +292,20 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
     }
   }, [kind, copy, refreshInstalled])
 
+  const update = useCallback(async (entry: StoreEntry): Promise<void> => {
+    setRuntimeRestartDeferred(false)
+    setRuntimeRestartError(undefined)
+    try {
+      setInstallState({ kind, id: entry.id, phase: 'installing', message: copy.storeUpdate })
+      const state = await window.EzDSH.store.update(kind, entry.id)
+      setInstallState(state)
+      if (state.phase === 'done') void refreshInstalled()
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setInstallState({ kind, id: entry.id, phase: 'failed', message })
+    }
+  }, [kind, copy, refreshInstalled])
+
   const busy = installState !== undefined
     && installState.id === selected?.id
     && (installState.phase === 'downloading' || installState.phase === 'auditing' || installState.phase === 'installing' || runtimeRestarting)
@@ -415,6 +429,12 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
           {installState?.audit !== undefined && installState.id === selected.id
             ? <AuditReportView report={installState.audit} copy={copy} />
             : null}
+          {installState?.compatibility?.status === 'unknown' && installState.id === selected.id
+            ? <p className="compatibility-warning" role="status">DSH 兼容性尚未由目录声明；已记录当前版本，建议先在安全模式验证。</p>
+            : null}
+          {installState?.compatibility?.status === 'incompatible' && installState.id === selected.id
+            ? <p className="compatibility-error" role="alert">{installState.compatibility.reason}</p>
+            : null}
           {installState !== undefined && installState.id === selected.id
             ? <p className={`install-phase phase-${installState.phase}`}>
                 {phaseLabel(copy, installState.phase)}
@@ -475,12 +495,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
                 <>
                   {updateAvailable(installedById.get(selected.id), selected)
                     ? (
-                      <button className="detail-install" disabled={busy || runtimeRestarting} onClick={() => {
-                        void (async () => {
-                          await window.EzDSH.store.uninstall(kind, selected.id)
-                          await startInstall(selected)
-                        })()
-                      }}>
+                      <button className="detail-install" disabled={busy || runtimeRestarting} onClick={() => { void update(selected) }}>
                         {copy.storeUpdate}
                       </button>
                       )

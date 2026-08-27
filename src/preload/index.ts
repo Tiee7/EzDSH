@@ -73,6 +73,7 @@ const bridge: EzDSHBridge = {
     install: (kind, id) => invoke('store:install', kind, id),
     installAnyway: (kind, id) => invoke('store:install-anyway', kind, id),
     confirmInstall: (kind, id, accepted) => invoke('store:confirm-install', kind, id, accepted),
+    update: (kind, id) => invoke('store:update', kind, id),
     uninstall: (kind, id) => invoke('store:uninstall', kind, id),
     listInstalled: () => invoke('store:list-installed'),
     refresh: (kind) => invoke('store:refresh', kind),
@@ -178,6 +179,9 @@ const bridge: EzDSHBridge = {
     verify: (selector: string) => invoke<RecoveryVerifyResult>('recovery:verify', selector),
     doctor: (repair = false) => invoke<RecoveryDoctorResult>('recovery:doctor', repair),
     restore: (selector: string, dryRun: boolean) => invoke<RecoveryDryRun | RecoveryRestoreResult>('recovery:restore', selector, dryRun),
+    enterSafeMode: () => invoke('recovery:enter-safe-mode'),
+    exitSafeMode: () => invoke('recovery:exit-safe-mode'),
+    rollbackPendingPlugin: () => invoke<RecoveryRestoreResult>('recovery:rollback-pending-plugin'),
     resolve: () => invoke<void>('recovery:resolve'),
     openDirectory: () => invoke<void>('recovery:open-directory'),
     onStateChange: (listener: (state: RecoveryState) => void) => {

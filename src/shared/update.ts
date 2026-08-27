@@ -13,6 +13,8 @@ export interface UpdateResolution {
   arch?: string
   currentVersion?: string
   latestVersion?: string
+  /** DSH Runtime bundled by the proposed EzDSH distribution, when declared by the resolver. */
+  dshRuntimeVersion?: string
   updateAvailable?: boolean
   trigger?: UpdateCheckTrigger
   language?: string
@@ -33,6 +35,8 @@ export interface UpdateState {
   phase: UpdatePhase
   currentVersion: string
   availableVersion?: string
+  /** Target Runtime evidence carried from the signed update resolver. */
+  targetDshRuntimeVersion?: string
   percent?: number
   message?: string
   lastCheckedAt?: string

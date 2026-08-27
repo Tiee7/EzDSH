@@ -26,6 +26,7 @@ export interface UpdateManagerOptions {
 export interface UpdateInstallContext {
   currentVersion: string
   targetVersion?: string
+  targetDshRuntimeVersion?: string
 }
 
 type UpdateListener = (state: UpdateState) => void
@@ -116,6 +117,7 @@ export class UpdateManager {
     this.publish({
       phase: 'idle',
       availableVersion: undefined,
+      targetDshRuntimeVersion: undefined,
       percent: undefined,
       message: undefined,
       lastCheckedAt: undefined
@@ -190,6 +192,8 @@ export class UpdateManager {
       }
 
       this.updater.setFeedURL({ provider: 'generic', url: feedUrl })
+      const targetDshRuntimeVersion = validRuntimeVersion(resolution.dshRuntimeVersion)
+      if (targetDshRuntimeVersion !== undefined) this.publish({ targetDshRuntimeVersion })
       return
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -230,6 +234,7 @@ export class UpdateManager {
       await this.options.prepareInstall?.({
         currentVersion: this.options.currentVersion,
         ...(this.current.availableVersion === undefined ? {} : { targetVersion: this.current.availableVersion }),
+        ...(this.current.targetDshRuntimeVersion === undefined ? {} : { targetDshRuntimeVersion: this.current.targetDshRuntimeVersion }),
       })
       this.publish({ phase: 'installing', message: '正在准备安装更新' })
       this.updater.quitAndInstall(false, true)
@@ -239,7 +244,7 @@ export class UpdateManager {
     return this.snapshot()
   }
 
-  private publish(patch: Omit<UpdateState, 'currentVersion'> & { currentVersion?: string }): void {
+  private publish(patch: Partial<Omit<UpdateState, 'currentVersion'>> & { currentVersion?: string }): void {
     this.current = {
       ...this.current,
       ...patch,
@@ -265,4 +270,10 @@ function validFeedUrl(value: string | undefined): string | undefined {
   } catch {
     return undefined
   }
+}
+
+function validRuntimeVersion(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  return normalized === '' ? undefined : normalized
 }

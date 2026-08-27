@@ -86,6 +86,7 @@ export interface EzDSHBridge {
     installAnyway(kind: StoreKind, id: string): Promise<InstallState>
     /** Answer a `confirm-wait` prompt; `accepted: false` cancels with `user-cancelled`. */
     confirmInstall(kind: StoreKind, id: string, accepted: boolean): Promise<InstallState>
+    update(kind: StoreKind, id: string): Promise<InstallState>
     uninstall(kind: StoreKind, id: string): Promise<InstallState>
     listInstalled(): Promise<InstalledListResult>
     /** Explicitly refresh the catalog from the remote source; resolves with the fetch timestamp. */
@@ -151,6 +152,9 @@ export interface EzDSHBridge {
     verify(selector: string): Promise<RecoveryVerifyResult>
     doctor(repair?: boolean): Promise<RecoveryDoctorResult>
     restore(selector: string, dryRun: boolean): Promise<RecoveryDryRun | RecoveryRestoreResult>
+    enterSafeMode(): Promise<RuntimeSnapshot>
+    exitSafeMode(): Promise<RuntimeSnapshot>
+    rollbackPendingPlugin(): Promise<RecoveryRestoreResult>
     resolve(): Promise<void>
     openDirectory(): Promise<void>
     onStateChange(listener: (state: RecoveryState) => void): () => void
