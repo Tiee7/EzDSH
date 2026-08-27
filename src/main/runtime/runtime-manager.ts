@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import type { UserDataLayout } from '../../shared/state.js'
 import { ensureUserDataLayout } from '../state/user-data.js'
 import { waitForRuntimeHealthy } from './health-check.js'
-import type { RuntimeSnapshot } from './runtime-types.js'
+import type { RuntimeMode, RuntimeSnapshot } from './runtime-types.js'
 import {
   EZDSH_RUNTIME_OWNER_ENV,
   EZDSH_RUNTIME_OWNER_VALUE,
@@ -81,10 +81,21 @@ export interface RuntimeManagerOptions {
   runtimeOwnership?: RuntimeOwnershipStore
 }
 
+export interface RuntimeLaunchContext {
+  mode?: RuntimeMode
+  dshHome?: string
+}
+
+interface ResolvedRuntimeLaunchContext {
+  mode: RuntimeMode
+  dshHome: string
+}
+
 type RuntimeListener = (snapshot: RuntimeSnapshot) => void
 
 const initialSnapshot = (layout: UserDataLayout): RuntimeSnapshot => ({
   phase: 'idle',
+  mode: 'normal',
   launchDirectory: layout.launchRoot,
   logPath: join(layout.logs, 'harness.log')
 })
@@ -94,6 +105,18 @@ class RuntimePortOccupiedError extends Error {
     super(`DSH Runtime port ${String(port)} is already in use`)
     this.name = 'RuntimePortOccupiedError'
   }
+}
+
+function resolveLaunchContext(layout: UserDataLayout, context: RuntimeLaunchContext): ResolvedRuntimeLaunchContext {
+  const mode = context.mode ?? 'normal'
+  if (mode === 'safe' && (context.dshHome === undefined || context.dshHome.trim() === '')) {
+    throw new Error('Safe Mode Runtime launch requires an isolated DSH home')
+  }
+  return { mode, dshHome: context.dshHome ?? layout.harness }
+}
+
+function sameLaunchContext(left: ResolvedRuntimeLaunchContext, right: ResolvedRuntimeLaunchContext): boolean {
+  return left.mode === right.mode && left.dshHome === right.dshHome
 }
 
 function isPortOccupiedMessage(value: unknown): boolean {
@@ -111,6 +134,7 @@ export class RuntimeManager {
   private listeners = new Set<RuntimeListener>()
   private stopping = false
   private stopRequested = false
+  private launchContext: ResolvedRuntimeLaunchContext
 
   constructor(private readonly config: RuntimeManagerOptions) {
     this.options = {
@@ -119,6 +143,7 @@ export class RuntimeManager {
       portRetryCount: config.portRetryCount ?? 20
     }
     this.current = initialSnapshot(config.layout)
+    this.launchContext = { mode: 'normal', dshHome: config.layout.harness }
   }
 
   snapshot(): RuntimeSnapshot {
@@ -130,10 +155,15 @@ export class RuntimeManager {
     return () => this.listeners.delete(listener)
   }
 
-  async start(): Promise<RuntimeSnapshot> {
-    if (this.current.phase === 'ready') return this.snapshot()
+  async start(context: RuntimeLaunchContext = {}): Promise<RuntimeSnapshot> {
+    const launchContext = resolveLaunchContext(this.config.layout, context)
+    if (this.current.phase === 'ready') {
+      if (sameLaunchContext(this.launchContext, launchContext)) return this.snapshot()
+      throw new Error('Runtime is already ready with a different launch context')
+    }
     if (this.startPromise !== undefined) return this.startPromise
 
+    this.launchContext = launchContext
     this.stopRequested = false
     this.stopping = false
     this.startPromise = this.startInternal().finally(() => {
@@ -176,9 +206,9 @@ export class RuntimeManager {
     return this.stopPromise
   }
 
-  async restart(): Promise<RuntimeSnapshot> {
+  async restart(context: RuntimeLaunchContext = {}): Promise<RuntimeSnapshot> {
     await this.stop()
-    return this.start()
+    return this.start(context)
   }
 
   private async startInternal(): Promise<RuntimeSnapshot> {
@@ -208,6 +238,7 @@ export class RuntimeManager {
     const url = `http://127.0.0.1:${String(port)}`
     this.setSnapshot({
       phase: 'starting',
+      mode: this.launchContext.mode,
       pid: undefined,
       port,
       url,
@@ -231,7 +262,7 @@ export class RuntimeManager {
       detached: process.platform !== 'win32',
       env: {
         ...inheritedEnvironment,
-        DSH_HOME: this.config.layout.harness,
+        DSH_HOME: this.launchContext.dshHome,
         [EZDSH_RUNTIME_OWNER_ENV]: EZDSH_RUNTIME_OWNER_VALUE,
         // Electron's executable can run a child as plain Node when this flag is set.
         ...(command === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {})

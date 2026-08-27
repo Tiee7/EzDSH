@@ -1,7 +1,9 @@
 export type RuntimePhase = 'idle' | 'starting' | 'ready' | 'stopping' | 'stopped' | 'failed'
+export type RuntimeMode = 'normal' | 'safe'
 
 export interface RuntimeSnapshot {
   phase: RuntimePhase
+  mode: RuntimeMode
   pid?: number
   port?: number
   url?: string

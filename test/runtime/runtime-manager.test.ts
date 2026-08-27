@@ -258,4 +258,37 @@ describe('RuntimeManager', () => {
     expect(manager.snapshot().phase).toBe('ready')
     expect(manager.snapshot().pid).toBe(11002)
   })
+
+  it('starts a Safe Mode Runtime against its isolated DSH home', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-safe-mode-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    const child = Object.assign(new EventEmitter(), {
+      pid: 12001,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill(signal: NodeJS.Signals): boolean {
+        this.emit('exit', 0, signal)
+        return true
+      }
+    })
+    let spawnedOptions: import('node:child_process').SpawnOptions | undefined
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      command: process.execPath,
+      allocatePort: async () => 4567,
+      waitForHealthy: async () => undefined,
+      spawnProcess: (_command, _args, options) => {
+        spawnedOptions = options
+        return child as never
+      }
+    })
+
+    const ready = await manager.start({ mode: 'safe', dshHome: join(root, 'safe-mode-home') } as never)
+
+    expect(spawnedOptions?.env?.DSH_HOME).toBe(join(root, 'safe-mode-home'))
+    expect((ready as { mode?: string }).mode).toBe('safe')
+    await manager.stop()
+  })
 })
