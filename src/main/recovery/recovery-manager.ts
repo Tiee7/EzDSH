@@ -20,7 +20,7 @@ import type { UserDataLayout } from '../../shared/state.js'
 export const RECOVERY_FORMAT_VERSION = 1
 export const CURRENT_DATA_SCHEMA_VERSION = 1
 
-export type RecoverySnapshotKind = 'manual' | 'pre-update' | 'pre-restore'
+export type RecoverySnapshotKind = 'manual' | 'pre-update' | 'pre-plugin-change' | 'pre-restore'
 
 export interface RecoveryManifest {
   formatVersion: typeof RECOVERY_FORMAT_VERSION
@@ -95,19 +95,40 @@ export interface RecoveryDoctorResult {
   issues: readonly RecoveryDoctorIssue[]
 }
 
-export interface PendingUpdate {
+export type PluginChangeAction = 'install' | 'update' | 'uninstall'
+
+export interface AffectedPlugin {
+  action: PluginChangeAction
+  entryId: string
+  packageName: string
+  profile: string
+}
+
+export interface RecoveryTransaction {
+  id: string
+  kind: 'update' | 'plugin-change'
   phase: 'prepared' | 'failed'
   snapshotName: string
   fromAppVersion: string
   targetAppVersion?: string
   preparedAt: string
+  affectedPlugin?: AffectedPlugin
   error?: string
 }
 
-export type RecoveryPhase = 'idle' | 'pending-update' | 'recovery-required' | 'restoring'
+/** @deprecated Use RecoveryTransaction; retained for updater compatibility. */
+export interface PendingUpdate extends RecoveryTransaction {
+  kind: 'update'
+}
+
+export interface PreparePluginChangeInput extends AffectedPlugin {}
+
+export type RecoveryPhase = 'idle' | 'pending-update' | 'pending-plugin-change' | 'recovery-required' | 'restoring'
 
 export interface RecoveryState {
   phase: RecoveryPhase
+  pendingTransaction?: RecoveryTransaction
+  /** @deprecated Use pendingTransaction. It is populated only for update transactions. */
   pendingUpdate?: PendingUpdate
   lastError?: string
 }
@@ -153,7 +174,7 @@ export interface PrepareUpdateInput {
 
 type RecoveryListener = (state: RecoveryState) => void
 
-const SNAPSHOT_PATTERN = /^ezdsh-(manual|pre-update|pre-restore)-[^/]+\.tar\.gz$/u
+const SNAPSHOT_PATTERN = /^ezdsh-(manual|pre-update|pre-plugin-change|pre-restore)-[^/]+\.tar\.gz$/u
 const COMPONENTS = ['harness', 'state'] as const
 const DEFAULT_SENSITIVE_PATHS = [
   'harness/.credentials.yaml',
@@ -185,10 +206,7 @@ export class RecoveryManager {
   }
 
   snapshot(): RecoveryState {
-    return {
-      ...this.current,
-      ...(this.current.pendingUpdate === undefined ? {} : { pendingUpdate: { ...this.current.pendingUpdate } }),
-    }
+    return cloneRecoveryState(this.current)
   }
 
   onChange(listener: RecoveryListener): () => void {
@@ -199,15 +217,11 @@ export class RecoveryManager {
   async initialize(): Promise<RecoveryState> {
     await mkdir(this.config.layout.backups, { recursive: true, mode: 0o700 })
     await this.writeRescueAssets()
-    const pending = await this.readPendingUpdate()
+    const pending = await this.readPendingTransaction()
     if (pending === undefined) {
       this.publish({ phase: 'idle' })
     } else {
-      this.publish({
-        phase: pending.phase === 'failed' ? 'recovery-required' : 'pending-update',
-        pendingUpdate: pending,
-        ...(pending.error === undefined ? {} : { lastError: pending.error }),
-      })
+      this.publish(stateForPendingTransaction(pending))
     }
     return this.snapshot()
   }
@@ -325,7 +339,10 @@ export class RecoveryManager {
       }
     }
 
-    this.publish({ phase: 'restoring', ...(this.current.pendingUpdate === undefined ? {} : { pendingUpdate: this.current.pendingUpdate }) })
+    this.publish({
+      phase: 'restoring',
+      ...(this.current.pendingTransaction === undefined ? {} : { pendingTransaction: this.current.pendingTransaction }),
+    })
     try {
       const preRestore = await this.createSnapshot({ kind: 'pre-restore', reason: `Before restoring ${snapshot.archiveName}` })
       const staging = join(this.config.layout.backups, `.ezdsh-restore-${randomUUID()}`)
@@ -374,14 +391,14 @@ export class RecoveryManager {
         entries,
       }
       this.publish({
-        phase: this.current.pendingUpdate === undefined ? 'idle' : 'recovery-required',
-        ...(this.current.pendingUpdate === undefined ? {} : { pendingUpdate: this.current.pendingUpdate }),
+        phase: this.current.pendingTransaction === undefined ? 'idle' : 'recovery-required',
+        ...(this.current.pendingTransaction === undefined ? {} : { pendingTransaction: this.current.pendingTransaction }),
       })
       return result
     } catch (error) {
       this.publish({
-        phase: this.current.pendingUpdate === undefined ? 'idle' : 'recovery-required',
-        ...(this.current.pendingUpdate === undefined ? {} : { pendingUpdate: this.current.pendingUpdate }),
+        phase: this.current.pendingTransaction === undefined ? 'idle' : 'recovery-required',
+        ...(this.current.pendingTransaction === undefined ? {} : { pendingTransaction: this.current.pendingTransaction }),
         lastError: error instanceof Error ? error.message : String(error),
       })
       throw error
@@ -396,33 +413,69 @@ export class RecoveryManager {
         : `Before updating to ${input.targetAppVersion}`,
     })
     const pending: PendingUpdate = {
+      id: randomUUID(),
+      kind: 'update',
       phase: 'prepared',
       snapshotName: snapshot.archiveName,
       fromAppVersion: this.config.appVersion,
       ...(input.targetAppVersion === undefined ? {} : { targetAppVersion: input.targetAppVersion }),
       preparedAt: this.options.now().toISOString(),
     }
-    await this.writePendingUpdate(pending)
-    this.publish({ phase: 'pending-update', pendingUpdate: pending })
+    await this.writePendingTransaction(pending)
+    this.publish(stateForPendingTransaction(pending))
     return pending
   }
 
-  async markBootFailure(error: string): Promise<RecoveryState> {
-    if (this.current.pendingUpdate === undefined) return this.snapshot()
-    const pending: PendingUpdate = { ...this.current.pendingUpdate, phase: 'failed', error }
-    await this.writePendingUpdate(pending)
-    this.publish({ phase: 'recovery-required', pendingUpdate: pending, lastError: error })
-    return this.snapshot()
+  async preparePluginChange(input: PreparePluginChangeInput): Promise<RecoveryTransaction> {
+    const snapshot = await this.createSnapshot({
+      kind: 'pre-plugin-change',
+      reason: `Before ${input.action} plugin ${input.packageName} in ${input.profile}`,
+    })
+    const pending: RecoveryTransaction = {
+      id: randomUUID(),
+      kind: 'plugin-change',
+      phase: 'prepared',
+      snapshotName: snapshot.archiveName,
+      fromAppVersion: this.config.appVersion,
+      preparedAt: this.options.now().toISOString(),
+      affectedPlugin: { ...input },
+    }
+    await this.writePendingTransaction(pending)
+    this.publish(stateForPendingTransaction(pending))
+    return pending
   }
 
-  async completeUpdate(): Promise<void> {
-    if (this.current.pendingUpdate === undefined) return
-    await this.clearPendingUpdate()
+  async hasPendingTransaction(): Promise<boolean> {
+    return this.current.pendingTransaction !== undefined
+  }
+
+  async abortPendingTransaction(): Promise<void> {
+    if (this.current.pendingTransaction === undefined) return
+    await this.clearPendingTransaction()
     this.publish({ phase: 'idle' })
   }
 
+  async markBootFailure(error: string): Promise<RecoveryState> {
+    if (this.current.pendingTransaction === undefined) return this.snapshot()
+    const pending: RecoveryTransaction = { ...this.current.pendingTransaction, phase: 'failed', error }
+    await this.writePendingTransaction(pending)
+    this.publish({ phase: 'recovery-required', pendingTransaction: pending, lastError: error })
+    return this.snapshot()
+  }
+
+  async completePendingTransaction(): Promise<void> {
+    if (this.current.pendingTransaction === undefined) return
+    await this.clearPendingTransaction()
+    this.publish({ phase: 'idle' })
+  }
+
+  async completeUpdate(): Promise<void> {
+    if (this.current.pendingTransaction?.kind !== 'update') return
+    await this.completePendingTransaction()
+  }
+
   async resolveRecovery(): Promise<void> {
-    await this.completeUpdate()
+    await this.completePendingTransaction()
   }
 
   /** Inspect persisted sessions without starting DSH; repair is opt-in and tail-only. */
@@ -530,30 +583,39 @@ export class RecoveryManager {
     }
   }
 
-  private async readPendingUpdate(): Promise<PendingUpdate | undefined> {
+  private async readPendingTransaction(): Promise<RecoveryTransaction | undefined> {
     try {
       const value: unknown = JSON.parse(await readFile(join(this.config.layout.root, UPDATE_TRANSACTION_FILE), 'utf8'))
-      if (!isPendingUpdate(value)) return undefined
-      return value
+      if (isRecoveryTransaction(value)) return value
+      if (isLegacyPendingUpdate(value)) {
+        return {
+          id: `legacy-${value.snapshotName}`,
+          kind: 'update',
+          phase: value.phase,
+          snapshotName: value.snapshotName,
+          fromAppVersion: value.fromAppVersion,
+          ...(value.targetAppVersion === undefined ? {} : { targetAppVersion: value.targetAppVersion }),
+          preparedAt: value.preparedAt,
+          ...(value.error === undefined ? {} : { error: value.error }),
+        }
+      }
+      return undefined
     } catch (error) {
       if (isErrno(error, 'ENOENT')) return undefined
       return undefined
     }
   }
 
-  private async writePendingUpdate(pending: PendingUpdate): Promise<void> {
+  private async writePendingTransaction(pending: RecoveryTransaction): Promise<void> {
     await writeAtomic(join(this.config.layout.root, UPDATE_TRANSACTION_FILE), `${JSON.stringify(pending, null, 2)}\n`, 0o600)
   }
 
-  private async clearPendingUpdate(): Promise<void> {
+  private async clearPendingTransaction(): Promise<void> {
     await rm(join(this.config.layout.root, UPDATE_TRANSACTION_FILE), { force: true })
   }
 
   private publish(next: RecoveryState): void {
-    this.current = {
-      ...next,
-      ...(next.pendingUpdate === undefined ? {} : { pendingUpdate: { ...next.pendingUpdate } }),
-    }
+    this.current = stateWithLegacyUpdate(next)
     const snapshot = this.snapshot()
     for (const listener of this.listeners) listener(snapshot)
   }
@@ -607,10 +669,31 @@ function parseManifest(value: unknown): RecoveryManifest {
 }
 
 function isRecoveryKind(value: unknown): value is RecoverySnapshotKind {
-  return value === 'manual' || value === 'pre-update' || value === 'pre-restore'
+  return value === 'manual' || value === 'pre-update' || value === 'pre-plugin-change' || value === 'pre-restore'
 }
 
-function isPendingUpdate(value: unknown): value is PendingUpdate {
+function isRecoveryTransaction(value: unknown): value is RecoveryTransaction {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && (value.kind === 'update' || value.kind === 'plugin-change')
+    && (value.phase === 'prepared' || value.phase === 'failed')
+    && typeof value.snapshotName === 'string'
+    && typeof value.fromAppVersion === 'string'
+    && typeof value.preparedAt === 'string'
+    && (value.targetAppVersion === undefined || typeof value.targetAppVersion === 'string')
+    && (value.affectedPlugin === undefined || isAffectedPlugin(value.affectedPlugin))
+    && (value.error === undefined || typeof value.error === 'string')
+}
+
+function isAffectedPlugin(value: unknown): value is AffectedPlugin {
+  return isRecord(value)
+    && (value.action === 'install' || value.action === 'update' || value.action === 'uninstall')
+    && typeof value.entryId === 'string'
+    && typeof value.packageName === 'string'
+    && typeof value.profile === 'string'
+}
+
+function isLegacyPendingUpdate(value: unknown): value is Omit<PendingUpdate, 'id' | 'kind'> {
   return isRecord(value)
     && (value.phase === 'prepared' || value.phase === 'failed')
     && typeof value.snapshotName === 'string'
@@ -618,6 +701,32 @@ function isPendingUpdate(value: unknown): value is PendingUpdate {
     && typeof value.preparedAt === 'string'
     && (value.targetAppVersion === undefined || typeof value.targetAppVersion === 'string')
     && (value.error === undefined || typeof value.error === 'string')
+}
+
+function stateForPendingTransaction(transaction: RecoveryTransaction): RecoveryState {
+  return {
+    phase: transaction.phase === 'failed'
+      ? 'recovery-required'
+      : transaction.kind === 'update' ? 'pending-update' : 'pending-plugin-change',
+    pendingTransaction: transaction,
+    ...(transaction.error === undefined ? {} : { lastError: transaction.error }),
+  }
+}
+
+function stateWithLegacyUpdate(next: RecoveryState): RecoveryState {
+  const pendingTransaction = next.pendingTransaction === undefined ? undefined : { ...next.pendingTransaction, ...(next.pendingTransaction.affectedPlugin === undefined ? {} : { affectedPlugin: { ...next.pendingTransaction.affectedPlugin } }) }
+  return {
+    ...next,
+    ...(pendingTransaction === undefined ? {} : { pendingTransaction }),
+    ...(pendingTransaction?.kind === 'update' ? { pendingUpdate: pendingTransaction as PendingUpdate } : {}),
+  }
+}
+
+function cloneRecoveryState(state: RecoveryState): RecoveryState {
+  return stateWithLegacyUpdate({
+    ...state,
+    ...(state.pendingTransaction === undefined ? {} : { pendingTransaction: state.pendingTransaction }),
+  })
 }
 
 function normalizeRelativePath(value: string): string {

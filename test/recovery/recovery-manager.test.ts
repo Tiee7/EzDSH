@@ -135,6 +135,41 @@ describe('RecoveryManager', () => {
     })
   })
 
+  it('creates a plugin-change snapshot and records the affected plugin after boot failure', async () => {
+    const layout = await createFixture()
+    const manager = createManager(layout)
+    await manager.initialize()
+
+    const pending = await manager.preparePluginChange({
+      action: 'install',
+      entryId: 'agent-teams',
+      packageName: '@nanmicoder/dsh-agent-teams',
+      profile: 'web',
+    })
+
+    expect(pending).toMatchObject({
+      kind: 'plugin-change',
+      phase: 'prepared',
+      affectedPlugin: { entryId: 'agent-teams', action: 'install' },
+    })
+    expect(pending.snapshotName).toMatch(/^ezdsh-pre-plugin-change-/)
+    expect(manager.snapshot().phase).toBe('pending-plugin-change')
+
+    await manager.markBootFailure('Plugin crashed during startup')
+
+    expect(manager.snapshot()).toMatchObject({
+      phase: 'recovery-required',
+      lastError: 'Plugin crashed during startup',
+      pendingTransaction: {
+        kind: 'plugin-change',
+        phase: 'failed',
+        affectedPlugin: { entryId: 'agent-teams', packageName: '@nanmicoder/dsh-agent-teams' },
+      },
+    })
+    await manager.completePendingTransaction()
+    expect(manager.snapshot().phase).toBe('idle')
+  })
+
   it('copies the dependency-free rescue channel and launcher into backups', async () => {
     const layout = await createFixture()
     const manager = createManager(layout, { rescueScriptPath: resolve('recovery/rescue.mjs') })
