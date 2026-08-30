@@ -168,6 +168,8 @@ export interface WorkflowNodeRunState {
   status: WorkflowNodeRunStatus
   startedAt?: string
   completedAt?: string
+  /** Elapsed execution time recorded in milliseconds. Older records omit this and render as 0. */
+  elapsedMs?: number
   /** The resolved value passed into this node, retained for run inspection. */
   input?: WorkflowValue
   output?: WorkflowValue

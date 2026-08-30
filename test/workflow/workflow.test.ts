@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDefaultWorkflow, normalizeWorkflow, validateWorkflow } from '../../src/shared/workflow.js'
+import { createDefaultWorkflow, formatWorkflowValidationIssues, normalizeWorkflow, validateWorkflow } from '../../src/shared/workflow.js'
 
 describe('workflow contract', () => {
   it('creates a valid starter graph', () => {
@@ -83,5 +83,25 @@ describe('workflow contract', () => {
     expect(result.valid).toBe(false)
     expect(result.issues.map((issue) => issue.message).join(' ')).toContain('控制字符')
     expect(result.issues.map((issue) => issue.message).join(' ')).toContain('相对路径')
+  })
+
+  it('formats validation errors with the workflow action and exact node context', () => {
+    const workflow = createDefaultWorkflow('短视频内容运营')
+    const node = workflow.nodes[1]!
+    const invalidWorkflow = {
+      ...workflow,
+      nodes: workflow.nodes.map((candidate) => candidate.id === node.id
+        ? { ...candidate, label: '脚本文案员工', type: 'employee', config: { employeeId: 'writer', instruction: '', outputMode: 'text' } } as never
+        : candidate),
+    }
+    const result = validateWorkflow(invalidWorkflow)
+
+    const message = formatWorkflowValidationIssues(invalidWorkflow, result.issues, '保存')
+
+    expect(message).toContain('Workflow「短视频内容运营」')
+    expect(message).toContain('保存')
+    expect(message).toContain('脚本文案员工')
+    expect(message).toContain(node.id)
+    expect(message).toContain('专业员工节点指令不能为空')
   })
 })

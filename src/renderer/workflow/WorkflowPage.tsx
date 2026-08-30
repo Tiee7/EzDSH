@@ -39,6 +39,7 @@ import {
   type WorkflowNodeRunStatus,
   type WorkflowNodeType,
   type WorkflowOutputMode,
+  type WorkflowPosition,
   type WorkflowModelOption,
   type WorkflowModelSelection,
   type WorkflowRunRecord,
@@ -53,9 +54,7 @@ interface WorkflowPageProps {
   onWorkspaceModeChange?: (active: boolean) => void
 }
 
-type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; status?: WorkflowNodeRunStatus }>
-
-const NODE_TYPES: WorkflowNodeType[] = ['input', 'ai-task', 'employee', 'skill', 'mcp', 'parallel', 'loop', 'condition', 'approval', 'transform', 'output', 'shell', 'file']
+type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; status?: WorkflowNodeRunStatus; duration?: string }>
 
 const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   input: 'Input',
@@ -72,6 +71,12 @@ const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   shell: 'Shell',
   file: 'File',
 }
+
+const NODE_LIBRARY_GROUPS: Array<{ label: string; types: WorkflowNodeType[] }> = [
+  { label: '流程控制', types: ['input', 'output', 'parallel', 'loop', 'condition', 'approval', 'transform'] },
+  { label: '智能能力', types: ['ai-task', 'employee', 'skill', 'mcp'] },
+  { label: '本地工具', types: ['shell', 'file'] },
+]
 
 function id(prefix: string): string {
   const suffix = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10)
@@ -147,7 +152,7 @@ function flowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, select
       width: WORKFLOW_FLOW_NODE_WIDTH,
       height: WORKFLOW_FLOW_NODE_HEIGHT,
       selected: node.id === selectedNodeId,
-      data: { label: `${node.label}${statusMark}`, nodeType: node.type, status },
+      data: { label: `${node.label}${statusMark}`, nodeType: node.type, status, ...(run === undefined ? {} : { duration: formatWorkflowNodeDuration(states.get(node.id)?.elapsedMs) }) },
       className: status === undefined ? undefined : `workflow-flow-node-${status}`,
     }
   })
@@ -252,12 +257,13 @@ function WorkflowFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element 
   return <div className={`workflow-flow-node ${selected ? 'workflow-flow-node-selected' : ''}`}>
     {handles.input === 'left' ? <Handle type="target" position={Position.Left} /> : null}
     <span>{data.label}</span>
+    {data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}
     {handles.output === 'right' ? <Handle type="source" position={Position.Right} /> : null}
   </div>
 }
 
 function ConditionFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element {
-  return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><span>{data.label}</span><div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />true</span><span><Handle type="source" position={Position.Right} id="false" />false</span></div></div>
+  return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><span>{data.label}</span>{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />true</span><span><Handle type="source" position={Position.Right} id="false" />false</span></div></div>
 }
 
 const nodeTypes = { workflow: WorkflowFlowNode, condition: ConditionFlowNode }
@@ -383,7 +389,7 @@ export function isWorkflowFormElement(element: Pick<HTMLElement, 'tagName' | 'is
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName.toUpperCase()) || element.isContentEditable
 }
 
-export type WorkflowKeyboardAction = 'undo' | 'redo' | 'select-all' | 'save'
+export type WorkflowKeyboardAction = 'undo' | 'redo' | 'select-all' | 'save' | 'copy' | 'paste'
 
 export function workflowKeyboardAction(event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey'>): WorkflowKeyboardAction | undefined {
   if (!event.metaKey && !event.ctrlKey) return undefined
@@ -392,6 +398,8 @@ export function workflowKeyboardAction(event: Pick<KeyboardEvent, 'key' | 'metaK
   if (key === 'y' && !event.shiftKey) return 'redo'
   if (key === 'a' && !event.shiftKey) return 'select-all'
   if (key === 's' && !event.shiftKey) return 'save'
+  if (key === 'c' && !event.shiftKey) return 'copy'
+  if (key === 'v' && !event.shiftKey) return 'paste'
   return undefined
 }
 
@@ -428,9 +436,30 @@ function newNode(type: WorkflowNodeType, index: number): WorkflowNode {
   }
 }
 
+/** Copy only node definitions: connections remain untouched, so a paste is safe to wire independently. */
+export function duplicateWorkflowNodes(nodes: ReadonlyArray<WorkflowNode>, createId: (node: WorkflowNode) => string, offset: WorkflowPosition = { x: 48, y: 32 }): WorkflowNode[] {
+  return nodes.map((node) => {
+    const duplicate = cloneWorkflow(node)
+    return {
+      ...duplicate,
+      id: createId(node),
+      position: { x: node.position.x + offset.x, y: node.position.y + offset.y },
+    }
+  })
+}
+
 function formatValue(value: WorkflowValue | undefined): string {
   if (value === undefined) return ''
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+}
+
+/** Present persisted millisecond timing without inventing time for legacy records. */
+export function formatWorkflowNodeDuration(elapsedMs?: number): string {
+  const totalMilliseconds = Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs ?? 0 : 0)
+  const hours = Math.floor(totalMilliseconds / 3_600_000)
+  const minutes = Math.floor((totalMilliseconds % 3_600_000) / 60_000)
+  const seconds = (totalMilliseconds % 60_000) / 1_000
+  return `${hours > 0 ? `${hours}时` : ''}${minutes > 0 ? `${minutes}分` : ''}${seconds.toFixed(1)}秒`
 }
 
 export type WorkflowOutputView = 'markdown' | 'json'
@@ -504,6 +533,15 @@ function renderWorkflowMarkdownInline(value: string): ReactNode[] {
   return nodes
 }
 
+function markdownTableCells(line: string): string[] {
+  return line.trim().replace(/^\|/u, '').replace(/\|$/u, '').split('|').map((cell) => cell.trim())
+}
+
+function isMarkdownTableSeparator(line: string, columnCount: number): boolean {
+  const cells = markdownTableCells(line)
+  return cells.length === columnCount && cells.every((cell) => /^:?-{3,}:?$/u.test(cell))
+}
+
 function renderWorkflowMarkdownBlocks(markdown: string): JSX.Element[] {
   const lines = markdown.replace(/\r\n?/gu, '\n').split('\n')
   const blocks: JSX.Element[] = []
@@ -532,6 +570,19 @@ function renderWorkflowMarkdownBlocks(markdown: string): JSX.Element[] {
       const Heading = `h${level}` as keyof JSX.IntrinsicElements
       blocks.push(<Heading key={`heading-${index}`}>{renderWorkflowMarkdownInline(heading[2] ?? '')}</Heading>)
       index += 1
+      continue
+    }
+    const headerCells = markdownTableCells(line)
+    if (headerCells.length > 1 && index + 1 < lines.length && isMarkdownTableSeparator(lines[index + 1] ?? '', headerCells.length)) {
+      const rows: string[][] = []
+      index += 2
+      while (index < lines.length) {
+        const cells = markdownTableCells(lines[index] ?? '')
+        if (cells.length !== headerCells.length || !(lines[index] ?? '').includes('|')) break
+        rows.push(cells)
+        index += 1
+      }
+      blocks.push(<div key={`table-${index}`} className="workflow-output-markdown-table-wrap"><table className="workflow-output-markdown-table"><thead><tr>{headerCells.map((cell, cellIndex) => <th key={`header-${cellIndex}`}>{renderWorkflowMarkdownInline(cell)}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={`row-${rowIndex}`}>{row.map((cell, cellIndex) => <td key={`cell-${rowIndex}-${cellIndex}`}>{renderWorkflowMarkdownInline(cell)}</td>)}</tr>)}</tbody></table></div>)
       continue
     }
     if (/^\s*(?:[-*_]\s*){3,}$/u.test(line)) {
@@ -565,7 +616,7 @@ function renderWorkflowMarkdownBlocks(markdown: string): JSX.Element[] {
     const paragraphLines: string[] = []
     while (index < lines.length) {
       const paragraphLine = lines[index] ?? ''
-      if (paragraphLine.trim() === '' || /^\s*```\s*[\w-]*\s*$/u.test(paragraphLine) || /^\s*(?:#{1,6})\s+/.test(paragraphLine) || /^\s*(?:[-+*]|\d+[.)])\s+/.test(paragraphLine) || /^\s*>/u.test(paragraphLine)) break
+      if (paragraphLine.trim() === '' || /^\s*```\s*[\w-]*\s*$/u.test(paragraphLine) || /^\s*(?:#{1,6})\s+/.test(paragraphLine) || /^\s*(?:[-+*]|\d+[.)])\s+/.test(paragraphLine) || /^\s*>/u.test(paragraphLine) || (markdownTableCells(paragraphLine).length > 1 && isMarkdownTableSeparator(lines[index + 1] ?? '', markdownTableCells(paragraphLine).length))) break
       paragraphLines.push(paragraphLine)
       index += 1
     }
@@ -636,16 +687,33 @@ export interface WorkflowOutputWindowState {
   id: string
   title: string
   value: WorkflowValue
+  position?: WorkflowPosition
+  zIndex?: number
 }
 
-function WorkflowOutputFloatingWindow({ copy, item, index, fontScale, onClose, onCopy, onIncreaseFont, onDecreaseFont }: WorkflowOutputFloatingWindowsProps & { item: WorkflowOutputWindowState; index: number }): JSX.Element {
-  const [position, setPosition] = useState({ x: 0, y: 0 })
+/** New result windows start at the left, and their initial placement never changes after another window closes. */
+export function createWorkflowOutputWindowState(id: string, title: string, value: WorkflowValue, index: number): Required<WorkflowOutputWindowState> {
+  return { id, title, value, position: { x: 18 + index * 36, y: 96 + index * 24 }, zIndex: index + 1 }
+}
+
+/** Focusing changes only stacking order, never the manually chosen window coordinates. */
+export function focusWorkflowOutputWindow(windows: ReadonlyArray<WorkflowOutputWindowState>, id: string): WorkflowOutputWindowState[] {
+  const zIndex = Math.max(0, ...windows.map((window, index) => window.zIndex ?? index + 1)) + 1
+  return windows.map((window) => window.id === id ? { ...window, zIndex } : window)
+}
+
+function WorkflowOutputFloatingWindow({ copy, item, index, fontScale, onClose, onCopy, onMove, onFocus, onIncreaseFont, onDecreaseFont }: WorkflowOutputFloatingWindowsProps & { item: WorkflowOutputWindowState; index: number }): JSX.Element {
+  const defaultPosition = useMemo(() => createWorkflowOutputWindowState(item.id, item.title, item.value, index).position, [index, item.id, item.title, item.value])
+  const [fallbackPosition, setFallbackPosition] = useState(defaultPosition)
+  const position = item.position ?? fallbackPosition
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number }>()
   useEffect(() => {
     const move = (event: PointerEvent): void => {
       const drag = dragRef.current
       if (drag === undefined || drag.pointerId !== event.pointerId) return
-      setPosition({ x: drag.originX + event.clientX - drag.startX, y: drag.originY + event.clientY - drag.startY })
+      const next = { x: drag.originX + event.clientX - drag.startX, y: drag.originY + event.clientY - drag.startY }
+      if (onMove === undefined) setFallbackPosition(next)
+      else onMove(item.id, next)
     }
     const end = (event: PointerEvent): void => {
       if (dragRef.current?.pointerId === event.pointerId) dragRef.current = undefined
@@ -653,14 +721,15 @@ function WorkflowOutputFloatingWindow({ copy, item, index, fontScale, onClose, o
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', end)
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', end) }
-  }, [])
+  }, [item.id, onMove])
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
     event.preventDefault()
+    onFocus?.(item.id)
     dragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: position.x, originY: position.y }
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
-  return <section className="workflow-output-window" style={{ '--workflow-window-index': String(index), transform: `translate(${position.x}px, ${position.y}px)` } as CSSProperties}>
+  return <section className="workflow-output-window" onPointerDown={() => onFocus?.(item.id)} style={{ left: position.x, top: position.y, zIndex: item.zIndex ?? index + 1 } as CSSProperties}>
     <div className="workflow-output-window-header workflow-output-window-drag-handle" onPointerDown={startDrag} title={copy.workflowDragOutputWindow}><strong>{item.title}</strong><button type="button" aria-label={copy.workflowCloseOutputWindow} title={copy.workflowCloseOutputWindow} onPointerDown={(event) => event.stopPropagation()} onClick={() => onClose(item.id)}>×</button></div>
     <WorkflowOutputViewer copy={copy} value={item.value} fontScale={fontScale} onCopy={() => onCopy(item.value)} onIncreaseFont={onIncreaseFont} onDecreaseFont={onDecreaseFont} />
   </section>
@@ -714,13 +783,15 @@ interface WorkflowOutputFloatingWindowsProps {
   fontScale: number
   onClose: (id: string) => void
   onCopy: (value: WorkflowValue) => void | Promise<void>
+  onMove?: (id: string, position: WorkflowPosition) => void
+  onFocus?: (id: string) => void
   onIncreaseFont: () => void
   onDecreaseFont: () => void
 }
 
-export function WorkflowOutputFloatingWindows({ copy, windows, fontScale, onClose, onCopy, onIncreaseFont, onDecreaseFont }: WorkflowOutputFloatingWindowsProps): JSX.Element {
+export function WorkflowOutputFloatingWindows({ copy, windows, fontScale, onClose, onCopy, onMove, onFocus, onIncreaseFont, onDecreaseFont }: WorkflowOutputFloatingWindowsProps): JSX.Element {
   return <div className="workflow-output-windows" aria-label={copy.workflowOutputWindow}>
-    {windows.map((item, index) => <WorkflowOutputFloatingWindow key={item.id} copy={copy} item={item} index={index} fontScale={fontScale} onClose={onClose} onCopy={onCopy} onIncreaseFont={onIncreaseFont} onDecreaseFont={onDecreaseFont} />)}
+    {windows.map((item, index) => <WorkflowOutputFloatingWindow key={item.id} copy={copy} item={item} index={index} fontScale={fontScale} onClose={onClose} onCopy={onCopy} onMove={onMove} onFocus={onFocus} onIncreaseFont={onIncreaseFont} onDecreaseFont={onDecreaseFont} />)}
   </div>
 }
 
@@ -822,6 +893,31 @@ export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel
   </>
 }
 
+interface WorkflowMetadataDialogProps {
+  copy: AppCopy
+  name: string
+  description: string
+  onChangeName: (name: string) => void
+  onChangeDescription: (description: string) => void
+  onClose: () => void
+  onSave: () => void
+}
+
+/** Metadata lives behind a focused dialog so the canvas toolbar stays dedicated to graph work. */
+export function WorkflowMetadataDialog({ copy, name, description, onChangeName, onChangeDescription, onClose, onSave }: WorkflowMetadataDialogProps): JSX.Element {
+  return <div className="workflow-metadata-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="workflow-metadata-dialog" role="dialog" aria-modal="true" aria-label="编辑工作流信息" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="workflow-metadata-dialog-header"><div><span className="workflow-kicker">{copy.workflowEditor}</span><h2>编辑工作流信息</h2></div><button type="button" aria-label={copy.workflowDismiss} onClick={onClose}>×</button></div>
+      <div className="workflow-metadata-dialog-fields"><label>{copy.workflowName}<input autoFocus value={name} onChange={(event) => onChangeName(event.target.value)} /></label><label>{copy.workflowDescription}<textarea value={description} onChange={(event) => onChangeDescription(event.target.value)} /></label></div>
+      <div className="workflow-metadata-dialog-actions"><button type="button" className="workflow-button-quiet" onClick={onClose}>{copy.workflowCancelEdit}</button><button type="button" className="workflow-button-primary workflow-save-button" onClick={onSave}>{copy.workflowSave}</button></div>
+    </section>
+  </div>
+}
+
+function WorkflowNodeLibrary({ onAdd }: { onAdd: (type: WorkflowNodeType) => void }): JSX.Element {
+  return <details className="workflow-node-library"><summary>＋ 添加节点</summary><div className="workflow-node-library-menu">{NODE_LIBRARY_GROUPS.map((group) => <section key={group.label}><strong>{group.label}</strong><div>{group.types.map((type) => <button key={type} type="button" onClick={() => onAdd(type)}>{nodeTypeLabel[type]}</button>)}</div></section>)}</div></details>
+}
+
 export type WorkflowContextMenuTarget = 'canvas' | 'node' | 'edge' | 'selection'
 
 export interface WorkflowContextMenuProps {
@@ -838,6 +934,9 @@ export interface WorkflowContextMenuProps {
   onUndo: () => void
   onRedo: () => void
   onDelete: () => void
+  onCopy?: () => void
+  onPaste?: () => void
+  canPaste?: boolean
   onAlign?: (alignment: WorkflowNodeAlignment) => void
   onFitView: () => void
   onSave: () => void
@@ -855,7 +954,7 @@ export function clampWorkflowContextMenuPosition(x: number, y: number, menuWidth
 }
 
 /** Context actions are deliberately on-demand so the canvas remains uncluttered during normal editing. */
-export function WorkflowContextMenu({ copy, target, x, y, canUndo, canRedo, busy, selectedNodeCount = 0, runDisabled = false, cancelLabel, onUndo, onRedo, onDelete, onAlign, onFitView, onSave, onRun, onCancel }: WorkflowContextMenuProps): JSX.Element {
+export function WorkflowContextMenu({ copy, target, x, y, canUndo, canRedo, busy, selectedNodeCount = 0, runDisabled = false, cancelLabel, onUndo, onRedo, onDelete, onCopy, onPaste, canPaste = false, onAlign, onFitView, onSave, onRun, onCancel }: WorkflowContextMenuProps): JSX.Element {
   const deleteLabel = target === 'edge' ? copy.workflowDeleteEdge : target === 'selection' ? copy.workflowDeleteSelection : copy.workflowDeleteNode
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuPosition, setMenuPosition] = useState({ left: x, top: y })
@@ -877,6 +976,8 @@ export function WorkflowContextMenu({ copy, target, x, y, canUndo, canRedo, busy
   return <div ref={menuRef} className="workflow-context-menu" role="menu" aria-label={copy.workflowContextMenu} style={{ left: menuPosition.left, top: menuPosition.top, visibility: menuPositioned ? 'visible' : 'hidden' }}>
     <button type="button" role="menuitem" onClick={onUndo} disabled={!canUndo || busy}>{copy.workflowUndo}<kbd>⌘Z</kbd></button>
     <button type="button" role="menuitem" onClick={onRedo} disabled={!canRedo || busy}>{copy.workflowRedo}<kbd>⇧⌘Z</kbd></button>
+    {target !== 'canvas' && onCopy !== undefined ? <button type="button" role="menuitem" onClick={onCopy} disabled={busy}>复制节点<kbd>⌘C</kbd></button> : null}
+    {onPaste !== undefined ? <button type="button" role="menuitem" onClick={onPaste} disabled={busy || !canPaste}>粘贴节点<kbd>⌘V</kbd></button> : null}
     {target !== 'canvas' ? <button type="button" role="menuitem" className="workflow-context-menu-danger" onClick={onDelete} disabled={busy}>{deleteLabel}<kbd>Delete</kbd></button> : null}
     {selectedNodeCount >= 2 && onAlign !== undefined ? <><div className="workflow-context-menu-divider" role="separator" /><div className="workflow-context-menu-align-label">{copy.workflowAlign}</div><div className="workflow-context-menu-align-grid">
       <button type="button" role="menuitem" onClick={() => onAlign('left')} disabled={busy}>{copy.workflowAlignLeft}</button>
@@ -1056,6 +1157,11 @@ interface WorkflowContextMenuState {
   edgeId?: string
 }
 
+interface WorkflowMetadataDraft {
+  name: string
+  description: string
+}
+
 export function WorkflowPage({ copy, locale, developerMode: _developerMode = false, onWorkspaceModeChange }: WorkflowPageProps): JSX.Element {
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([])
   const [employees, setEmployees] = useState<EmployeeSnapshot[]>([])
@@ -1076,6 +1182,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [showRunSidebar, setShowRunSidebar] = useState(true)
   const [outputFontScale, setOutputFontScale] = useState(1)
   const [outputWindows, setOutputWindows] = useState<WorkflowOutputWindowState[]>([])
+  const [metadataDraft, setMetadataDraft] = useState<WorkflowMetadataDraft>()
   const [executionDetailHeight, setExecutionDetailHeight] = useState(280)
   const [showMiniMap, setShowMiniMap] = useState(true)
   const [runSetup, setRunSetup] = useState<WorkflowRunSetup>()
@@ -1087,6 +1194,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const executionMainRef = useRef<HTMLDivElement>(null)
   const executionResizeRef = useRef<{ startY: number; startHeight: number }>()
   const fitViewRef = useRef<(() => Promise<boolean>)>()
+  const copiedWorkflowNodesRef = useRef<WorkflowNode[]>([])
+  const workflowPasteCountRef = useRef(0)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -1355,6 +1464,33 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setSelectedNodeId(node.id)
   }
 
+  const copySelectedNodes = (): void => {
+    const current = currentDefinition()
+    if (current === undefined) return
+    const selectedIds = new Set(nodes.filter((node) => node.selected === true).map((node) => node.id))
+    if (selectedNodeId !== undefined) selectedIds.add(selectedNodeId)
+    const copied = current.nodes.filter((node) => selectedIds.has(node.id)).map((node) => cloneWorkflow(node))
+    if (copied.length === 0) return
+    copiedWorkflowNodesRef.current = copied
+    workflowPasteCountRef.current = 0
+    setMessage(`已复制 ${copied.length} 个节点`)
+  }
+
+  const pasteCopiedNodes = (): void => {
+    const current = currentDefinition()
+    const copied = copiedWorkflowNodesRef.current
+    if (current === undefined || copied.length === 0) return
+    workflowPasteCountRef.current += 1
+    const offset = { x: 48 * workflowPasteCountRef.current, y: 32 * workflowPasteCountRef.current }
+    const pasted = duplicateWorkflowNodes(copied, (node) => id(node.type), offset)
+    const next = { ...current, nodes: [...current.nodes, ...pasted] }
+    applyDefinition(next)
+    setNodes(flowNodes(next, currentRun).map((node) => ({ ...node, selected: pasted.some((candidate) => candidate.id === node.id) })))
+    setSelectedNodeId(pasted.at(-1)?.id)
+    setSelectedEdgeId(undefined)
+    setMessage(`已粘贴 ${pasted.length} 个节点`)
+  }
+
   const updateNode = (update: (node: WorkflowNode) => WorkflowNode): void => {
     const current = currentDefinition()
     if (current === undefined || selectedNodeId === undefined) return
@@ -1410,7 +1546,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const target = event.target
       if (target instanceof HTMLElement && isWorkflowFormElement(target)) return
       const action = workflowKeyboardAction(event)
-      if (action === undefined || action === 'select-all' || action === 'save') return
+      if (action === undefined || action === 'select-all' || action === 'save' || action === 'copy' || action === 'paste') return
       event.preventDefault()
       event.stopPropagation()
       if (action === 'redo') redo()
@@ -1441,6 +1577,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       if (action === 'redo') redo()
       else if (action === 'undo') undo()
       else if (action === 'select-all') selectAllNodes()
+      else if (action === 'copy') copySelectedNodes()
+      else if (action === 'paste') pasteCopiedNodes()
       else if (!busy) void save()
       return
     }
@@ -1565,11 +1703,23 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }
 
   const openOutputWindow = (key: string, title: string, value: WorkflowValue): void => {
-    const id = `${currentRun?.id ?? 'run'}:${key}`
-    setOutputWindows((current) => current.some((item) => item.id === id) ? current : [...current, { id, title, value }])
+    const windowId = `${currentRun?.id ?? 'run'}:${key}`
+    setOutputWindows((current) => {
+      const existing = current.find((item) => item.id === windowId)
+      if (existing === undefined) return [...current, createWorkflowOutputWindowState(windowId, title, value, current.length)]
+      return focusWorkflowOutputWindow(current.map((item) => item.id === windowId ? { ...item, title, value } : item), windowId)
+    })
   }
 
   const copyOutput = (): void => setMessage(copy.workflowOutputCopied)
+
+  const saveWorkflowMetadata = (): void => {
+    const current = currentDefinition()
+    const nextMetadata = metadataDraft
+    if (current === undefined || nextMetadata === undefined) return
+    applyDefinition({ ...current, name: nextMetadata.name, description: nextMetadata.description })
+    setMetadataDraft(undefined)
+  }
 
   const beginExecutionResize = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const container = executionMainRef.current
@@ -1725,7 +1875,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
         <header className="workflow-workspace-header">
           <div className="workflow-workspace-identity">
             <button type="button" className="workflow-back-button" onClick={exitWorkspace}>{copy.workflowBack}</button>
-            <div><strong>{selected.name}</strong><span>v{selected.revision} · {copy.workflowWorkspace}</span></div>
+            <div><div className="workflow-workspace-title-row"><strong>{selected.name}</strong><button type="button" className="workflow-metadata-edit-button" aria-label="编辑工作流信息" title="编辑工作流信息" onClick={() => setMetadataDraft({ name: selected.name, description: selected.description })}>✎</button></div><span>v{selected.revision} · {copy.workflowWorkspace}</span></div>
           </div>
           <div className="workflow-view-switch" role="tablist" aria-label={copy.workflowWorkspace}>
             <button type="button" role="tab" aria-selected={workspaceView === 'editor'} className={workspaceView === 'editor' ? 'workflow-view-active' : ''} onClick={() => setWorkspaceView('editor')}>{copy.workflowEditor}</button>
@@ -1756,8 +1906,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           {workspaceView === 'editor' ? <>
             <section className="workflow-editor-panel">
               <div className="workflow-editor-toolbar">
-                <div className="workflow-editor-fields"><input aria-label={copy.workflowName} value={selected.name} onChange={(event) => { const current = currentDefinition(); if (current !== undefined) applyDefinition({ ...current, name: event.target.value }) }} /><input aria-label={copy.workflowDescription} className="workflow-description-input" value={selected.description} onChange={(event) => { const current = currentDefinition(); if (current !== undefined) applyDefinition({ ...current, description: event.target.value }) }} /></div>
-                <div className="workflow-node-buttons">{NODE_TYPES.map((type) => <button key={type} type="button" onClick={() => addNode(type)}>{nodeTypeLabel[type]}</button>)}</div>
+                <WorkflowNodeLibrary onAdd={addNode} />
+                <p className="workflow-editor-flow-hint">一个节点可连接多个下游；多路输入会等待所有可用上游完成，并按节点 ID 汇聚传入。</p>
               </div>
               <div ref={workflowCanvasRef} className="workflow-canvas" tabIndex={0} onPointerDownCapture={focusWorkflowCanvas} onKeyDown={onCanvasKeyDown}>
                 <ReactFlow
@@ -1828,9 +1978,10 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           </section>}
         </div>
       </>}
-      {outputWindows.length > 0 ? <WorkflowOutputFloatingWindows copy={copy} windows={outputWindows} fontScale={outputFontScale} onClose={(id) => setOutputWindows((current) => current.filter((item) => item.id !== id))} onCopy={copyOutput} onIncreaseFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} /> : null}
+      {outputWindows.length > 0 ? <WorkflowOutputFloatingWindows copy={copy} windows={outputWindows} fontScale={outputFontScale} onClose={(id) => setOutputWindows((current) => current.filter((item) => item.id !== id))} onCopy={copyOutput} onMove={(id, position) => setOutputWindows((current) => current.map((item) => item.id === id ? { ...item, position } : item))} onFocus={(id) => setOutputWindows((current) => focusWorkflowOutputWindow(current, id))} onIncreaseFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} /> : null}
+      {metadataDraft ? <WorkflowMetadataDialog copy={copy} name={metadataDraft.name} description={metadataDraft.description} onChangeName={(name) => setMetadataDraft((current) => current === undefined ? current : { ...current, name })} onChangeDescription={(description) => setMetadataDraft((current) => current === undefined ? current : { ...current, description })} onClose={() => setMetadataDraft(undefined)} onSave={saveWorkflowMetadata} /> : null}
       {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} allowShellFile={runSetup.allowShellFile} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
-      {contextMenu ? <WorkflowContextMenu copy={copy} target={contextMenu.target} x={contextMenu.x} y={contextMenu.y} selectedNodeCount={(contextMenu.target === 'canvas' || contextMenu.target === 'selection' || (contextMenu.nodeId !== undefined && nodes.some((node) => node.id === contextMenu.nodeId && node.selected === true))) ? nodes.filter((node) => node.selected === true).length : 0} canUndo={(history?.past.length ?? 0) > 0} canRedo={(history?.future.length ?? 0) > 0} busy={busy} runDisabled={currentRun?.status === 'running'} cancelLabel={draft ? copy.workflowCancelCreate : copy.workflowCancelEdit} onUndo={() => { dismissContextMenu(); undo(); focusWorkflowCanvas() }} onRedo={() => { dismissContextMenu(); redo(); focusWorkflowCanvas() }} onDelete={deleteContextMenuSelection} onAlign={alignSelectedNodes} onFitView={fitViewFromContextMenu} onSave={saveFromContextMenu} onRun={runFromContextMenu} onCancel={() => { dismissContextMenu(); exitWorkspace() }} /> : null}
+      {contextMenu ? <WorkflowContextMenu copy={copy} target={contextMenu.target} x={contextMenu.x} y={contextMenu.y} selectedNodeCount={(contextMenu.target === 'canvas' || contextMenu.target === 'selection' || (contextMenu.nodeId !== undefined && nodes.some((node) => node.id === contextMenu.nodeId && node.selected === true))) ? nodes.filter((node) => node.selected === true).length : 0} canUndo={(history?.past.length ?? 0) > 0} canRedo={(history?.future.length ?? 0) > 0} busy={busy} runDisabled={currentRun?.status === 'running'} cancelLabel={draft ? copy.workflowCancelCreate : copy.workflowCancelEdit} onUndo={() => { dismissContextMenu(); undo(); focusWorkflowCanvas() }} onRedo={() => { dismissContextMenu(); redo(); focusWorkflowCanvas() }} onCopy={() => { copySelectedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} onPaste={() => { pasteCopiedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} canPaste={copiedWorkflowNodesRef.current.length > 0} onDelete={deleteContextMenuSelection} onAlign={alignSelectedNodes} onFitView={fitViewFromContextMenu} onSave={saveFromContextMenu} onRun={runFromContextMenu} onCancel={() => { dismissContextMenu(); exitWorkspace() }} /> : null}
       {message ? <WorkflowToast message={message} copy={copy} actionLabel={deletedWorkflow === undefined ? undefined : copy.workflowUndoDelete} onAction={deletedWorkflow === undefined ? undefined : () => void restoreDeletedWorkflow()} onDismiss={() => setMessage('')} /> : null}
       {error ? <div className="workflow-error-banner" role="alert">{error}</div> : null}
     </div>

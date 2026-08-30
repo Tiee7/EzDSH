@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { WORKFLOW_SCHEMA_VERSION, cloneWorkflow, createDefaultWorkflow, normalizeWorkflow, validateWorkflow, type WorkflowCreateInput, type WorkflowDefinition, type WorkflowUpdateInput } from '../../shared/workflow.js'
+import { WORKFLOW_SCHEMA_VERSION, cloneWorkflow, createDefaultWorkflow, formatWorkflowValidationIssues, normalizeWorkflow, validateWorkflow, type WorkflowCreateInput, type WorkflowDefinition, type WorkflowUpdateInput } from '../../shared/workflow.js'
 
 const FILE_NAME = 'workflows.json'
 
@@ -75,7 +75,7 @@ export class WorkflowStore {
     })
     if (workflow === undefined) throw new Error('Invalid workflow document')
     const result = validateWorkflow(workflow)
-    if (!result.valid) throw new Error(result.issues.map((issue) => issue.message).join('\n'))
+    if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, '创建工作流'))
     if (this.workflows.has(workflow.id)) throw new Error(`Workflow already exists: ${workflow.id}`)
     this.workflows.set(workflow.id, workflow)
     await this.persist()
@@ -98,7 +98,7 @@ export class WorkflowStore {
     })
     if (workflow === undefined) throw new Error('Invalid workflow document')
     const result = validateWorkflow(workflow)
-    if (!result.valid) throw new Error(result.issues.map((issue) => issue.message).join('\n'))
+    if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, '保存工作流'))
     this.workflows.set(id, workflow)
     await this.persist()
     return cloneWorkflow(workflow)

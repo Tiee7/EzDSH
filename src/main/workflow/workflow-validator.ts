@@ -1,4 +1,4 @@
-import { normalizeWorkflow, validateWorkflow, type WorkflowDefinition, type WorkflowValidationResult } from '../../shared/workflow.js'
+import { formatWorkflowValidationIssues, normalizeWorkflow, validateWorkflow, type WorkflowDefinition, type WorkflowValidationResult } from '../../shared/workflow.js'
 
 /** Normalize and validate untrusted input before it enters the workflow store. */
 export function validateWorkflowInput(raw: unknown): { workflow?: WorkflowDefinition; result: WorkflowValidationResult } {
@@ -9,9 +9,9 @@ export function validateWorkflowInput(raw: unknown): { workflow?: WorkflowDefini
   return { workflow, result: validateWorkflow(workflow) }
 }
 
-export function assertValidWorkflow(workflow: WorkflowDefinition): void {
+export function assertValidWorkflow(workflow: WorkflowDefinition, action = '校验工作流'): void {
   const result = validateWorkflow(workflow)
-  if (!result.valid) throw new Error(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join('\n'))
+  if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, action))
 }
 
 export function topologicalOrder(workflow: WorkflowDefinition): string[] {

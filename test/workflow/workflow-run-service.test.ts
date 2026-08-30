@@ -398,7 +398,39 @@ describe('workflow run service', () => {
     expect(result.status).toBe('completed')
     expect(result.output).toBe('accepted: true')
     expect(result.nodeStates.find((state) => state.nodeId === 'no')?.status).toBe('skipped')
+    expect(result.nodeStates.every((state) => typeof state.elapsedMs === 'number')).toBe(true)
     expect(result.events.some((event) => event.type === 'node-completed')).toBe(true)
+  })
+
+  it('waits for every connected upstream node and passes named values into a multi-input join', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-multi-input-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      schemaVersion: 2, id: 'workflow-multi-input', name: 'Multi input', description: '', revision: 1, enabled: true,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      nodes: [
+        { id: 'brief', type: 'input', label: '需求', config: { name: 'brief' }, position: { x: 0, y: 0 } },
+        { id: 'research', type: 'input', label: '调研', config: { name: 'research' }, position: { x: 0, y: 80 } },
+        { id: 'join', type: 'transform', label: '汇聚', config: { template: 'identity' }, position: { x: 240, y: 40 } },
+        { id: 'output', type: 'output', label: '输出', config: {}, position: { x: 480, y: 40 } },
+      ],
+      edges: [
+        { id: 'brief-join', source: 'brief', target: 'join' },
+        { id: 'research-join', source: 'research', target: 'join' },
+        { id: 'join-output', source: 'join', target: 'output' },
+      ],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, { brief: '内容需求', research: '调研结论' })).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.nodeStates.find((state) => state.nodeId === 'join')?.input).toEqual({ brief: '内容需求', research: '调研结论' })
+    expect(result.output).toEqual({ brief: '内容需求', research: '调研结论' })
   })
 
   it('requires explicit authorization for Shell and File nodes', async () => {

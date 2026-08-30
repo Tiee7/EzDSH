@@ -169,9 +169,12 @@ export class WorkflowRunService {
     }
     const outputs = new Map(record.nodeStates.filter((candidate) => candidate.output !== undefined).map((candidate) => [candidate.nodeId, candidate.output as WorkflowValue]))
     const incoming = workflow.edges.filter((edge) => edge.target === node.id)
+    const nodeMap = new Map(workflow.nodes.map((candidate) => [candidate.id, candidate]))
+    const stateMap = new Map(record.nodeStates.map((candidate) => [candidate.nodeId, candidate]))
     state.status = 'completed'
-    state.output = this.previousValue(node.id, incoming, outputs, record.input)
+    state.output = this.previousValue(incoming.filter((edge) => this.isEdgeActive(edge, nodeMap, stateMap, outputs)), outputs, record.input)
     state.completedAt = new Date().toISOString()
+    state.elapsedMs = 0
     state.error = undefined
     record.status = 'queued'
     record.error = undefined
@@ -260,7 +263,7 @@ export class WorkflowRunService {
       workflowRevision: workflow.revision,
       status: 'queued',
       input: cloneWorkflow(input),
-      nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending' })),
+      nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending', elapsedMs: 0 })),
       events: [],
       allowShellFile: options.allowShellFile === true,
       debug: options.debug === true,
@@ -295,6 +298,7 @@ export class WorkflowRunService {
         if (active.cancelled) {
           state.status = active.pauseRequested ? 'pending' : 'cancelled'
           state.completedAt = new Date().toISOString()
+          state.elapsedMs ??= 0
           record.status = active.pauseRequested ? 'paused' : 'cancelled'
           record.error = active.pauseRequested ? '应用正在切换工作区，运行已暂停。' : '用户取消了运行'
           record.completedAt = new Date().toISOString()
@@ -302,22 +306,26 @@ export class WorkflowRunService {
           break
         }
         const incoming = workflow.edges.filter((edge) => edge.target === node.id)
-        if (incoming.length > 0 && !incoming.some((edge) => this.isEdgeActive(edge, nodeMap, stateMap, outputs))) {
+        const activeIncoming = incoming.filter((edge) => this.isEdgeActive(edge, nodeMap, stateMap, outputs))
+        if (incoming.length > 0 && activeIncoming.length === 0) {
           state.status = 'skipped'
           state.completedAt = new Date().toISOString()
+          state.elapsedMs = 0
           await this.save(record, 'node-skipped', '条件分支未命中', node.id)
           continue
         }
         state.status = 'running'
         state.startedAt = new Date().toISOString()
+        const executionStartedAt = Date.now()
         await this.save(record, 'node-started', `开始执行节点：${node.label}`, node.id)
         try {
-          const previous = this.previousValue(node.id, incoming, outputs, record.input)
+          const previous = this.previousValue(activeIncoming, outputs, record.input)
           state.input = cloneWorkflow(previous)
           const output = await this.executeNode(node, record.input, previous, record.allowShellFile, active, record)
           state.status = 'completed'
           state.output = cloneWorkflow(output)
           state.completedAt = new Date().toISOString()
+          state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
           outputs.set(node.id, output)
           await this.save(record, 'node-completed', `节点完成：${node.label}`, node.id)
         } catch (error) {
@@ -325,6 +333,7 @@ export class WorkflowRunService {
             state.status = 'pending'
             state.startedAt = undefined
             state.completedAt = undefined
+            state.elapsedMs = 0
             record.status = 'waiting-approval'
             record.waitingApprovalNodeId = node.id
             record.error = error.message
@@ -334,6 +343,7 @@ export class WorkflowRunService {
           state.status = active.pauseRequested ? 'pending' : active.cancelled ? 'cancelled' : 'failed'
           state.error = error instanceof Error ? error.message : String(error)
           state.completedAt = new Date().toISOString()
+          state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
           record.status = active.pauseRequested ? 'paused' : active.cancelled ? 'cancelled' : 'failed'
           record.error = state.error
           record.completedAt = new Date().toISOString()
@@ -563,11 +573,19 @@ export class WorkflowRunService {
     return (outputs.get(edge.source) === true) === (edge.sourcePort === 'true')
   }
 
-  private previousValue(nodeId: string, incoming: WorkflowEdge[], outputs: Map<string, WorkflowValue>, input: WorkflowValue): WorkflowValue {
-    const values = incoming.map((edge) => outputs.get(edge.source)).filter((value): value is WorkflowValue => value !== undefined)
+  private previousValue(incoming: WorkflowEdge[], outputs: Map<string, WorkflowValue>, input: WorkflowValue): WorkflowValue {
+    const values = incoming.flatMap((edge) => {
+      const value = outputs.get(edge.source)
+      return value === undefined ? [] : [{ edge, value }]
+    })
     if (values.length === 0) return input
-    if (values.length === 1) return values[0] as WorkflowValue
-    return values
+    if (values.length === 1) return values[0]?.value as WorkflowValue
+    return values.reduce<Record<string, WorkflowValue>>((result, { edge, value }) => {
+      const key = edge.targetPort?.trim() || edge.source
+      const existing = result[key]
+      result[key] = existing === undefined ? value : Array.isArray(existing) ? [...existing, value] : [existing, value]
+      return result
+    }, {})
   }
 
   private async save(record: WorkflowRunRecord, type: WorkflowRunEvent['type'], message: string, nodeId?: string): Promise<void> {
