@@ -201,6 +201,8 @@ export interface InstallState {
   /** Present for DSH profile plugin operations, including an unknown warning. */
   readonly compatibility?: PluginCompatibilityAssessment
   readonly failureReason?: InstallFailureReason
+  /** Local DSH/pnpm command log for a failed managed plugin operation. */
+  readonly logPath?: string
   /** Present during `confirm-wait` and `failed` phases after an audit ran. */
   readonly audit?: AuditReport
 }

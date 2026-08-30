@@ -3,6 +3,8 @@ import {
   auditLabel,
   auditTone,
   categoryLabel,
+  entryType,
+  entryTypeLabel,
   compareVersions,
   phaseLabel,
   updateAvailable
@@ -54,6 +56,21 @@ describe('badges and phase labels', () => {
     expect(phaseLabel(en, 'downloading')).toBe('Downloading…')
     expect(phaseLabel(en, 'done')).toBe('Installed')
     expect(phaseLabel(en, 'failed')).toBe('Operation failed')
+  })
+})
+
+describe('entry type labels', () => {
+  it('derives plugin and MCP types from their payloads', () => {
+    expect(entryType({ ...entry('1.0.0'), plugin: { source: 'npm:@example/plugin' } })).toBe('plugin')
+    expect(entryType({ ...entry('1.0.0'), kind: 'mcp', mcp: { transport: 'stdio', serverName: 'example' } })).toBe('mcp')
+    expect(entryType(entry('1.0.0'))).toBeUndefined()
+  })
+
+  it('localizes the type labels', () => {
+    expect(entryTypeLabel(getAppCopy('zh'), 'plugin')).toBe('插件')
+    expect(entryTypeLabel(getAppCopy('zh'), 'mcp')).toBe('MCP 服务')
+    expect(entryTypeLabel(getAppCopy('en'), 'plugin')).toBe('Plugin')
+    expect(entryTypeLabel(getAppCopy('en'), 'mcp')).toBe('MCP server')
   })
 })
 

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
@@ -23,7 +24,7 @@ import {
 } from '../shared/update.js'
 import { APP_NAME } from '../shared/app-identity.js'
 import { DEFAULT_APP_LOCALE, getAppCopy, type AppLocale } from '../shared/locale.js'
-import type { NavigationTarget } from '../shared/navigation.js'
+import { isDeveloperOnlyTab, type NavigationTarget } from '../shared/navigation.js'
 import { findDeepLinkInArgs, parseDeepLink, type DeepLinkInstall, type DeepLinkSession, type ResolvedDeepLinkInstall } from '../shared/deep-link.js'
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
 import type { UserDataLayout, WorkspaceOperationState, WorkspaceSnapshot } from '../shared/state.js'
@@ -42,7 +43,15 @@ import { StoreService } from './store/store-service.js'
 import { StoreClient } from './store/store-client.js'
 import { createDemoFetch } from './store/demo-catalog.js'
 import { DshPluginInstaller } from './store/dsh-plugin-installer.js'
-import { createDshPluginCommand } from './store/dsh-plugin-command.js'
+import { repairInstalledDshPlugin } from './store/dsh-plugin-compatibility.js'
+import { importCodexAuth } from './store/codex-auth-importer.js'
+import {
+  applyDshPluginCompatibilityWorkaround,
+  createDshPluginCommand,
+  readBundledVersions,
+  resolveBundledPnpm,
+} from './store/dsh-plugin-command.js'
+import { parseDshCliInvocation, runDshCli } from './cli/dsh-cli.js'
 import {
   RuntimeManager,
   resolveRuntimeCommandPath,
@@ -60,6 +69,7 @@ import { getApplicationMenuTemplate } from './application-menu.js'
 import { LocaleService, writeDshLocale } from './locale/locale-service.js'
 import { ChannelBridgeService } from './channel-bridge/index.js'
 import { DshSessionClient } from './channel-bridge/dsh-session.js'
+import { deleteArchivedSessionFromStore } from './channel-bridge/archived-session-store.js'
 import { openDeepLinkedSession } from './session-deep-link.js'
 import { NavigationService } from './navigation/navigation-service.js'
 import { getNavigationTargetForInput } from './navigation/navigation-shortcuts.js'
@@ -68,8 +78,20 @@ import { EXTERNAL_API_DEFAULT_PORT } from '../shared/external-api.js'
 import type { NavConfig } from '../shared/navigation.js'
 import { AdapterRegistry } from './channel-bridge/adapter-registry.js'
 import { ChannelAdapterLoader } from './channel-bridge/adapter-loader.js'
+import { MobileRemoteService } from './mobile/mobile-remote-service.js'
+import type { MobileRemoteSnapshot } from '../shared/mobile-remote.js'
 import { ExternalServiceManager } from './external-services/external-service-manager.js'
 import type { ExternalServiceCreateInput, ExternalServiceUpdateInput } from '../shared/external-services.js'
+import { EmployeeService } from './employees/employee-service.js'
+import type { EmployeeCreateInput, EmployeeProjectSummary, EmployeeRunRequest, EmployeeSessionLock, EmployeeSessionSummary, EmployeeUpdateInput } from '../shared/employees.js'
+import { WorkflowStore } from './workflow/workflow-store.js'
+import { WorkflowRunStore } from './workflow/workflow-run-store.js'
+import { WorkflowRunService } from './workflow/workflow-run-service.js'
+import { WorkflowLightweightClient } from './workflow/workflow-lightweight-client.js'
+import { WorkflowMcpClient } from './workflow/workflow-mcp-client.js'
+import { WorkflowInternalSessionStore } from './workflow/workflow-internal-session-store.js'
+import { workflowFromEmployee } from './workflow/employee-workflow.js'
+import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue } from '../shared/workflow.js'
 import { bindWindowClosedCleanup } from './window-lifecycle.js'
 import { shutdownExternalServicesFirst } from './shutdown.js'
 import { restartApplication, shouldRelaunchWorkspace } from './restart.js'
@@ -91,12 +113,16 @@ import {
   type RecoveryState,
 } from './recovery/recovery-manager.js'
 import { PluginRecoveryCoordinator } from './recovery/plugin-recovery-coordinator.js'
+import { ProxyService } from './proxy/proxy-service.js'
+import type { ProxyProfileInput, ProxySettingsSnapshot } from '../shared/proxy.js'
+import type { ProxyTestResult } from '../shared/proxy.js'
 
 let mainWindow: BrowserWindow | undefined
 let runtimeManager: RuntimeManager | undefined
 let runtimeProcessManager: DshRuntimeProcessManager | undefined
 let runtimeOwnershipStore: RuntimeOwnershipStore | undefined
 let providerService: ProviderService | undefined
+let proxyService: ProxyService | undefined
 let localeService: LocaleService | undefined
 let updateManager: UpdateManager | undefined
 let recoveryManager: RecoveryManager | undefined
@@ -118,7 +144,12 @@ let storeService: StoreService | undefined
 let channelBridgeService: ChannelBridgeService | undefined
 let navigationService: NavigationService | undefined
 let externalApiService: ExternalApiService | undefined
+let mobileRemoteService: MobileRemoteService | undefined
 let externalServiceManager: ExternalServiceManager | undefined
+let employeeService: EmployeeService | undefined
+let workflowStore: WorkflowStore | undefined
+let workflowRunStore: WorkflowRunStore | undefined
+let workflowRunService: WorkflowRunService | undefined
 let isQuitting = false
 let updateDialogOpen = false
 let workspaceOperationActive = false
@@ -129,6 +160,9 @@ const externalServiceWatchers = new Set<number>()
 let stopRuntimeListener: (() => void) | undefined
 let stopLocaleListener: (() => void) | undefined
 let stopExternalServiceWatcher: (() => void) | undefined
+let stopEmployeeWatcher: (() => void) | undefined
+let stopEmployeeLockWatcher: (() => void) | undefined
+let stopWorkflowWatcher: (() => void) | undefined
 let stopRecoveryListener: (() => void) | undefined
 
 const LIGHT_WINDOW_BACKGROUND = '#f9fafb'
@@ -214,6 +248,71 @@ function handleNotificationSignal(notification: NotificationSignal): void {
   nativeNotificationService?.notify(notification)
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('notifications:event', notification)
+  }
+}
+
+const CLI_PROFILE_NAME = /^[a-z][a-z0-9-]*$/
+
+function dshProfileFromArgs(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]
+    if (argument === '--profile') {
+      const profile = args[index + 1]
+      return profile !== undefined && CLI_PROFILE_NAME.test(profile) ? profile : undefined
+    }
+    if (argument?.startsWith('--profile=')) {
+      const profile = argument.slice('--profile='.length)
+      return CLI_PROFILE_NAME.test(profile) ? profile : undefined
+    }
+  }
+  return 'web'
+}
+
+/** Execute a DSH command without creating the EzDSH window or touching Runtime ownership. */
+async function runDshCliMode(dshArgs: readonly string[]): Promise<void> {
+  try {
+    app.setName(APP_NAME)
+    await app.whenReady()
+    const workspaceConfigPath = getWorkspaceConfigPath(app.getPath('appData'))
+    const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, app.getPath('userData'))
+    const layout = getUserDataLayout(workspaceRoot)
+    await ensureUserDataLayout(layout)
+
+    const appPath = app.getAppPath()
+    const runtimeEntryPath = resolveRuntimeEntryPath({
+      appPath,
+      resourcesPath: process.resourcesPath,
+      isPackaged: app.isPackaged,
+      developmentSourceRoot: process.env.EZDSH_DSH_SOURCE?.trim() || undefined
+    })
+    const runtimeCommandPath = resolveRuntimeCommandPath({
+      appPath,
+      resourcesPath: process.resourcesPath,
+      isPackaged: app.isPackaged,
+      arch: process.arch
+    })
+    const versions = await readBundledVersions(appPath)
+    const profile = dshProfileFromArgs(dshArgs)
+    const profileHasWorkspaceFile = profile !== undefined
+      && existsSync(join(layout.harness, 'profiles', profile, 'pnpm-workspace.yaml'))
+    const forwardedArgs = applyDshPluginCompatibilityWorkaround(dshArgs, {
+      ...versions,
+      profileHasWorkspaceFile
+    })
+    const exitCode = await runDshCli({
+      command: runtimeCommandPath ?? process.execPath,
+      runtimeEntryPath,
+      pnpmPath: resolveBundledPnpm(appPath),
+      dshHome: layout.harness,
+      dshArgs: forwardedArgs,
+      launchRoot: layout.launchRoot,
+      environment: process.env
+    })
+    app.exit(exitCode)
+  } catch (error) {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    console.error(`EzDSH CLI failed:\n${message}`)
+    app.exit(1)
   }
 }
 
@@ -315,6 +414,17 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   notificationSettingsPath = join(layout.state, 'notifications.json')
   notificationSettings = await readNotificationSettings(notificationSettingsPath)
 
+  if (await repairInstalledDshPlugin(layout.harness, 'web', 'dsh-codex')) {
+    console.warn('[dsh-plugin] repaired dsh-codex account status compatibility')
+  }
+  if (await importCodexAuth(
+    join(layout.harness, '.credentials.yaml'),
+    undefined,
+    join(layout.state, 'codex-auth-imported'),
+  )) {
+    console.warn('[dsh-plugin] imported the existing local Codex OAuth session')
+  }
+
   localeService = new LocaleService(join(layout.harness, 'settings.yaml'))
   await localeService.start()
 
@@ -331,6 +441,14 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     arch: process.arch
   })
   const dshRuntimeVersion = await readDshRuntimeVersion(runtimeEntryPath)
+  proxyService = new ProxyService({
+    configPath: join(layout.state, 'proxy.json'),
+    applyRuntime: async () => {
+      const phase = runtimeManager?.snapshot().phase
+      if (phase === 'ready' || phase === 'starting') await runtimeManager?.restart()
+    },
+  })
+  await proxyService.initialize()
   recoveryManager = new RecoveryManager({
     layout,
     appVersion: app.getVersion(),
@@ -352,6 +470,18 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     runtimeEntryPath,
     command: runtimeCommandPath,
     runtimeOwnership: runtimeOwnershipStore,
+    getEnvironment: () => proxyService?.getRuntimeEnvironment() ?? { ...process.env },
+  })
+  mobileRemoteService = new MobileRemoteService({
+    statePath: join(layout.state, 'mobile-remote.json'),
+    getRuntimeUrl: () => runtimeManager?.snapshot().url,
+    appIconPath: getAppIconPath(),
+    getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
+  })
+  await mobileRemoteService.initialize()
+  await mobileRemoteService.start().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[mobile-remote] failed to start:', message)
   })
   safeModeController = new SafeModeController({ layout })
   await safeModeController.initialize()
@@ -376,6 +506,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
       appPath: app.getAppPath(),
       dshHome: layout.harness,
       launchRoot: layout.launchRoot,
+      logsDir: layout.logs,
       runtimeEntryPath,
       command: runtimeCommandPath
     }),
@@ -396,6 +527,60 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   stopExternalServiceWatcher?.()
   stopExternalServiceWatcher = externalServiceManager.watch(emitExternalServiceState)
 
+  stopEmployeeWatcher?.()
+  stopEmployeeLockWatcher?.()
+  stopWorkflowWatcher?.()
+  stopWorkflowWatcher = undefined
+  employeeService = new EmployeeService({
+    configPath: join(layout.state, 'employees.json'),
+    cwd: layout.root,
+    createClient: () => {
+      const runtimeUrl = runtimeManager?.snapshot().url
+      if (runtimeUrl === undefined) throw new Error('DSH Runtime 尚未启动')
+      return new DshSessionClient({ baseUrl: runtimeUrl, timeoutMs: 10 * 60 * 1000 })
+    },
+  })
+  await employeeService.initialize().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[employees] failed to initialize:', message)
+  })
+  stopEmployeeWatcher = employeeService.watch(emitEmployeeState)
+  stopEmployeeLockWatcher = employeeService.watchSessionLocks(emitEmployeeLockState)
+
+  workflowStore = new WorkflowStore(layout.state)
+  workflowRunStore = new WorkflowRunStore(layout.state)
+  workflowRunService = new WorkflowRunService({
+    workflowStore,
+    runStore: workflowRunStore,
+    workspaceRoot: layout.root,
+    createClient: () => {
+      const runtimeUrl = runtimeManager?.snapshot().url
+      if (runtimeUrl === undefined) throw new Error('DSH Runtime 尚未启动')
+      return new DshSessionClient({ baseUrl: runtimeUrl, timeoutMs: 10 * 60 * 1000 })
+    },
+    resolveEmployee: (id) => employeeService?.get(id),
+    lightweightClient: new WorkflowLightweightClient({
+      resolveProfile: async () => {
+        if (providerService === undefined) throw new Error('模型供应商服务尚未初始化')
+        return providerService.resolveWorkflowModel()
+      },
+    }),
+    mcpClient: new WorkflowMcpClient({ patchPath: join(layout.harness, 'profiles', 'web', 'cordis.patch.yml') }),
+    internalSessionStore: new WorkflowInternalSessionStore(layout.state),
+  })
+  await workflowRunService.initialize().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[workflows] failed to initialize:', message)
+  })
+  await workflowRunService.cleanupExpiredInternalArtifacts(async (sessionId) => {
+    const deleted = await deleteArchivedSessionFromStore(layout.harness, sessionId)
+    if (!deleted) throw new Error(`Workflow 内部 Session ${sessionId} 不在 DSH 归档列表中，保留以便下次安全重试`)
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[workflows] failed to clean retained internal sessions:', message)
+  })
+  stopWorkflowWatcher = workflowRunService.watch(emitWorkflowState)
+
   externalApiService = new ExternalApiService({
     getRuntimeUrl: () => runtimeManager?.snapshot().url,
     port: resolveExternalApiPort(process.env.EZDSH_EXTERNAL_API_PORT),
@@ -415,6 +600,9 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   channelBridgeService = new ChannelBridgeService({
     layout,
     getRuntimeUrl: () => runtimeManager?.snapshot().url,
+    isDeveloperMode: () => developerMode,
+    stopRuntime: () => runtimeManager?.stop() ?? Promise.resolve(),
+    startRuntime: async () => { await runtimeManager?.start() },
     registry: channelBridgeRegistry,
   })
   await channelBridgeService.initialize().catch((error: unknown) => {
@@ -517,6 +705,7 @@ async function changeWorkspace(kind: 'migrate' | 'switch', root: string): Promis
       runtimeManager?.start() ?? Promise.resolve(),
       externalApiService?.start() ?? Promise.resolve(),
       channelBridgeService?.start() ?? Promise.resolve(),
+      mobileRemoteService?.start() ?? Promise.resolve(),
     ])
     workspaceOperationActive = false
     emitWorkspaceState(undefined)
@@ -576,6 +765,7 @@ async function handleUpdateCheck(interactive: boolean): Promise<void> {
 }
 
 function navigateToTab(tab: NavigationTarget): void {
+  if (isDeveloperOnlyTab(tab) && !developerMode) return
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('ui:navigate', tab)
   }
@@ -614,6 +804,12 @@ async function openDeepLinkSession(sessionId: string): Promise<void> {
     sessionId,
     unarchiveSession: async (targetSessionId) => {
       if (runtimeManager === undefined) throw new Error('Runtime manager is not ready')
+      if (channelBridgeService !== undefined) {
+        const snapshot = runtimeManager.snapshot()
+        if (snapshot.url === undefined) await runtimeManager.start()
+        await channelBridgeService.unarchiveSession(targetSessionId)
+        return
+      }
       const snapshot = runtimeManager.snapshot()
       const runtime = snapshot.url === undefined ? await runtimeManager.start() : snapshot
       if (runtime.url === undefined) throw new Error('DSH Runtime URL is not available')
@@ -678,6 +874,7 @@ function setApplicationMenu(locale: AppLocale = localeService?.snapshot() ?? DEF
   Menu.setApplicationMenu(Menu.buildFromTemplate(getApplicationMenuTemplate({
     locale,
     navConfig: navigationService?.getConfig(),
+    developerMode,
     onCheckForUpdates: () => void handleUpdateCheck(true),
     onNavigate: navigateToTab,
     onOpenRuntimeLog: () => {
@@ -715,12 +912,14 @@ async function stopApplicationComponents(): Promise<void> {
   notificationRuntimeUrl = undefined
   runtimeNotificationService?.stop()
   await notificationSettingsWriteChain.catch(() => undefined)
+  await workflowRunService?.stop()
   await shutdownExternalServicesFirst(
     () => externalServiceManager?.stopAll() ?? Promise.resolve(),
     [
       () => runtimeProcessManager?.stopAll() ?? Promise.resolve(),
       () => channelBridgeService?.stop() ?? Promise.resolve(),
       () => externalApiService?.stop() ?? Promise.resolve(),
+      () => mobileRemoteService?.stop() ?? Promise.resolve(),
     ],
   )
 }
@@ -730,6 +929,29 @@ function emitExternalServiceState(snapshots: Awaited<ReturnType<ExternalServiceM
     if (window.isDestroyed() || !externalServiceWatchers.has(window.webContents.id)) continue
     window.webContents.send('external-services:state-change', snapshots)
   }
+}
+
+function emitEmployeeState(employees: Awaited<ReturnType<EmployeeService['list']>>): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('employees:state-change', employees)
+  }
+}
+
+function emitEmployeeLockState(locks: EmployeeSessionLock[]): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('employees:lock-change', locks)
+  }
+}
+
+function emitWorkflowState(record: Awaited<ReturnType<WorkflowRunService['get']>>): void {
+  if (record === undefined) return
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('workflow-runs:state-change', record)
+  }
+}
+
+function requireDeveloperModeFeature(): void {
+  if (!developerMode) throw new Error('Employee features are available only in developer mode')
 }
 
 function registerIpcHandlers(): void {
@@ -792,6 +1014,14 @@ function registerIpcHandlers(): void {
     try {
       if (providerService === undefined) throw new Error('Provider service is not ready')
       return success(await providerService.getStatuses())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('providers:list-workflow-models', async (): Promise<IpcResult<Awaited<ReturnType<ProviderService['listWorkflowModels']>>>> => {
+    try {
+      if (providerService === undefined) throw new Error('Provider service is not ready')
+      return success(await providerService.listWorkflowModels())
     } catch (error) {
       return failure(error)
     }
@@ -982,6 +1212,7 @@ function registerIpcHandlers(): void {
       developerMode = enabled
       updateManager?.setFeedURL(resolveUpdateFeedUrl() ?? STABLE_UPDATE_FEED_URL, allowPrereleaseUpdates())
       emitDeveloperMode()
+      setApplicationMenu()
       return success(developerMode)
     } catch (error) {
       return failure(error)
@@ -1018,6 +1249,49 @@ function registerIpcHandlers(): void {
     try {
       await changeWorkspace('switch', root)
       return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:get-proxy-config', (): IpcResult<ProxySettingsSnapshot> => {
+    try {
+      if (proxyService === undefined) throw new Error('Proxy service is not ready')
+      return success(proxyService.snapshot())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:save-proxy', async (_event, input: ProxyProfileInput): Promise<IpcResult<ProxySettingsSnapshot>> => {
+    try {
+      if (proxyService === undefined) throw new Error('Proxy service is not ready')
+      return success(await proxyService.save(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:activate-proxy', async (_event, id?: string): Promise<IpcResult<ProxySettingsSnapshot>> => {
+    try {
+      if (proxyService === undefined) throw new Error('Proxy service is not ready')
+      if (id !== undefined && typeof id !== 'string') throw new Error('Invalid proxy ID')
+      return success(await proxyService.activate(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:delete-proxy', async (_event, id: string): Promise<IpcResult<ProxySettingsSnapshot>> => {
+    try {
+      if (proxyService === undefined) throw new Error('Proxy service is not ready')
+      if (typeof id !== 'string') throw new Error('Invalid proxy ID')
+      return success(await proxyService.remove(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('settings:test-proxy', async (_event, id: string): Promise<IpcResult<ProxyTestResult>> => {
+    try {
+      if (proxyService === undefined) throw new Error('Proxy service is not ready')
+      if (typeof id !== 'string') throw new Error('Invalid proxy ID')
+      return success(await proxyService.test(id))
     } catch (error) {
       return failure(error)
     }
@@ -1088,6 +1362,232 @@ function registerIpcHandlers(): void {
     externalServiceWatchers.delete(event.sender.id)
     return success(undefined)
   })
+  ipcMain.handle('employees:list', async (): Promise<IpcResult<Awaited<ReturnType<EmployeeService['list']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.initialize()
+      return success(employeeService.list())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:list-projects', async (): Promise<IpcResult<EmployeeProjectSummary[]>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      return success(await employeeService.listProjects())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:list-sessions', async (_event, projectId?: string): Promise<IpcResult<EmployeeSessionSummary[]>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      return success(await employeeService.listSessions(projectId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:create-session', async (_event, projectId: string, title?: string): Promise<IpcResult<EmployeeSessionSummary>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      return success(await employeeService.createSession(projectId, title))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:list-session-locks', async (): Promise<IpcResult<EmployeeSessionLock[]>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.initialize()
+      return success(employeeService.listSessionLocks())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:force-unlock-session', async (_event, sessionId: string): Promise<IpcResult<void>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.forceUnlockSession(sessionId)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:create', async (_event, input: EmployeeCreateInput): Promise<IpcResult<Awaited<ReturnType<EmployeeService['create']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      return success(await employeeService.create(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:update', async (_event, id: string, input: EmployeeUpdateInput): Promise<IpcResult<Awaited<ReturnType<EmployeeService['update']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      return success(await employeeService.update(id, input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:remove', async (_event, id: string): Promise<IpcResult<void>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.remove(id)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:set-enabled', async (_event, id: string, enabled: boolean): Promise<IpcResult<Awaited<ReturnType<EmployeeService['setEnabled']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      return success(await employeeService.setEnabled(id, enabled))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:run', async (_event, id: string, request: EmployeeRunRequest): Promise<IpcResult<Awaited<ReturnType<EmployeeService['run']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      return success(await employeeService.run(id, request))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:list', async (): Promise<IpcResult<Awaited<ReturnType<WorkflowStore['list']>>>> => {
+    try {
+      if (workflowStore === undefined) throw new Error('Workflow service is not ready')
+      await workflowStore.initialize()
+      return success(workflowStore.list())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:get', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<WorkflowStore['get']>>>> => {
+    try {
+      if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid workflow ID')
+      if (workflowStore === undefined) throw new Error('Workflow service is not ready')
+      await workflowStore.initialize()
+      return success(workflowStore.get(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:create', async (_event, input: WorkflowCreateInput): Promise<IpcResult<Awaited<ReturnType<WorkflowStore['create']>>>> => {
+    try {
+      if (workflowStore === undefined) throw new Error('Workflow service is not ready')
+      return success(await workflowStore.create(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:update', async (_event, id: string, input: WorkflowUpdateInput): Promise<IpcResult<Awaited<ReturnType<WorkflowStore['update']>>>> => {
+    try {
+      if (workflowStore === undefined) throw new Error('Workflow service is not ready')
+      return success(await workflowStore.update(id, input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:remove', async (_event, id: string): Promise<IpcResult<void>> => {
+    try {
+      if (workflowStore === undefined) throw new Error('Workflow service is not ready')
+      await workflowStore.remove(id)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:duplicate', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<WorkflowStore['duplicate']>>>> => {
+    try {
+      if (workflowStore === undefined) throw new Error('Workflow service is not ready')
+      return success(await workflowStore.duplicate(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:generate', async (_event, request: WorkflowGenerateRequest): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['generate']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      return success(await workflowRunService.generate(request))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:import-employee', async (_event, employeeId: string): Promise<IpcResult<Awaited<ReturnType<WorkflowStore['create']>>>> => {
+    try {
+      if (employeeService === undefined || workflowStore === undefined) throw new Error('Workflow service is not ready')
+      await employeeService.initialize()
+      const employee = employeeService.get(employeeId)
+      if (employee === undefined) throw new Error(`Employee "${employeeId}" was not found`)
+      return success(await workflowStore.create(workflowFromEmployee(employee)))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:list', async (_event, workflowId?: string): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['list']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      await workflowRunService.initialize()
+      return success(workflowRunService.list(workflowId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:get', async (_event, runId: string): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['get']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
+      return success(workflowRunService.get(runId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:start', async (_event, workflowId: string, input: WorkflowValue, options: WorkflowRunOptions): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['start']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      if (typeof workflowId !== 'string' || workflowId.trim() === '') throw new Error('Invalid workflow ID')
+      return success(await workflowRunService.start(workflowId, input, options))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:resume', async (_event, runId: string): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['resume']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      return success(await workflowRunService.resume(runId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:cancel', async (_event, runId: string): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['cancel']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      return success(await workflowRunService.cancel(runId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:approve', async (_event, runId: string, approved: boolean): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['approve']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      if (typeof runId !== 'string' || typeof approved !== 'boolean') throw new Error('Invalid workflow approval input')
+      return success(await workflowRunService.approve(runId, approved))
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('updates:get-status', (): IpcResult<UpdateState> => {
     if (updateManager === undefined) return failure(new Error('Update manager is not ready'))
     return success(updateManager.snapshot())
@@ -1136,6 +1636,16 @@ function registerIpcHandlers(): void {
         kind: 'manual',
         reason: 'Manual backup requested from EzDSH settings',
       }))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:delete', async (_event, selector: string): Promise<IpcResult<void>> => {
+    try {
+      if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      if (typeof selector !== 'string') throw new Error('Invalid recovery delete input')
+      await recoveryManager.deleteSnapshot(selector)
+      return success(undefined)
     } catch (error) {
       return failure(error)
     }
@@ -1250,6 +1760,35 @@ function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('channel-bridge:list-archived-sessions', async (): Promise<IpcResult<Awaited<ReturnType<ChannelBridgeService['listArchivedSessions']>>>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      return success(await channelBridgeService.listArchivedSessions())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+
+  ipcMain.handle('channel-bridge:unarchive-session', async (_event, sessionId: string): Promise<IpcResult<void>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      await channelBridgeService.unarchiveSession(sessionId)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+
+  ipcMain.handle('channel-bridge:delete-archived-session', async (_event, sessionId: string): Promise<IpcResult<void>> => {
+    try {
+      if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
+      await channelBridgeService.deleteArchivedSession(sessionId)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+
   ipcMain.handle('channel-bridge:start-pairing', async (): Promise<IpcResult<Awaited<ReturnType<ChannelBridgeService['startPairing']>>>> => {
     try {
       if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
@@ -1273,6 +1812,74 @@ function registerIpcHandlers(): void {
     try {
       if (channelBridgeService === undefined) throw new Error('Channel bridge service is not ready')
       return success(channelBridgeService.getPairingState())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+
+  ipcMain.handle('mobile-remote:get-status', (): IpcResult<MobileRemoteSnapshot> => {
+    try {
+      if (mobileRemoteService === undefined) throw new Error('Mobile remote service is not ready')
+      return success(mobileRemoteService.snapshot())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('mobile-remote:start-pairing', async (): Promise<IpcResult<MobileRemoteSnapshot>> => {
+    try {
+      if (mobileRemoteService === undefined) throw new Error('Mobile remote service is not ready')
+      return success(await mobileRemoteService.startPairing())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('mobile-remote:cancel-pairing', (): IpcResult<MobileRemoteSnapshot> => {
+    try {
+      if (mobileRemoteService === undefined) throw new Error('Mobile remote service is not ready')
+      return success(mobileRemoteService.cancelPairing())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('mobile-remote:approve-pairing', (_event, requestId: string): IpcResult<MobileRemoteSnapshot> => {
+    try {
+      if (mobileRemoteService === undefined) throw new Error('Mobile remote service is not ready')
+      if (typeof requestId !== 'string' || requestId.trim() === '') throw new Error('Invalid pairing request ID')
+      return success(mobileRemoteService.approvePairing(requestId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('mobile-remote:reject-pairing', (_event, requestId: string): IpcResult<MobileRemoteSnapshot> => {
+    try {
+      if (mobileRemoteService === undefined) throw new Error('Mobile remote service is not ready')
+      if (typeof requestId !== 'string' || requestId.trim() === '') throw new Error('Invalid pairing request ID')
+      return success(mobileRemoteService.rejectPairing(requestId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('mobile-remote:start-public-access', async (): Promise<IpcResult<MobileRemoteSnapshot>> => {
+    try {
+      if (mobileRemoteService === undefined) throw new Error('Mobile remote service is not ready')
+      return success(await mobileRemoteService.startPublicAccess())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('mobile-remote:stop-public-access', async (): Promise<IpcResult<MobileRemoteSnapshot>> => {
+    try {
+      if (mobileRemoteService === undefined) throw new Error('Mobile remote service is not ready')
+      return success(await mobileRemoteService.stopPublicAccess())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('mobile-remote:disconnect-device', (_event, deviceId: string): IpcResult<MobileRemoteSnapshot> => {
+    try {
+      if (mobileRemoteService === undefined) throw new Error('Mobile remote service is not ready')
+      if (typeof deviceId !== 'string' || deviceId.trim() === '') throw new Error('Invalid device ID')
+      return success(mobileRemoteService.disconnectDevice(deviceId))
     } catch (error) {
       return failure(error)
     }
@@ -1352,7 +1959,7 @@ function createWindow(): BrowserWindow {
   window.webContents.on('before-input-event', (event, input) => {
     const config = navigationService?.getConfig()
     if (config === undefined) return
-    const target = getNavigationTargetForInput(input, config, process.platform)
+    const target = getNavigationTargetForInput(input, config, process.platform, developerMode)
     if (target === undefined) return
     // Keep navigation reliable when an embedded page would otherwise consume the key.
     event.preventDefault()
@@ -1385,28 +1992,33 @@ function createWindow(): BrowserWindow {
 
 app.setName(APP_NAME)
 
-const singleInstance = app.requestSingleInstanceLock()
+const cliInvocation = parseDshCliInvocation(process.argv)
 
-if (!singleInstance) {
-  app.quit()
+if (cliInvocation !== undefined) {
+  void runDshCliMode(cliInvocation.args)
 } else {
-  app.setAsDefaultProtocolClient('ezdsh')
+  const singleInstance = app.requestSingleInstanceLock()
 
-  const startupLink = parseDeepLink(findDeepLinkInArgs(process.argv) ?? '')
-  if (startupLink?.action === 'install') {
-    pendingDeepLinkInstall = startupLink
-  } else if (startupLink?.action === 'session') {
-    pendingDeepLinkSession = startupLink
-  }
+  if (!singleInstance) {
+    app.quit()
+  } else {
+    app.setAsDefaultProtocolClient('ezdsh')
 
-  app.whenReady().then(async () => {
-    app.setName(APP_NAME)
-    nativeTheme.on('updated', syncWindowBackgroundColor)
-    workspaceConfigPath = getWorkspaceConfigPath(app.getPath('appData'))
-    const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, app.getPath('userData'))
-    const layout = getUserDataLayout(workspaceRoot)
-    await ensureUserDataLayout(layout)
-    await initializeWorkspaceServices(layout)
+    const startupLink = parseDeepLink(findDeepLinkInArgs(process.argv) ?? '')
+    if (startupLink?.action === 'install') {
+      pendingDeepLinkInstall = startupLink
+    } else if (startupLink?.action === 'session') {
+      pendingDeepLinkSession = startupLink
+    }
+
+    app.whenReady().then(async () => {
+      app.setName(APP_NAME)
+      nativeTheme.on('updated', syncWindowBackgroundColor)
+      workspaceConfigPath = getWorkspaceConfigPath(app.getPath('appData'))
+      const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, app.getPath('userData'))
+      const layout = getUserDataLayout(workspaceRoot)
+      await ensureUserDataLayout(layout)
+      await initializeWorkspaceServices(layout)
     const configuredUpdateFeedUrl = process.env.EZDSH_UPDATE_FEED_URL?.trim() || undefined
     const updateFeedUrl = resolveUpdateFeedUrl()
     const configuredUpdateResolveUrl = process.env.EZDSH_UPDATE_RESOLVE_URL?.trim() || undefined
@@ -1510,4 +2122,5 @@ if (!singleInstance) {
       app.quit()
     }
   })
+}
 }

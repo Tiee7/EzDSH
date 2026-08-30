@@ -79,6 +79,7 @@ export interface RuntimeManagerOptions {
   processKill?: (pid: number, signal: NodeJS.Signals) => boolean
   allocatePort?: () => Promise<number>
   runtimeOwnership?: RuntimeOwnershipStore
+  getEnvironment?: () => NodeJS.ProcessEnv
 }
 
 export interface RuntimeLaunchContext {
@@ -255,7 +256,7 @@ export class RuntimeManager {
     const args = command === process.execPath
       ? ['--expose-internals', this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
       : [this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
-    const inheritedEnvironment = { ...process.env }
+    const inheritedEnvironment = { ...(this.config.getEnvironment?.() ?? process.env) }
     if (command !== process.execPath) delete inheritedEnvironment.ELECTRON_RUN_AS_NODE
     const spawnOptions: SpawnOptions = {
       cwd: this.config.layout.launchRoot,

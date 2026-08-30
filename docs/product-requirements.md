@@ -2,9 +2,9 @@
 
 ## 1. 产品定义
 
-EzDSH 是 DeepSeek Harness 的桌面客户端。它将本地 Harness Runtime 作为独立子进程运行，并提供一个稳定的桌面入口，让用户无需手动启动命令行、查找本地端口或管理运行目录。
+EzDSH 是 DeepSeek Harness 的桌面发行版，也是一套以工作流为核心的自动化平台。用户可以把固定重复流程和多岗位复杂协作编排成可运行、可检查、可恢复的工作流。
 
-EzDSH 不重新实现 Harness 的 Agent 能力，而是解决以下桌面产品问题：
+围绕这个定位，EzDSH 负责把 DeepSeek Harness 的能力整理成普通用户可以直接使用的工作体验，重点解决以下问题：
 
 - 安装后可以直接启动；
 - 没有模型供应商时可以完成首次配置；
@@ -208,6 +208,7 @@ EzDSH 更新采用整包更新：新的 EzDSH 安装包内携带对应版本的 
 | REC-005 | 升级事务 | 升级前写入 pending transaction；新 Runtime 健康后清除，启动失败则展示 Recovery Mode |
 | REC-006 | Session Log doctor | 默认只读诊断 Session Log；只有用户明确操作时才修复最后一条未完成 JSONL 尾记录 |
 | REC-007 | 独立救援 | 备份目录包含不依赖 Electron/DSH 的 rescue CLI 与 loopback Web UI，可执行 list、verify、doctor、restore |
+| REC-008 | 快照管理 | 设置页独立的“备份与恢复”导航可以校验、恢复或删除快照；删除会连同 sidecar 和本机 vault 一起清理，并保护活动恢复事务 |
 
 ## 5. 数据目录约定
 
@@ -277,3 +278,51 @@ dataSchemaVersion: 1
 - [ ] 可以创建快照、验证 checksum，并在 dry-run 后恢复到上一份用户环境
 - [ ] Credential 明文不在 Archive 中，换机恢复会提示重新输入
 - [ ] Runtime 启动失败会进入 Recovery Mode，独立 rescue 通道可以列出并校验快照
+
+## 9. Workflow 编排、智能处理与专业员工
+
+EZDSH 提供独立的 Workflow 页面，用 React Flow 编辑可持久化的 DAG。核心概念定义为：
+
+```text
+工作流 = 事情如何完成
+专业员工 = 哪个岗位对专业环节负责
+智能处理 = 当前流程中的轻量临时推理
+技能 = 员工或节点可以调用的原子能力
+任务 = 一次业务请求
+运行 = 任务执行产生的技术记录
+```
+
+用户可以创建、复制、删除、拖拽和连线，并在节点检查器中配置 Input、智能处理、专业员工、Skill、MCP、Parallel、Loop、Condition、Approval、Transform、Output、Shell 和 File 节点。轻量需求可直接使用智能处理，不要求所有模型调用都包装成员工。
+
+### 9.1 运行闭环
+
+```text
+编辑 JSON-safe Workflow
+  ↓ Main 校验并保存 revision
+输入任务并明确授权高风险节点
+  ↓
+创建运行记录 → 逐节点执行 → 每步 checkpoint
+  ↓                         ↘
+完成/输出                 失败/暂停 → 恢复
+```
+
+运行记录保存在 `<userData>/state/workflow-runs.json`，工作流定义保存在 `<userData>/state/workflows.json`，因此被现有 Recovery 快照的 `state/` 覆盖。应用重启不会静默丢失运行：未完成记录会显示为“已暂停”，用户可以从最后一个未完成节点重试。
+
+### 9.2 安全与 AI 生成
+
+- Renderer 不能读取工作区路径、Credential 或执行权限；所有操作经过 typed Preload IPC。
+- Workflow 文档不允许任意 JavaScript、`eval`、凭据字段或无效节点/连线；循环图会在保存和运行前被拒绝。
+- Shell/File 需要每次运行显式授权；File 只能访问当前工作区内的相对路径，Shell 不使用 shell 解释器。
+- AI 只生成草稿 JSON，经过 normalize、Schema 校验和人工审阅后才能保存或运行。
+- 智能处理、专业员工、Skill、MCP 节点复用 DSH Runtime 的 Session API，不在 EZDSH 中重复实现模型调用和工具权限系统。
+- 智能处理和专业员工节点可以输出文本或 JSON；无效 JSON 会在同一 Session 中修复一次。
+
+### 9.3 专业员工与兼容迁移
+
+专业员工是一份可复用的岗位档案，包含业务边界、工作原则、执行规范、质量标准、能力、技能 ID 和档案版本。员工不拥有内部工作流；同一员工可以被多个工作流引用。旧 Employee 的启用步骤会迁移为非执行性的执行规范，旧 Workflow 的 `agent` 节点会迁移为 `ai-task`。
+
+### 9.4 短视频内容运营 V1
+
+系统内置“短视频内容运营”模板：内容需求依次经过选题策划、资料调研、脚本文案、内容审核和人工审批，最终形成待制作内容成果。四个专业员工环节使用 JSON 交接。
+
+当前 V1 只支持手动运行和人工审批，不包含定时执行、持久后台 Worker、外部平台自动发布、员工长期记忆或 EZDSH 自我升级。后续无人值守能力必须建立在工作流发布、不可变版本、任务队列、权限预算、告警、重试补偿和幂等机制之上。

@@ -42,6 +42,47 @@ export interface DshWorkspaceSummary {
   updatedAt: string
 }
 
+export interface DshModelSelection {
+  provider: string
+  model: string
+  reasoningEffort?: string
+}
+
+export interface DshModelReasoningEffort {
+  id: string
+  name: string
+  description?: string
+}
+
+export interface DshModelCatalogModel {
+  id: string
+  name: string
+  description?: string
+  reasoning?: {
+    efforts: DshModelReasoningEffort[]
+    defaultEffort?: string
+  }
+}
+
+export interface DshModelProviderGroup {
+  id: string
+  name: string
+  models: DshModelCatalogModel[]
+}
+
+export interface DshModelCatalogFailure {
+  id: string
+  name: string
+  message: string
+}
+
+export interface DshSessionModels {
+  current: DshModelSelection
+  routable: boolean
+  groups: DshModelProviderGroup[]
+  failures: DshModelCatalogFailure[]
+}
+
 export interface TurnTrackerCallbacks {
   /** Called after the prompt has been queued in DSH. */
   onAcknowledged(): void
@@ -103,8 +144,8 @@ interface SessionHistoryRequest {
   maxMessages?: number
 }
 
-interface SessionHistoryResponse {
-  events: HistoryEntry[]
+export interface DshSessionHistoryResponse {
+  events: DshSessionHistoryEntry[]
   hasMore: boolean
   projections?: unknown
 }
@@ -125,12 +166,12 @@ interface SessionSummaryWire {
   }
 }
 
-interface HistoryEntry {
-  event: SessionEvent
+export interface DshSessionHistoryEntry {
+  event: DshSessionEvent
   view?: unknown
 }
 
-interface SessionEvent {
+export interface DshSessionEvent {
   type: string
   seq: number
   time: number
@@ -152,6 +193,17 @@ interface RpcResponseEnvelope<T> {
   result: { ok: true; value: T } | { ok: false; error: { code: string; message: string; details?: unknown } }
 }
 
+export class DshApiError extends Error {
+  constructor(
+    readonly path: string,
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'DshApiError'
+  }
+}
+
 export class DshSessionClient {
   private readonly pollIntervalMs: number
 
@@ -160,14 +212,16 @@ export class DshSessionClient {
   }
 
   async createSession(params?: { sessionId?: string; cwd?: string; workspaceId?: string }): Promise<DshSession> {
-    const body: SessionCreateRequest = {
-      sessionId: params?.sessionId,
-      cwd: params?.cwd,
-      workspaceId: params?.workspaceId,
-    }
+    const body: SessionCreateRequest = params?.workspaceId === undefined
+      ? { sessionId: params?.sessionId, cwd: params?.cwd }
+      : { sessionId: params.sessionId, workspaceId: params.workspaceId }
 
     const response = await this.post<SessionCreateResponse>('/api/session.create', body)
     return { sessionId: response.sessionId }
+  }
+
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    await this.post<{ title: string; seq: number }>('/api/session.rename', { sessionId, title })
   }
 
   async archiveSession(sessionId: string): Promise<WorkspaceArchiveResponse> {
@@ -178,13 +232,26 @@ export class DshSessionClient {
     return this.post<WorkspaceArchiveResponse>('/api/workspace.unarchiveSession', { sessionId })
   }
 
+  async cancelSession(sessionId: string): Promise<void> {
+    await this.post<{ accepted: true }>('/api/session.cancel', { sessionId })
+  }
+
   async listWorkspaces(): Promise<DshWorkspaceSummary[]> {
-    const response = await this.post<WorkspaceListResponse>('/api/workspace.list', {})
+    const response = await this.listWorkspaceResponse()
     const archived = new Set(response.archivedSessionIds)
     return response.items.map((workspace) => ({
       ...workspace,
       sessionIds: workspace.sessionIds.filter((sessionId) => !archived.has(sessionId)),
     }))
+  }
+
+  async listArchivedSessions(): Promise<DshSessionSummary[]> {
+    const response = await this.listWorkspaceResponse()
+    if (response.archivedSessionIds.length === 0) return []
+
+    const archived = new Set(response.archivedSessionIds)
+    const sessions = await this.listSessions()
+    return sessions.filter((session) => archived.has(session.sessionId))
   }
 
   async createWorkspace(path: string): Promise<WorkspaceCreateResponse> {
@@ -218,10 +285,7 @@ export class DshSessionClient {
   }
 
   async getSessionTitle(sessionId: string): Promise<string | undefined> {
-    const history = await this.post<SessionHistoryResponse>('/api/session.history', {
-      sessionId,
-      maxMessages: 100,
-    } as SessionHistoryRequest)
+    const history = await this.getSessionHistory(sessionId, { maxMessages: 100 })
 
     const titleEvents = history.events
       .map((entry) => entry.event)
@@ -233,6 +297,27 @@ export class DshSessionClient {
     const data = latest.data as { title?: string } | undefined
     const title = data?.title
     return typeof title === 'string' && title.length > 0 ? title : undefined
+  }
+
+  async getSessionHistory(sessionId: string, options?: { beforeSeq?: number; maxMessages?: number }): Promise<DshSessionHistoryResponse> {
+    return this.post<DshSessionHistoryResponse>('/api/session.history', {
+      sessionId,
+      beforeSeq: options?.beforeSeq,
+      maxMessages: options?.maxMessages,
+    } satisfies SessionHistoryRequest)
+  }
+
+  async getSessionModels(sessionId: string): Promise<DshSessionModels> {
+    return this.post<DshSessionModels>('/api/session.models', { sessionId })
+  }
+
+  async selectSessionModel(sessionId: string, selection: DshModelSelection): Promise<{ selected: DshModelSelection }> {
+    return this.post<{ selected: DshModelSelection }>('/api/session.selectModel', {
+      sessionId,
+      provider: selection.provider,
+      model: selection.model,
+      ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort },
+    })
   }
 
   async sendPrompt(sessionId: string, text: string): Promise<DshSendResult> {
@@ -280,13 +365,11 @@ export class DshSessionClient {
     const startTime = Date.now()
     const deadline = startTime + options.timeoutMs
     let nextStatusTime = startTime + options.statusIntervalMs
-    const collectedEvents: SessionEvent[] = []
+    const collectedEvents: DshSessionEvent[] = []
     const seenSeqs = new Set<number>()
 
     while (Date.now() < deadline) {
-      const history = await this.post<SessionHistoryResponse>('/api/session.history', {
-        sessionId,
-      } as SessionHistoryRequest)
+      const history = await this.getSessionHistory(sessionId)
 
       const events = history.events.map((entry) => entry.event)
       for (const event of events) {
@@ -317,9 +400,7 @@ export class DshSessionClient {
   }
 
   private async getCurrentMaxSeq(sessionId: string): Promise<number> {
-    const history = await this.post<SessionHistoryResponse>('/api/session.history', {
-      sessionId,
-    } as SessionHistoryRequest)
+    const history = await this.getSessionHistory(sessionId)
 
     if (history.events.length === 0) return -1
     return Math.max(...history.events.map((entry) => entry.event.seq))
@@ -343,7 +424,7 @@ export class DshSessionClient {
 
     if (!response.ok) {
       const text = await response.text()
-      throw new Error(`DSH API ${path} failed: ${response.status} ${text}`)
+      throw new DshApiError(path, response.status, `DSH API ${path} failed: ${response.status} ${text}`)
     }
 
     const rpcResponse = (await response.json()) as RpcResponseEnvelope<T>
@@ -352,6 +433,10 @@ export class DshSessionClient {
     }
     return rpcResponse.result.value
   }
+
+  private async listWorkspaceResponse(): Promise<WorkspaceListResponse> {
+    return this.post<WorkspaceListResponse>('/api/workspace.list', {})
+  }
 }
 
 function readProjectedTitle(item: SessionSummaryWire): string | undefined {
@@ -359,7 +444,7 @@ function readProjectedTitle(item: SessionSummaryWire): string | undefined {
   return typeof title === 'string' && title.length > 0 ? title : undefined
 }
 
-function extractAssistantText(events: SessionEvent[]): string {
+function extractAssistantText(events: DshSessionEvent[]): string {
   const assistantMessages = events.filter((event) => event.type === 'assistant/message')
   const parts: string[] = []
 

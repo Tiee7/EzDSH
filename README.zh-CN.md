@@ -1,11 +1,11 @@
 # EzDSH
 
 <p align="center">
-  <img src="assets/social-preview2.png" alt="EzDSH DeepSeek Harness 桌面客户端" width="100%" />
+  <img src="assets/social-preview2.png" alt="EzDSH DeepSeek Harness 桌面发行版" width="100%" />
 </p>
 
 <p align="center">
-  <strong>适用于 macOS 和 Windows 的 DeepSeek Harness 开箱即用桌面客户端。</strong><br/>
+  <strong>适用于 macOS 和 Windows 的 DeepSeek Harness 开箱即用桌面发行版。</strong><br/>
   内置 Runtime，自动管理运行环境，数据与密钥本地保存，无需 Node.js 或命令行配置。
 </p>
 
@@ -38,6 +38,10 @@
 - **自主且可信**：用户拥有对数据、配置、工具和最终决策的控制权。
 - **与用户共建**：在真实使用和持续反馈中不断成长。
 
+## EzDSH 是什么
+
+EzDSH 是 DeepSeek Harness 的桌面发行版；它是一个 AI 工作团队，让每一次执行都更有分工、更有条理，也更容易得到稳定结果。
+
 ## 为什么选择 EzDSH
 
 DeepSeek Harness 功能强大，但在本地跑起来往往需要安装运行环境、从命令行启动服务、管理端口、编辑供应商配置、维持后台进程。EzDSH 把这一整套流程封装成一个桌面应用，让你专注于用 AI 创造价值，而不是和环境配置作斗争。
@@ -49,6 +53,8 @@ DeepSeek Harness 功能强大，但在本地跑起来往往需要安装运行环
 ### 安装即用，无需配置环境
 
 EzDSH 内置固定版本的 DeepSeek Harness Runtime。你无需提前安装 Node.js、pnpm 或 Harness CLI。应用会自动创建工作目录、分配本地端口、启动 Runtime、加载 Harness Web UI。
+
+插件安装同样由 EzDSH 的分发层负责。应用使用内置的 DSH Runtime 和 pnpm，自动处理已知的 Profile workspace 兼容问题，并在安装后验证插件是否已正确加入目标 Profile。用户无需手动复制命令或补充兼容参数。
 
 ### 完整的 Runtime 生命周期管理
 

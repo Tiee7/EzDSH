@@ -316,6 +316,20 @@ export class RecoveryManager {
     return snapshots.sort((left, right) => right.manifest.createdAt.localeCompare(left.manifest.createdAt))
   }
 
+  async deleteSnapshot(selector: string): Promise<void> {
+    const snapshot = await this.resolveSnapshot(selector)
+    if (this.current.pendingTransaction?.snapshotName === snapshot.archiveName) {
+      throw new Error(`Cannot delete the snapshot required for ${this.current.pendingTransaction.kind} recovery`)
+    }
+
+    await Promise.all([
+      rm(snapshot.archivePath, { force: true }),
+      rm(snapshot.checksumPath, { force: true }),
+      rm(snapshot.manifestPath, { force: true }),
+      rm(join(this.config.layout.backups, 'vault', snapshot.archiveName), { recursive: true, force: true }),
+    ])
+  }
+
   async verify(selector: string): Promise<RecoveryVerifyResult> {
     const snapshot = await this.resolveSnapshot(selector)
     try {

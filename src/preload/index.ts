@@ -5,7 +5,9 @@ import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
 import type { NavigationTarget } from '../shared/navigation.js'
 import type { AppPlatform } from '../shared/platform.js'
 import type { NavConfig } from '../shared/navigation.js'
+import type { MobileRemoteSnapshot } from '../shared/mobile-remote.js'
 import type { NotificationSettings } from '../shared/notifications.js'
+import type { ProxyProfileInput, ProxySettingsSnapshot, ProxyTestResult } from '../shared/proxy.js'
 import type {
   RecoveryDryRun,
   RecoveryDoctorResult,
@@ -19,6 +21,26 @@ import type {
   ExternalServiceSnapshot,
   ExternalServiceUpdateInput,
 } from '../shared/external-services.js'
+import type {
+  EmployeeCreateInput,
+  EmployeeProjectSummary,
+  EmployeeRunRequest,
+  EmployeeRunResult,
+  EmployeeSessionLock,
+  EmployeeSnapshot,
+  EmployeeSessionSummary,
+  EmployeeUpdateInput,
+} from '../shared/employees.js'
+import type {
+  WorkflowCreateInput,
+  WorkflowDefinition,
+  WorkflowGenerateRequest,
+  WorkflowRunOptions,
+  WorkflowRunRecord,
+  WorkflowUpdateInput,
+  WorkflowValue,
+  WorkflowModelOption,
+} from '../shared/workflow.js'
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>
@@ -83,6 +105,50 @@ const bridge: EzDSHBridge = {
       return () => ipcRenderer.removeListener('store:state-change', handler)
     }
   },
+  employees: {
+    list: () => invoke<EmployeeSnapshot[]>('employees:list'),
+    listProjects: () => invoke<EmployeeProjectSummary[]>('employees:list-projects'),
+    listSessions: (projectId?: string) => invoke<EmployeeSessionSummary[]>('employees:list-sessions', projectId),
+    createSession: (projectId: string, title?: string) => invoke<EmployeeSessionSummary>('employees:create-session', projectId, title),
+    listSessionLocks: () => invoke<EmployeeSessionLock[]>('employees:list-session-locks'),
+    forceUnlockSession: (sessionId: string) => invoke<void>('employees:force-unlock-session', sessionId),
+    create: (input: EmployeeCreateInput) => invoke<EmployeeSnapshot>('employees:create', input),
+    update: (id: string, input: EmployeeUpdateInput) => invoke<EmployeeSnapshot>('employees:update', id, input),
+    remove: (id: string) => invoke<void>('employees:remove', id),
+    setEnabled: (id: string, enabled: boolean) => invoke<EmployeeSnapshot>('employees:set-enabled', id, enabled),
+    run: (id: string, request: EmployeeRunRequest) => invoke<EmployeeRunResult>('employees:run', id, request),
+    onStateChange: (listener: (employees: EmployeeSnapshot[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, employees: EmployeeSnapshot[]) => listener(employees)
+      ipcRenderer.on('employees:state-change', handler)
+      return () => ipcRenderer.removeListener('employees:state-change', handler)
+    },
+    onLockChange: (listener: (locks: EmployeeSessionLock[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, locks: EmployeeSessionLock[]) => listener(locks)
+      ipcRenderer.on('employees:lock-change', handler)
+      return () => ipcRenderer.removeListener('employees:lock-change', handler)
+    }
+  },
+  workflows: {
+    list: () => invoke<WorkflowDefinition[]>('workflows:list'),
+    get: (id: string) => invoke<WorkflowDefinition | undefined>('workflows:get', id),
+    create: (input: WorkflowCreateInput) => invoke<WorkflowDefinition>('workflows:create', input),
+    update: (id: string, input: WorkflowUpdateInput) => invoke<WorkflowDefinition>('workflows:update', id, input),
+    remove: (id: string) => invoke<void>('workflows:remove', id),
+    duplicate: (id: string) => invoke<WorkflowDefinition>('workflows:duplicate', id),
+    generate: (request: WorkflowGenerateRequest) => invoke<WorkflowDefinition>('workflows:generate', request),
+    importEmployee: (employeeId: string) => invoke<WorkflowDefinition>('workflows:import-employee', employeeId),
+    listRuns: (workflowId?: string) => invoke<WorkflowRunRecord[]>('workflow-runs:list', workflowId),
+    getRun: (runId: string) => invoke<WorkflowRunRecord | undefined>('workflow-runs:get', runId),
+    start: (workflowId: string, input: WorkflowValue, options?: WorkflowRunOptions) => invoke<WorkflowRunRecord>('workflow-runs:start', workflowId, input, options ?? {}),
+    resume: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:resume', runId),
+    cancel: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:cancel', runId),
+    approve: (runId: string, approved: boolean) => invoke<WorkflowRunRecord>('workflow-runs:approve', runId, approved),
+    onStateChange: (listener: (record: WorkflowRunRecord) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, record: WorkflowRunRecord) => listener(record)
+      ipcRenderer.on('workflow-runs:state-change', handler)
+      return () => ipcRenderer.removeListener('workflow-runs:state-change', handler)
+    }
+  },
   settings: {
     setLocale: (locale) => invoke('settings:set-locale', locale),
     getLanguageTagVisible: () => invoke<boolean>('settings:get-language-tag-visible'),
@@ -104,6 +170,11 @@ const bridge: EzDSHBridge = {
     selectWorkspace: () => invoke<string | undefined>('settings:select-workspace'),
     migrateWorkspace: (root: string) => invoke('settings:migrate-workspace', root),
     switchWorkspace: (root: string) => invoke('settings:switch-workspace', root),
+    getProxyConfig: () => invoke<ProxySettingsSnapshot>('settings:get-proxy-config'),
+    saveProxy: (input: ProxyProfileInput) => invoke<ProxySettingsSnapshot>('settings:save-proxy', input),
+    activateProxy: (id?: string) => invoke<ProxySettingsSnapshot>('settings:activate-proxy', id),
+    deleteProxy: (id: string) => invoke<ProxySettingsSnapshot>('settings:delete-proxy', id),
+    testProxy: (id: string) => invoke<ProxyTestResult>('settings:test-proxy', id),
     onWorkspaceChange: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state)
       ipcRenderer.on('workspace:state-change', handler)
@@ -133,6 +204,7 @@ const bridge: EzDSHBridge = {
   providers: {
     listDefinitions: () => invoke('providers:list-definitions'),
     getStatus: () => invoke('providers:get-status'),
+    listWorkflowModels: () => invoke<WorkflowModelOption[]>('providers:list-workflow-models'),
     testConnection: (input) => invoke('providers:test-connection', input),
     listModels: (input) => invoke('providers:list-models', input),
     getProfile: (providerId) => invoke('providers:get-profile', providerId),
@@ -176,6 +248,7 @@ const bridge: EzDSHBridge = {
     getStatus: () => invoke<RecoveryState>('recovery:get-status'),
     listSnapshots: () => invoke<RecoverySnapshot[]>('recovery:list'),
     createSnapshot: () => invoke<RecoverySnapshot>('recovery:create-snapshot'),
+    deleteSnapshot: (selector: string) => invoke<void>('recovery:delete', selector),
     verify: (selector: string) => invoke<RecoveryVerifyResult>('recovery:verify', selector),
     doctor: (repair = false) => invoke<RecoveryDoctorResult>('recovery:doctor', repair),
     restore: (selector: string, dryRun: boolean) => invoke<RecoveryDryRun | RecoveryRestoreResult>('recovery:restore', selector, dryRun),
@@ -195,9 +268,22 @@ const bridge: EzDSHBridge = {
     setConfig: (config) => invoke('channel-bridge:set-config', config),
     getConfigPath: () => invoke('channel-bridge:get-config-path'),
     listSessions: () => invoke('channel-bridge:list-sessions'),
+    listArchivedSessions: () => invoke('channel-bridge:list-archived-sessions'),
+    unarchiveSession: (sessionId: string) => invoke('channel-bridge:unarchive-session', sessionId),
+    deleteArchivedSession: (sessionId: string) => invoke('channel-bridge:delete-archived-session', sessionId),
     startPairing: () => invoke('channel-bridge:start-pairing'),
     cancelPairing: () => invoke('channel-bridge:cancel-pairing'),
     getPairingState: () => invoke('channel-bridge:get-pairing-state')
+  },
+  mobileRemote: {
+    getStatus: () => invoke<MobileRemoteSnapshot>('mobile-remote:get-status'),
+    startPairing: () => invoke<MobileRemoteSnapshot>('mobile-remote:start-pairing'),
+    cancelPairing: () => invoke<MobileRemoteSnapshot>('mobile-remote:cancel-pairing'),
+    approvePairing: (requestId: string) => invoke<MobileRemoteSnapshot>('mobile-remote:approve-pairing', requestId),
+    rejectPairing: (requestId: string) => invoke<MobileRemoteSnapshot>('mobile-remote:reject-pairing', requestId),
+    startPublicAccess: () => invoke<MobileRemoteSnapshot>('mobile-remote:start-public-access'),
+    stopPublicAccess: () => invoke<MobileRemoteSnapshot>('mobile-remote:stop-public-access'),
+    disconnectDevice: (deviceId: string) => invoke<MobileRemoteSnapshot>('mobile-remote:disconnect-device', deviceId),
   },
   navigation: {
     getConfig: () => invoke<NavConfig>('navigation:get-config'),

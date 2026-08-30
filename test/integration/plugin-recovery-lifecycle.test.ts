@@ -58,7 +58,7 @@ describe('managed plugin recovery lifecycle', () => {
       profile: 'web',
     }, async () => {
       await writeFile(profileManifest, '{"dependencies":{"working-plugin":"1.0.0","broken-plugin":"9.9.9"}}\n')
-    })).rejects.toThrow('broken plugin boot')
+    }, async () => undefined)).rejects.toThrow('broken plugin boot')
 
     expect(runtime.snapshot()).toEqual({ phase: 'ready', mode: 'safe' })
     await expect(readFile(join(safeMode.homePath(), 'profiles', 'web', 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })

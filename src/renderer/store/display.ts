@@ -3,6 +3,8 @@
 import { STORE_CATEGORY_LABELS_ZH, type InstalledRecord, type StoreAuditLevel, type StoreCategory, type StoreEntry, type InstallPhase } from '../../shared/store.js'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
 
+export type StoreEntryType = 'plugin' | 'mcp'
+
 /**
  * Compare two dotted version strings numerically part by part.
  * @returns positive when `left` is newer, negative when older, 0 when equal.
@@ -36,6 +38,18 @@ export function auditLabel(copy: AppCopy, level: StoreAuditLevel): string {
   if (level === 'verified') return copy.auditVerified
   if (level === 'basic') return copy.auditBasic
   return copy.auditUnaudited
+}
+
+/** Identify the installable extension represented by a catalog entry. */
+export function entryType(entry: StoreEntry): StoreEntryType | undefined {
+  if (entry.plugin !== undefined) return 'plugin'
+  if (entry.mcp !== undefined || entry.kind === 'mcp') return 'mcp'
+  return undefined
+}
+
+/** Localized label for an entry type badge. */
+export function entryTypeLabel(copy: AppCopy, type: StoreEntryType): string {
+  return type === 'plugin' ? copy.storeEntryTypePlugin : copy.storeEntryTypeMcp
 }
 
 /** Display the Chinese category label in Chinese and the stable id in English. */

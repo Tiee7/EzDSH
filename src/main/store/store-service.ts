@@ -36,6 +36,7 @@ import { installPresetBundle, PresetConflictError, uninstallPreset } from './pre
 import { installMcpEntry, uninstallMcpEntry } from './mcp-installer.js'
 import { InstallErrorReporter, type InstallErrorReport } from './install-reporter.js'
 import type { PreparePluginChangeInput } from '../recovery/recovery-manager.js'
+import type { PluginRecoveryRunOptions } from '../recovery/plugin-recovery-coordinator.js'
 import { assessPluginCompatibility } from './compatibility.js'
 
 /** Client-side adapter for installing a Skill entry backed by a DSH plugin package. */
@@ -50,6 +51,7 @@ export interface StorePluginRecovery {
     input: PreparePluginChangeInput,
     mutate: () => Promise<T>,
     persist: (value: T) => Promise<void>,
+    options?: PluginRecoveryRunOptions,
   ): Promise<{ value: T; transactionId: string }>
 }
 
@@ -439,7 +441,7 @@ export class StoreService {
       })
     } catch (error) {
       this.reportInstallError(kind, id, 'write_failed', describe(error), { stage: 'update', failureReason: 'install' })
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', audit, compatibility, message: describe(error) })
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', audit, compatibility, message: describe(error), ...logPathFromError(error) })
     }
   }
 
@@ -486,7 +488,7 @@ export class StoreService {
       else await uninstallMcpEntry(webProfilePatchFile(this.dshHome), id)
       if (recoveryTransactionId === undefined) await registry.remove(kind, id)
     } catch (error) {
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error) })
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error), ...logPathFromError(error) })
     }
     return this.finish({
       kind,
@@ -519,6 +521,7 @@ export class StoreService {
             pluginChangeInput(entry, 'install'),
             () => this.pluginInstaller?.install(entry) ?? Promise.reject(new Error('DSH plugin installer is not available in this build')),
             async (result) => registry.upsert(installedRecord(entry, bundle, result, compatibility)),
+            { deferRuntimeRestart: true },
           )
           pluginInstall = outcome.value
           recoveryTransactionId = outcome.transactionId
@@ -536,7 +539,7 @@ export class StoreService {
       if (reason !== 'conflict') {
         this.reportInstallError(entry.kind, entry.id, 'write_failed', describe(error), { stage: 'install', failureReason: reason })
       }
-      return this.finish({ kind, id, phase: 'failed', failureReason: reason, audit, message: describe(error) })
+      return this.finish({ kind, id, phase: 'failed', failureReason: reason, audit, message: describe(error), ...logPathFromError(error) })
     }
     return this.finish({
       kind,
@@ -630,6 +633,13 @@ function sha256Of(bytes: Buffer): string {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function logPathFromError(error: unknown): { logPath?: string } {
+  const path = typeof error === 'object' && error !== null
+    ? (error as { logPath?: unknown }).logPath
+    : undefined
+  return typeof path === 'string' && path !== '' ? { logPath: path } : {}
 }
 
 function classifyDownloadError(error: unknown): 'checksum_mismatch' | 'timeout' | 'download_failed' {

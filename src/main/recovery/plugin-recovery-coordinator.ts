@@ -18,6 +18,7 @@ export interface PluginRecoveryStore {
   abortPendingTransaction(): Promise<void>
   completePendingTransaction(): Promise<void>
   markBootFailure(error: string): Promise<RecoveryState>
+  hasPendingTransaction?: () => Promise<boolean>
 }
 
 export interface PluginRecoverySafeMode {
@@ -35,27 +36,45 @@ export interface PluginRecoveryOutcome<T> {
   transactionId: string
 }
 
+export interface PluginRecoveryRunOptions {
+  /** Keep a running Runtime alive and wait for the user to restart it after a successful install. */
+  deferRuntimeRestart?: boolean
+}
+
 /**
- * Makes an EzDSH-managed DSH plugin mutation recoverable. The previous
- * Runtime is stopped before the backup so the archive contains a stable
- * profile. A plugin command failure clears its unused transaction; a failed
- * normal restart retains it and provides a clean Safe Mode Runtime instead.
+ * Makes an EzDSH-managed DSH plugin mutation recoverable. By default the
+ * previous Runtime is stopped before the backup so the archive contains a
+ * stable profile. Install callers can defer the restart: the profile is
+ * mutated while Runtime remains usable, and the pending transaction is kept
+ * until the user's later restart has booted successfully.
  */
 export class PluginRecoveryCoordinator {
   private safeModeStart: Promise<void> | undefined
 
   constructor(private readonly options: PluginRecoveryCoordinatorOptions) {}
 
-  async run<T>(input: PreparePluginChangeInput, mutate: () => Promise<T>): Promise<PluginRecoveryOutcome<T>> {
+  async run<T>(
+    input: PreparePluginChangeInput,
+    mutate: () => Promise<T>,
+    persist: (value: T) => Promise<void>,
+    options: PluginRecoveryRunOptions = {},
+  ): Promise<PluginRecoveryOutcome<T>> {
+    if (this.options.recovery.hasPendingTransaction !== undefined && await this.options.recovery.hasPendingTransaction()) {
+      throw new Error('Restart Runtime before changing another DSH plugin')
+    }
     const wasRunning = this.options.runtime.snapshot().phase === 'ready'
-    if (wasRunning) await this.options.runtime.stop()
+    const deferRuntimeRestart = options.deferRuntimeRestart === true && wasRunning
+    if (wasRunning && !deferRuntimeRestart) await this.options.runtime.stop()
     const transaction = await this.options.recovery.preparePluginChange(input)
     let mutationCompleted = false
     try {
       const value = await mutate()
       mutationCompleted = true
-      if (wasRunning) {
+      await persist(value)
+      if (wasRunning && !deferRuntimeRestart) {
         await this.options.runtime.start({ mode: 'normal' })
+        await this.options.recovery.completePendingTransaction()
+      } else if (!wasRunning) {
         await this.options.recovery.completePendingTransaction()
       }
       return { value, transactionId: transaction.id }

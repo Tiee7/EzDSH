@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -111,6 +111,40 @@ describe('DshPluginInstaller', () => {
     expect(result.packageName).toBe('@nanmicoder/dsh-agent-teams')
   })
 
+  it('automatically retries known DSH dependency build scripts for one-click installs', async () => {
+    const profile = await makeProfile()
+    const calls: string[][] = []
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async (_profile, args) => {
+        calls.push([...args])
+        if (calls.length === 1) {
+          throw new Error(
+            'DSH plugin command failed (code=1, signal=null): [ERR_PNPM_IGNORED_BUILDS] ' +
+            'Ignored build scripts: @google/genai@1.52.0, protobufjs@7.6.5'
+          )
+        }
+        await writeFile(profile.packagePath, JSON.stringify({
+          name: 'web',
+          dependencies: { '@nanmicoder/dsh-agent-teams': '0.1.13' }
+        }))
+      }
+    })
+
+    const result = await installer.install(pluginEntry())
+
+    expect(calls).toEqual([
+      ['add', 'npm:@nanmicoder/dsh-agent-teams@0.1.13'],
+      [
+        'add',
+        '--allow-build=@google/genai@1.52.0',
+        '--allow-build=protobufjs@7.6.5',
+        'npm:@nanmicoder/dsh-agent-teams@0.1.13'
+      ]
+    ])
+    expect(result.packageName).toBe('@nanmicoder/dsh-agent-teams')
+  })
+
   it('does not auto-approve build scripts for a newly introduced dependency', async () => {
     const profile = await makeProfile()
     const calls: string[][] = []
@@ -119,6 +153,21 @@ describe('DshPluginInstaller', () => {
       runCommand: async (_profile, args) => {
         calls.push([...args])
         throw new Error('Ignored build scripts: newly-installed-plugin@https://example.com/plugin.tgz')
+      }
+    })
+
+    await expect(installer.install(pluginEntry())).rejects.toThrow(/Ignored build scripts/i)
+    expect(calls).toEqual([['add', 'npm:@nanmicoder/dsh-agent-teams@0.1.13']])
+  })
+
+  it('does not auto-approve an unverified version of a known dependency', async () => {
+    const profile = await makeProfile()
+    const calls: string[][] = []
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async (_profile, args) => {
+        calls.push([...args])
+        throw new Error('Ignored build scripts: @google/genai@1.52.1')
       }
     })
 
@@ -200,5 +249,70 @@ describe('DshPluginInstaller', () => {
 
     expect(calledArgs).toEqual(['add', 'github:owner/repo#main'])
     expect(result.packageName).toBe('@nanmicoder/dsh-agent-teams')
+  })
+
+  it('recovers a GitHub package name when a previous partial install already wrote the dependency', async () => {
+    const profile = await makeProfile()
+    await writeFile(profile.packagePath, JSON.stringify({
+      name: 'web',
+      dependencies: { 'dsh-codex': 'github:ddll8023/dsh-codex' }
+    }))
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async () => {
+        await writeFile(profile.packagePath, JSON.stringify({
+          name: 'web',
+          dependencies: { 'dsh-codex': 'github:ddll8023/dsh-codex' }
+        }))
+      }
+    })
+
+    const result = await installer.install(pluginEntry({
+      id: 'dsh-codex',
+      name: 'DSH Codex',
+      plugin: { source: 'github:ddll8023/dsh-codex' }
+    }))
+
+    expect(result.packageName).toBe('dsh-codex')
+  })
+
+  it('repairs the installed dsh-codex account status before Runtime reload', async () => {
+    const profile = await makeProfile()
+    const sourcePath = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-codex', 'lib', 'index.js')
+    await mkdir(join(sourcePath, '..'), { recursive: true })
+    await writeFile(sourcePath, `
+await registerSessionEventType();
+
+  async function buildAccountStatusFast() {
+    try {
+      return {
+        loggedIn: false,
+        accountId: undefined,
+      };
+    } catch (e) {
+      return {};
+    }
+  }
+
+  // Account Remote
+`)
+
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async (_profile, _args) => {
+        await writeFile(profile.packagePath, JSON.stringify({
+          name: 'web',
+          dependencies: { 'dsh-codex': 'github:ddll8023/dsh-codex' }
+        }))
+      }
+    })
+
+    await installer.install(pluginEntry({
+      id: 'dsh-codex',
+      name: 'DSH Codex',
+      plugin: { source: 'github:ddll8023/dsh-codex' }
+    }))
+
+    expect(await readFile(sourcePath, 'utf8')).toContain('function omitUndefinedProperties(value)')
   })
 })

@@ -14,7 +14,7 @@ describe('application menu navigate section', () => {
       items: [
         builtin('harness')!,
         builtin('docs')!,
-        { kind: 'custom' as const, id: 'external', label: 'External', url: 'https://example.com' },
+        { kind: 'custom' as const, id: 'external', label: 'External', url: 'https://example.com', visible: true },
         builtin('store')!,
         { ...builtin('presets')!, visible: false },
         builtin('settings')!
@@ -57,7 +57,8 @@ describe('application menu navigate section', () => {
           kind: 'custom' as const,
           id: `custom-${index + 1}`,
           label: `Custom ${index + 1}`,
-          url: `https://example.com/${index + 1}`
+          url: `https://example.com/${index + 1}`,
+          visible: true
         })),
         settings
       ]
@@ -102,7 +103,7 @@ describe('application menu navigate section', () => {
     ])
   })
 
-  it('exposes the five tabs by page order and keeps CmdOrCtrl+0 on settings', () => {
+  it('exposes the ordinary four tabs by page order and keeps CmdOrCtrl+0 on settings', () => {
     const navigate = findMenu('前往')
     expect(navigate?.submenu).toBeDefined()
     const items = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item)
@@ -136,6 +137,26 @@ describe('application menu navigate section', () => {
     const navigate = template.find((item) => item.label === 'Go')
     const labels = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item).map((item) => item.label)
     expect(labels).toEqual(['DeepSeek Harness', 'Skills', 'Preset', 'Docs', 'Settings'])
+  })
+
+  it('exposes the employees tab only in developer mode', () => {
+    const template = getApplicationMenuTemplate({ locale: 'zh', developerMode: true })
+    const navigate = template.find((item) => item.label === '前往')
+    const items = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item) as Array<{
+      label?: string
+      accelerator?: string
+    }>
+
+    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Workflow', 'Skills', 'Preset', '使用手册', '员工', '设置'])
+    expect(items.map((item) => item.accelerator)).toEqual([
+      'CmdOrCtrl+1',
+      'CmdOrCtrl+2',
+      'CmdOrCtrl+3',
+      'CmdOrCtrl+4',
+      'CmdOrCtrl+5',
+      'CmdOrCtrl+6',
+      'CmdOrCtrl+0'
+    ])
   })
 
   it('omits hidden tabs while preserving the visible page order', () => {

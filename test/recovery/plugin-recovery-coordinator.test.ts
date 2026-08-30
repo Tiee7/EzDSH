@@ -29,7 +29,7 @@ describe('PluginRecoveryCoordinator', () => {
     }, async () => {
       calls.push('mutate')
       return 'installed'
-    })).rejects.toThrow('plugin boot failure')
+    }, async () => undefined)).rejects.toThrow('plugin boot failure')
 
     expect(calls).toEqual(['stop', 'mutate', 'start:normal', 'stop', 'start:safe'])
     expect(recovery.preparePluginChange).toHaveBeenCalledWith(expect.objectContaining({ entryId: 'agent-teams', action: 'install' }))
@@ -55,11 +55,43 @@ describe('PluginRecoveryCoordinator', () => {
 
     await expect(coordinator.run({
       action: 'uninstall', entryId: 'agent-teams', packageName: '@nanmicoder/dsh-agent-teams', profile: 'web',
-    }, async () => { throw new Error('pnpm refused') })).rejects.toThrow('pnpm refused')
+    }, async () => { throw new Error('pnpm refused') }, async () => undefined)).rejects.toThrow('pnpm refused')
 
     expect(recovery.abortPendingTransaction).toHaveBeenCalledTimes(1)
     expect(recovery.markBootFailure).not.toHaveBeenCalled()
     expect(safeMode.enable).not.toHaveBeenCalled()
+  })
+
+  it('keeps Runtime running during plugin installation and persists before deferring restart', async () => {
+    const calls: string[] = []
+    const runtime = {
+      snapshot: () => ({ phase: 'ready', mode: 'normal' as const }),
+      stop: vi.fn(async () => { calls.push('stop') }),
+      start: vi.fn(async () => { calls.push('start:normal'); return { phase: 'ready', mode: 'normal' as const } }),
+    }
+    const recovery = {
+      preparePluginChange: vi.fn(async () => ({ id: 'txn-deferred', kind: 'plugin-change' as const, phase: 'prepared' as const, snapshotName: 'snapshot.tar.gz' })),
+      abortPendingTransaction: vi.fn(async () => undefined),
+      completePendingTransaction: vi.fn(async () => undefined),
+      markBootFailure: vi.fn(async () => ({ phase: 'recovery-required' as const })),
+    }
+    const safeMode = { enable: vi.fn(async () => ({ dshHome: '/safe' })) }
+    const persist = vi.fn(async (value: string) => { calls.push(`persist:${value}`) })
+    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, safeMode })
+
+    const outcome = await coordinator.run({
+      action: 'install', entryId: 'dsh-codex', packageName: 'dsh-codex', profile: 'web',
+    }, async () => {
+      calls.push('mutate')
+      return 'installed'
+    }, persist, { deferRuntimeRestart: true })
+
+    expect(outcome).toMatchObject({ value: 'installed', transactionId: 'txn-deferred' })
+    expect(calls).toEqual(['mutate', 'persist:installed'])
+    expect(runtime.stop).not.toHaveBeenCalled()
+    expect(runtime.start).not.toHaveBeenCalled()
+    expect(recovery.completePendingTransaction).not.toHaveBeenCalled()
+    expect(persist).toHaveBeenCalledWith('installed')
   })
 
   it('coalesces concurrent Safe Mode start requests after the same boot failure', async () => {

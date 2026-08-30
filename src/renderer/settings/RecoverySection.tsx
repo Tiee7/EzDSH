@@ -6,6 +6,20 @@ interface RecoverySectionProps {
   copy: AppCopy
 }
 
+export function recoveryDeleteApiAvailable(value: unknown): value is (selector: string) => Promise<void> {
+  return typeof value === 'function'
+}
+
+export function recoveryVerificationLabel(
+  copy: AppCopy,
+  snapshotName: string,
+  verification: RecoveryVerifyResult | undefined,
+): string {
+  return verification?.snapshotName === snapshotName
+    ? copy.settingsRecoveryVerified(verification.ok)
+    : copy.settingsRecoveryVerify
+}
+
 /** User-facing manual backup, checksum verification, restore preview, and Session Log doctor. */
 export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
   const [snapshots, setSnapshots] = useState<RecoverySnapshot[]>([])
@@ -65,6 +79,28 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
     }
   }
 
+  const deleteSnapshot = async (snapshot: RecoverySnapshot): Promise<void> => {
+    if (busy) return
+    const deleteApi: unknown = window.EzDSH.recovery.deleteSnapshot
+    if (!recoveryDeleteApiAvailable(deleteApi)) {
+      setError(copy.settingsRecoveryBridgeOutdated)
+      return
+    }
+    if (!window.confirm(copy.settingsRecoveryDeleteConfirm(snapshot.archiveName))) return
+    setBusy(true)
+    setError(undefined)
+    setVerification(undefined)
+    try {
+      await deleteApi(snapshot.archiveName)
+      setSnapshots((current) => current.filter((item) => item.archiveName !== snapshot.archiveName))
+      setMessage(copy.settingsRecoveryDeleted)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.settingsRecoveryEmpty)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const restore = async (snapshot: RecoverySnapshot): Promise<void> => {
     if (busy) return
     setBusy(true)
@@ -93,6 +129,7 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
         <div>
           <p className="settings-label">{copy.settingsRecovery}</p>
           <p className="settings-hint settings-recovery-hint">{copy.settingsRecoveryHint}</p>
+          <p className="settings-hint settings-recovery-verify-hint">{copy.settingsRecoveryVerifyHint}</p>
         </div>
       </div>
       <div className="settings-recovery-actions">
@@ -118,8 +155,9 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
               <p className="settings-hint">{snapshot.manifest.kind} · {snapshot.manifest.createdAt} · EzDSH {snapshot.manifest.appVersion}</p>
             </div>
             <div className="settings-actions">
-              <button className="settings-action" type="button" disabled={busy} onClick={() => { void verify(snapshot.archiveName) }}>{copy.settingsRecoveryVerified(true)}</button>
-              <button className="settings-action" type="button" disabled={busy} onClick={() => { void restore(snapshot) }}>{copy.recoveryRestorePrevious}</button>
+              <button className="settings-action" type="button" disabled={busy} onClick={() => { void verify(snapshot.archiveName) }}>{recoveryVerificationLabel(copy, snapshot.archiveName, verification)}</button>
+              <button className="settings-action" type="button" disabled={busy} onClick={() => { void restore(snapshot) }}>{copy.settingsRecoveryRestore}</button>
+              <button className="settings-action settings-action-danger" type="button" disabled={busy} onClick={() => { void deleteSnapshot(snapshot) }}>{copy.settingsRecoveryDelete}</button>
             </div>
           </div>
         ))}

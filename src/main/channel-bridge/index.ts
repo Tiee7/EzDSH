@@ -1,7 +1,11 @@
 import type { UserDataLayout } from '../../shared/state.js'
 import { AdapterRegistry } from './adapter-registry.js'
 import { createConfigStorage, type ConfigStorage } from './config.js'
-import { DshSessionClient } from './dsh-session.js'
+import { DshApiError, DshSessionClient } from './dsh-session.js'
+import {
+  deleteArchivedSessionFromStore,
+  removeArchivedSessionFromStore,
+} from './archived-session-store.js'
 import type {
   ChannelAdapter,
   ChannelBridgeConfig,
@@ -26,6 +30,11 @@ export interface ChannelBridgeOptions {
   layout: UserDataLayout
   /** Returns the current DSH Runtime URL, or undefined if it is not running. */
   getRuntimeUrl(): string | undefined
+  /** Returns whether destructive Session maintenance is currently enabled. */
+  isDeveloperMode?(): boolean
+  /** Stop and start the Runtime around legacy workspace-store compatibility writes. */
+  stopRuntime?(): Promise<void>
+  startRuntime?(): Promise<void>
   /** Registry of available channel adapters. */
   registry: AdapterRegistry
 }
@@ -38,6 +47,7 @@ export class ChannelBridgeService {
   private activeTurns = new Map<string, boolean>()
   private pairing?: PairingChallenge
   private pairingTimer?: NodeJS.Timeout
+  private archiveMutation: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly options: ChannelBridgeOptions) {
     this.config = { ...DEFAULT_CHANNEL_BRIDGE_CONFIG }
@@ -163,6 +173,76 @@ export class ChannelBridgeService {
       timeoutMs: 10_000,
     })
     return client.listSessions()
+  }
+
+  async listArchivedSessions(): Promise<DshSessionSummary[]> {
+    const runtimeUrl = this.options.getRuntimeUrl()
+    if (runtimeUrl === undefined) {
+      throw new Error('DSH Runtime 尚未启动')
+    }
+
+    const client = new DshSessionClient({
+      baseUrl: runtimeUrl,
+      timeoutMs: 10_000,
+    })
+    return client.listArchivedSessions()
+  }
+
+  async unarchiveSession(sessionId: string): Promise<void> {
+    await this.enqueueArchiveMutation(async () => {
+      const runtimeUrl = this.options.getRuntimeUrl()
+      if (runtimeUrl === undefined) {
+        throw new Error('DSH Runtime 尚未启动')
+      }
+
+      const client = new DshSessionClient({
+        baseUrl: runtimeUrl,
+        timeoutMs: 10_000,
+      })
+      try {
+        await client.unarchiveSession(sessionId)
+      } catch (error) {
+        if (!(error instanceof DshApiError) || error.status !== 404) throw error
+        if (this.options.stopRuntime === undefined || this.options.startRuntime === undefined) {
+          throw new Error('当前 DSH Runtime 不支持恢复归档 Session，请重启应用后重试')
+        }
+
+        await this.options.stopRuntime()
+        try {
+          await removeArchivedSessionFromStore(this.options.layout.harness, sessionId)
+        } finally {
+          await this.options.startRuntime()
+        }
+      }
+    })
+  }
+
+  async deleteArchivedSession(sessionId: string): Promise<void> {
+    await this.enqueueArchiveMutation(async () => {
+      if (this.options.isDeveloperMode?.() !== true) {
+        throw new Error('永久删除归档会话仅在开发者模式下可用')
+      }
+      if (this.options.getRuntimeUrl() === undefined) {
+        throw new Error('DSH Runtime 尚未启动')
+      }
+      if (this.options.stopRuntime === undefined || this.options.startRuntime === undefined) {
+        throw new Error('当前 DSH Runtime 不支持永久删除归档 Session，请重启应用后重试')
+      }
+
+      await this.options.stopRuntime()
+      try {
+        const deleted = await deleteArchivedSessionFromStore(this.options.layout.harness, sessionId)
+        if (!deleted) throw new Error('Session 已不在归档列表中')
+      } finally {
+        await this.options.startRuntime()
+      }
+    })
+  }
+
+  private enqueueArchiveMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.archiveMutation.then(operation, operation)
+    this.archiveMutation = run.then(() => undefined, () => undefined)
+    return run
   }
 
   getPairingState(): PairingState {

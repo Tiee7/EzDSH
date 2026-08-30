@@ -6,7 +6,9 @@ import {
   isCustomNavItem,
   visibleNavItems,
   type AppTab,
-  type NavConfig
+  type NavConfig,
+  type NavItem,
+  type NavigationTarget
 } from '../../shared/navigation.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import type { UpdateState } from '../../shared/update.js'
@@ -21,9 +23,12 @@ import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js
 import { WebPane } from './WebPane.js'
 import { StorePage } from '../store/StorePage.js'
 import { PresetPage } from '../store/PresetPage.js'
+import { EmployeesPage } from '../employees/EmployeesPage.js'
+import { WorkflowPage } from '../workflow/WorkflowPage.js'
 import { DocsPage } from '../docs/DocsPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
 import { UpdateCenter } from '../update-center/UpdateCenter.js'
+import { shouldKeepTabMounted } from './page-lifecycle.js'
 import { RecoveryPanel } from '../recovery/RecoveryPanel.js'
 import logoUrl from '../../../assets/logo.png'
 import { ensureAudio, playNotificationSound } from '../notifications/audio.js'
@@ -33,12 +38,16 @@ function builtinTabLabel(id: AppTab, copy: AppCopy): string {
   switch (id) {
     case 'harness':
       return copy.tabHarness
+    case 'workflow':
+      return copy.tabWorkflow
     case 'store':
       return copy.tabStore
     case 'presets':
       return copy.tabPresets
     case 'docs':
       return copy.tabDocs
+    case 'employees':
+      return copy.tabEmployees
     case 'settings':
       return copy.tabSettings
   }
@@ -123,6 +132,28 @@ function LanguageTag({ locale, copy, onSelect }: LanguageTagProps): JSX.Element 
   )
 }
 
+interface SystemNavigationProps {
+  copy: AppCopy
+  locale: AppLocale
+  isMac: boolean
+  visibleItems: NavItem[]
+  activeTab: string
+  languageTagVisible: boolean
+  onSelectTab: (tab: NavigationTarget) => void
+  onSelectLocale: (locale: AppLocale) => Promise<void>
+}
+
+/** The application-level navigation stays mounted even when a page enters workspace focus mode. */
+export function SystemNavigation({ copy, locale, isMac, visibleItems, activeTab, languageTagVisible, onSelectTab, onSelectLocale }: SystemNavigationProps): JSX.Element {
+  return <nav className={`tab-bar ${isMac ? 'tab-bar-mac' : ''}`} aria-label={copy.menuNavigate}>
+    <div className="tab-bar-drag-region" aria-hidden="true" />
+    <div className="tab-bar-tabs" role="tablist">
+      {visibleItems.map((item) => <button key={item.id} role="tab" aria-selected={activeTab === item.id} className={`tab-bar-item ${activeTab === item.id ? 'tab-bar-item-active' : ''}`} onClick={() => onSelectTab(item.id)}>{isBuiltinNavItem(item) ? builtinTabLabel(item.id, copy) : item.label}</button>)}
+    </div>
+    {languageTagVisible ? <LanguageTag locale={locale} copy={copy} onSelect={onSelectLocale} /> : null}
+  </nav>
+}
+
 export function App() {
   const [locale, setLocale] = useState<AppLocale>(DEFAULT_APP_LOCALE)
   const [languageTagVisible, setLanguageTagVisible] = useState(true)
@@ -131,7 +162,9 @@ export function App() {
   const [update, setUpdate] = useState<UpdateState>()
   const [loading, setLoading] = useState(true)
   const [navConfig, setNavConfig] = useState<NavConfig>(() => getDefaultNavConfig())
+  const [developerMode, setDeveloperMode] = useState(false)
   const [activeTab, setActiveTab] = useState<string>('harness')
+  const [workflowWorkspaceMode, setWorkflowWorkspaceMode] = useState(false)
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
   const [deepLinkTarget, setDeepLinkTarget] = useState<DeepLinkInstallTarget | undefined>()
   const [deepLinkSession, setDeepLinkSession] = useState<DeepLinkSessionTarget | undefined>()
@@ -193,6 +226,9 @@ export function App() {
     const unsubscribeLanguageTag = window.EzDSH.settings.onLanguageTagVisibilityChange((visible) => {
       if (active) setLanguageTagVisible(visible)
     })
+    const unsubscribeDeveloperMode = window.EzDSH.settings.onDeveloperModeChange((enabled) => {
+      if (active) setDeveloperMode(enabled)
+    })
     const unsubscribeUpdate = window.EzDSH.updates.onStateChange((snapshot) => {
       if (active) setUpdate(snapshot)
     })
@@ -228,6 +264,13 @@ export function App() {
       })
       .catch(() => {
         // Keep the shortcut visible if its optional preference cannot be read.
+      })
+    void window.EzDSH.settings.getDeveloperMode()
+      .then((enabled) => {
+        if (active) setDeveloperMode(enabled)
+      })
+      .catch(() => {
+        // Keep developer-only tabs hidden if the optional preference cannot be read.
       })
     void window.EzDSH.updates.getStatus()
       .then((snapshot) => {
@@ -269,6 +312,7 @@ export function App() {
       unsubscribeDeepLinkSession()
       unsubscribeLocale()
       unsubscribeLanguageTag()
+      unsubscribeDeveloperMode()
       unsubscribeUpdate()
       unsubscribeRecovery()
       unsubscribeNav()
@@ -282,6 +326,11 @@ export function App() {
     if (nextLocale === locale) return
     await window.EzDSH.settings.setLocale(nextLocale)
   }, [locale])
+
+  const openSessionFromSettings = useCallback((sessionId: string): void => {
+    setActiveTab('harness')
+    setDeepLinkSession({ sessionId })
+  }, [])
 
   const sendSessionToRuntime = useCallback(() => {
     const frame = harnessFrameRef.current
@@ -302,7 +351,7 @@ export function App() {
     void ensureRuntime()
   }, [ensureRuntime, recovery.phase, recoveryLoaded])
 
-  const visibleItems = useMemo(() => visibleNavItems(navConfig), [navConfig])
+  const visibleItems = useMemo(() => visibleNavItems(navConfig, developerMode), [developerMode, navConfig])
   const visibleIds = useMemo(() => visibleItems.map((item) => item.id), [visibleItems])
 
   useEffect(() => {
@@ -310,6 +359,10 @@ export function App() {
       setActiveTab(visibleIds[0] ?? 'harness')
     }
   }, [visibleIds, activeTab])
+
+  useEffect(() => {
+    if (activeTab !== 'workflow') setWorkflowWorkspaceMode(false)
+  }, [activeTab])
 
   const workspaceLock = workspaceOperation === undefined ? null : (
     <div className="workspace-operation-lock" role="alert" aria-live="assertive">
@@ -326,24 +379,8 @@ export function App() {
 
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {
     return (
-      <main className="workspace">
-        <nav className={`tab-bar ${isMac ? 'tab-bar-mac' : ''}`} aria-label={copy.menuNavigate}>
-          <div className="tab-bar-drag-region" aria-hidden="true" />
-          <div className="tab-bar-tabs" role="tablist">
-            {visibleItems.map((item) => (
-              <button
-                key={item.id}
-                role="tab"
-                aria-selected={activeTab === item.id}
-                className={`tab-bar-item ${activeTab === item.id ? 'tab-bar-item-active' : ''}`}
-                onClick={() => setActiveTab(item.id)}
-              >
-                {isBuiltinNavItem(item) ? builtinTabLabel(item.id, copy) : item.label}
-              </button>
-            ))}
-          </div>
-          {languageTagVisible ? <LanguageTag locale={locale} copy={copy} onSelect={selectLocale} /> : null}
-        </nav>
+      <main className={`workspace ${activeTab === 'workflow' && workflowWorkspaceMode ? 'workspace-workflow-focus' : ''}`}>
+        <SystemNavigation copy={copy} locale={locale} isMac={isMac} visibleItems={visibleItems} activeTab={activeTab} languageTagVisible={languageTagVisible} onSelectTab={setActiveTab} onSelectLocale={selectLocale} />
         <div className="workspace-content">
           {visibleItems.map((item) => {
             if (isCustomNavItem(item)) {
@@ -369,9 +406,17 @@ export function App() {
                 return activeTab === 'store'
                   ? <section key="store" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabStore}><StorePage copy={copy} locale={locale} deepLinkTarget={deepLinkTarget} /></section>
                   : null
+              case 'workflow':
+                return shouldKeepTabMounted(item.id) || activeTab === 'workflow'
+                  ? <section key="workflow" className={`workspace-pane ${activeTab === 'workflow' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabWorkflow}><WorkflowPage copy={copy} locale={locale} developerMode={developerMode} onWorkspaceModeChange={setWorkflowWorkspaceMode} /></section>
+                  : null
               case 'presets':
                 return activeTab === 'presets'
                   ? <section key="presets" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabPresets}><PresetPage copy={copy} locale={locale} /></section>
+                  : null
+              case 'employees':
+                return shouldKeepTabMounted(item.id) || activeTab === 'employees'
+                  ? <section key="employees" className={`workspace-pane ${activeTab === 'employees' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabEmployees}><EmployeesPage copy={copy} /></section>
                   : null
               case 'docs':
                 return (
@@ -381,7 +426,7 @@ export function App() {
                 )
               case 'settings':
                 return activeTab === 'settings'
-                  ? <section key="settings" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} /></section>
+                  ? <section key="settings" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} onOpenSession={openSessionFromSettings} /></section>
                   : null
             }
           })}

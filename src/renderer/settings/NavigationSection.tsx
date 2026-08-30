@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import {
+  isDeveloperOnlyTab,
   isBuiltinNavItem,
+  isCustomNavItem,
   isValidWebUrl,
   pinFixedTabs,
   validateNavConfig,
@@ -13,6 +15,7 @@ import {
 
 interface NavigationSectionProps {
   copy: AppCopy
+  developerMode: boolean
 }
 
 interface EditingDraft {
@@ -20,23 +23,32 @@ interface EditingDraft {
   url: string
 }
 
-function builtinLabel(id: AppTab, copy: AppCopy): string {
+export function builtinLabel(id: AppTab, copy: AppCopy): string {
   switch (id) {
     case 'harness':
       return copy.tabHarness
+    case 'workflow':
+      return copy.tabWorkflow
     case 'store':
       return copy.tabStore
     case 'presets':
       return copy.tabPresets
     case 'docs':
       return copy.tabDocs
+    case 'employees':
+      return copy.tabEmployees
     case 'settings':
       return copy.tabSettings
   }
 }
 
+/** Core navigation stays anchored; required-but-reorderable pages may move. */
+export function isNavItemMovable(item: NavItem, editingId: string | undefined): boolean {
+  return editingId === undefined && !(isBuiltinNavItem(item) && (item.id === 'harness' || item.id === 'settings'))
+}
+
 /** Manage which tabs show in the top tab bar and in which order. */
-export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element {
+export function NavigationSection({ copy, developerMode }: NavigationSectionProps): JSX.Element {
   const [items, setItems] = useState<NavItem[]>([])
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -45,6 +57,9 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
   const [draft, setDraft] = useState<EditingDraft>({ label: '', url: '' })
   const [dragIndex, setDragIndex] = useState<number>()
   const [dropBoundary, setDropBoundary] = useState<number>()
+  const itemsForDisplay = developerMode
+    ? items
+    : items.filter((item) => !isDeveloperOnlyTab(item.id))
 
   useEffect(() => {
     let active = true
@@ -64,7 +79,9 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
   }, [copy.navSaveFailed])
 
   const persist = async (next: NavItem[]): Promise<void> => {
-    const pinned = pinFixedTabs(next)
+    const nextIds = new Set(next.map((item) => item.id))
+    const hiddenDeveloperItems = items.filter((item) => isDeveloperOnlyTab(item.id) && !nextIds.has(item.id))
+    const pinned = pinFixedTabs([...next, ...hiddenDeveloperItems])
     const error = validateNavConfig({ items: pinned })
     if (error !== undefined) {
       setSaveError(error)
@@ -89,6 +106,13 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
     void persist(next)
   }
 
+  const toggleCustom = (id: string): void => {
+    const next = items.map((item) =>
+      isCustomNavItem(item) && item.id === id ? { ...item, visible: !item.visible } : item
+    )
+    void persist(next)
+  }
+
   const startEdit = (item: CustomNavItem): void => {
     setEditingId(item.id)
     setDraft({ label: item.label, url: item.url })
@@ -98,7 +122,7 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
     const id = crypto.randomUUID()
     setEditingId(id)
     setDraft({ label: '', url: '' })
-    setItems([...items, { kind: 'custom', id, label: '', url: '' }])
+    setItems([...items, { kind: 'custom', id, label: '', url: '', visible: true }])
   }
 
   const saveEdit = (item: CustomNavItem): void => {
@@ -141,7 +165,7 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
       }
       boundary = i + 1
     }
-    setDropBoundary(Math.min(Math.max(boundary, 1), items.length - 1))
+    setDropBoundary(Math.min(Math.max(boundary, 1), itemsForDisplay.length - 1))
   }
 
   const onDrop = (event: React.DragEvent<HTMLUListElement>): void => {
@@ -153,7 +177,7 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
     let to = dropBoundary ?? dragIndex
     if (dragIndex < to) to -= 1
     if (to !== dragIndex) {
-      const next = [...items]
+      const next = [...itemsForDisplay]
       const [moved] = next.splice(dragIndex, 1)
       next.splice(to, 0, moved)
       void persist(next)
@@ -171,8 +195,8 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
       <p className="settings-hint">{copy.navSectionHint}</p>
       <p className="settings-hint nav-shortcut-hint">{copy.navShortcutHint}</p>
       <ul className="nav-list" onDragOver={onListDragOver} onDrop={onDrop}>
-        {items.map((item, index) => {
-          const movable = editingId === undefined && !(isBuiltinNavItem(item) && item.locked)
+        {itemsForDisplay.map((item, index) => {
+          const movable = isNavItemMovable(item, editingId)
           return (
             <li
               key={item.id}
@@ -220,6 +244,15 @@ export function NavigationSection({ copy }: NavigationSectionProps): JSX.Element
                 <>
                   <span className="nav-label">{item.label}</span>
                   <code className="nav-url">{item.url}</code>
+                  <button
+                    type="button"
+                    className={`nav-toggle ${item.visible ? 'nav-toggle-on' : ''}`}
+                    disabled={busy}
+                    aria-pressed={item.visible}
+                    onClick={() => toggleCustom(item.id)}
+                  >
+                    {item.visible ? copy.navHide : copy.navShow}
+                  </button>
                   <button type="button" className="nav-action" disabled={busy} onClick={() => startEdit(item)}>{copy.navEdit}</button>
                   <button type="button" className="nav-action nav-action-danger" disabled={busy} onClick={() => deleteItem(item.id)}>{copy.navDelete}</button>
                 </>

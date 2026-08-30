@@ -1,16 +1,24 @@
 /** Top-level tabs shared by the renderer tab bar, the preload bridge, and the native application menu. */
-export const APP_TABS = ['harness', 'store', 'presets', 'docs', 'settings'] as const
+export const APP_TABS = ['harness', 'workflow', 'store', 'presets', 'docs', 'employees', 'settings'] as const
 
 /** One top-level navigation target. */
 export type AppTab = (typeof APP_TABS)[number]
+
+/** Tabs reserved for developer-mode features. */
+export const DEVELOPER_ONLY_TABS: readonly AppTab[] = ['workflow', 'employees']
 
 /** Return whether `value` is a valid {@link AppTab}. */
 export function isAppTab(value: unknown): value is AppTab {
   return (APP_TABS as readonly unknown[]).includes(value)
 }
 
-/** Built-in tabs that must stay visible and cannot be removed. */
-export const LOCKED_NAV_TABS: readonly AppTab[] = ['harness', 'settings']
+/** Return whether a top-level tab is reserved for developer mode. */
+export function isDeveloperOnlyTab(value: unknown): value is AppTab {
+  return DEVELOPER_ONLY_TABS.includes(value as AppTab)
+}
+
+/** Tabs reserved for the application and therefore not removable from navigation. */
+export const LOCKED_NAV_TABS: readonly AppTab[] = ['harness', 'employees', 'settings']
 
 /** Maximum number of page-position shortcuts; zero is reserved for settings. */
 export const NAVIGATION_SHORTCUT_LIMIT = 9
@@ -29,6 +37,7 @@ export interface CustomNavItem {
   id: string
   label: string
   url: string
+  visible: boolean
 }
 
 export type NavItem = BuiltinNavItem | CustomNavItem
@@ -62,24 +71,24 @@ export function isCustomNavItem(item: NavItem): item is CustomNavItem {
 
 /** Whether a nav item should be shown in the tab bar. Locked built-ins are always shown. */
 export function isVisibleNavItem(item: NavItem): boolean {
-  return isCustomNavItem(item) || item.visible || item.locked
+  return isCustomNavItem(item) ? item.visible : item.visible || item.locked
 }
 
 /** Items that should appear in the tab bar, in display order. */
-export function visibleNavItems(config: NavConfig): NavItem[] {
-  return config.items.filter(isVisibleNavItem)
+export function visibleNavItems(config: NavConfig, developerMode = false): NavItem[] {
+  return config.items.filter((item) => isVisibleNavItem(item) && (developerMode || !isDeveloperOnlyTab(item.id)))
 }
 
 /** Items that receive CmdOrCtrl+1..9, excluding trailing settings which has CmdOrCtrl+0. */
-export function navigationShortcutItems(config: NavConfig): NavItem[] {
-  const visibleItems = visibleNavItems(config)
+export function navigationShortcutItems(config: NavConfig, developerMode = false): NavItem[] {
+  const visibleItems = visibleNavItems(config, developerMode)
   return visibleItems.slice(0, NAVIGATION_SHORTCUT_LIMIT).filter((item, index) => {
     const isLastVisibleItem = index === visibleItems.length - 1
     return !(isLastVisibleItem && isBuiltinNavItem(item) && item.id === 'settings')
   })
 }
 
-/** Ensure fixed tabs stay anchored: harness first, settings last. */
+/** Ensure core tabs stay anchored: harness first, settings last. */
 export function pinFixedTabs(items: NavItem[]): NavItem[] {
   const harness = items.find((item) => isBuiltinNavItem(item) && item.id === 'harness')
   const settings = items.find((item) => isBuiltinNavItem(item) && item.id === 'settings')
@@ -125,7 +134,7 @@ export function normalizeNavConfig(raw: unknown): NavConfig {
       && typeof entry.url === 'string' && isValidWebUrl(entry.url)
     ) {
       seen.add(entry.id)
-      items.push({ kind: 'custom', id: entry.id, label: entry.label, url: entry.url })
+      items.push({ kind: 'custom', id: entry.id, label: entry.label, url: entry.url, visible: entry.visible !== false })
     }
   }
   for (const id of APP_TABS) {

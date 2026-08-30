@@ -20,20 +20,20 @@ describe('navigation service', () => {
     const custom: NavConfig = {
       items: [
         ...getDefaultNavConfig().items,
-        { kind: 'custom', id: 'c1', label: 'Web', url: 'https://example.com' }
+        { kind: 'custom', id: 'c1', label: 'Web', url: 'https://example.com', visible: true }
       ]
     }
     await service.setConfig(custom)
     const reloaded = new NavigationService(dir)
     await reloaded.initialize()
-    expect(reloaded.getConfig().items.map((i) => i.id)).toEqual(['harness', 'store', 'presets', 'docs', 'c1', 'settings'])
+    expect(reloaded.getConfig().items.map((i) => i.id)).toEqual(['harness', 'workflow', 'store', 'presets', 'docs', 'employees', 'c1', 'settings'])
   })
 
   it('rejects an invalid config without persisting', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-nav-'))
     const service = new NavigationService(dir)
     await service.initialize()
-    const bad: NavConfig = { items: [{ kind: 'custom', id: 'c1', label: 'X', url: 'ftp://x.com' }] }
+    const bad: NavConfig = { items: [{ kind: 'custom', id: 'c1', label: 'X', url: 'ftp://x.com', visible: true }] }
     await expect(service.setConfig(bad)).rejects.toThrow(/http\(s\)/)
     expect(service.getConfig()).toEqual(getDefaultNavConfig())
   })
@@ -43,6 +43,6 @@ describe('navigation service', () => {
     await writeFile(join(dir, 'navigation.json'), JSON.stringify({ items: [{ kind: 'builtin', id: 'store', visible: false }] }))
     const service = new NavigationService(dir)
     await service.initialize()
-    expect(service.getConfig().items.map((i) => i.id)).toEqual(['harness', 'store', 'presets', 'docs', 'settings'])
+    expect(service.getConfig().items.map((i) => i.id)).toEqual(['harness', 'store', 'workflow', 'presets', 'docs', 'employees', 'settings'])
   })
 })

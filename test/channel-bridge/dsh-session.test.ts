@@ -66,15 +66,107 @@ describe('DshSessionClient', () => {
   })
 
   it('creates a session inside a DSH workspace and queues a prompt', async () => {
-    const mockFetch = createMockFetch([
-      ok({ sessionId: 'session-2' }),
-      ok({ accepted: true }),
-    ])()
-    vi.stubGlobal('fetch', mockFetch)
+    const requests: Array<{ method: string; payload: unknown }> = []
+    let responseIndex = 0
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; payload: unknown }
+      requests.push(request)
+      const body = [
+        ok({ sessionId: 'session-2' }),
+        ok({ accepted: true }),
+      ][Math.min(responseIndex++, 1)]
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as Response
+    })
     const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
 
-    await expect(client.createSession({ workspaceId: 'workspace-1' })).resolves.toEqual({ sessionId: 'session-2' })
+    await expect(client.createSession({ cwd: '/work', workspaceId: 'workspace-1' })).resolves.toEqual({ sessionId: 'session-2' })
+    expect(requests[0]?.payload).toEqual({ workspaceId: 'workspace-1' })
     await expect(client.queuePrompt('session-2', '完成任务')).resolves.toEqual({ accepted: true })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('renames a session through the DSH session API', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; payload: unknown }
+      requests.push(request)
+      const response = ok({ title: '新会话', seq: 1 })
+      return {
+        ok: true,
+        status: 200,
+        json: async () => response,
+        text: async () => JSON.stringify(response),
+      } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await expect(client.renameSession('session-1', '新会话')).resolves.toBeUndefined()
+    expect(requests).toEqual([expect.objectContaining({ method: 'session.rename', payload: { sessionId: 'session-1', title: '新会话' } })])
+
+    vi.unstubAllGlobals()
+  })
+
+  it('loads and selects a session model', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; payload: unknown }
+      requests.push(request)
+      const value = request.method === 'session.models'
+        ? {
+            current: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+            routable: true,
+            groups: [{ id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' }] }],
+            failures: [],
+          }
+        : { selected: { provider: 'deepseek', model: 'deepseek-v4-pro' } }
+      const response = ok(value)
+      return {
+        ok: true,
+        status: 200,
+        json: async () => response,
+        text: async () => JSON.stringify(response),
+      } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await expect(client.getSessionModels('session-1')).resolves.toMatchObject({
+      current: { provider: 'deepseek', model: 'deepseek-v4-flash' },
+      groups: [{ models: [{ id: 'deepseek-v4-pro' }] }],
+    })
+    await expect(client.selectSessionModel('session-1', { provider: 'deepseek', model: 'deepseek-v4-pro' })).resolves.toEqual({
+      selected: { provider: 'deepseek', model: 'deepseek-v4-pro' },
+    })
+    expect(requests).toEqual([
+      expect.objectContaining({ method: 'session.models', payload: { sessionId: 'session-1' } }),
+      expect.objectContaining({ method: 'session.selectModel', payload: { sessionId: 'session-1', provider: 'deepseek', model: 'deepseek-v4-pro' } }),
+    ])
+
+    vi.unstubAllGlobals()
+  })
+
+  it('cancels a running DSH session', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; payload: unknown }
+      requests.push(request)
+      const body = ok({ accepted: true })
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await expect(client.cancelSession('session-1')).resolves.toBeUndefined()
+    expect(requests).toEqual([expect.objectContaining({ method: 'session.cancel', payload: { sessionId: 'session-1' } })])
 
     vi.unstubAllGlobals()
   })
@@ -87,6 +179,58 @@ describe('DshSessionClient', () => {
     const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
 
     await expect(client.unarchiveSession('session-2')).resolves.toEqual({ archivedSessionIds: [] })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('lists only sessions that are in the workspace archive set', async () => {
+    const methods: string[] = []
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string }
+      methods.push(body.method)
+
+      if (body.method === 'workspace.list') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ok({
+            items: [],
+            archivedSessionIds: ['session-archived'],
+          }),
+        } as Response
+      }
+
+      if (body.method === 'session.list') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ok({
+            items: [
+              {
+                sessionId: 'session-visible',
+                updatedAt: 2,
+                running: false,
+                projections: { values: { title: 'Visible' } },
+              },
+              {
+                sessionId: 'session-archived',
+                updatedAt: 1,
+                running: false,
+                projections: { values: { title: 'Archived' } },
+              },
+            ],
+          }),
+        } as Response
+      }
+
+      throw new Error(`unexpected request: ${body.method}`)
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await expect(client.listArchivedSessions()).resolves.toEqual([
+      { sessionId: 'session-archived', updatedAt: 1, running: false, title: 'Archived' },
+    ])
+    expect(methods).toEqual(['workspace.list', 'session.list'])
 
     vi.unstubAllGlobals()
   })

@@ -8,7 +8,7 @@ import type {
   StoreEntry,
   StoreKind
 } from '../../shared/store.js'
-import { auditLabel, auditTone, categoryLabel, phaseLabel, updateAvailable } from './display.js'
+import { auditLabel, auditTone, categoryLabel, entryType, entryTypeLabel, phaseLabel, updateAvailable, type StoreEntryType } from './display.js'
 import { MarkdownContent } from './MarkdownContent.js'
 import './store.css'
 
@@ -23,6 +23,41 @@ interface StoreBrowserProps {
 
 function AuditBadge({ entry, copy }: { entry: StoreEntry; copy: AppCopy }): JSX.Element {
   return <span className={`badge ${auditTone(entry.auditLevel)}`}>{auditLabel(copy, entry.auditLevel)}</span>
+}
+
+function EntryTypeIcon({ type }: { type: StoreEntryType }): JSX.Element {
+  if (type === 'plugin') {
+    return (
+      <svg viewBox="0 0 20 20" aria-hidden="true" data-icon="puzzle-piece">
+        <path d="M4 4h3.5a2.5 2.5 0 1 1 5 0H16v3.5a2.5 2.5 0 1 0 0 5V16h-3.5a2.5 2.5 0 1 1-5 0H4v-3.5a2.5 2.5 0 1 0 0-5V4Z" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" data-icon="plug">
+      <path d="M12 22v-5M9 7V2M15 7V2M6 13V7h12v6a6 6 0 0 1-12 0Z" />
+    </svg>
+  )
+}
+
+export function EntryTypeBadge({ entry, copy }: { entry: StoreEntry; copy: AppCopy }): JSX.Element | null {
+  const type = entryType(entry)
+  if (type === undefined) return null
+  const label = entryTypeLabel(copy, type)
+  return (
+    <span className={`badge badge-type badge-type-${type}`} role="img" aria-label={label} title={label}>
+      <EntryTypeIcon type={type} />
+    </span>
+  )
+}
+
+export function EntryBadges({ entry, copy }: { entry: StoreEntry; copy: AppCopy }): JSX.Element {
+  return (
+    <div className="entry-badges">
+      <EntryTypeBadge entry={entry} copy={copy} />
+      <AuditBadge entry={entry} copy={copy} />
+    </div>
+  )
 }
 
 function AuditReportView({ report, copy }: { report: AuditReport; copy: AppCopy }): JSX.Element {
@@ -68,6 +103,16 @@ export function AuditOverrideActions({ copy, disabled, onInstallAnyway }: {
   )
 }
 
+export function InstallFailureNotice({ copy, state }: { copy: AppCopy; state: InstallState }): JSX.Element {
+  return (
+    <div className="install-failure" role="alert">
+      <p className="install-failure-title">{copy.storeInstallFailed}</p>
+      {state.message !== undefined ? <pre className="install-failure-message">{state.message}</pre> : null}
+      {state.logPath !== undefined ? <p className="install-failure-log">{copy.storeInstallLogPath(state.logPath)}</p> : null}
+    </div>
+  )
+}
+
 /** One selectable entry card. */
 function EntryCard({ entry, installed, copy, selected, onSelect }: {
   entry: StoreEntry
@@ -83,7 +128,7 @@ function EntryCard({ entry, installed, copy, selected, onSelect }: {
         : null}
       <div className="entry-card-head">
         <span className="entry-name">{entry.name}</span>
-        <AuditBadge entry={entry} copy={copy} />
+        <EntryBadges entry={entry} copy={copy} />
       </div>
       <p className="entry-description">{entry.description}</p>
       <div className="entry-meta">
@@ -391,7 +436,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
         <aside className="store-detail">
           <h2 className="detail-name">{selected.name}</h2>
           <div className="detail-meta">
-            <AuditBadge entry={selected} copy={copy} />
+            <EntryBadges entry={selected} copy={copy} />
             <span>v{selected.version}</span>
           </div>
           <p className="detail-description">{selected.description}</p>
@@ -438,8 +483,11 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
           {installState !== undefined && installState.id === selected.id
             ? <p className={`install-phase phase-${installState.phase}`}>
                 {phaseLabel(copy, installState.phase)}
-                {installState.message !== undefined ? ` — ${installState.message}` : ''}
+                {installState.phase !== 'failed' && installState.message !== undefined ? ` — ${installState.message}` : ''}
               </p>
+            : null}
+          {installState !== undefined && installState.id === selected.id && installState.phase === 'failed'
+            ? <InstallFailureNotice copy={copy} state={installState} />
             : null}
           {installState?.phase === 'done' && installState.id === selected.id && installState.runtimeRestartRequired && !runtimeRestartDeferred
             ? (

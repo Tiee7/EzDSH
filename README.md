@@ -52,6 +52,8 @@ EzDSH packages the Runtime, curates a plugin ecosystem, connects remote operatio
 
 EzDSH ships with a fixed-version DeepSeek Harness Runtime. You do not need to install Node.js, pnpm, or the Harness CLI yourself. The app creates the workspace, picks a local port, starts the runtime, and loads the Harness Web UI automatically.
 
+Plugin installation is handled by EzDSH’s distribution layer as well. The app uses its bundled DSH Runtime and pnpm, automatically handles known Profile workspace compatibility issues, and verifies that the plugin was added to the target Profile. You do not need to copy commands or add compatibility flags manually.
+
 ### Full runtime lifecycle management
 
 EzDSH is not a browser wrapper. It manages the complete Runtime lifecycle:

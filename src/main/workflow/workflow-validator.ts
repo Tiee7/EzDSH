@@ -1,0 +1,38 @@
+import { normalizeWorkflow, validateWorkflow, type WorkflowDefinition, type WorkflowValidationResult } from '../../shared/workflow.js'
+
+/** Normalize and validate untrusted input before it enters the workflow store. */
+export function validateWorkflowInput(raw: unknown): { workflow?: WorkflowDefinition; result: WorkflowValidationResult } {
+  const workflow = normalizeWorkflow(raw)
+  if (workflow === undefined) {
+    return { result: { valid: false, issues: [{ path: '', message: 'Workflow 文档格式无效。' }] } }
+  }
+  return { workflow, result: validateWorkflow(workflow) }
+}
+
+export function assertValidWorkflow(workflow: WorkflowDefinition): void {
+  const result = validateWorkflow(workflow)
+  if (!result.valid) throw new Error(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join('\n'))
+}
+
+export function topologicalOrder(workflow: WorkflowDefinition): string[] {
+  assertValidWorkflow(workflow)
+  const incoming = new Map(workflow.nodes.map((node) => [node.id, 0]))
+  const outgoing = new Map<string, string[]>()
+  for (const edge of workflow.edges) {
+    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1)
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target])
+  }
+  const queue = workflow.nodes.filter((node) => incoming.get(node.id) === 0).map((node) => node.id)
+  const result: string[] = []
+  while (queue.length > 0) {
+    const id = queue.shift() as string
+    result.push(id)
+    for (const target of outgoing.get(id) ?? []) {
+      const next = (incoming.get(target) ?? 0) - 1
+      incoming.set(target, next)
+      if (next === 0) queue.push(target)
+    }
+  }
+  if (result.length !== workflow.nodes.length) throw new Error('Workflow contains a cycle')
+  return result
+}

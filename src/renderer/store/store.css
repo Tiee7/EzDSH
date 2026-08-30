@@ -235,6 +235,13 @@
   gap: 8px;
 }
 
+.entry-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
 .entry-name {
   font-size: 14px;
   font-weight: 600;
@@ -283,6 +290,36 @@
   padding: 2px 8px;
   font-size: 10px;
   font-weight: 600;
+}
+
+.badge-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  background: transparent;
+  color: var(--ezdsh-text-faint);
+  cursor: default;
+}
+
+.badge-type svg {
+  width: 12px;
+  height: 12px;
+}
+
+.badge-type-plugin svg {
+  fill: currentColor;
+}
+
+.badge-type-mcp svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .badge-verified {
@@ -569,6 +606,39 @@
 
 .phase-done {
   color: var(--ezdsh-accent-green);
+}
+
+.install-failure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--ezdsh-accent-red);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ezdsh-accent-red) 8%, transparent);
+}
+
+.install-failure-title,
+.install-failure-log {
+  margin: 0;
+  color: var(--ezdsh-accent-red);
+  font-size: 12px;
+}
+
+.install-failure-message {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  color: var(--ezdsh-text-body);
+  font: inherit;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.install-failure-log {
+  color: var(--ezdsh-text-faint);
+  word-break: break-all;
 }
 
 .install-blocked {

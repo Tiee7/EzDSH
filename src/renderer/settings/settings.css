@@ -143,6 +143,14 @@
   color: var(--ezdsh-text-faint);
 }
 
+.settings-hint-100 {
+  max-width: 100%;
+  padding: 10px 10px 10px 20px;
+  color: var(--ezdsh-accent-orange);
+}
+
+
+
 .settings-item-update .settings-hint {
   max-width: none;
 }
@@ -554,6 +562,189 @@
 
 .settings-card-content + .settings-card-content {
   border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.proxy-loading,
+.proxy-empty {
+  margin: 0;
+  padding: 18px 20px;
+  color: var(--ezdsh-text-faint);
+  font-size: 12px;
+}
+
+.proxy-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.proxy-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 20px;
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.proxy-row-active {
+  background: color-mix(in srgb, var(--ezdsh-active-background) 55%, transparent);
+}
+
+.proxy-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.proxy-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--ezdsh-text-body);
+  font-size: 13px;
+}
+
+.proxy-title-row .settings-dot {
+  margin-right: 0;
+}
+
+.proxy-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--ezdsh-code-background);
+  color: var(--ezdsh-text-faint);
+  font-size: 10px;
+}
+
+.proxy-row-active .proxy-badge {
+  color: var(--ezdsh-accent-green);
+  background: color-mix(in srgb, var(--ezdsh-accent-green) 14%, transparent);
+}
+
+.proxy-meta {
+  max-width: 100%;
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+}
+
+.proxy-controls {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.proxy-busy {
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+}
+
+.proxy-test-result {
+  font-size: 11px;
+}
+
+.proxy-test-result-success {
+  color: var(--ezdsh-accent-green);
+}
+
+.proxy-test-result-failed {
+  max-width: 240px;
+  overflow-wrap: anywhere;
+  color: var(--ezdsh-accent-red);
+}
+
+.proxy-error {
+  margin: 12px 20px 16px;
+}
+
+.proxy-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 680px;
+}
+
+.proxy-form > label,
+.proxy-form-row > label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ezdsh-text-body);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.proxy-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr) minmax(100px, 0.7fr);
+  gap: 12px;
+}
+
+.proxy-form-row + .proxy-form-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.proxy-form input:not([type='checkbox']),
+.proxy-form select,
+.proxy-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-body);
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.proxy-form input:not([type='checkbox']),
+.proxy-form select {
+  height: 34px;
+}
+
+.proxy-form input:focus,
+.proxy-form select:focus,
+.proxy-form textarea:focus {
+  outline: none;
+  border-color: var(--ezdsh-active-border);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ezdsh-active-border) 15%, transparent);
+}
+
+.proxy-form input::placeholder,
+.proxy-form textarea::placeholder {
+  color: var(--ezdsh-text-faint);
+  opacity: 0.6;
+}
+
+.proxy-field-hint {
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .proxy-form-row,
+  .proxy-form-row + .proxy-form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .proxy-row {
+    flex-direction: column;
+  }
+
+  .proxy-controls {
+    justify-content: flex-start;
+  }
 }
 
 .settings-progress {
@@ -1602,6 +1793,15 @@
   max-width: 620px;
 }
 
+.settings-recovery-verify-hint {
+  max-width: 620px;
+  margin-top: 6px;
+}
+
+.settings-action-danger {
+  color: var(--ezdsh-accent-red);
+}
+
 .settings-recovery-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1640,10 +1840,229 @@
   overflow-wrap: anywhere;
 }
 
+.settings-archived-sessions-card {
+  overflow: hidden;
+}
+
+.settings-archived-sessions-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-archived-sessions-developer-hint {
+  margin: 0;
+  padding: 10px 20px 0;
+  color: var(--ezdsh-accent-orange);
+}
+
+.settings-archived-sessions-empty {
+  max-width: none;
+  margin: 0;
+  padding: 18px 20px;
+}
+
+.settings-archived-sessions-list {
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.settings-archived-session-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 20px;
+}
+
+.settings-archived-session-row + .settings-archived-session-row {
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.settings-archived-session-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-archived-session-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ezdsh-text-body);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-archived-session-status {
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--ezdsh-code-background);
+  color: var(--ezdsh-text-faint);
+  font-size: 10px;
+}
+
+.settings-archived-session-id {
+  display: block;
+  max-width: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-archived-session-updated {
+  margin-top: 5px;
+}
+
+.settings-archived-session-actions {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.mobile-remote-card {
+  overflow: hidden;
+}
+
+.mobile-remote-status {
+  flex: none;
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mobile-remote-status-ready {
+  color: var(--ezdsh-accent-green);
+}
+
+.mobile-remote-status-error {
+  color: var(--ezdsh-accent-red);
+}
+
+.mobile-remote-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mobile-remote-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mobile-remote-url-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mobile-remote-url {
+  max-width: 100%;
+  padding: 7px 9px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 8px;
+  color: var(--ezdsh-text-body);
+  background: var(--ezdsh-code-background);
+  font: 12px/1.4 var(--ezdsh-font-mono, ui-monospace, monospace);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-remote-url:hover {
+  border-color: var(--ezdsh-active-border);
+}
+
+.mobile-remote-pairing {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding-top: 4px;
+}
+
+.mobile-remote-qr {
+  flex: none;
+  width: 180px;
+  height: 180px;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.mobile-remote-pairing-info {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.mobile-remote-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.mobile-remote-pending-row,
+.mobile-remote-device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+}
+
+.mobile-remote-pending-row + .mobile-remote-pending-row,
+.mobile-remote-device-row + .mobile-remote-device-row {
+  border-top: 1px solid var(--ezdsh-hairline);
+}
+
+.mobile-remote-warning {
+  margin: 0;
+  color: var(--ezdsh-accent-orange);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 @media (max-width: 640px) {
+  .settings-archived-sessions-header {
+    flex-direction: column;
+  }
+
+  .settings-archived-session-row {
+    flex-direction: column;
+  }
+
+  .settings-archived-session-actions {
+    justify-content: flex-start;
+  }
+
   .settings-recovery-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .mobile-remote-section-heading,
+  .mobile-remote-pending-row,
+  .mobile-remote-device-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mobile-remote-pairing {
+    flex-direction: column;
+  }
+
+  .mobile-remote-qr {
+    width: 220px;
+    height: 220px;
+    align-self: center;
   }
 }
 

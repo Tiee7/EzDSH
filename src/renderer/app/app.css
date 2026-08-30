@@ -260,6 +260,15 @@ h1 {
   background: var(--ezdsh-runtime-background);
 }
 
+.workspace-workflow-focus .workspace-content {
+  background: var(--ezdsh-runtime-background);
+}
+
+.workspace-workflow-focus .workspace-pane-page {
+  overflow: hidden;
+  padding: 0;
+}
+
 .language-tag {
   position: relative;
   z-index: 2;
@@ -386,11 +395,11 @@ h1 {
 .workspace-pane {
   position: absolute;
   inset: 0;
-  visibility: hidden;
+  display: none;
 }
 
 .workspace-pane-active {
-  visibility: visible;
+  display: block;
 }
 
 .workspace-pane iframe {

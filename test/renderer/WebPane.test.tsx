@@ -5,7 +5,7 @@ import { probeWebPaneUrl, WEB_PANE_MAX_AUTO_RETRIES, webPaneRetryDelay, WebPane 
 describe('WebPane startup state', () => {
   it('shows a startup message before loading a custom page', () => {
     const markup = renderToStaticMarkup(
-      <WebPane item={{ kind: 'custom', id: 'workbench', label: 'Workbench', url: 'http://127.0.0.1:3456' }} active />,
+      <WebPane item={{ kind: 'custom', id: 'workbench', label: 'Workbench', url: 'http://127.0.0.1:3456', visible: true }} active />,
     )
 
     expect(markup).toContain('正在启动')

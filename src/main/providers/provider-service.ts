@@ -18,8 +18,18 @@ import type {
 } from '../../shared/providers.js'
 import { needsProviderSetup, PROVIDER_API_PROTOCOLS } from '../../shared/providers.js'
 import { findProviderDefinition, PROVIDER_DEFINITIONS } from './provider-definitions.js'
+import type { WorkflowModelOption, WorkflowModelSelection } from '../../shared/workflow.js'
 
 type JsonMap = Record<string, unknown>
+
+export interface WorkflowModelProfile {
+  providerId: string
+  modelId: string
+  api: ProviderApiProtocol
+  baseUrl: string
+  /** Main-process only. Never return this through IPC. */
+  apiKey: string
+}
 
 const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   zhipuai: 'zai',
@@ -251,6 +261,88 @@ export class ProviderService {
 
   needsSetup(statuses: readonly ProviderStatus[]): boolean {
     return needsProviderSetup(statuses)
+  }
+
+  /**
+   * Resolves the first usable configured model for stateless workflow execution.
+   * This deliberately stays in the main process so workflow nodes never receive
+   * credentials and do not need a DSH coding session just to call a model.
+   */
+  async resolveWorkflowModel(selection?: WorkflowModelSelection): Promise<WorkflowModelProfile> {
+    const settings = await this.readDocument(this.settingsPath)
+    const credentials = await this.readDocument(this.credentialsPath)
+    const requestedProviderId = selection?.providerId.trim()
+    const requestedModelId = selection?.modelId.trim()
+    if (selection !== undefined && (requestedProviderId === undefined || requestedProviderId === '' || requestedModelId === undefined || requestedModelId === '')) {
+      throw new Error('指定的模型必须包含供应商和模型 ID。')
+    }
+    const knownIds = PROVIDER_DEFINITIONS.map((definition) => definition.id)
+    const customRoutes = Object.keys(asMap(asMap(settings['llm-pi-ai'])?.providers) ?? {})
+      .filter((id) => !knownIds.includes(id))
+    const providerIds = requestedProviderId === undefined ? [...knownIds, ...customRoutes] : [requestedProviderId]
+    for (const providerId of providerIds) {
+      const route = this.readRoute(settings, providerId)
+      if (route === undefined) continue
+      const definition = PROVIDER_DEFINITIONS.find((candidate) => candidate.id === providerId)
+      const credentialKey = typeof route.apiKeyEnv === 'string'
+        ? route.apiKeyEnv
+        : definition?.credentialKey ?? deriveCredentialKey(providerId)
+      const apiKey = typeof process.env[credentialKey] === 'string' && process.env[credentialKey]?.trim() !== ''
+        ? process.env[credentialKey]!.trim()
+        : typeof credentials[credentialKey] === 'string'
+          ? (credentials[credentialKey] as string).trim()
+          : ''
+      if (apiKey === '') continue
+      const baseUrl = this.normalizeBaseUrl(typeof route.baseURL === 'string' ? route.baseURL : definition?.defaultBaseUrl ?? this.catalogBaseUrl(providerId))
+      if (baseUrl === undefined) continue
+      const configuredModelId = asArray(route.models)
+        ?.map((model) => asMap(model))
+        .find((model): model is JsonMap => typeof model?.id === 'string')?.id
+        ?? (providerId === 'deepseek-official' ? 'deepseek-chat' : undefined)
+      const modelId = requestedModelId ?? configuredModelId
+      if (typeof modelId !== 'string' || modelId.trim() === '') continue
+      if (requestedModelId !== undefined) {
+        const modelIds = asArray(route.models)
+          ?.map((model) => asMap(model)?.id)
+          .filter((id): id is string => typeof id === 'string')
+        const isOfficialDefault = providerId === 'deepseek-official' && modelIds !== undefined && modelIds.length === 0 && requestedModelId === 'deepseek-chat'
+        if (!modelIds?.includes(requestedModelId) && !isOfficialDefault) continue
+      }
+      const api = isProviderApiProtocol(route.api)
+        ? route.api
+        : providerId === 'anthropic' || providerId === 'minimax'
+          ? 'anthropic-messages'
+          : providerId === 'openai'
+            ? 'openai-responses'
+            : 'openai-completions'
+      return { providerId, modelId, api, baseUrl, apiKey }
+    }
+    if (selection !== undefined) throw new Error(`指定的模型不可用：${requestedProviderId}/${requestedModelId}`)
+    throw new Error('没有可用于轻量智能处理的模型。请先在设置中配置至少一个供应商、API Key 和模型。')
+  }
+
+  /** Lists safe, configured model choices for the workflow run dialog. */
+  async listWorkflowModels(): Promise<WorkflowModelOption[]> {
+    const [definitions, statuses] = await Promise.all([this.listDefinitions(), this.getStatuses()])
+    const usable = new Set(statuses.filter((status) => status.usable).map((status) => status.providerId))
+    const options: WorkflowModelOption[] = []
+    for (const definition of definitions) {
+      if (!usable.has(definition.id)) continue
+      const profile = await this.getProfile(definition.id)
+      const configuredModels: ProviderModel[] = profile?.models ?? (profile?.modelIds ?? []).map((modelId) => ({ id: modelId }))
+      const models: ProviderModel[] = configuredModels.length > 0
+        ? configuredModels
+        : definition.id === 'deepseek-official' ? [{ id: 'deepseek-chat' } satisfies ProviderModel] : []
+      for (const model of models) {
+        options.push({
+          providerId: definition.id,
+          providerName: definition.displayName,
+          modelId: model.id,
+          ...(model.name === undefined ? {} : { modelName: model.name }),
+        })
+      }
+    }
+    return options
   }
 
   private async readDocument(path: string): Promise<JsonMap> {

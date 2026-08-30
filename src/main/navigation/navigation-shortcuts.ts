@@ -17,7 +17,8 @@ export type NavigationShortcutPlatform = NodeJS.Platform
 export function getNavigationTargetForInput(
   input: NavigationShortcutInput,
   config: NavConfig,
-  platform: NavigationShortcutPlatform
+  platform: NavigationShortcutPlatform,
+  developerMode = false
 ): NavigationTarget | undefined {
   if (input.type !== 'keyDown' || input.isComposing || input.isAutoRepeat || input.shift || input.alt) {
     return undefined
@@ -32,5 +33,5 @@ export function getNavigationTargetForInput(
   if (keyMatch === null) return undefined
   const digit = Number(keyMatch[1] ?? keyMatch[0])
   if (digit === 0) return 'settings'
-  return navigationShortcutItems(config)[digit - 1]?.id
+  return navigationShortcutItems(config, developerMode)[digit - 1]?.id
 }

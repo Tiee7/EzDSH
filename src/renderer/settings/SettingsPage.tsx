@@ -11,6 +11,9 @@ import { NavigationSection } from './NavigationSection.js'
 import { ExternalServicesSection } from './ExternalServicesSection.js'
 import { NotificationsSection } from './NotificationsSection.js'
 import { RecoverySection } from './RecoverySection.js'
+import { ArchivedSessionsSection } from './ArchivedSessionsSection.js'
+import { ProxySection } from './ProxySection.js'
+import { MobileRemoteSection } from './MobileRemoteSection.js'
 import { SETTINGS_TAB_IDS, type SettingsTab } from './settings-navigation.js'
 import './settings.css'
 
@@ -18,10 +21,11 @@ interface SettingsPageProps {
   copy: AppCopy
   locale: AppLocale
   runtime: RuntimeSnapshot | undefined
+  onOpenSession?: (sessionId: string) => void
 }
 
 /** Settings page with a left-hand navigation sidebar. */
-export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ copy, locale, runtime, onOpenSession }: SettingsPageProps): JSX.Element {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const [busy, setBusy] = useState(false)
   const [languageTagVisible, setLanguageTagVisible] = useState(true)
@@ -168,7 +172,10 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
 
   const tabLabels: Record<SettingsTab, string> = {
     general: copy.settingsTabGeneral,
-    notifications: copy.settingsNotifications,
+    proxy: copy.settingsProxy,
+    notifications: copy.settingsTabNotifications,
+    recovery: copy.settingsRecovery,
+    sessions: copy.settingsSessionManagement,
     'remote-control': copy.settingsTabRemoteControl,
     navigation: copy.settingsTabNavigation,
     'external-services': copy.settingsExternalServices,
@@ -241,7 +248,6 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
             <section className="settings-card">
               <UpdateSection copy={copy} />
             </section>
-            <RecoverySection copy={copy} />
             <section className="settings-card">
               <div className="settings-item">
                 <div className="settings-item-text">
@@ -312,13 +318,22 @@ export function SettingsPage({ copy, locale, runtime }: SettingsPageProps): JSX.
               </div>
             </section>
           </>
+        ) : activeTab === 'proxy' ? (
+          <ProxySection copy={copy} />
         ) : activeTab === 'notifications' ? (
           <NotificationsSection copy={copy} />
+        ) : activeTab === 'recovery' ? (
+          <RecoverySection copy={copy} />
+        ) : activeTab === 'sessions' ? (
+          <ArchivedSessionsSection copy={copy} developerMode={developerMode} onOpenSession={onOpenSession} />
         ) : activeTab === 'remote-control' ? (
-          <ChannelBridgePage copy={copy} />
+          <>
+            <MobileRemoteSection copy={copy} />
+            <ChannelBridgePage copy={copy} />
+          </>
         ) : activeTab === 'navigation' ? (
           <section className="settings-card">
-            <NavigationSection copy={copy} />
+            <NavigationSection copy={copy} developerMode={developerMode} />
           </section>
         ) : (
           <ExternalServicesSection copy={copy} />

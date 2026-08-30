@@ -9,6 +9,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { InstalledRecord, StoreEntry, StorePluginConfig } from '../../shared/store.js'
+import { repairInstalledDshPlugin } from './dsh-plugin-compatibility.js'
 
 export interface PluginCommandRunner {
   (profile: string, args: readonly string[]): Promise<void>
@@ -37,6 +38,20 @@ const PROFILE_NAME = /^[a-z][a-z0-9-]*$/
 const PACKAGE_NAME = /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/
 const NPM_SOURCE = /^npm:(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+(?:@[^\s/][^\s]*)?$/
 const GITHUB_SOURCE = /^github:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#[A-Za-z0-9_.\/-]+)?$/
+
+/**
+ * pnpm 11 blocks lifecycle scripts by default in a DSH profile. These exact
+ * package versions are known transitive DSH dependencies whose lifecycle
+ * scripts are compatible with the bundled Runtime and should not turn a
+ * catalog install into a manual pnpm configuration task.
+ *
+ * Keep this list exact and versioned: arbitrary third-party install scripts
+ * must remain blocked and visible to the user.
+ */
+const AUTOMATICALLY_ALLOWED_BUILD_VERSIONS: Readonly<Record<string, readonly string[]>> = {
+  '@google/genai': ['1.52.0'],
+  protobufjs: ['7.6.5']
+}
 
 /** Validate and normalize a catalog plugin source before passing it to pnpm. */
 export function validatePluginSource(config: StorePluginConfig): void {
@@ -78,6 +93,7 @@ export class DshPluginInstaller {
     if (!hasDependency(after, packageName)) {
       throw new Error(`DSH plugin package ${packageName} was not added to profile ${profile}`)
     }
+    await repairInstalledDshPlugin(this.options.dshHome, profile, packageName)
     return {
       packageName,
       profile,
@@ -105,7 +121,7 @@ export class DshPluginInstaller {
     try {
       await this.options.runCommand(profile, args)
     } catch (error) {
-      const allowBuildArgs = existingIgnoredBuildArgs(error, before)
+      const allowBuildArgs = recoverableIgnoredBuildArgs(error, before)
       if (allowBuildArgs.length === 0) throw error
       const command = args[0]
       if (command === undefined) throw error
@@ -172,23 +188,61 @@ function packageNameFromBuildSpec(spec: string): string {
 }
 
 /**
- * Only approve scripts for dependencies that were already in the profile.
- * A newly introduced plugin must still go through explicit user approval.
+ * Approve scripts for dependencies that were already in the profile, plus
+ * exact package/version pairs covered by the DSH compatibility policy.
  */
-function existingIgnoredBuildArgs(error: unknown, before: ProfileManifest): string[] {
+function recoverableIgnoredBuildArgs(error: unknown, before: ProfileManifest): string[] {
   const existing = dependencyNames(before)
+  const seen = new Set<string>()
   return ignoredBuildSpecs(error)
-    .filter((spec) => existing.has(packageNameFromBuildSpec(spec)))
+    .filter((spec) => {
+      const packageName = packageNameFromBuildSpec(spec)
+      const allowed = existing.has(packageName) || isAutomaticallyAllowedBuildSpec(spec)
+      if (!allowed || seen.has(spec)) return false
+      seen.add(spec)
+      return true
+    })
     .map((spec) => `--allow-build=${spec}`)
+}
+
+function isAutomaticallyAllowedBuildSpec(spec: string): boolean {
+  const packageName = packageNameFromBuildSpec(spec)
+  const versions = AUTOMATICALLY_ALLOWED_BUILD_VERSIONS[packageName]
+  if (versions === undefined) return false
+  const versionPrefix = `${packageName}@`
+  return spec.startsWith(versionPrefix) && versions.includes(spec.slice(versionPrefix.length))
 }
 
 function resolvePackageName(config: StorePluginConfig, before: ProfileManifest, after: ProfileManifest): string {
   const declared = config.packageName ?? packageNameFromSourceIfNpm(config.source)
   if (declared !== undefined) return declared
+  const sourceMatch = packageNameFromManifestSource(config.source, after)
+  if (sourceMatch !== undefined) return sourceMatch
   const beforeNames = dependencyNames(before)
   const added = [...dependencyNames(after)].filter((name) => !beforeNames.has(name))
   if (added.length === 1) return added[0] as string
   throw new Error(`Cannot determine the package name added by ${config.source}`)
+}
+
+/** Find the package name recorded by pnpm for a source-backed dependency. */
+function packageNameFromManifestSource(source: string, manifest: ProfileManifest): string | undefined {
+  for (const group of [manifest.dependencies, manifest.devDependencies, manifest.optionalDependencies]) {
+    for (const [packageName, spec] of Object.entries(group ?? {})) {
+      if (typeof spec === 'string' && packageSourcesMatch(source, spec)) return packageName
+    }
+  }
+  return undefined
+}
+
+/** Match GitHub sources by repository even when pnpm adds or changes a ref. */
+function packageSourcesMatch(left: string, right: string): boolean {
+  if (left === right) return true
+  if (!left.startsWith('github:') || !right.startsWith('github:')) return false
+  return githubRepository(left) === githubRepository(right)
+}
+
+function githubRepository(source: string): string {
+  return source.slice('github:'.length).split('#', 1)[0] ?? ''
 }
 
 function packageNameFromSourceIfNpm(source: string): string | undefined {

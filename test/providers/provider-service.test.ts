@@ -62,6 +62,57 @@ describe('ProviderService', () => {
     expect(JSON.stringify(result)).not.toContain('secret-value')
   })
 
+  it('resolves a main-process-only model profile for lightweight workflow execution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    await service.save({
+      providerId: 'workflow-gateway', custom: true, api: 'openai-completions',
+      apiKey: 'workflow-secret', baseUrl: 'https://gateway.example/v1/', modelIds: ['workflow-model'],
+    })
+
+    await expect(service.resolveWorkflowModel()).resolves.toEqual({
+      providerId: 'workflow-gateway', modelId: 'workflow-model', api: 'openai-completions',
+      baseUrl: 'https://gateway.example/v1', apiKey: 'workflow-secret',
+    })
+  })
+
+  it('resolves the selected workflow model without exposing credentials', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    await service.save({
+      providerId: 'workflow-gateway', custom: true, api: 'openai-completions',
+      apiKey: 'workflow-secret', baseUrl: 'https://gateway.example/v1/', modelIds: ['workflow-default', 'workflow-selected'],
+    })
+
+    await expect(service.resolveWorkflowModel({ providerId: 'workflow-gateway', modelId: 'workflow-selected' })).resolves.toEqual({
+      providerId: 'workflow-gateway', modelId: 'workflow-selected', api: 'openai-completions',
+      baseUrl: 'https://gateway.example/v1', apiKey: 'workflow-secret',
+    })
+    await expect(service.resolveWorkflowModel({ providerId: 'workflow-gateway', modelId: 'not-configured' })).rejects.toThrow('指定的模型')
+  })
+
+  it('lists configured usable workflow models without returning credentials', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    await service.save({
+      providerId: 'workflow-gateway', custom: true, api: 'openai-completions',
+      apiKey: 'workflow-secret', baseUrl: 'https://gateway.example/v1/', modelIds: ['workflow-model'],
+    })
+
+    const models = await service.listWorkflowModels()
+    expect(models).toEqual([{ providerId: 'workflow-gateway', providerName: 'workflow-gateway', modelId: 'workflow-model' }])
+    expect(JSON.stringify(models)).not.toContain('workflow-secret')
+  })
+
   it('writes catalog providers as catalog references with selected models', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
     roots.push(root)

@@ -6,6 +6,7 @@ import type { WorkspaceOperationState, WorkspaceSnapshot } from './state.js'
 import type { NavigationTarget } from './navigation.js'
 import type { NavConfig } from './navigation.js'
 import type { AppPlatform } from './platform.js'
+import type { ProxyProfileInput, ProxySettingsSnapshot, ProxyTestResult } from './proxy.js'
 import type {
   InstalledListResult,
   InstallState,
@@ -28,6 +29,7 @@ import type {
   TestProviderInput
 } from './providers.js'
 import type { ChannelBridgeConfig, DshSessionSummary, PairingState } from './channel-bridge.js'
+import type { MobileRemoteSnapshot } from './mobile-remote.js'
 import type { NotificationSettings, NotificationSignal } from './notifications.js'
 import type {
   RecoveryDryRun,
@@ -42,6 +44,26 @@ import type {
   ExternalServiceSnapshot,
   ExternalServiceUpdateInput,
 } from './external-services.js'
+import type {
+  EmployeeCreateInput,
+  EmployeeProjectSummary,
+  EmployeeRunRequest,
+  EmployeeRunResult,
+  EmployeeSessionLock,
+  EmployeeSnapshot,
+  EmployeeSessionSummary,
+  EmployeeUpdateInput,
+} from './employees.js'
+import type {
+  WorkflowCreateInput,
+  WorkflowDefinition,
+  WorkflowGenerateRequest,
+  WorkflowRunOptions,
+  WorkflowRunRecord,
+  WorkflowUpdateInput,
+  WorkflowValue,
+  WorkflowModelOption,
+} from './workflow.js'
 
 /** Payload sent from main to renderer when a deep-link install should begin. */
 export interface DeepLinkInstallTarget {
@@ -93,6 +115,38 @@ export interface EzDSHBridge {
     refresh(kind: StoreKind): Promise<StoreRefreshResult>
     onStateChange(listener: (state: InstallState) => void): () => void
   }
+  employees: {
+    list(): Promise<EmployeeSnapshot[]>
+    listProjects(): Promise<EmployeeProjectSummary[]>
+    listSessions(projectId?: string): Promise<EmployeeSessionSummary[]>
+    createSession(projectId: string, title?: string): Promise<EmployeeSessionSummary>
+    listSessionLocks(): Promise<EmployeeSessionLock[]>
+    forceUnlockSession(sessionId: string): Promise<void>
+    create(input: EmployeeCreateInput): Promise<EmployeeSnapshot>
+    update(id: string, input: EmployeeUpdateInput): Promise<EmployeeSnapshot>
+    remove(id: string): Promise<void>
+    setEnabled(id: string, enabled: boolean): Promise<EmployeeSnapshot>
+    run(id: string, request: EmployeeRunRequest): Promise<EmployeeRunResult>
+    onStateChange(listener: (employees: EmployeeSnapshot[]) => void): () => void
+    onLockChange(listener: (locks: EmployeeSessionLock[]) => void): () => void
+  }
+  workflows: {
+    list(): Promise<WorkflowDefinition[]>
+    get(id: string): Promise<WorkflowDefinition | undefined>
+    create(input: WorkflowCreateInput): Promise<WorkflowDefinition>
+    update(id: string, input: WorkflowUpdateInput): Promise<WorkflowDefinition>
+    remove(id: string): Promise<void>
+    duplicate(id: string): Promise<WorkflowDefinition>
+    generate(request: WorkflowGenerateRequest): Promise<WorkflowDefinition>
+    importEmployee(employeeId: string): Promise<WorkflowDefinition>
+    listRuns(workflowId?: string): Promise<WorkflowRunRecord[]>
+    getRun(runId: string): Promise<WorkflowRunRecord | undefined>
+    start(workflowId: string, input: WorkflowValue, options?: WorkflowRunOptions): Promise<WorkflowRunRecord>
+    resume(runId: string): Promise<WorkflowRunRecord>
+    cancel(runId: string): Promise<WorkflowRunRecord>
+    approve(runId: string, approved: boolean): Promise<WorkflowRunRecord>
+    onStateChange(listener: (record: WorkflowRunRecord) => void): () => void
+  }
   settings: {
     setLocale(locale: AppLocale): Promise<void>
     getLanguageTagVisible(): Promise<boolean>
@@ -107,6 +161,11 @@ export interface EzDSHBridge {
     migrateWorkspace(root: string): Promise<void>
     switchWorkspace(root: string): Promise<void>
     onWorkspaceChange(listener: (state: WorkspaceOperationState | undefined) => void): () => void
+    getProxyConfig(): Promise<ProxySettingsSnapshot>
+    saveProxy(input: ProxyProfileInput): Promise<ProxySettingsSnapshot>
+    activateProxy(id?: string): Promise<ProxySettingsSnapshot>
+    deleteProxy(id: string): Promise<ProxySettingsSnapshot>
+    testProxy(id: string): Promise<ProxyTestResult>
   }
   externalServices: {
     list(): Promise<ExternalServiceSnapshot[]>
@@ -122,6 +181,7 @@ export interface EzDSHBridge {
   providers: {
     listDefinitions(): Promise<ProviderDefinition[]>
     getStatus(): Promise<ProviderStatus[]>
+    listWorkflowModels(): Promise<WorkflowModelOption[]>
     testConnection(input: TestProviderInput): Promise<TestConnectionResult>
     listModels(input: ListModelsInput): Promise<ProviderModel[]>
     getProfile(providerId: string): Promise<ProviderProfile | undefined>
@@ -149,6 +209,7 @@ export interface EzDSHBridge {
     getStatus(): Promise<RecoveryState>
     listSnapshots(): Promise<RecoverySnapshot[]>
     createSnapshot(): Promise<RecoverySnapshot>
+    deleteSnapshot(selector: string): Promise<void>
     verify(selector: string): Promise<RecoveryVerifyResult>
     doctor(repair?: boolean): Promise<RecoveryDoctorResult>
     restore(selector: string, dryRun: boolean): Promise<RecoveryDryRun | RecoveryRestoreResult>
@@ -164,12 +225,25 @@ export interface EzDSHBridge {
     setConfig(config: ChannelBridgeConfig): Promise<void>
     getConfigPath(): Promise<string>
     listSessions(): Promise<DshSessionSummary[]>
+    listArchivedSessions(): Promise<DshSessionSummary[]>
+    unarchiveSession(sessionId: string): Promise<void>
+    deleteArchivedSession(sessionId: string): Promise<void>
     /** Start a verification-code pairing challenge. Returns the code and expiry. */
     startPairing(): Promise<PairingState>
     /** Cancel the active pairing challenge, if any. */
     cancelPairing(): Promise<void>
     /** Get the current pairing challenge state. */
     getPairingState(): Promise<PairingState>
+  }
+  mobileRemote: {
+    getStatus(): Promise<MobileRemoteSnapshot>
+    startPairing(): Promise<MobileRemoteSnapshot>
+    cancelPairing(): Promise<MobileRemoteSnapshot>
+    approvePairing(requestId: string): Promise<MobileRemoteSnapshot>
+    rejectPairing(requestId: string): Promise<MobileRemoteSnapshot>
+    startPublicAccess(): Promise<MobileRemoteSnapshot>
+    stopPublicAccess(): Promise<MobileRemoteSnapshot>
+    disconnectDevice(deviceId: string): Promise<MobileRemoteSnapshot>
   }
   navigation: {
     getConfig(): Promise<NavConfig>

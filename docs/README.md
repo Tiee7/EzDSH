@@ -1,10 +1,11 @@
 # EzDSH 文档
 
-EzDSH 是一个基于 Electron 的 DeepSeek Harness 桌面客户端。它负责把本地 Harness 运行时、桌面窗口、配置引导、数据持久化、安全边界和应用更新组织成一个可安装、可恢复的桌面应用。
+EzDSH 是 DeepSeek Harness 的桌面发行版；它是一个 AI 工作团队，让每一次执行都更有分工、更有条理，也更容易得到稳定结果。
 
 ## 文档导航
 
 - [产品需求](./product-requirements.md)：产品目标、用户流程、功能范围和验收标准
+- [多角色 AI 员工使用指南](./ai-employees.md)：员工理念、能力边界、使用方法和常见自动化场景
 - [技术架构](./architecture.md)：进程结构、启动流程、配置存储、安全和更新机制
 - [DSH Runtime 依赖关系](./runtime-dependency.md)：项目依赖、本机安装和打包运行时的边界
 - [发布手册](./release-manual.md)：版本、素材、验证、打包、签名、公证和自动更新的完整流程

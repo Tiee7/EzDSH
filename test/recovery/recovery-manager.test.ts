@@ -258,6 +258,30 @@ describe('RecoveryManager', () => {
     expect(snapshots.every((snapshot) => snapshot.manifest.kind === 'manual')).toBe(true)
   })
 
+  it('deletes a snapshot with its integrity sidecars and credential vault', async () => {
+    const layout = await createFixture()
+    const manager = createManager(layout)
+    const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'delete test' })
+
+    await manager.deleteSnapshot(snapshot.archiveName)
+
+    await expect(manager.listSnapshots()).resolves.toEqual([])
+    await expect(access(snapshot.archivePath)).rejects.toThrow()
+    await expect(access(snapshot.checksumPath)).rejects.toThrow()
+    await expect(access(snapshot.manifestPath)).rejects.toThrow()
+    await expect(access(join(layout.backups, 'vault', snapshot.archiveName))).rejects.toThrow()
+  })
+
+  it('protects the snapshot required by an active recovery transaction', async () => {
+    const layout = await createFixture()
+    const manager = createManager(layout)
+    await manager.initialize()
+    const pending = await manager.prepareUpdate({ targetAppVersion: '1.8.1537' })
+
+    await expect(manager.deleteSnapshot(pending.snapshotName)).rejects.toThrow('required for update recovery')
+    await expect(access(join(layout.backups, pending.snapshotName))).resolves.toBeUndefined()
+  })
+
   it('refuses to rewrite a committed middle session record even in repair mode', async () => {
     const layout = await createFixture()
     const manager = createManager(layout)

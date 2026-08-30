@@ -40,7 +40,7 @@ function skillEntry(overrides: Partial<StoreEntry> = {}): StoreEntry {
   }
 }
 
-function makeService(entries: readonly StoreEntry[], root: { dshHome: string; registryPath: string }, events: InstallState[], files: Record<string, Buffer> = { 'demo/SKILL.md': Buffer.from(SKILL_MD) }, installErrorReporter?: { report: (report: InstallErrorReport) => void | Promise<void> }, pluginInstaller?: StorePluginInstaller, pluginRecovery?: { run: <T>(input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => Promise<{ value: T; transactionId: string }> }, dshRuntimeVersion?: () => string | undefined): StoreService {
+function makeService(entries: readonly StoreEntry[], root: { dshHome: string; registryPath: string }, events: InstallState[], files: Record<string, Buffer> = { 'demo/SKILL.md': Buffer.from(SKILL_MD) }, installErrorReporter?: { report: (report: InstallErrorReport) => void | Promise<void> }, pluginInstaller?: StorePluginInstaller, pluginRecovery?: { run: <T>(input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>, options?: { deferRuntimeRestart?: boolean }) => Promise<{ value: T; transactionId: string }> }, dshRuntimeVersion?: () => string | undefined): StoreService {
   return new StoreService({
     dshHome: root.dshHome,
     registryPath: root.registryPath,
@@ -146,6 +146,7 @@ describe('install state machine', () => {
       expect.objectContaining({ action: 'install', entryId: 'agent-teams', packageName: '@nanmicoder/dsh-agent-teams', profile: 'web' }),
       expect.any(Function),
       expect.any(Function),
+      { deferRuntimeRestart: true },
     )
     expect(done).toMatchObject({ phase: 'done', recoveryTransactionId: 'txn-plugin-install' })
     expect((await service.listInstalled()).records[0]).toMatchObject({ pluginPackageName: '@nanmicoder/dsh-agent-teams' })

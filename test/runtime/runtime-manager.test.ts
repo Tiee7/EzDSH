@@ -291,4 +291,44 @@ describe('RuntimeManager', () => {
     expect((ready as { mode?: string }).mode).toBe('safe')
     await manager.stop()
   })
+
+  it('uses the current environment provider on every Runtime launch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-environment-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    const child = Object.assign(new EventEmitter(), {
+      pid: 13001,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill(signal: NodeJS.Signals): boolean {
+        this.emit('exit', 0, signal)
+        return true
+      }
+    })
+    let environment = { HTTP_PROXY: 'http://first.invalid' }
+    const spawnedEnvironments: Array<NodeJS.ProcessEnv | undefined> = []
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      command: process.execPath,
+      allocatePort: async () => 4567,
+      waitForHealthy: async () => undefined,
+      getEnvironment: () => environment,
+      spawnProcess: (_command, _args, options) => {
+        spawnedEnvironments.push(options.env)
+        return child as never
+      }
+    })
+
+    await manager.start()
+    await manager.stop()
+    environment = { HTTP_PROXY: 'http://second.invalid' }
+    await manager.start()
+
+    expect(spawnedEnvironments).toEqual([
+      expect.objectContaining({ HTTP_PROXY: 'http://first.invalid' }),
+      expect.objectContaining({ HTTP_PROXY: 'http://second.invalid' }),
+    ])
+    await manager.stop()
+  })
 })

@@ -17,15 +17,19 @@ export interface ApplicationMenuOptions {
   onOpenRuntimeLog?: () => void
   onOpenHarnessDir?: () => void
   locale?: AppLocale
+  /** Include developer-only tabs when developer mode is enabled. */
+  developerMode?: boolean
   /** Current navigation config; numeric shortcuts follow its visible item order. */
   navConfig?: NavConfig
 }
 
 const TAB_LABELS: Record<AppTab, (copy: AppCopy) => string> = {
   harness: (c) => c.tabHarness,
+  workflow: (c) => c.tabWorkflow,
   store: (c) => c.tabStore,
   presets: (c) => c.tabPresets,
   docs: (c) => c.tabDocs,
+  employees: (c) => c.tabEmployees,
   settings: (c) => c.tabSettings
 }
 
@@ -35,7 +39,7 @@ function tabLabel(item: NavItem, copy: AppCopy): string {
 
 function getNavigateItems(options: ApplicationMenuOptions, copy: AppCopy): MenuItemConstructorOptions[] {
   const navConfig = options.navConfig ?? getDefaultNavConfig()
-  const numberedItems = navigationShortcutItems(navConfig).map((item, index) => ({
+  const numberedItems = navigationShortcutItems(navConfig, options.developerMode === true).map((item, index) => ({
     label: tabLabel(item, copy),
     accelerator: `CmdOrCtrl+${index + 1}`,
     click: () => options.onNavigate?.(item.id)
