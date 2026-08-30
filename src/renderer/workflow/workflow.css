@@ -112,7 +112,7 @@
 .workflow-canvas .react-flow__pane, .workflow-execution-canvas .react-flow__pane, .workflow-canvas .react-flow__node, .workflow-execution-canvas .react-flow__node { cursor: default; }
 .workflow-flow-node { position: relative; display: grid; width: 100%; min-width: 0; height: 100%; min-height: 64px; place-items: center; border: 1px solid var(--ezdsh-panel-border-strong); border-radius: 10px; padding: 10px 16px; background: var(--ezdsh-panel-background); color: var(--ezdsh-text-heading); box-shadow: 0 6px 18px rgba(15, 25, 40, .08); font-size: 12px; text-align: center; }
 .workflow-flow-node-content, .workflow-condition-node-content { display: flex; align-items: center; min-width: 0; gap: 9px; }
-.workflow-flow-node-content > span:last-child, .workflow-condition-node-content > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-flow-node-content > span:last-child, .workflow-condition-node-content > span:last-child { min-width: 0; overflow: hidden; font-size: 13px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-node-type-icon { display: grid; flex: none; width: 27px; height: 27px; place-items: center; border-radius: 8px; background: color-mix(in srgb, var(--workflow-node-accent) 13%, var(--ezdsh-panel-background)); color: var(--workflow-node-accent); }
 .workflow-node-type-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .workflow-node-type-input { --workflow-node-accent: #3b82f6; }
