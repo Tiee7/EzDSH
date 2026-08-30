@@ -246,6 +246,17 @@ export interface AppCopy {
   workflowFileOperation: string
   workflowFilePath: string
   workflowFileContent: string
+  workflowHttpMethod: string
+  workflowHttpUrl: string
+  workflowHttpHeaders: string
+  workflowHttpHeadersHint: string
+  workflowHttpQuery: string
+  workflowHttpBody: string
+  workflowHttpResponseMode: string
+  workflowHttpTimeout: string
+  workflowCodeLanguage: string
+  workflowCode: string
+  workflowCodeTimeout: string
   workflowValidate: string
   workflowRun: string
   workflowRunning: string
@@ -298,6 +309,9 @@ export interface AppCopy {
   workflowCollapseInput: string
   workflowGoUpstream: string
   workflowExport: string
+  workflowExportToFile: string
+  workflowExportToClipboard: string
+  workflowClipboardExportFailed: string
   workflowImport: string
   workflowImportClipboard: string
   workflowClipboardInvalid: string
@@ -318,6 +332,8 @@ export interface AppCopy {
   workflowGeneratedEmployeeWarnings: (warnings: string) => string
   workflowAllowShellFile: string
   workflowAllowShellFileHint: string
+  workflowAllowCode: string
+  workflowAllowCodeHint: string
   workflowDebugRun: string
   workflowDebugRunHint: string
   workflowValidationFailed: string
@@ -922,6 +938,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowFileOperation: '文件操作',
     workflowFilePath: '工作区相对路径',
     workflowFileContent: '写入内容',
+    workflowHttpMethod: '请求方法',
+    workflowHttpUrl: '请求 URL',
+    workflowHttpHeaders: '请求头（JSON）',
+    workflowHttpHeadersHint: '例如 {"Authorization":"Bearer {{token}}"}。',
+    workflowHttpQuery: '查询参数（JSON）',
+    workflowHttpBody: '请求体（JSON 或文本）',
+    workflowHttpResponseMode: '响应格式',
+    workflowHttpTimeout: '超时（毫秒）',
+    workflowCodeLanguage: '代码语言',
+    workflowCode: '代码',
+    workflowCodeTimeout: '超时（毫秒）',
     workflowValidate: '校验',
     workflowRun: '运行',
     workflowRunning: '运行中…',
@@ -974,6 +1001,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowCollapseInput: '收起输入',
     workflowGoUpstream: '到上游',
     workflowExport: '导出',
+    workflowExportToFile: '到文件',
+    workflowExportToClipboard: '到剪贴板',
+    workflowClipboardExportFailed: '无法写入剪贴板，请检查权限。',
     workflowImport: '导入',
     workflowImportClipboard: '从剪贴板导入',
     workflowClipboardInvalid: '剪贴板内的数据格式不正确',
@@ -994,6 +1024,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowGeneratedEmployeeWarnings: (warnings) => `员工创建提示：${warnings}`,
     workflowAllowShellFile: '允许 Shell / 文件节点',
     workflowAllowShellFileHint: '运行前需要显式允许；文件路径仍被限制在当前工作区内。',
+    workflowAllowCode: '允许代码执行节点',
+    workflowAllowCodeHint: '运行前需要显式允许；支持 Node.js 和 Python3，代码在独立子进程中运行并受超时限制。',
     workflowDebugRun: '调试运行',
     workflowDebugRunHint: '保留 30 天的运行记录和内部诊断会话；普通成功运行保留 14 天。',
     workflowValidationFailed: 'Workflow 校验未通过',
@@ -1597,6 +1629,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowFileOperation: 'File operation',
     workflowFilePath: 'Workspace-relative path',
     workflowFileContent: 'Write content',
+    workflowHttpMethod: 'Request method',
+    workflowHttpUrl: 'Request URL',
+    workflowHttpHeaders: 'Request headers (JSON)',
+    workflowHttpHeadersHint: 'For example {"Authorization":"Bearer {{token}}"}',
+    workflowHttpQuery: 'Query parameters (JSON)',
+    workflowHttpBody: 'Request body (JSON or text)',
+    workflowHttpResponseMode: 'Response format',
+    workflowHttpTimeout: 'Timeout (ms)',
+    workflowCodeLanguage: 'Code language',
+    workflowCode: 'Code',
+    workflowCodeTimeout: 'Timeout (ms)',
     workflowValidate: 'Validate',
     workflowRun: 'Run',
     workflowRunning: 'Running…',
@@ -1649,6 +1692,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowCollapseInput: 'Collapse input',
     workflowGoUpstream: 'Go upstream',
     workflowExport: 'Export',
+    workflowExportToFile: 'To file',
+    workflowExportToClipboard: 'To clipboard',
+    workflowClipboardExportFailed: 'Unable to write to the clipboard. Check permissions.',
     workflowImport: 'Import',
     workflowImportClipboard: 'Import from clipboard',
     workflowClipboardInvalid: 'Clipboard data format is invalid.',
@@ -1669,6 +1715,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowGeneratedEmployeeWarnings: (warnings) => `Employee creation notice: ${warnings}`,
     workflowAllowShellFile: 'Allow Shell / File nodes',
     workflowAllowShellFileHint: 'Explicit permission is required before a run; file paths remain confined to the workspace.',
+    workflowAllowCode: 'Allow code execution nodes',
+    workflowAllowCodeHint: 'Explicit permission is required; Node.js and Python3 run in a separate subprocess with a timeout.',
     workflowDebugRun: 'Debug run',
     workflowDebugRunHint: 'Keep run history and internal diagnostics for 30 days; normal successful runs are kept for 14 days.',
     workflowValidationFailed: 'Workflow validation failed',

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -16,6 +17,8 @@ import type {
   WorkflowValue,
   WorkflowModelSelection,
   ConditionOperator,
+  HttpNodeConfig,
+  WorkflowCodeLanguage,
 } from '../../shared/workflow.js'
 import { EMPLOYEE_CAPABILITIES } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
@@ -34,6 +37,8 @@ export interface WorkflowRunServiceOptions {
   workflowStore: WorkflowStore
   runStore: WorkflowRunStore
   workspaceRoot: string
+  /** Standalone Node executable bundled with the app, used by code nodes. */
+  nodeCommandPath?: string
   createClient: () => WorkflowSessionClient
   resolveEmployee: (id: string) => EmployeeSnapshot | undefined
   listEmployees?: () => EmployeeSnapshot[]
@@ -270,6 +275,7 @@ export class WorkflowRunService {
       nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending', elapsedMs: 0 })),
       events: [],
       allowShellFile: options.allowShellFile === true,
+      allowCode: options.allowCode === true,
       debug: options.debug === true,
       ...(model === undefined ? {} : { model }),
     }
@@ -379,7 +385,7 @@ export class WorkflowRunService {
     try {
       const previous = this.resolveNodeInput(node, incoming, outputs, record.input)
       state.input = cloneWorkflow(previous)
-      const output = await this.executeNode(node, record.input, previous, record.allowShellFile, active, record)
+      const output = await this.executeNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record)
       state.status = 'completed'
       state.output = cloneWorkflow(output)
       state.completedAt = new Date().toISOString()
@@ -416,6 +422,7 @@ export class WorkflowRunService {
     input: WorkflowValue,
     previous: WorkflowValue,
     allowShellFile: boolean,
+    allowCode: boolean,
     active: ActiveRun,
     record: WorkflowRunRecord,
   ): Promise<WorkflowValue> {
@@ -486,6 +493,10 @@ export class WorkflowRunService {
       case 'file':
         if (!allowShellFile) throw new Error('Shell/File 节点需要运行时显式授权')
         return runFile(this.options.workspaceRoot, node.config.operation, node.config.path, node.config.content, previous)
+      case 'http': return runHttp(node.config, input, previous, active.abortController.signal)
+      case 'code':
+        if (!allowCode) throw new Error('代码节点需要运行时显式授权')
+        return runCode(node.config.language, node.config.code, input, previous, this.options.workspaceRoot, node.config.timeoutMs ?? 120_000, active.abortController.signal, this.options.nodeCommandPath)
     }
   }
 
@@ -815,6 +826,19 @@ function repairGeneratedNode(node: WorkflowNode, catalog: EmployeeCatalogEntry[]
       warnings.push(`节点「${node.label}」包含无效文件配置，已安全改为智能处理节点。`)
       return { ...node, type: 'ai-task', config: { instruction: generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
     }
+    case 'http': {
+      try {
+        const url = new URL(node.config.url)
+        if ((url.protocol === 'http:' || url.protocol === 'https:') && ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(node.config.method)) return node
+      } catch { /* fall through to the safe replacement */ }
+      warnings.push(`节点「${node.label}」包含无效 HTTP 配置，已安全改为智能处理节点。`)
+      return { ...node, type: 'ai-task', config: { instruction: generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
+    }
+    case 'code': {
+      if ((node.config.language === 'nodejs' || node.config.language === 'python3') && node.config.code.trim() !== '') return node
+      warnings.push(`节点「${node.label}」包含无效代码配置，已安全改为智能处理节点。`)
+      return { ...node, type: 'ai-task', config: { instruction: generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
+    }
     case 'input':
     case 'output': return node
   }
@@ -903,8 +927,9 @@ function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[]): string 
     '节点的输入数据只能由 inputBindings 显式选择；每项格式为 {"id":"...","name":"本节点变量名","sourceNodeId":"来源节点 ID","sourcePath":"可选 JSON 字段路径","required":true}。sourcePath 缺省时指向来源节点完整 result；input 节点可直接作为变量来源。变量引用也会形成执行依赖，即使没有直接连线。节点提示词只使用自己声明的 {{变量名}} 或 {{变量名.字段}}。outputVariables 用于声明 JSON 输出字段，例如 [{"name":"summary","description":"调研摘要"}]；result 始终代表完整输出。',
     'ai-task 用于轻量内联智能处理；employee 必须引用目录中真实存在的 employeeId，并填写非空 instruction；目录中不存在的员工 ID 禁止出现在 employee 节点中。如果目录中没有任何员工适合该职责，使用 ai-task 而不是编造员工。禁止输出旧版 agent 节点。',
     'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds（数组）和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；每个 condition 必须有且只应有两个下游连线，分别明确写 sourcePort: "true" 与 sourcePort: "false"，不能省略；transform.template 只能是 identity、json、extract-text、prepend、append。',
+    '需要访问外部 HTTP API 时使用 http 节点，config 必须包含 method（GET、POST、PUT、PATCH、DELETE）、http/https url、headers 对象、responseMode（auto、json 或 text），可选 query、body、timeoutMs；代码自动化使用 code 节点，language 只能是 nodejs 或 python3，code 非空。Node.js 代码可使用 input、previous 变量并 return 结果；Python3 代码可使用 input、previous 变量并给 result 赋值。代码节点运行前需要用户在运行对话框显式授权。',
     '只有用户明确提供了 MCP 工具名时才生成 MCP 节点，否则使用 ai-task 或 employee，不要生成空 tool。',
-    '不要生成 API Key、密码、Token、任意 JavaScript、eval 或 shell 控制符。文件路径必须是工作区相对路径。',
+    '不要生成 API Key、密码或 Token。只有用户明确要求代码自动化时才生成 code 节点；代码应保持最小范围，不要使用 eval、反向 Shell 或破坏性命令。文件路径必须是工作区相对路径。',
     `可用专业员工目录（只能引用其中的 employeeId）：${JSON.stringify(catalog)}`,
   ].join('\n')
 }
@@ -1005,6 +1030,169 @@ async function runFile(root: string, operation: 'read' | 'write', path: string, 
   const rendered = interpolateNodeTemplate(content ?? '{{value}}', previous)
   await writeFile(filePath, rendered, { encoding: 'utf8', mode: 0o600 })
   return rendered
+}
+
+const WORKFLOW_HTTP_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+async function runHttp(config: HttpNodeConfig, input: WorkflowValue, previous: WorkflowValue, parentSignal: AbortSignal): Promise<WorkflowValue> {
+  const renderedUrl = resolveWorkflowTemplate(config.url, input, previous)
+  let url: URL
+  try {
+    url = new URL(renderedUrl)
+  } catch {
+    throw new Error('HTTP 请求 URL 无效。')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('HTTP 请求只允许 http 或 https URL。')
+  const query = config.query === undefined ? undefined : resolveWorkflowTemplateValue(config.query, input, previous)
+  if (query !== undefined && isRecord(query)) {
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, renderTemplateValue(value))
+  }
+  const headers = Object.fromEntries(Object.entries(config.headers).map(([key, value]) => [key, resolveWorkflowTemplate(value, input, previous)]))
+  const resolvedBody = config.body === undefined ? undefined : resolveWorkflowTemplateValue(config.body, input, previous)
+  const requestInit: RequestInit = { method: config.method, headers }
+  if (resolvedBody !== undefined && config.method !== 'GET') {
+    if (typeof resolvedBody === 'string') requestInit.body = resolvedBody
+    else {
+      requestInit.body = JSON.stringify(resolvedBody)
+      if (Object.keys(headers).every((key) => key.toLowerCase() !== 'content-type')) headers['Content-Type'] = 'application/json'
+    }
+  }
+  const controller = new AbortController()
+  const onAbort = (): void => controller.abort()
+  parentSignal.addEventListener('abort', onAbort, { once: true })
+  const timeout = setTimeout(() => controller.abort(), clampWorkflowTimeout(config.timeoutMs))
+  try {
+    let response: Response
+    try {
+      response = await fetch(url, { ...requestInit, signal: controller.signal })
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error(parentSignal.aborted ? 'HTTP 请求已取消。' : 'HTTP 请求超时。')
+      throw error
+    }
+    const text = await response.text()
+    if (Buffer.byteLength(text, 'utf8') > WORKFLOW_HTTP_MAX_RESPONSE_BYTES) throw new Error('HTTP 响应超过 5 MB 限制。')
+    let body: WorkflowValue = text
+    if (config.responseMode !== 'text' && (config.responseMode === 'json' || response.headers.get('content-type')?.toLowerCase().includes('application/json') === true)) {
+      try { body = JSON.parse(text) as WorkflowValue } catch {
+        if (config.responseMode === 'json') throw new Error('HTTP 响应不是有效 JSON。')
+      }
+    }
+    if (!response.ok) throw new Error(`HTTP 请求失败（${response.status}）：${typeof body === 'string' ? body.slice(0, 500) : JSON.stringify(body).slice(0, 500)}`)
+    return { status: response.status, ok: response.ok, headers: Object.fromEntries(response.headers.entries()), body }
+  } finally {
+    clearTimeout(timeout)
+    parentSignal.removeEventListener('abort', onAbort)
+  }
+}
+
+function resolveWorkflowTemplateValue(value: WorkflowValue, input: WorkflowValue, previous: WorkflowValue): WorkflowValue {
+  if (typeof value === 'string') {
+    if (value.trim() === '{{input}}') return cloneWorkflow(input)
+    if (value.trim() === '{{value}}') return cloneWorkflow(previous)
+    return resolveWorkflowTemplate(value, input, previous)
+  }
+  if (Array.isArray(value)) return value.map((item) => resolveWorkflowTemplateValue(item, input, previous))
+  if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveWorkflowTemplateValue(item, input, previous)]))
+  return value
+}
+
+function resolveWorkflowTemplate(template: string, input: WorkflowValue, previous: WorkflowValue): string {
+  const variables = isRecord(previous) ? previous : {}
+  return interpolateWorkflowVariables(template
+    .replaceAll('{{input}}', renderTemplateValue(input))
+    .replaceAll('{{value}}', renderTemplateValue(previous)), variables)
+}
+
+function clampWorkflowTimeout(timeoutMs: number | undefined): number {
+  return Math.max(1_000, Math.min(timeoutMs ?? 120_000, 10 * 60 * 1_000))
+}
+
+function runCode(language: WorkflowCodeLanguage, code: string, input: WorkflowValue, previous: WorkflowValue, cwd: string, timeoutMs: number, parentSignal: AbortSignal, nodeCommandPath?: string): Promise<WorkflowValue> {
+  const nodeScript = `
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+const input = payload.input;
+const previous = payload.previous;
+const logs = [];
+const originalLog = console.log;
+console.log = (...args) => logs.push(args.map((arg) => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' '));
+try {
+  const result = await (async () => {
+${code}
+  })();
+  const output = result === undefined ? logs.join('\\n') : result;
+  process.stdout.write(JSON.stringify(output === undefined ? null : output));
+} catch (error) {
+  process.stderr.write(error instanceof Error ? error.stack || error.message : String(error));
+  process.exitCode = 1;
+} finally { console.log = originalLog; }
+`
+  const pythonScript = `
+import contextlib, io, json, sys
+payload = json.loads(sys.stdin.read())
+input = payload.get("input")
+previous = payload.get("previous")
+result = None
+_output = io.StringIO()
+try:
+    with contextlib.redirect_stdout(_output):
+${code.split('\n').map((line) => `        ${line}`).join('\n')}
+    if result is None and _output.getvalue().strip():
+        result = _output.getvalue().strip()
+    print(json.dumps(result, ensure_ascii=False))
+except Exception as error:
+    print(f"{type(error).__name__}: {error}", file=sys.stderr)
+    raise
+`
+  const command = language === 'nodejs' ? (nodeCommandPath ?? process.execPath) : resolvePythonCommand()
+  const args = language === 'nodejs' ? ['--input-type=module', '--eval', nodeScript] : ['-c', pythonScript]
+  const environment = language === 'nodejs' && command === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : undefined
+  return runCodeProcess(command, args, cwd, JSON.stringify({ input, previous }), clampWorkflowTimeout(timeoutMs), parentSignal, environment)
+}
+
+function resolvePythonCommand(): string {
+  const candidates = process.platform === 'win32'
+    ? ['python', 'py']
+    : ['python3', 'python', '/usr/local/bin/python3', '/opt/homebrew/bin/python3', '/usr/bin/python3']
+  for (const candidate of candidates) {
+    if (candidate.includes('/') || candidate.includes('\\')) {
+      if (existsSync(candidate)) return candidate
+      continue
+    }
+    const path = process.env.PATH?.split(process.platform === 'win32' ? ';' : ':').find((directory) => existsSync(resolve(directory, candidate)))
+    if (path !== undefined) return resolve(path, candidate)
+  }
+  return candidates[0] ?? 'python3'
+}
+
+function runCodeProcess(command: string, args: string[], cwd: string, payload: string, timeoutMs: number, parentSignal: AbortSignal, extraEnvironment?: NodeJS.ProcessEnv): Promise<WorkflowValue> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { cwd, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...extraEnvironment } })
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    const onAbort = (): void => { child.kill(); reject(new Error('代码节点已取消。')) }
+    parentSignal.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => { timedOut = true; child.kill(); reject(new Error('代码节点超时。')) }, timeoutMs)
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); if (Buffer.byteLength(stdout, 'utf8') > WORKFLOW_HTTP_MAX_RESPONSE_BYTES) child.kill() })
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    child.once('error', (error) => { clearTimeout(timer); parentSignal.removeEventListener('abort', onAbort); reject(error) })
+    child.once('close', (code) => {
+      clearTimeout(timer)
+      parentSignal.removeEventListener('abort', onAbort)
+      if (timedOut || parentSignal.aborted) return
+      if (code !== 0) { reject(new Error(`代码节点退出码 ${String(code)}：${stderr.trim() || stdout.trim()}`)); return }
+      const text = stdout.trim()
+      if (text === '') { resolvePromise(null); return }
+      try {
+        const value = JSON.parse(text) as unknown
+        if (!isWorkflowValue(value)) throw new Error('代码输出不是 JSON-safe 值')
+        resolvePromise(value)
+      } catch { resolvePromise(text) }
+    })
+    child.stdin?.end(payload)
+  })
 }
 
 function runShell(command: string, args: string[], cwd: string, timeoutMs: number): Promise<WorkflowValue> {

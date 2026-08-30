@@ -568,6 +568,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     workflowStore,
     runStore: workflowRunStore,
     workspaceRoot: layout.root,
+    nodeCommandPath: runtimeCommandPath,
     createClient: createWorkflowSessionClient,
     resolveEmployee: (id) => employeeService?.get(id),
     listEmployees: () => employeeService?.list() ?? [],

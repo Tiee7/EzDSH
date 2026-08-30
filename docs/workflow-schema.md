@@ -62,7 +62,9 @@ AI workflow generation, persistence and the `workflow` field inside an import/ex
 - `edges` use unique IDs and connect existing node IDs through `source` and `target`. They control execution order, branching and loops; they must not be empty for multi-node workflows, and must not form cycles.
 - `inputBindings` is the only way a node receives data. Each binding has a local `name`, a `sourceNodeId`, an optional dot-separated `sourcePath`, and `required`. The node can use it in instructions as `{{name}}` or `{{name.field}}`; values not bound to the node are not interpolated.
 - `sourcePath` omitted means the source node's complete `result`. For a JSON result, declare selectable fields in `outputVariables`; `result` is always implicit. A binding creates an execution dependency even if the nodes do not have a direct edge.
-- The supported node types are `input`, `ai-task`, `employee`, `skill`, `mcp`, `parallel`, `loop`, `condition`, `approval`, `transform`, `output`, `shell` and `file`.
+- The supported node types are `input`, `ai-task`, `employee`, `skill`, `mcp`, `parallel`, `loop`, `condition`, `approval`, `transform`, `output`, `shell`, `file`, `http` and `code`.
+- An `http` node performs an `http` or `https` request with structured method, headers, query, body and response mode fields. It returns `{ status, ok, headers, body }` and fails on non-2xx responses.
+- A `code` node runs Node.js or Python3 in a separate subprocess. Node.js code receives `input` and `previous` and returns a value; Python3 code receives the same variables and assigns `result`. Code execution is disabled unless the run dialog explicitly authorizes it, and every process has a timeout.
 - An `employee` node must use an existing, enabled employee ID and include a non-empty instruction. When no suitable employee exists, create one before graph generation; if creation is unavailable, use `ai-task`.
 - A `condition` node uses exactly one of `truthy`, `equals`, `not-equals`, `contains`, `greater-than` or `less-than`. Its outgoing branch edges use `sourcePort: "true"` or `sourcePort: "false"`.
 

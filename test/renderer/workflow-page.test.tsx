@@ -619,6 +619,7 @@ describe('WorkflowPage regressions', () => {
         modelOptions={[{ providerId: 'deepseek-official', providerName: 'DeepSeek', modelId: 'deepseek-chat', modelName: 'DeepSeek Chat' }]}
         modelSelection={undefined}
         allowShellFile={false}
+        allowCode={false}
         debug={false}
         busy={false}
         modelLoading={false}
@@ -626,6 +627,7 @@ describe('WorkflowPage regressions', () => {
         onChangeModel={vi.fn()}
         onRefreshModels={vi.fn()}
         onChangeAllowShellFile={vi.fn()}
+        onChangeAllowCode={vi.fn()}
         onChangeDebug={vi.fn()}
         onClose={vi.fn()}
         onStart={vi.fn()}
@@ -710,6 +712,9 @@ describe('WorkflowPage regressions', () => {
     expect(draftMarkup).toContain('workflow-save-button')
     expect(editMarkup).toContain('取消编辑')
     expect(editMarkup).toContain('导出')
+    expect(editMarkup).toContain('到文件')
+    expect(editMarkup).toContain('到剪贴板')
+    expect(editMarkup).toContain('workflow-export-menu')
     expect(editMarkup).not.toContain('导出 JSON')
     expect(editMarkup.indexOf('导出')).toBeLessThan(editMarkup.indexOf('保存'))
   })

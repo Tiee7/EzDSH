@@ -44,6 +44,7 @@
 - `exportedAt` 是 ISO 8601 导出时间。
 - `workflow` 是 Schema V2 工作流定义，包含名称、说明、节点、连线、版本和启用状态。
 - `employees` 可选，仅包含 `workflow.nodes` 实际引用的员工档案；员工 ID、名称、岗位、提示词、规范、能力和技能是创建/复用员工所需字段。
+- 工作流节点支持 HTTP 请求（`http`）和 Node.js/Python3 代码执行（`code`）；代码节点导入后仍需在运行对话框中显式授权。
 - `workflow.nodes[].id` 在工作流内唯一；`type` 必须是受支持的节点类型；`config` 必须符合节点类型配置。
 - `workflow.edges[]` 只能引用已有节点。条件节点的分支连线使用 `sourcePort: "true"` 或 `"false"`。
 - 节点 `position` 只保存编辑器布局，不参与运行语义。

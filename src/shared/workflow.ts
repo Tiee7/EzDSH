@@ -20,6 +20,8 @@ export const WORKFLOW_NODE_TYPES = [
   'output',
   'shell',
   'file',
+  'http',
+  'code',
 ] as const
 
 export type WorkflowNodeType = (typeof WORKFLOW_NODE_TYPES)[number]
@@ -141,6 +143,29 @@ export interface FileNodeConfig {
   content?: string
 }
 
+export type WorkflowHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+export type WorkflowHttpResponseMode = 'auto' | 'json' | 'text'
+
+/** HTTP request configuration. Headers, query and body may use {{input}}/{{value}} templates at runtime. */
+export interface HttpNodeConfig {
+  method: WorkflowHttpMethod
+  url: string
+  headers: Record<string, string>
+  query?: Record<string, WorkflowValue>
+  body?: WorkflowValue
+  responseMode: WorkflowHttpResponseMode
+  timeoutMs?: number
+}
+
+export type WorkflowCodeLanguage = 'nodejs' | 'python3'
+
+/** A sandboxed-by-default script step. The run dialog must explicitly authorize it. */
+export interface CodeNodeConfig {
+  language: WorkflowCodeLanguage
+  code: string
+  timeoutMs?: number
+}
+
 export type WorkflowNode =
   | WorkflowNodeBase<'input', InputNodeConfig>
   | WorkflowNodeBase<'ai-task', AiTaskNodeConfig>
@@ -155,6 +180,8 @@ export type WorkflowNode =
   | WorkflowNodeBase<'output', OutputNodeConfig>
   | WorkflowNodeBase<'shell', ShellNodeConfig>
   | WorkflowNodeBase<'file', FileNodeConfig>
+  | WorkflowNodeBase<'http', HttpNodeConfig>
+  | WorkflowNodeBase<'code', CodeNodeConfig>
 
 export interface WorkflowEdge {
   id: string
@@ -233,6 +260,8 @@ export interface WorkflowRunRecord {
   nodeStates: WorkflowNodeRunState[]
   events: WorkflowRunEvent[]
   allowShellFile: boolean
+  /** Whether code nodes were explicitly authorized for this run. */
+  allowCode?: boolean
   /** Optional model override selected for this run; omitted means provider default. */
   model?: WorkflowModelSelection
   /** Debug runs retain diagnostic history for longer than normal runs. */
@@ -247,6 +276,7 @@ export interface WorkflowRunRecord {
 
 export interface WorkflowRunOptions {
   allowShellFile?: boolean
+  allowCode?: boolean
   debug?: boolean
   /** Optional model override; omitted to use the configured default model. */
   model?: WorkflowModelSelection
@@ -438,6 +468,20 @@ function readNodeConfig(type: WorkflowNodeType, value: unknown): Record<string, 
     case 'output': return { label: typeof config.label === 'string' ? config.label : undefined }
     case 'shell': return { command: typeof config.command === 'string' ? config.command : '', args: Array.isArray(config.args) ? config.args.filter((arg): arg is string => typeof arg === 'string') : [], cwd: typeof config.cwd === 'string' ? config.cwd : undefined, timeoutMs: typeof config.timeoutMs === 'number' ? config.timeoutMs : undefined }
     case 'file': return { operation: config.operation, path: typeof config.path === 'string' ? config.path : '', content: typeof config.content === 'string' ? config.content : undefined }
+    case 'http': return {
+      method: config.method === 'POST' || config.method === 'PUT' || config.method === 'PATCH' || config.method === 'DELETE' ? config.method : 'GET',
+      url: typeof config.url === 'string' ? config.url : '',
+      headers: isRecord(config.headers) ? Object.fromEntries(Object.entries(config.headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : {},
+      query: isRecord(config.query) && isWorkflowValue(config.query) ? config.query as Record<string, WorkflowValue> : undefined,
+      body: isWorkflowValue(config.body) ? config.body : undefined,
+      responseMode: config.responseMode === 'json' || config.responseMode === 'text' ? config.responseMode : 'auto',
+      timeoutMs: typeof config.timeoutMs === 'number' ? config.timeoutMs : undefined,
+    }
+    case 'code': return {
+      language: config.language === 'python3' ? 'python3' : 'nodejs',
+      code: typeof config.code === 'string' ? config.code : '',
+      timeoutMs: typeof config.timeoutMs === 'number' ? config.timeoutMs : undefined,
+    }
   }
 }
 
@@ -743,6 +787,28 @@ function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowVa
     case 'file':
       if (node.config.path.trim() === '' || node.config.path.startsWith('/') || /^[a-zA-Z]:[\\/]/u.test(node.config.path)) add('File 路径必须是工作区内的相对路径。')
       if (node.config.operation !== 'read' && node.config.operation !== 'write') add('File 操作必须是 read 或 write。')
+      break
+    case 'http': {
+      if (node.config.url.trim() === '') add('HTTP 请求 URL 不能为空。')
+      else {
+        try {
+          const url = new URL(node.config.url)
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') add('HTTP 请求只允许 http 或 https URL。')
+        } catch { add('HTTP 请求 URL 无效。') }
+      }
+      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(node.config.method)) add('HTTP 请求方法无效。')
+      if (!['auto', 'json', 'text'].includes(node.config.responseMode)) add('HTTP 响应格式无效。')
+      if (node.config.query !== undefined && (!isWorkflowValue(node.config.query) || Array.isArray(node.config.query))) add('HTTP 查询参数必须是 JSON 对象。')
+      if (node.config.timeoutMs !== undefined && (!Number.isInteger(node.config.timeoutMs) || node.config.timeoutMs < 1_000 || node.config.timeoutMs > 600_000)) add('HTTP 请求超时必须是 1000 到 600000 毫秒。')
+      for (const [name, value] of Object.entries(node.config.headers)) {
+        if (name.trim() === '' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(name) || typeof value !== 'string') add('HTTP 请求头名称或值无效。')
+      }
+      break
+    }
+    case 'code':
+      if (node.config.language !== 'nodejs' && node.config.language !== 'python3') add('代码语言必须是 nodejs 或 python3。')
+      if (node.config.code.trim() === '') add('代码不能为空。')
+      if (node.config.timeoutMs !== undefined && (!Number.isInteger(node.config.timeoutMs) || node.config.timeoutMs < 1_000 || node.config.timeoutMs > 600_000)) add('代码超时必须是 1000 到 600000 毫秒。')
       break
     case 'input':
     case 'output':

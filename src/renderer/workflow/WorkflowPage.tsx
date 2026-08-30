@@ -78,12 +78,14 @@ const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   output: 'Output',
   shell: 'Shell',
   file: 'File',
+  http: 'HTTP 请求',
+  code: '代码执行',
 }
 
 const NODE_LIBRARY_GROUPS: Array<{ label: string; types: WorkflowNodeType[] }> = [
   { label: '流程控制', types: ['input', 'output', 'parallel', 'loop', 'condition', 'approval', 'transform'] },
   { label: '智能能力', types: ['ai-task', 'employee', 'skill', 'mcp'] },
-  { label: '本地工具', types: ['shell', 'file'] },
+  { label: '外部与本地工具', types: ['http', 'code', 'shell', 'file'] },
 ]
 
 const workflowNodeIconPath: Record<WorkflowNodeType, string> = {
@@ -100,6 +102,8 @@ const workflowNodeIconPath: Record<WorkflowNodeType, string> = {
   output: 'M5 12h12m-5-5 5 5-5 5M5 5v14',
   shell: 'm7 8 4 4-4 4m6 0h4M4 4h16v16H4V4Z',
   file: 'M6 3h8l4 4v14H6V3Zm8 0v5h4',
+  http: 'M4 5h16v14H4V5Zm0 4h16M8 14h3m2 0h3',
+  code: 'm8 8-4 4 4 4m8-8 4 4-4 4m-5-10-2 12',
 }
 
 function id(prefix: string): string {
@@ -501,6 +505,8 @@ function newNode(type: WorkflowNodeType, index: number): WorkflowNode {
     case 'output': return { ...base, type, config: {} }
     case 'shell': return { ...base, type, config: { command: 'echo', args: ['{{value}}'] } }
     case 'file': return { ...base, type, config: { operation: 'read', path: 'README.md' } }
+    case 'http': return { ...base, type, config: { method: 'GET', url: 'https://api.example.com/data', headers: {}, responseMode: 'auto', timeoutMs: 30_000 } }
+    case 'code': return { ...base, type, config: { language: 'nodejs', code: "return { value: input };", timeoutMs: 30_000 } }
   }
 }
 
@@ -933,10 +939,14 @@ function McpArgumentsField({
   copy,
   value,
   onCommit,
+  label = copy.workflowMcpArguments,
+  hint = copy.workflowMcpArgumentsHint,
 }: {
   copy: AppCopy
   value: Record<string, WorkflowValue> | undefined
   onCommit: (value: Record<string, WorkflowValue>) => void
+  label?: string
+  hint?: string
 }): JSX.Element {
   const [draft, setDraft] = useState(() => JSON.stringify(value ?? {}, null, 2))
   const [error, setError] = useState('')
@@ -951,7 +961,34 @@ function McpArgumentsField({
       setError(reason instanceof Error ? reason.message : 'MCP 参数必须是 JSON 对象。')
     }
   }
-  return <label>{copy.workflowMcpArguments}<textarea value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} spellCheck={false} /><small>{error === '' ? copy.workflowMcpArgumentsHint : error}</small></label>
+  return <label>{label}<textarea value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} spellCheck={false} /><small>{error === '' ? hint : error}</small></label>
+}
+
+function WorkflowJsonValueField({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string
+  value: WorkflowValue | undefined
+  onCommit: (value: WorkflowValue | undefined) => void
+}): JSX.Element {
+  const [draft, setDraft] = useState(() => value === undefined ? '' : formatValue(value))
+  const [error, setError] = useState('')
+  useEffect(() => { setDraft(value === undefined ? '' : formatValue(value)); setError('') }, [value])
+  const commit = (): void => {
+    if (draft.trim() === '') { onCommit(undefined); setError(''); return }
+    try {
+      const parsed = JSON.parse(draft) as unknown
+      if (!isWorkflowValue(parsed)) throw new Error('值必须是 JSON-safe 数据。')
+      onCommit(parsed)
+      setError('')
+    } catch {
+      onCommit(draft)
+      setError('')
+    }
+  }
+  return <label>{label}<textarea value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} spellCheck={false} /><small>{error}</small></label>
 }
 
 export function userFacingWorkflowText(value: string, locale: AppLocale): string {
@@ -979,14 +1016,24 @@ export interface WorkflowEditorActionsProps {
   runLabel: string
   onCancel: () => void
   onSave: () => void
-  onExport: () => void
+  onExport?: () => void
+  onExportFile?: () => void
+  onExportClipboard?: () => void
   onRun: () => void
 }
 
-export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel, onCancel, onSave, onExport, onRun }: WorkflowEditorActionsProps): JSX.Element {
+export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel, onCancel, onSave, onExport, onExportFile, onExportClipboard, onRun }: WorkflowEditorActionsProps): JSX.Element {
+  const exportFile = onExportFile ?? onExport
+  const exportClipboard = onExportClipboard ?? onExport
   return <>
     <button type="button" className="workflow-button-quiet" onClick={onCancel} disabled={busy}>{draft ? copy.workflowCancelCreate : copy.workflowCancelEdit}</button>
-    <button type="button" className="workflow-button-quiet" onClick={onExport} disabled={busy}>{copy.workflowExport}</button>
+    <details className="workflow-export-menu">
+      <summary className="workflow-button-quiet workflow-export-menu-trigger">{copy.workflowExport}</summary>
+      <div className="workflow-export-menu-panel" role="menu">
+        <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); exportFile?.() }} disabled={busy || exportFile === undefined}>{copy.workflowExportToFile}</button>
+        <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); exportClipboard?.() }} disabled={busy || exportClipboard === undefined}>{copy.workflowExportToClipboard}</button>
+      </div>
+    </details>
     <button type="button" className="workflow-button-primary workflow-save-button" onClick={onSave} disabled={busy}>{copy.workflowSave}</button>
     <button type="button" className="workflow-button-primary" onClick={onRun} disabled={runDisabled}>{runLabel}</button>
   </>
@@ -1113,6 +1160,7 @@ interface WorkflowRunLaunchDialogProps {
   modelOptions: WorkflowModelOption[]
   modelSelection: WorkflowModelSelection | undefined
   allowShellFile: boolean
+  allowCode: boolean
   debug: boolean
   busy: boolean
   modelLoading: boolean
@@ -1120,6 +1168,7 @@ interface WorkflowRunLaunchDialogProps {
   onChangeModel: (value: WorkflowModelSelection | undefined) => void
   onRefreshModels: () => void
   onChangeAllowShellFile: (value: boolean) => void
+  onChangeAllowCode: (value: boolean) => void
   onChangeDebug: (value: boolean) => void
   onClose: () => void
   onStart: () => void
@@ -1132,6 +1181,7 @@ export function WorkflowRunLaunchDialog({
   modelOptions,
   modelSelection,
   allowShellFile,
+  allowCode,
   debug,
   busy,
   modelLoading,
@@ -1139,6 +1189,7 @@ export function WorkflowRunLaunchDialog({
   onChangeModel,
   onRefreshModels,
   onChangeAllowShellFile,
+  onChangeAllowCode,
   onChangeDebug,
   onClose,
   onStart,
@@ -1153,6 +1204,7 @@ export function WorkflowRunLaunchDialog({
         {fields.length === 0 ? <p className="workflow-muted">{copy.workflowNoLaunchInputs}</p> : fields.map((field) => <label key={field.id} className="workflow-launch-field"><span>{field.label}</span><textarea aria-label={field.label} value={values[field.key] ?? ''} onChange={(event) => onChangeValue(field.key, event.target.value)} placeholder={field.defaultValue === undefined ? copy.workflowInputHint : undefined} /></label>)}
         <label className="workflow-launch-field"><span>{copy.workflowModel}</span><div className="workflow-model-control"><select value={modelSelection === undefined ? '' : workflowModelOptionKey(modelSelection)} onChange={(event) => onChangeModel(modelOptions.find((option) => workflowModelOptionKey(option) === event.target.value))}><option value="">{copy.workflowUseDefaultModel}</option>{modelOptions.map((option) => <option key={workflowModelOptionKey(option)} value={workflowModelOptionKey(option)}>{option.providerName} · {option.modelName ?? option.modelId}</option>)}</select><button type="button" className="workflow-button-quiet workflow-model-refresh" onClick={onRefreshModels} disabled={busy || modelLoading}>{modelLoading ? copy.workflowRefreshingModels : copy.workflowRefreshModels}</button></div><small className="workflow-launch-note">{modelOptions.length === 0 ? copy.workflowNoModels : copy.workflowModelHint}</small></label>
         <label className="workflow-checkbox"><input type="checkbox" checked={allowShellFile} onChange={(event) => onChangeAllowShellFile(event.target.checked)} /> <span>{copy.workflowAllowShellFile}<small className="workflow-launch-note">{copy.workflowAllowShellFileHint}</small></span></label>
+        <label className="workflow-checkbox"><input type="checkbox" checked={allowCode} onChange={(event) => onChangeAllowCode(event.target.checked)} /> <span>{copy.workflowAllowCode}<small className="workflow-launch-note">{copy.workflowAllowCodeHint}</small></span></label>
         <label className="workflow-checkbox"><input type="checkbox" checked={debug} onChange={(event) => onChangeDebug(event.target.checked)} /> <span>{copy.workflowDebugRun}<small className="workflow-launch-note">{copy.workflowDebugRunHint}</small></span></label>
       </div>
       <div className="workflow-launch-dialog-actions"><button type="button" className="workflow-button-quiet" onClick={onClose} disabled={busy}>{copy.workflowCancelSetup}</button><button type="button" className="workflow-button-primary" onClick={onStart} disabled={busy}>{busy ? copy.workflowRunning : copy.workflowStartRun}</button></div>
@@ -1244,6 +1296,7 @@ interface WorkflowRunSetup {
   modelOptions: WorkflowModelOption[]
   modelSelection?: WorkflowModelSelection
   allowShellFile: boolean
+  allowCode: boolean
   debug: boolean
   modelLoading: boolean
 }
@@ -1498,7 +1551,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     }
   }
 
-  const exportWorkflow = (): void => {
+  const exportWorkflowToFile = (): void => {
     const workflow = currentDefinition()
     if (workflow === undefined) return
     try {
@@ -1513,6 +1566,18 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       setMessage(copy.workflowExported)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    }
+  }
+
+  const exportWorkflowToClipboard = async (): Promise<void> => {
+    const workflow = currentDefinition()
+    if (workflow === undefined) return
+    try {
+      if (navigator.clipboard?.writeText === undefined) throw new Error(copy.workflowClipboardExportFailed)
+      await navigator.clipboard.writeText(serializeWorkflowExport(workflow, undefined, employees))
+      setMessage(copy.workflowExported)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowClipboardExportFailed)
     }
   }
 
@@ -1850,7 +1915,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     let modelOptions: WorkflowModelOption[] = []
     try { modelOptions = await window.EzDSH.providers.listWorkflowModels() } catch { /* The default model remains available if the optional catalog cannot load. */ }
     const fields = getWorkflowLaunchFields(saved)
-    setRunSetup({ workflowId: saved.id, fields, values: createWorkflowLaunchValues(fields), modelOptions, modelSelection: undefined, allowShellFile: false, debug: false, modelLoading: false })
+    setRunSetup({ workflowId: saved.id, fields, values: createWorkflowLaunchValues(fields), modelOptions, modelSelection: undefined, allowShellFile: false, allowCode: false, debug: false, modelLoading: false })
   }
 
   const refreshRunModels = async (): Promise<void> => {
@@ -1879,7 +1944,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setBusy(true)
     setError('')
     try {
-      const record = await window.EzDSH.workflows.start(runSetup.workflowId, buildWorkflowLaunchInput(runSetup.fields, runSetup.values), { allowShellFile: runSetup.allowShellFile, debug: runSetup.debug, ...(runSetup.modelSelection === undefined ? {} : { model: runSetup.modelSelection }) })
+      const record = await window.EzDSH.workflows.start(runSetup.workflowId, buildWorkflowLaunchInput(runSetup.fields, runSetup.values), { allowShellFile: runSetup.allowShellFile, allowCode: runSetup.allowCode, debug: runSetup.debug, ...(runSetup.modelSelection === undefined ? {} : { model: runSetup.modelSelection }) })
       setCurrentRun(record)
       setSelectedRunNodeId(undefined)
       setRuns((current) => [record, ...current.filter((item) => item.id !== record.id)])
@@ -2092,7 +2157,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               runLabel={currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}
               onCancel={exitWorkspace}
               onSave={() => void save()}
-              onExport={exportWorkflow}
+              onExportFile={exportWorkflowToFile}
+              onExportClipboard={() => void exportWorkflowToClipboard()}
               onRun={() => void openRunSetup()}
             /> : <>
               <button type="button" className="workflow-button-primary workflow-save-button" onClick={() => void save()} disabled={busy}>{copy.workflowSave}</button>
@@ -2162,6 +2228,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                   {selectedNode.type === 'transform' ? <><label>{copy.workflowTransformTemplate}<select value={selectedNode.config.template} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, template: event.target.value as TransformTemplate } } : node)}>{(['identity', 'json', 'extract-text', 'prepend', 'append'] as TransformTemplate[]).map((template) => <option key={template} value={template}>{template}</option>)}</select></label><label>{copy.workflowTransformText}<input value={selectedNode.config.text ?? ''} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, text: event.target.value } } : node)} /></label></> : null}
                   {selectedNode.type === 'shell' ? <><label>{copy.workflowShellCommand}<input value={selectedNode.config.command} onChange={(event) => updateNode((node) => node.type === 'shell' ? { ...node, config: { ...node.config, command: event.target.value } } : node)} /></label><label>{copy.workflowShellArgs}<textarea value={selectedNode.config.args.join('\n')} onChange={(event) => updateNode((node) => node.type === 'shell' ? { ...node, config: { ...node.config, args: event.target.value.split('\n').filter(Boolean) } } : node)} /></label></> : null}
                   {selectedNode.type === 'file' ? <><label>{copy.workflowFileOperation}<select value={selectedNode.config.operation} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, operation: event.target.value as 'read' | 'write' } } : node)}><option value="read">read</option><option value="write">write</option></select></label><label>{copy.workflowFilePath}<input value={selectedNode.config.path} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, path: event.target.value } } : node)} /></label>{selectedNode.config.operation === 'write' ? <label>{copy.workflowFileContent}<textarea value={selectedNode.config.content ?? ''} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, content: event.target.value } } : node)} /></label> : null}</> : null}
+                  {selectedNode.type === 'http' ? <><label>{copy.workflowHttpMethod}<select value={selectedNode.config.method} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, method: event.target.value as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' } } : node)}>{(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).map((method) => <option key={method} value={method}>{method}</option>)}</select></label><label>{copy.workflowHttpUrl}<input value={selectedNode.config.url} placeholder="https://api.example.com/data" onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, url: event.target.value } } : node)} /></label><McpArgumentsField key={selectedNode.id + '-headers'} copy={copy} value={selectedNode.config.headers} label={copy.workflowHttpHeaders} hint={copy.workflowHttpHeadersHint} onCommit={(headers) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, headers: Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, WorkflowValue] => typeof entry[1] === 'string').map(([key, value]) => [key, value as string])) } } : node)} /><McpArgumentsField key={selectedNode.id + '-query'} copy={copy} value={selectedNode.config.query} label={copy.workflowHttpQuery} hint={copy.workflowMcpArgumentsHint} onCommit={(query) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, query } } : node)} /><WorkflowJsonValueField key={selectedNode.id + '-body'} label={copy.workflowHttpBody} value={selectedNode.config.body} onCommit={(body) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, body } } : node)} /><label>{copy.workflowHttpResponseMode}<select value={selectedNode.config.responseMode} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, responseMode: event.target.value as 'auto' | 'json' | 'text' } } : node)}><option value="auto">auto</option><option value="json">json</option><option value="text">text</option></select></label><label>{copy.workflowHttpTimeout}<input type="number" min="1000" max="600000" step="1000" value={selectedNode.config.timeoutMs ?? 120000} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, timeoutMs: Number(event.target.value) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'code' ? <><label>{copy.workflowCodeLanguage}<select value={selectedNode.config.language} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, language: event.target.value as 'nodejs' | 'python3' } } : node)}><option value="nodejs">Node.js</option><option value="python3">Python3</option></select></label><label>{copy.workflowCode}<textarea className="workflow-code-editor" value={selectedNode.config.code} spellCheck={false} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, code: event.target.value } } : node)} /></label><p className="workflow-muted">Node.js 可使用 input、previous 并 return 结果；Python3 可使用 input、previous 并给 result 赋值。</p><label>{copy.workflowCodeTimeout}<input type="number" min="1000" max="600000" step="1000" value={selectedNode.config.timeoutMs ?? 120000} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, timeoutMs: Number(event.target.value) } } : node)} /></label></> : null}
                 </>}
               </section>
             </aside>
@@ -2180,7 +2248,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       </>}
       {outputWindows.length > 0 ? <WorkflowOutputFloatingWindows copy={copy} windows={outputWindows} fontScale={outputFontScale} onClose={(id) => setOutputWindows((current) => current.filter((item) => item.id !== id))} onCopy={copyOutput} onMove={(id, position) => setOutputWindows((current) => current.map((item) => item.id === id ? { ...item, position } : item))} onFocus={(id) => setOutputWindows((current) => focusWorkflowOutputWindow(current, id))} onIncreaseFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} /> : null}
       {metadataDraft ? <WorkflowMetadataDialog copy={copy} name={metadataDraft.name} description={metadataDraft.description} onChangeName={(name) => setMetadataDraft((current) => current === undefined ? current : { ...current, name })} onChangeDescription={(description) => setMetadataDraft((current) => current === undefined ? current : { ...current, description })} onClose={() => setMetadataDraft(undefined)} onSave={saveWorkflowMetadata} /> : null}
-      {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} allowShellFile={runSetup.allowShellFile} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
+      {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} allowShellFile={runSetup.allowShellFile} allowCode={runSetup.allowCode} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeAllowCode={(allowCode) => setRunSetup((current) => current === undefined ? current : { ...current, allowCode })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
       {contextMenu ? <WorkflowContextMenu copy={copy} target={contextMenu.target} x={contextMenu.x} y={contextMenu.y} selectedNodeCount={(contextMenu.target === 'canvas' || contextMenu.target === 'selection' || (contextMenu.nodeId !== undefined && nodes.some((node) => node.id === contextMenu.nodeId && node.selected === true))) ? nodes.filter((node) => node.selected === true).length : 0} canUndo={(history?.past.length ?? 0) > 0} canRedo={(history?.future.length ?? 0) > 0} busy={busy} runDisabled={currentRun?.status === 'running'} cancelLabel={draft ? copy.workflowCancelCreate : copy.workflowCancelEdit} onUndo={() => { dismissContextMenu(); undo(); focusWorkflowCanvas() }} onRedo={() => { dismissContextMenu(); redo(); focusWorkflowCanvas() }} onCopy={() => { copySelectedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} onPaste={() => { pasteCopiedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} canPaste={copiedWorkflowNodesRef.current.length > 0} onDelete={deleteContextMenuSelection} onAlign={alignSelectedNodes} onFitView={fitViewFromContextMenu} onSave={saveFromContextMenu} onRun={runFromContextMenu} onCancel={() => { dismissContextMenu(); exitWorkspace() }} /> : null}
       {message ? <WorkflowToast message={message} copy={copy} actionLabel={deletedWorkflow === undefined ? undefined : copy.workflowUndoDelete} onAction={deletedWorkflow === undefined ? undefined : () => void restoreDeletedWorkflow()} onDismiss={() => setMessage('')} /> : null}
       {error ? <WorkflowErrorBanner message={error} copy={copy} onDismiss={() => setError('')} /> : null}
