@@ -36,6 +36,8 @@ import {
   type TransformTemplate,
   type WorkflowDefinition,
   type WorkflowNode,
+  type WorkflowNodeInputBinding,
+  type WorkflowNodeOutputVariable,
   type WorkflowNodeRunState,
   type WorkflowNodeRunStatus,
   type WorkflowNodeType,
@@ -422,7 +424,7 @@ function preserveWorkflowEdgeSelection<T extends Edge>(edges: ReadonlyArray<T>, 
 }
 
 function newNode(type: WorkflowNodeType, index: number): WorkflowNode {
-  const base = { id: id(type), type, label: nodeTypeLabel[type], position: { x: 120 + (index % 3) * 300, y: 110 + Math.floor(index / 3) * 180 } }
+  const base = { id: id(type), type, label: nodeTypeLabel[type], position: { x: 120 + (index % 3) * 300, y: 110 + Math.floor(index / 3) * 180 }, ...(type === 'input' ? {} : { inputBindings: [], outputVariables: [] }) }
   switch (type) {
     case 'input': return { ...base, type, config: { name: 'task' } }
     case 'ai-task': return { ...base, type, config: { instruction: '请完成上游输入交代的任务，并输出清晰结果。', mode: 'single', skillIds: [], outputMode: 'text' } }
@@ -438,6 +440,26 @@ function newNode(type: WorkflowNodeType, index: number): WorkflowNode {
     case 'shell': return { ...base, type, config: { command: 'echo', args: ['{{value}}'] } }
     case 'file': return { ...base, type, config: { operation: 'read', path: 'README.md' } }
   }
+}
+
+export interface WorkflowVariableOption {
+  sourceNodeId: string
+  sourcePath?: string
+  label: string
+}
+
+/** Values that can be selected as a node-local input. `result` denotes the full output. */
+export function getWorkflowVariableOptions(workflow: WorkflowDefinition, targetNodeId: string): WorkflowVariableOption[] {
+  return workflow.nodes.flatMap((node) => {
+    if (node.id === targetNodeId) return []
+    if (node.type === 'input') {
+      const name = node.config.name?.trim() || node.label
+      return [{ sourceNodeId: node.id, label: `${node.label} · ${name}` }]
+    }
+    const options: WorkflowVariableOption[] = [{ sourceNodeId: node.id, label: `${node.label} · result` }]
+    for (const variable of node.outputVariables ?? []) options.push({ sourceNodeId: node.id, sourcePath: variable.name, label: `${node.label} · ${variable.name}` })
+    return options
+  })
 }
 
 /** Copy only node definitions: connections remain untouched, so a paste is safe to wire independently. */
@@ -1957,6 +1979,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                 <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowEditor}</span><h2>{copy.workflowInspector}</h2></div>{selectedNode ? <span className="workflow-type-badge">{nodeTypeLabel[selectedNode.type]}</span> : null}</div>
                 {selectedNode === undefined ? <p className="workflow-muted">{copy.workflowNodeSelectHint}</p> : <>
                   <label>{copy.workflowNodeLabel}<input value={selectedNode.label} onChange={(event) => updateNode((node) => ({ ...node, label: event.target.value }))} /></label>
+                  {selectedNode.type === 'input' ? null : <WorkflowNodeVariablesEditor workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} />}
                   {selectedNode.type === 'input' ? <label>{copy.workflowName}<input value={selectedNode.config.name ?? ''} onChange={(event) => updateNode((node) => node.type === 'input' ? { ...node, config: { ...node.config, name: event.target.value } } : node)} /></label> : null}
                   {selectedNode.type === 'ai-task' ? <>
                     <label>{copy.workflowInstruction}<textarea value={selectedNode.config.instruction} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, instruction: event.target.value } } : node)} /></label>
@@ -2008,6 +2031,52 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
 export function WorkflowErrorBanner({ message, copy, onDismiss }: { message: string; copy: AppCopy; onDismiss: () => void }): JSX.Element {
   return <div className="workflow-error-banner" role="alert"><span>{message}</span><button type="button" aria-label={copy.workflowDismiss} title={copy.workflowDismiss} onClick={onDismiss}>×</button></div>
+}
+
+function workflowVariableOptionKey(option: WorkflowVariableOption): string {
+  return `${option.sourceNodeId}\u0000${option.sourcePath ?? ''}`
+}
+
+function workflowBindingFromOption(option: WorkflowVariableOption, name: string): WorkflowNodeInputBinding {
+  return { id: id('variable'), name, sourceNodeId: option.sourceNodeId, ...(option.sourcePath === undefined ? {} : { sourcePath: option.sourcePath }), required: true }
+}
+
+/** Dify-style per-node bindings keep variable selection separate from graph connections. */
+function WorkflowNodeVariablesEditor({ workflow, node, onChange }: { workflow: WorkflowDefinition; node: WorkflowNode; onChange: (update: (node: WorkflowNode) => WorkflowNode) => void }): JSX.Element {
+  const options = getWorkflowVariableOptions(workflow, node.id)
+  const optionsByKey = new Map(options.map((option) => [workflowVariableOptionKey(option), option]))
+  const bindings = node.inputBindings ?? []
+  const outputVariables = node.outputVariables ?? []
+  const updateBinding = (index: number, update: (binding: WorkflowNodeInputBinding) => WorkflowNodeInputBinding): void => onChange((current) => ({ ...current, inputBindings: (current.inputBindings ?? []).map((binding, currentIndex) => currentIndex === index ? update(binding) : binding) }))
+  const removeBinding = (index: number): void => onChange((current) => ({ ...current, inputBindings: (current.inputBindings ?? []).filter((_binding, currentIndex) => currentIndex !== index) }))
+  const addBinding = (): void => {
+    const option = options[0]
+    if (option === undefined) return
+    onChange((current) => ({ ...current, inputBindings: [...(current.inputBindings ?? []), workflowBindingFromOption(option, `input_${(current.inputBindings?.length ?? 0) + 1}`)] }))
+  }
+  const updateOutput = (index: number, update: (variable: WorkflowNodeOutputVariable) => WorkflowNodeOutputVariable): void => onChange((current) => ({ ...current, outputVariables: (current.outputVariables ?? []).map((variable, currentIndex) => currentIndex === index ? update(variable) : variable) }))
+  return <>
+    <details className="workflow-variable-editor" open>
+      <summary>输入变量</summary>
+      <p>选择本节点实际使用的上游变量；在提示词中使用 <code>{'{{变量名}}'}</code>。</p>
+      {bindings.map((binding, index) => <div key={binding.id} className="workflow-variable-editor-row">
+        <input aria-label="变量名" value={binding.name} onChange={(event) => updateBinding(index, (current) => ({ ...current, name: event.target.value }))} />
+        <select aria-label="变量来源" value={workflowVariableOptionKey({ sourceNodeId: binding.sourceNodeId, sourcePath: binding.sourcePath, label: '' })} onChange={(event) => {
+          const option = optionsByKey.get(event.target.value)
+          if (option !== undefined) updateBinding(index, (current) => ({ ...current, sourceNodeId: option.sourceNodeId, ...(option.sourcePath === undefined ? { sourcePath: undefined } : { sourcePath: option.sourcePath }) }))
+        }}>{options.map((option) => <option key={workflowVariableOptionKey(option)} value={workflowVariableOptionKey(option)}>{option.label}</option>)}</select>
+        <label className="workflow-variable-required"><input type="checkbox" checked={binding.required} onChange={(event) => updateBinding(index, (current) => ({ ...current, required: event.target.checked }))} />必填</label>
+        <button type="button" className="workflow-variable-remove" onClick={() => removeBinding(index)} aria-label="删除变量">×</button>
+      </div>)}
+      <button type="button" className="workflow-variable-add" onClick={addBinding} disabled={options.length === 0}>添加输入变量</button>
+    </details>
+    <details className="workflow-variable-editor">
+      <summary>输出变量</summary>
+      <p><code>result</code> 始终代表整个节点结果；为 JSON 输出补充字段名，供下游选择。</p>
+      {outputVariables.map((variable, index) => <div key={`${variable.name}-${index}`} className="workflow-variable-editor-row"><input aria-label="输出变量名" value={variable.name} onChange={(event) => updateOutput(index, (current) => ({ ...current, name: event.target.value }))} /><input aria-label="输出变量说明" value={variable.description ?? ''} placeholder="说明（可选）" onChange={(event) => updateOutput(index, (current) => ({ ...current, description: event.target.value }))} /><button type="button" className="workflow-variable-remove" aria-label="删除输出变量" onClick={() => onChange((current) => ({ ...current, outputVariables: (current.outputVariables ?? []).filter((_variable, currentIndex) => currentIndex !== index) }))}>×</button></div>)}
+      <button type="button" className="workflow-variable-add" onClick={() => onChange((current) => ({ ...current, outputVariables: [...(current.outputVariables ?? []), { name: `output_${(current.outputVariables?.length ?? 0) + 1}` }] }))}>添加输出变量</button>
+    </details>
+  </>
 }
 
 function OutputModeField({ copy, value, onChange }: { copy: AppCopy; value: WorkflowOutputMode; onChange: (value: WorkflowOutputMode) => void }): JSX.Element {

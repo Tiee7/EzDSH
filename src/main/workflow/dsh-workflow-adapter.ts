@@ -1,5 +1,5 @@
 import type { EmployeeSnapshot } from '../../shared/employees.js'
-import { isWorkflowValue, type WorkflowModelSelection, type WorkflowNode, type WorkflowOutputMode, type WorkflowValue } from '../../shared/workflow.js'
+import { interpolateWorkflowVariables, isWorkflowValue, type WorkflowModelSelection, type WorkflowNode, type WorkflowNodeOutputVariable, type WorkflowOutputMode, type WorkflowValue } from '../../shared/workflow.js'
 
 /** Minimal DSH contract used only for employee and legacy Skill internal sessions. */
 export interface WorkflowSessionClient {
@@ -19,6 +19,7 @@ interface InstructionNode {
   id: string
   label: string
   type: string
+  outputVariables?: WorkflowNodeOutputVariable[]
 }
 
 /**
@@ -117,14 +118,19 @@ export function buildNodePrompt(
   systemPrompt: string | undefined,
   outputMode: WorkflowOutputMode,
 ): string {
+  const variables = previous !== null && typeof previous === 'object' && !Array.isArray(previous) ? previous : {}
+  const renderedInstruction = interpolateWorkflowVariables(instruction, variables)
+  const renderedSystemPrompt = systemPrompt === undefined ? undefined : interpolateWorkflowVariables(systemPrompt, variables)
+  const outputVariables = node.outputVariables?.filter((variable) => variable.name !== 'result') ?? []
   return [
     '你正在执行 EZDSH 工作流的一个节点。请只完成节点指令，不要修改工作流结构。',
     `节点类型：${node.type}`,
     `节点名称：${node.label}`,
     `本次工作流输入：${JSON.stringify(input)}`,
-    `上游节点输出：${JSON.stringify(previous)}`,
-    systemPrompt === undefined || systemPrompt.trim() === '' ? '' : `工作原则：\n${systemPrompt}`,
-    `节点指令：${instruction}`,
+    `节点输入变量：${JSON.stringify(previous)}`,
+    renderedSystemPrompt === undefined || renderedSystemPrompt.trim() === '' ? '' : `工作原则：\n${renderedSystemPrompt}`,
+    outputVariables.length === 0 ? '' : `结构化输出字段：${outputVariables.map((variable) => `${variable.name}${variable.description === undefined ? '' : `（${variable.description}）`}`).join('、')}。`,
+    `节点指令：${renderedInstruction}`,
     outputMode === 'json' ? '输出要求：只输出一个 JSON 文档，不要解释，不要使用 Markdown 代码围栏。' : '',
   ].filter(Boolean).join('\n\n')
 }

@@ -117,7 +117,13 @@ export class WorkflowStore {
     return this.create({
       name: `${source.name} copy`,
       description: source.description,
-      nodes: source.nodes.map((node) => ({ ...cloneWorkflow(node), id: idMap.get(node.id) as string })),
+      nodes: source.nodes.map((node) => ({
+        ...cloneWorkflow(node),
+        id: idMap.get(node.id) as string,
+        ...(node.inputBindings === undefined ? {} : {
+          inputBindings: node.inputBindings.map((binding) => ({ ...binding, sourceNodeId: idMap.get(binding.sourceNodeId) ?? binding.sourceNodeId })),
+        }),
+      })),
       edges: source.edges.map((edge) => ({ ...edge, id: `${edge.id}-copy-${randomUUID().slice(0, 6)}`, source: idMap.get(edge.source) as string, target: idMap.get(edge.target) as string })),
     })
   }

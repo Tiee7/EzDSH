@@ -1,4 +1,4 @@
-import { formatWorkflowValidationIssues, normalizeWorkflow, validateWorkflow, type WorkflowDefinition, type WorkflowValidationResult } from '../../shared/workflow.js'
+import { formatWorkflowValidationIssues, normalizeWorkflow, validateWorkflow, workflowNodeDependencyIds, type WorkflowDefinition, type WorkflowValidationResult } from '../../shared/workflow.js'
 
 /** Normalize and validate untrusted input before it enters the workflow store. */
 export function validateWorkflowInput(raw: unknown): { workflow?: WorkflowDefinition; result: WorkflowValidationResult } {
@@ -18,9 +18,11 @@ export function topologicalOrder(workflow: WorkflowDefinition): string[] {
   assertValidWorkflow(workflow)
   const incoming = new Map(workflow.nodes.map((node) => [node.id, 0]))
   const outgoing = new Map<string, string[]>()
-  for (const edge of workflow.edges) {
-    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1)
-    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target])
+  for (const node of workflow.nodes) {
+    for (const source of workflowNodeDependencyIds(workflow, node)) {
+      incoming.set(node.id, (incoming.get(node.id) ?? 0) + 1)
+      outgoing.set(source, [...(outgoing.get(source) ?? []), node.id])
+    }
   }
   const queue = workflow.nodes.filter((node) => incoming.get(node.id) === 0).map((node) => node.id)
   const result: string[] = []

@@ -558,6 +558,84 @@ describe('workflow run service', () => {
     expect(result.output).toEqual({ brief: '内容需求', research: '调研结论' })
   })
 
+  it('binds named variables from selected node outputs and interpolates only those variables into a prompt', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-variable-bindings-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      schemaVersion: 2, id: 'workflow-variable-bindings', name: 'Variable bindings', description: '', revision: 1, enabled: true,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      nodes: [
+        { id: 'topic', type: 'input', label: '主题', config: { name: 'topic' }, position: { x: 0, y: 0 } },
+        { id: 'research', type: 'ai-task', label: '调研', config: { instruction: '研究 {{topic}}', mode: 'single', skillIds: [], outputMode: 'json' }, position: { x: 220, y: -70 }, inputBindings: [{ id: 'topic-input', name: 'topic', sourceNodeId: 'topic', required: true }], outputVariables: [{ name: 'summary' }, { name: 'sources' }] },
+        { id: 'outline', type: 'ai-task', label: '提纲', config: { instruction: '为 {{topic}} 制作提纲', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 220, y: 70 }, inputBindings: [{ id: 'topic-input', name: 'topic', sourceNodeId: 'topic', required: true }] },
+        { id: 'writer', type: 'ai-task', label: '写作', config: { instruction: '主题：{{topic}}\n调研：{{research}}\n提纲：{{outline}}\n忽略：{{notSelected}}', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 480, y: 0 }, inputBindings: [
+          { id: 'topic-input', name: 'topic', sourceNodeId: 'topic', required: true },
+          { id: 'research-input', name: 'research', sourceNodeId: 'research', sourcePath: 'summary', required: true },
+          { id: 'outline-input', name: 'outline', sourceNodeId: 'outline', required: true },
+        ] },
+        { id: 'output', type: 'output', label: '输出', config: {}, position: { x: 720, y: 0 }, inputBindings: [{ id: 'result-input', name: 'result', sourceNodeId: 'writer', required: true }] },
+      ],
+      edges: [
+        { id: 'topic-research', source: 'topic', target: 'research' },
+        { id: 'topic-outline', source: 'topic', target: 'outline' },
+        { id: 'research-writer', source: 'research', target: 'writer' },
+        { id: 'outline-writer', source: 'outline', target: 'writer' },
+        { id: 'writer-output', source: 'writer', target: 'output' },
+      ],
+    } as unknown as WorkflowDefinition)
+    const complete = vi.fn(async ({ prompt }: { prompt: string }) => {
+      if (prompt.includes('节点名称：调研')) return '{"summary":"可验证的调研结论","sources":["资料 A"]}'
+      if (prompt.includes('节点名称：提纲')) return '三段式提纲'
+      if (prompt.includes('节点名称：写作')) return '完整文稿'
+      return ''
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      lightweightClient: { complete },
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, { topic: '火箭发布' })).id)
+    const writerPrompt = complete.mock.calls.map(([request]) => request.prompt as string).find((prompt) => prompt.includes('节点名称：写作'))
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toBe('完整文稿')
+    expect(result.nodeStates.find((state) => state.nodeId === 'writer')?.input).toEqual({ topic: '火箭发布', research: '可验证的调研结论', outline: '三段式提纲' })
+    expect(writerPrompt).toContain('主题：火箭发布')
+    expect(writerPrompt).toContain('调研：可验证的调研结论')
+    expect(writerPrompt).toContain('提纲：三段式提纲')
+    expect(writerPrompt).toContain('忽略：{{notSelected}}')
+  })
+
+  it('treats an explicit variable source as a dependency even without a visual edge', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-variable-dependency-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-variable-dependency', name: 'Variable dependency', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: '主题', config: { name: 'topic' }, position: { x: 0, y: 0 } },
+        { id: 'writer', type: 'ai-task', label: '写作', config: { instruction: '围绕 {{topic}} 写作', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 300, y: 0 }, inputBindings: [{ id: 'topic', name: 'topic', sourceNodeId: 'input', required: true }] },
+        { id: 'output', type: 'output', label: '输出', config: {}, position: { x: 600, y: 0 }, inputBindings: [{ id: 'result', name: 'result', sourceNodeId: 'writer', required: true }] },
+      ],
+      // The edge controls only the final display path. `input → writer` comes from the binding above.
+      edges: [{ id: 'writer-output', source: 'writer', target: 'output' }],
+    })
+    const complete = vi.fn(async ({ prompt }: { prompt: string }) => prompt.includes('节点名称：写作') ? '成文结果' : '')
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      lightweightClient: { complete },
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, { topic: '显式依赖' })).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toBe('成文结果')
+    expect(result.nodeStates.find((state) => state.nodeId === 'writer')?.input).toEqual({ topic: '显式依赖' })
+  })
+
   it('requires explicit authorization for Shell and File nodes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-security-'))
     const workflowStore = new WorkflowStore(dir)

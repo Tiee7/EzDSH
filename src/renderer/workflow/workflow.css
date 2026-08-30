@@ -153,6 +153,18 @@
 .workflow-panel-card label, .workflow-execution-detail label { display: block; margin: 12px 0; color: var(--ezdsh-text-muted); font-size: 11px; }
 .workflow-panel-card label input, .workflow-panel-card label select, .workflow-panel-card label textarea, .workflow-execution-detail label input, .workflow-execution-detail label select, .workflow-execution-detail label textarea { display: block; margin-top: 6px; }
 .workflow-panel-card label small { display: block; margin-top: 5px; color: var(--ezdsh-text-faint); font-size: 10px; line-height: 1.45; }
+.workflow-variable-editor { margin: 12px 0; border: 1px solid var(--ezdsh-panel-border); border-radius: 8px; background: var(--ezdsh-code-background); }
+.workflow-variable-editor summary { cursor: pointer; padding: 9px 10px; color: var(--ezdsh-text-body); font-size: 11px; font-weight: 750; }
+.workflow-variable-editor p { margin: 0 10px 9px; color: var(--ezdsh-text-faint); font-size: 10px; line-height: 1.45; }
+.workflow-variable-editor code { border-radius: 3px; padding: 1px 3px; background: color-mix(in srgb, var(--ezdsh-panel-background) 65%, var(--ezdsh-brand)); color: var(--ezdsh-text-body); }
+.workflow-variable-editor-row { display: grid; grid-template-columns: minmax(54px, .7fr) minmax(0, 1.3fr) auto 25px; align-items: center; gap: 5px; padding: 0 8px 7px; }
+.workflow-variable-editor-row input, .workflow-variable-editor-row select { min-width: 0; margin: 0 !important; padding: 5px 6px; font-size: 10px; }
+.workflow-variable-required { display: inline-flex !important; align-items: center; gap: 3px; margin: 0 !important; color: var(--ezdsh-text-muted) !important; font-size: 10px !important; white-space: nowrap; }
+.workflow-variable-required input { width: auto; margin: 0 !important; }
+.workflow-variable-remove, .workflow-variable-add { min-height: 25px !important; padding: 4px 7px !important; font-size: 10px !important; }
+.workflow-variable-remove { display: grid; width: 25px; place-items: center; padding: 0 !important; color: var(--ezdsh-text-faint) !important; }
+.workflow-variable-add { margin: 0 8px 9px; }
+.workflow-variable-editor:nth-of-type(2) .workflow-variable-editor-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) 25px; }
 .workflow-type-badge { display: inline-block; border-radius: 6px; padding: 4px 7px; background: var(--ezdsh-active-background); color: var(--ezdsh-brand); font-size: 10px; font-weight: 750; }
 .workflow-muted { margin: 10px 0; color: var(--ezdsh-text-faint); font-size: 11px; line-height: 1.55; }
 .workflow-employee-context { border: 1px solid var(--ezdsh-hairline); border-radius: 9px; padding: 9px 10px; background: var(--ezdsh-code-background); }

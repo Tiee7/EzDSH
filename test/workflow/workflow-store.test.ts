@@ -44,6 +44,7 @@ describe('workflow stores', () => {
     const copy = await store.duplicate(created.id)
     expect(copy.id).not.toBe(created.id)
     expect(copy.edges.every((edge) => copy.nodes.some((node) => node.id === edge.source) && copy.nodes.some((node) => node.id === edge.target))).toBe(true)
+    expect(copy.nodes.flatMap((node) => node.inputBindings ?? []).every((binding) => copy.nodes.some((node) => node.id === binding.sourceNodeId))).toBe(true)
     const reloaded = new WorkflowStore(dir)
     await reloaded.initialize()
     expect(reloaded.list().map((workflow) => workflow.name)).toEqual(['Persisted copy', 'Persisted'])

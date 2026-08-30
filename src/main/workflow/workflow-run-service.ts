@@ -8,6 +8,7 @@ import type {
   WorkflowGenerateRequest,
   WorkflowGenerateResult,
   WorkflowNode,
+  WorkflowNodeInputBinding,
   WorkflowNodeRunState,
   WorkflowRunEvent,
   WorkflowRunOptions,
@@ -19,7 +20,7 @@ import type {
 import { EMPLOYEE_CAPABILITIES } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
-import { cloneWorkflow, isWorkflowValue, normalizeWorkflow, validateWorkflow } from '../../shared/workflow.js'
+import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, workflowNodeDependencyIds } from '../../shared/workflow.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
@@ -294,12 +295,13 @@ export class WorkflowRunService {
       for (const state of record.nodeStates) if (state.output !== undefined) outputs.set(state.nodeId, state.output)
 
       const incomingByNode = new Map(workflow.nodes.map((node) => [node.id, workflow.edges.filter((edge) => edge.target === node.id)]))
+      const dependencyIdsByNode = new Map(workflow.nodes.map((node) => [node.id, workflowNodeDependencyIds(workflow, node)]))
       const pending = new Set(order.filter((nodeId) => stateMap.get(nodeId)?.status === 'pending'))
       while (pending.size > 0 && !active.cancelled) {
         const ready = order.flatMap((nodeId) => {
           if (!pending.has(nodeId)) return []
-          const incoming = incomingByNode.get(nodeId) ?? []
-          return incoming.every((edge) => isTerminalNodeState(stateMap.get(edge.source)?.status)) ? [nodeId] : []
+          const dependencyIds = dependencyIdsByNode.get(nodeId) ?? []
+          return dependencyIds.every((sourceId) => isTerminalNodeState(stateMap.get(sourceId)?.status)) ? [nodeId] : []
         })
         if (ready.length === 0) throw new Error('Workflow 存在无法继续推进的依赖关系。')
 
@@ -375,7 +377,7 @@ export class WorkflowRunService {
     const executionStartedAt = Date.now()
     await this.save(record, 'node-started', `开始执行节点：${node.label}`, node.id)
     try {
-      const previous = this.previousValue(incoming, outputs, record.input)
+      const previous = this.resolveNodeInput(node, incoming, outputs, record.input)
       state.input = cloneWorkflow(previous)
       const output = await this.executeNode(node, record.input, previous, record.allowShellFile, active, record)
       state.status = 'completed'
@@ -453,7 +455,8 @@ export class WorkflowRunService {
         { id: node.id, label: node.label, type: node.type }, instruction, input, previous, undefined, 'text', active.abortController.signal, record.model,
       )))
       case 'loop': {
-        const items = Array.isArray(previous) ? previous : [previous]
+        const loopInput = this.primaryNodeValue(node, previous)
+        const items = Array.isArray(loopInput) ? loopInput : [loopInput]
         const results: WorkflowValue[] = []
         for (const item of items.slice(0, node.config.maxIterations ?? 20)) {
           results.push(await this.executeLightweight(
@@ -469,13 +472,17 @@ export class WorkflowRunService {
         }
         return results
       }
-      case 'condition': return evaluateCondition(node.config.operator, previous, node.config.value)
+      case 'condition': return evaluateCondition(node.config.operator, this.primaryNodeValue(node, previous), node.config.value)
       case 'approval': throw new WorkflowApprovalRequired(node.config.message)
-      case 'transform': return transform(node.config.template, node.config.text, previous)
-      case 'output': return previous
+      case 'transform': return transform(node.config.template, node.config.text, this.primaryNodeValue(node, previous))
+      case 'output': {
+        const bindings = node.inputBindings
+        if (bindings !== undefined && bindings.length === 1 && isRecord(previous)) return previous[bindings[0]?.name ?? 'result'] ?? null
+        return previous
+      }
       case 'shell':
         if (!allowShellFile) throw new Error('Shell/File 节点需要运行时显式授权')
-        return runShell(node.config.command, node.config.args, resolveWorkspacePath(this.options.workspaceRoot, node.config.cwd ?? '.'), node.config.timeoutMs ?? 120_000)
+        return runShell(node.config.command, node.config.args.map((argument) => interpolateNodeTemplate(argument, previous)), resolveWorkspacePath(this.options.workspaceRoot, node.config.cwd ?? '.'), node.config.timeoutMs ?? 120_000)
       case 'file':
         if (!allowShellFile) throw new Error('Shell/File 节点需要运行时显式授权')
         return runFile(this.options.workspaceRoot, node.config.operation, node.config.path, node.config.content, previous)
@@ -611,6 +618,35 @@ export class WorkflowRunService {
       result[key] = existing === undefined ? value : Array.isArray(existing) ? [...existing, value] : [existing, value]
       return result
     }, {})
+  }
+
+  /** Build the node-local variable object. Untouched legacy nodes retain their former edge-derived payload. */
+  private resolveNodeInput(
+    node: WorkflowNode,
+    incoming: WorkflowEdge[],
+    outputs: Map<string, WorkflowValue>,
+    input: WorkflowValue,
+  ): Record<string, WorkflowValue> | WorkflowValue {
+    const bindings = node.inputBindings
+    if (bindings === undefined) return this.previousValue(incoming, outputs, input)
+    return Object.fromEntries(bindings.map((binding) => [binding.name, this.resolveBinding(binding, outputs)]))
+  }
+
+  private resolveBinding(binding: WorkflowNodeInputBinding, outputs: Map<string, WorkflowValue>): WorkflowValue {
+    const source = outputs.get(binding.sourceNodeId)
+    const value = source === undefined ? undefined : resolveWorkflowValuePath(source, binding.sourcePath)
+    if (value !== undefined) return cloneWorkflow(value)
+    if (binding.defaultValue !== undefined) return cloneWorkflow(binding.defaultValue)
+    if (!binding.required) return null
+    const field = binding.sourcePath === undefined ? '' : `.${binding.sourcePath}`
+    throw new Error(`节点输入变量“${binding.name}”需要来源“${binding.sourceNodeId}${field}”，但该值不可用。`)
+  }
+
+  /** Utility nodes operate on their single selected variable rather than its wrapper object. */
+  private primaryNodeValue(node: WorkflowNode, input: WorkflowValue): WorkflowValue {
+    const bindings = node.inputBindings
+    if (bindings !== undefined && bindings.length === 1 && isRecord(input)) return input[bindings[0]?.name ?? 'result'] ?? null
+    return input
   }
 
   private async save(record: WorkflowRunRecord, type: WorkflowRunEvent['type'], message: string, nodeId?: string): Promise<void> {
@@ -863,7 +899,8 @@ function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[]): string 
   return [
     '你是 Workflow 架构助手。根据用户描述生成一个可审阅的 JSON 工作流文档。',
     '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
-    '文档必须包含 name、description、nodes、edges；nodes 必须包含一个 input 输入节点和一个 output 最终输出节点。每个 nodes 项必须有唯一的 id、type、label、config、position（{ "x": 数字, "y": 数字 }）；每个 edges 项必须有唯一的 id、source、target。source 和 target 必须是 nodes 中已有的 id。edges 必须表达所有前后依赖，不能留空（只有一个节点时例外），不能有循环。节点与连线结构遵循 docs/workflow-schema.md 中的 Workflow Schema v2。',
+    '文档必须包含 name、description、nodes、edges；nodes 必须包含一个 input 输入节点和一个 output 最终输出节点。每个 nodes 项必须有唯一的 id、type、label、config、position（{ "x": 数字, "y": 数字 }）、inputBindings（数组）和 outputVariables（数组）；每个 edges 项必须有唯一的 id、source、target。source 和 target 必须是 nodes 中已有的 id。edges 只表达执行顺序、分支和循环，不能留空（只有一个节点时例外），不能有循环。节点与连线结构遵循 docs/workflow-schema.md 中的 Workflow Schema v2。',
+    '节点的输入数据只能由 inputBindings 显式选择；每项格式为 {"id":"...","name":"本节点变量名","sourceNodeId":"来源节点 ID","sourcePath":"可选 JSON 字段路径","required":true}。sourcePath 缺省时指向来源节点完整 result；input 节点可直接作为变量来源。变量引用也会形成执行依赖，即使没有直接连线。节点提示词只使用自己声明的 {{变量名}} 或 {{变量名.字段}}。outputVariables 用于声明 JSON 输出字段，例如 [{"name":"summary","description":"调研摘要"}]；result 始终代表完整输出。',
     'ai-task 用于轻量内联智能处理；employee 必须引用目录中真实存在的 employeeId，并填写非空 instruction；目录中不存在的员工 ID 禁止出现在 employee 节点中。如果目录中没有任何员工适合该职责，使用 ai-task 而不是编造员工。禁止输出旧版 agent 节点。',
     'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds（数组）和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；每个 condition 必须有且只应有两个下游连线，分别明确写 sourcePort: "true" 与 sourcePort: "false"，不能省略；transform.template 只能是 identity、json、extract-text、prepend、append。',
     '只有用户明确提供了 MCP 工具名时才生成 MCP 节点，否则使用 ai-task 或 employee，不要生成空 tool。',
@@ -926,15 +963,27 @@ function resolveMcpArgument(value: WorkflowValue, input: WorkflowValue, previous
   if (typeof value === 'string') {
     if (value === '{{input}}') return cloneWorkflow(input)
     if (value === '{{value}}') return cloneWorkflow(previous)
-    return value
+    const token = value.match(/^\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}$/u)?.[1]
+    const variables = isRecord(previous) ? previous : {}
+    if (token !== undefined) {
+      const [name, ...path] = token.split('.')
+      const root = name === undefined ? undefined : variables[name]
+      const resolved = root === undefined ? undefined : resolveWorkflowValuePath(root, path.join('.'))
+      if (resolved !== undefined) return cloneWorkflow(resolved)
+    }
+    return interpolateWorkflowVariables(value
       .replaceAll('{{input}}', renderTemplateValue(input))
-      .replaceAll('{{value}}', renderTemplateValue(previous))
+      .replaceAll('{{value}}', renderTemplateValue(previous)), variables)
   }
   if (Array.isArray(value)) return value.map((item) => resolveMcpArgument(item, input, previous))
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveMcpArgument(item, input, previous)]))
   }
   return value
+}
+
+function interpolateNodeTemplate(template: string, variables: WorkflowValue): string {
+  return isRecord(variables) ? interpolateWorkflowVariables(template, variables) : template.replaceAll('{{value}}', renderTemplateValue(variables))
 }
 
 function renderTemplateValue(value: WorkflowValue): string {
@@ -953,7 +1002,7 @@ async function runFile(root: string, operation: 'read' | 'write', path: string, 
   const filePath = resolveWorkspacePath(root, path)
   if (operation === 'read') return await readFile(filePath, 'utf8')
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
-  const rendered = (content ?? '{{value}}').replaceAll('{{value}}', String(previous)).replaceAll('{{input}}', String(previous))
+  const rendered = interpolateNodeTemplate(content ?? '{{value}}', previous)
   await writeFile(filePath, rendered, { encoding: 'utf8', mode: 0o600 })
   return rendered
 }

@@ -29,12 +29,34 @@ export interface WorkflowPosition {
   y: number
 }
 
+/** A named value made available to a node from an earlier node's output. */
+export interface WorkflowNodeInputBinding {
+  id: string
+  /** The variable name exposed inside this node, for example `research`. */
+  name: string
+  sourceNodeId: string
+  /** Optional object/array path within the source output, for example `summary` or `items.0`. */
+  sourcePath?: string
+  required: boolean
+  defaultValue?: WorkflowValue
+}
+
+/** A user-facing field advertised by a node's structured output. `result` is always implicit. */
+export interface WorkflowNodeOutputVariable {
+  name: string
+  description?: string
+}
+
 export interface WorkflowNodeBase<T extends WorkflowNodeType, C> {
   id: string
   type: T
   label: string
   config: C
   position: WorkflowPosition
+  /** Variables this node elects to consume. Control-flow edges never implicitly become prompt inputs. */
+  inputBindings?: WorkflowNodeInputBinding[]
+  /** Optional JSON fields produced by this node, presented to downstream variable pickers. */
+  outputVariables?: WorkflowNodeOutputVariable[]
 }
 
 export interface InputNodeConfig {
@@ -313,8 +335,9 @@ export function createDefaultWorkflow(name = '新工作流'): WorkflowDefinition
           outputMode: 'text',
         },
         position: { x: 380, y: 180 },
+        inputBindings: [{ id: 'topic', name: 'topic', sourceNodeId: inputId, required: true }],
       },
-      { id: outputId, type: 'output', label: '输出', config: {}, position: { x: 720, y: 180 } },
+      { id: outputId, type: 'output', label: '输出', config: {}, position: { x: 720, y: 180 }, inputBindings: [{ id: 'result', name: 'result', sourceNodeId: aiTaskId, required: true }] },
     ],
     edges: [
       { id: newId('edge'), source: inputId, target: aiTaskId },
@@ -340,6 +363,29 @@ function readPosition(value: unknown): WorkflowPosition {
 
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function readInputBindings(value: unknown): WorkflowNodeInputBinding[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.flatMap((item, index) => {
+    if (!isRecord(item) || typeof item.name !== 'string' || typeof item.sourceNodeId !== 'string') return []
+    return [{
+      id: typeof item.id === 'string' && item.id !== '' ? item.id : `input-${index + 1}`,
+      name: item.name,
+      sourceNodeId: item.sourceNodeId,
+      sourcePath: typeof item.sourcePath === 'string' && item.sourcePath !== '' ? item.sourcePath : undefined,
+      required: item.required !== false,
+      defaultValue: isWorkflowValue(item.defaultValue) ? item.defaultValue : undefined,
+    }]
+  })
+}
+
+function readOutputVariables(value: unknown): WorkflowNodeOutputVariable[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.name !== 'string') return []
+    return [{ name: item.name, description: typeof item.description === 'string' && item.description !== '' ? item.description : undefined }]
+  })
 }
 
 function normalizeNodeType(value: unknown): WorkflowNodeType | undefined {
@@ -390,12 +436,16 @@ export function normalizeWorkflow(raw: unknown): WorkflowDefinition | undefined 
     if (type === undefined) continue
     const legacyAgent = rawNode.type === 'agent'
     const rawLabel = typeof rawNode.label === 'string' ? rawNode.label.trim() : ''
+    const inputBindings = readInputBindings(rawNode.inputBindings)
+    const outputVariables = readOutputVariables(rawNode.outputVariables)
     nodes.push({
       id: rawNode.id,
       type,
       label: legacyAgent && (rawLabel === '' || rawLabel === 'Agent') ? '智能处理' : rawLabel || type,
       config: readNodeConfig(type, rawNode.config) as never,
       position: readPosition(rawNode.position),
+      ...(inputBindings === undefined ? {} : { inputBindings }),
+      ...(outputVariables === undefined ? {} : { outputVariables }),
     } as WorkflowNode)
   }
   const nodeIds = new Set(nodes.map((node) => node.id))
@@ -440,7 +490,15 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
     if (nodeIds.has(node.id)) issues.push({ path: `nodes.${index}.id`, message: '节点 ID 重复。' })
     nodeIds.add(node.id)
     if (node.label.trim() === '') issues.push({ path: `nodes.${index}.label`, message: '节点名称不能为空。' })
+    validateNodeBindings(node, `nodes.${index}`, issues)
     validateNodeConfig(node, `nodes.${index}.config`, issues)
+  }
+
+  for (const [index, node] of workflow.nodes.entries()) {
+    for (const [bindingIndex, binding] of (node.inputBindings ?? []).entries()) {
+      if (!nodeIds.has(binding.sourceNodeId)) issues.push({ path: `nodes.${index}.inputBindings.${bindingIndex}.sourceNodeId`, message: '输入变量必须引用现有节点。' })
+      if (binding.sourceNodeId === node.id) issues.push({ path: `nodes.${index}.inputBindings.${bindingIndex}.sourceNodeId`, message: '节点不能引用自己的输出。' })
+    }
   }
 
   const edgeIds = new Set<string>()
@@ -452,6 +510,13 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
     const targets = adjacency.get(edge.source) ?? []
     targets.push(edge.target)
     adjacency.set(edge.source, targets)
+  }
+  for (const node of workflow.nodes) {
+    for (const binding of node.inputBindings ?? []) {
+      const targets = adjacency.get(binding.sourceNodeId) ?? []
+      targets.push(node.id)
+      adjacency.set(binding.sourceNodeId, targets)
+    }
   }
 
   const visiting = new Set<string>()
@@ -470,6 +535,64 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
   for (const nodeId of nodeIds) visit(nodeId)
   if (workflow.nodes.length === 0) issues.push({ path: 'nodes', message: '至少需要一个节点。' })
   return { valid: issues.length === 0, issues }
+}
+
+function validateNodeBindings(node: WorkflowNode, path: string, issues: WorkflowValidationIssue[]): void {
+  const names = new Set<string>()
+  for (const [index, binding] of (node.inputBindings ?? []).entries()) {
+    const bindingPath = `${path}.inputBindings.${index}`
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(binding.name)) issues.push({ path: `${bindingPath}.name`, message: '输入变量名只能使用字母、数字和下划线，且不能以数字开头。' })
+    if (names.has(binding.name)) issues.push({ path: `${bindingPath}.name`, message: '输入变量名不能重复。' })
+    names.add(binding.name)
+    if (binding.sourcePath !== undefined && !/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/u.test(binding.sourcePath)) issues.push({ path: `${bindingPath}.sourcePath`, message: '输出字段路径只能使用点号分隔的字母、数字和下划线。' })
+  }
+  const outputNames = new Set<string>(['result'])
+  for (const [index, output] of (node.outputVariables ?? []).entries()) {
+    const outputPath = `${path}.outputVariables.${index}.name`
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(output.name)) issues.push({ path: outputPath, message: '输出变量名只能使用字母、数字和下划线，且不能以数字开头。' })
+    if (outputNames.has(output.name)) issues.push({ path: outputPath, message: '输出变量名不能重复，也不能覆盖 result。' })
+    outputNames.add(output.name)
+  }
+}
+
+/** Explicit variable references add an execution dependency even without a visible control-flow edge. */
+export function workflowNodeDependencyIds(workflow: WorkflowDefinition, node: WorkflowNode): string[] {
+  return [...new Set([
+    ...workflow.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source),
+    ...(node.inputBindings ?? []).map((binding) => binding.sourceNodeId),
+  ])]
+}
+
+/** Resolve a dotted field path from a JSON-compatible workflow value. */
+export function resolveWorkflowValuePath(value: WorkflowValue, path?: string): WorkflowValue | undefined {
+  if (path === undefined || path === '') return value
+  let current: WorkflowValue | undefined = value
+  for (const part of path.split('.')) {
+    if (Array.isArray(current)) {
+      const index = Number(part)
+      current = Number.isInteger(index) && index >= 0 ? current[index] : undefined
+    } else if (current !== null && typeof current === 'object') {
+      current = current[part]
+    } else {
+      current = undefined
+    }
+    if (current === undefined) return undefined
+  }
+  return current
+}
+
+function renderWorkflowVariable(value: WorkflowValue): string {
+  return typeof value === 'string' ? value : JSON.stringify(value)
+}
+
+/** Interpolate only a node's declared input variables, including nested JSON fields. */
+export function interpolateWorkflowVariables(template: string, variables: Record<string, WorkflowValue>): string {
+  return template.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/gu, (token, path: string) => {
+    const [name, ...parts] = path.split('.')
+    const root = name === undefined ? undefined : variables[name]
+    const value = root === undefined ? undefined : resolveWorkflowValuePath(root, parts.join('.'))
+    return value === undefined ? token : renderWorkflowVariable(value)
+  })
 }
 
 function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowValidationIssue[]): void {

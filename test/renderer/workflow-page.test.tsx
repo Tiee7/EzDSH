@@ -221,6 +221,21 @@ describe('WorkflowPage regressions', () => {
     expect(duplicate.config).not.toBe(source.config)
   })
 
+  it('offers start fields and declared upstream outputs as named node-input variables', () => {
+    const workflow = createDefaultWorkflow('Variable options')
+    const input = workflow.nodes.find((node) => node.type === 'input')!
+    const research = workflow.nodes.find((node) => node.type === 'ai-task')!
+    const target = workflow.nodes.find((node) => node.type === 'output')!
+    research.outputVariables = [{ name: 'summary', description: '调研结论' }, { name: 'sources' }]
+
+    expect(workflowPage.getWorkflowVariableOptions(workflow, target.id)).toEqual(expect.arrayContaining([
+      { sourceNodeId: input.id, sourcePath: undefined, label: '输入 · task' },
+      { sourceNodeId: research.id, sourcePath: undefined, label: '智能处理 · result' },
+      { sourceNodeId: research.id, sourcePath: 'summary', label: '智能处理 · summary' },
+      { sourceNodeId: research.id, sourcePath: 'sources', label: '智能处理 · sources' },
+    ]))
+  })
+
   it('selects every workflow node without changing node data', () => {
     const nodes: Node[] = [
       { id: 'first', position: { x: 20, y: 40 }, data: { label: 'First' }, selected: false },
