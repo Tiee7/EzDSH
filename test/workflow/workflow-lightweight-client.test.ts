@@ -56,4 +56,19 @@ describe('WorkflowLightweightClient', () => {
     await expect(client.complete({ prompt: 'do work', outputMode: 'text', model: selection })).resolves.toBe('完成')
     expect(resolveProfile).toHaveBeenCalledWith(selection)
   })
+
+  it('uses the Runtime adapter for the configured default and plugin-owned models', async () => {
+    const runtimeComplete = vi.fn(async () => 'Codex 完成')
+    const resolveProfile = vi.fn(async () => openAiProfile)
+    const client = new WorkflowLightweightClient({ resolveProfile, completeWithRuntime: runtimeComplete })
+
+    await expect(client.complete({ prompt: 'default', outputMode: 'text' })).resolves.toBe('Codex 完成')
+    await expect(client.complete({
+      prompt: 'selected',
+      outputMode: 'text',
+      model: { providerId: 'openai-codex', modelId: 'gpt-5.6-luna' },
+    })).resolves.toBe('Codex 完成')
+    expect(runtimeComplete).toHaveBeenCalledTimes(2)
+    expect(resolveProfile).not.toHaveBeenCalled()
+  })
 })

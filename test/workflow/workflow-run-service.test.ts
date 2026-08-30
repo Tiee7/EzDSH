@@ -62,6 +62,7 @@ async function createNodeService(options: {
   complete: ReturnType<typeof vi.fn>
   mcpCall: ReturnType<typeof vi.fn>
   archiveSession: ReturnType<typeof vi.fn>
+  selectSessionModel: ReturnType<typeof vi.fn>
 }> {
   const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-node-'))
   const workflowStore = new WorkflowStore(dir)
@@ -83,6 +84,7 @@ async function createNodeService(options: {
   const complete = vi.fn(async () => responses.shift() ?? '')
   const mcpCall = vi.fn(async () => 'mcp-complete')
   const archiveSession = vi.fn(async () => undefined)
+  const selectSessionModel = vi.fn(async () => ({ selected: { provider: 'openai-codex', model: 'gpt-5.6-luna' } }))
   const service = new WorkflowRunService({
     workflowStore,
     runStore: new WorkflowRunStore(dir),
@@ -91,12 +93,13 @@ async function createNodeService(options: {
       createSession,
       sendPrompt,
       archiveSession,
+      selectSessionModel,
     }),
     resolveEmployee: options.resolveEmployee ?? (() => undefined),
     lightweightClient: { complete },
     mcpClient: { call: mcpCall },
   })
-  return { service, workflowId: workflow.id, sendPrompt, createSession, complete, mcpCall, archiveSession }
+  return { service, workflowId: workflow.id, sendPrompt, createSession, complete, mcpCall, archiveSession, selectSessionModel }
 }
 
 async function eventually(service: WorkflowRunService, runId: string): Promise<NonNullable<ReturnType<WorkflowRunService['get']>>> {
@@ -129,6 +132,28 @@ describe('workflow run service', () => {
     expect(sendPrompt).toHaveBeenCalledWith('session-node', expect.stringContaining('只审核内容'))
     expect(sendPrompt).toHaveBeenCalledWith('session-node', expect.stringContaining('事实有依据'))
     await vi.waitFor(() => expect(archiveSession).toHaveBeenCalledWith('session-node'))
+  })
+
+  it('applies the selected workflow model to Runtime-backed employee sessions', async () => {
+    const { service, workflowId, selectSessionModel } = await createNodeService({
+      node: {
+        id: 'employee',
+        type: 'employee',
+        label: '审核员',
+        config: { employeeId: 'content-reviewer', instruction: '审核脚本', outputMode: 'text' },
+        position: { x: 200, y: 0 },
+      },
+      resolveEmployee: () => reviewer(),
+    })
+
+    const selection = { providerId: 'openai-codex', modelId: 'gpt-5.6-luna' }
+    const result = await eventually(service, (await service.start(workflowId, '内容', { model: selection })).id)
+
+    expect(result.status).toBe('completed')
+    expect(selectSessionModel).toHaveBeenCalledWith('session-node', {
+      provider: 'openai-codex',
+      model: 'gpt-5.6-luna',
+    })
   })
 
   it('reuses one isolated employee Session only within its workflow run', async () => {

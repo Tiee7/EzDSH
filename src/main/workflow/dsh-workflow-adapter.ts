@@ -1,9 +1,10 @@
 import type { EmployeeSnapshot } from '../../shared/employees.js'
-import { isWorkflowValue, type WorkflowNode, type WorkflowOutputMode, type WorkflowValue } from '../../shared/workflow.js'
+import { isWorkflowValue, type WorkflowModelSelection, type WorkflowNode, type WorkflowOutputMode, type WorkflowValue } from '../../shared/workflow.js'
 
 /** Minimal DSH contract used only for employee and legacy Skill internal sessions. */
 export interface WorkflowSessionClient {
   createSession(params: { cwd: string }): Promise<{ sessionId: string }>
+  selectSessionModel?(sessionId: string, selection: { provider: string; model: string }): Promise<unknown>
   sendPrompt(sessionId: string, text: string): Promise<{ text: string }>
   cancelSession?(sessionId: string): Promise<void>
   archiveSession?(sessionId: string): Promise<unknown>
@@ -27,8 +28,13 @@ interface InstructionNode {
 export class DshWorkflowAdapter {
   constructor(private readonly options: DshWorkflowAdapterOptions) {}
 
-  async createInternalSession(): Promise<string> {
-    return (await this.options.createClient().createSession({ cwd: this.options.cwd })).sessionId
+  async createInternalSession(model?: WorkflowModelSelection): Promise<string> {
+    const client = this.options.createClient()
+    const sessionId = (await client.createSession({ cwd: this.options.cwd })).sessionId
+    if (model !== undefined) {
+      await client.selectSessionModel?.(sessionId, { provider: model.providerId, model: model.modelId })
+    }
+    return sessionId
   }
 
   async cancelSession(sessionId: string): Promise<void> {

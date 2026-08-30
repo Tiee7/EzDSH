@@ -20,6 +20,8 @@ export interface WorkflowLightweightRequest {
 
 export interface WorkflowLightweightClientOptions {
   resolveProfile: (selection?: WorkflowModelSelection) => Promise<WorkflowModelProfile>
+  /** Runtime-backed execution supports plugin-owned routes such as ChatGPT OAuth Codex. */
+  completeWithRuntime?: (request: WorkflowLightweightRequest) => Promise<string>
   fetchImpl?: typeof fetch
 }
 
@@ -35,6 +37,9 @@ export class WorkflowLightweightClient {
   }
 
   async complete(request: WorkflowLightweightRequest): Promise<string> {
+    if (this.options.completeWithRuntime !== undefined) {
+      return this.options.completeWithRuntime(request)
+    }
     const profile = await this.options.resolveProfile(request.model)
     switch (profile.api) {
       case 'anthropic-messages': return this.completeAnthropic(profile, request)

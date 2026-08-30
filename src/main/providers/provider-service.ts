@@ -31,6 +31,11 @@ export interface WorkflowModelProfile {
   apiKey: string
 }
 
+export interface ProviderServiceOptions {
+  /** Live Runtime directory; includes model routes contributed by plugins. */
+  listRuntimeModels?: () => Promise<WorkflowModelOption[]>
+}
+
 const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   zhipuai: 'zai',
   togetherai: 'together',
@@ -43,7 +48,7 @@ export class ProviderService {
   private readonly credentialsPath: string
   private readonly settingsPath: string
 
-  constructor(private readonly layout: UserDataLayout) {
+  constructor(private readonly layout: UserDataLayout, private readonly options: ProviderServiceOptions = {}) {
     this.credentialsPath = join(layout.harness, '.credentials.yaml')
     this.settingsPath = join(layout.harness, 'settings.yaml')
   }
@@ -323,6 +328,14 @@ export class ProviderService {
 
   /** Lists safe, configured model choices for the workflow run dialog. */
   async listWorkflowModels(): Promise<WorkflowModelOption[]> {
+    if (this.options.listRuntimeModels !== undefined) {
+      try {
+        const runtimeModels = await this.options.listRuntimeModels()
+        if (runtimeModels.length > 0) return runtimeModels
+      } catch {
+        // Runtime may still be starting; retain the configured-provider fallback.
+      }
+    }
     const [definitions, statuses] = await Promise.all([this.listDefinitions(), this.getStatuses()])
     const usable = new Set(statuses.filter((status) => status.usable).map((status) => status.providerId))
     const options: WorkflowModelOption[] = []

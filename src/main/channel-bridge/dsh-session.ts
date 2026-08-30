@@ -83,6 +83,11 @@ export interface DshSessionModels {
   failures: DshModelCatalogFailure[]
 }
 
+export interface DshModelCatalog {
+  groups: DshModelProviderGroup[]
+  failures: DshModelCatalogFailure[]
+}
+
 export interface TurnTrackerCallbacks {
   /** Called after the prompt has been queued in DSH. */
   onAcknowledged(): void
@@ -309,6 +314,11 @@ export class DshSessionClient {
 
   async getSessionModels(sessionId: string): Promise<DshSessionModels> {
     return this.post<DshSessionModels>('/api/session.models', { sessionId })
+  }
+
+  /** Host-wide catalog from every registered Runtime adapter, including plugins. */
+  async getModelCatalog(): Promise<DshModelCatalog> {
+    return this.post<DshModelCatalog>('/api/llm.models', {})
   }
 
   async selectSessionModel(sessionId: string, selection: DshModelSelection): Promise<{ selected: DshModelSelection }> {

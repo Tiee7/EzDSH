@@ -150,6 +150,33 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
+  it('loads the host-wide Runtime model catalog without creating a session', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; payload: unknown }
+      requests.push(request)
+      const response = ok({
+        groups: [{ id: 'openai-codex', name: 'OpenAI Codex', models: [{ id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }] }],
+        failures: [],
+      })
+      return {
+        ok: true,
+        status: 200,
+        json: async () => response,
+        text: async () => JSON.stringify(response),
+      } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await expect(client.getModelCatalog()).resolves.toEqual({
+      groups: [{ id: 'openai-codex', name: 'OpenAI Codex', models: [{ id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }] }],
+      failures: [],
+    })
+    expect(requests).toEqual([expect.objectContaining({ method: 'llm.models', payload: {} })])
+
+    vi.unstubAllGlobals()
+  })
+
   it('cancels a running DSH session', async () => {
     const requests: Array<{ method: string; payload: unknown }> = []
     vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {

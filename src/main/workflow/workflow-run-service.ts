@@ -459,7 +459,7 @@ export class WorkflowRunService {
     const reuseKey = kind === 'employee' ? `employee:${employeeId ?? ''}` : `skill:${nodeId}`
     const existing = active.sessionKeys.get(reuseKey)
     if (existing !== undefined) return existing
-    const sessionId = await this.adapter.createInternalSession()
+    const sessionId = await this.adapter.createInternalSession(record.model)
     active.sessionKeys.set(reuseKey, sessionId)
     active.sessionIds.add(sessionId)
     await this.internalSessionStore.register({

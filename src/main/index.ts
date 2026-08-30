@@ -88,6 +88,7 @@ import { WorkflowStore } from './workflow/workflow-store.js'
 import { WorkflowRunStore } from './workflow/workflow-run-store.js'
 import { WorkflowRunService } from './workflow/workflow-run-service.js'
 import { WorkflowLightweightClient } from './workflow/workflow-lightweight-client.js'
+import { WorkflowRuntimeClient } from './workflow/workflow-runtime-client.js'
 import { WorkflowMcpClient } from './workflow/workflow-mcp-client.js'
 import { WorkflowInternalSessionStore } from './workflow/workflow-internal-session-store.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
@@ -531,14 +532,26 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   stopEmployeeLockWatcher?.()
   stopWorkflowWatcher?.()
   stopWorkflowWatcher = undefined
+  const createWorkflowSessionClient = (): DshSessionClient => {
+    const runtimeUrl = runtimeManager?.snapshot().url
+    if (runtimeUrl === undefined) throw new Error('DSH Runtime 尚未启动')
+    return new DshSessionClient({ baseUrl: runtimeUrl, timeoutMs: 10 * 60 * 1000 })
+  }
+  const runtimeWorkflowClient = new WorkflowRuntimeClient({
+    cwd: layout.root,
+    createClient: createWorkflowSessionClient,
+  })
+  const lightweightClient = new WorkflowLightweightClient({
+    resolveProfile: async (selection) => {
+      if (providerService === undefined) throw new Error('模型供应商服务尚未初始化')
+      return providerService.resolveWorkflowModel(selection)
+    },
+    completeWithRuntime: (request) => runtimeWorkflowClient.complete(request),
+  })
   employeeService = new EmployeeService({
     configPath: join(layout.state, 'employees.json'),
     cwd: layout.root,
-    createClient: () => {
-      const runtimeUrl = runtimeManager?.snapshot().url
-      if (runtimeUrl === undefined) throw new Error('DSH Runtime 尚未启动')
-      return new DshSessionClient({ baseUrl: runtimeUrl, timeoutMs: 10 * 60 * 1000 })
-    },
+    createClient: createWorkflowSessionClient,
   })
   await employeeService.initialize().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
@@ -553,18 +566,9 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     workflowStore,
     runStore: workflowRunStore,
     workspaceRoot: layout.root,
-    createClient: () => {
-      const runtimeUrl = runtimeManager?.snapshot().url
-      if (runtimeUrl === undefined) throw new Error('DSH Runtime 尚未启动')
-      return new DshSessionClient({ baseUrl: runtimeUrl, timeoutMs: 10 * 60 * 1000 })
-    },
+    createClient: createWorkflowSessionClient,
     resolveEmployee: (id) => employeeService?.get(id),
-    lightweightClient: new WorkflowLightweightClient({
-      resolveProfile: async () => {
-        if (providerService === undefined) throw new Error('模型供应商服务尚未初始化')
-        return providerService.resolveWorkflowModel()
-      },
-    }),
+    lightweightClient,
     mcpClient: new WorkflowMcpClient({ patchPath: join(layout.harness, 'profiles', 'web', 'cordis.patch.yml') }),
     internalSessionStore: new WorkflowInternalSessionStore(layout.state),
   })
@@ -610,7 +614,17 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     console.error('[channel-bridge] failed to initialize:', message)
   })
 
-  providerService = new ProviderService(layout)
+  providerService = new ProviderService(layout, {
+    listRuntimeModels: async () => {
+      const catalog = await createWorkflowSessionClient().getModelCatalog()
+      return catalog.groups.flatMap((group) => group.models.map((model) => ({
+        providerId: group.id,
+        providerName: group.name,
+        modelId: model.id,
+        modelName: model.name,
+      })))
+    },
+  })
   await providerService.initialize()
   navigationService = new NavigationService(layout.state)
   await navigationService.initialize()
