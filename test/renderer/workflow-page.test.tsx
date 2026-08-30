@@ -383,6 +383,7 @@ describe('WorkflowPage regressions', () => {
     expect(finalMarkup).toContain('最终结果')
     expect(nodeMarkup).toContain('节点输入')
     expect(nodeMarkup).toContain('节点输出')
+    expect(nodeMarkup).toContain(`${node.label} · 节点输出`)
     expect(nodeMarkup).toContain('上游节点输出')
     expect(nodeMarkup).toContain('到上游')
   })
