@@ -57,7 +57,7 @@ interface WorkflowPageProps {
   onWorkspaceModeChange?: (active: boolean) => void
 }
 
-type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; status?: WorkflowNodeRunStatus; duration?: string }>
+type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; status?: WorkflowNodeRunStatus; duration?: string; isRunning?: boolean }>
 
 const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   input: 'Input',
@@ -143,7 +143,7 @@ export function redoWorkflowHistory(history: WorkflowHistoryState): WorkflowHist
   }
 }
 
-function flowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, selectedNodeId?: string): FlowNode[] {
+export function workflowFlowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, selectedNodeId?: string): FlowNode[] {
   const states = new Map(run?.nodeStates.map((state) => [state.nodeId, state]))
   return workflow.nodes.map((node) => {
     const status = states.get(node.id)?.status
@@ -155,7 +155,7 @@ function flowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, select
       width: WORKFLOW_FLOW_NODE_WIDTH,
       height: WORKFLOW_FLOW_NODE_HEIGHT,
       selected: node.id === selectedNodeId,
-      data: { label: `${node.label}${statusMark}`, nodeType: node.type, status, ...(run === undefined ? {} : { duration: formatWorkflowNodeDuration(states.get(node.id)?.elapsedMs) }) },
+      data: { label: `${node.label}${statusMark}`, nodeType: node.type, status, isRunning: status === 'running', ...(run === undefined ? {} : { duration: formatWorkflowNodeDuration(states.get(node.id)?.elapsedMs) }) },
       className: status === undefined ? undefined : `workflow-flow-node-${status}`,
     }
   })
@@ -260,13 +260,14 @@ function WorkflowFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element 
   return <div className={`workflow-flow-node ${selected ? 'workflow-flow-node-selected' : ''}`}>
     {handles.input === 'left' ? <Handle type="target" position={Position.Left} /> : null}
     <span>{data.label}</span>
+    {data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}
     {data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}
     {handles.output === 'right' ? <Handle type="source" position={Position.Right} /> : null}
   </div>
 }
 
 function ConditionFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element {
-  return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><span>{data.label}</span>{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />true</span><span><Handle type="source" position={Position.Right} id="false" />false</span></div></div>
+  return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><span>{data.label}</span>{data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />true</span><span><Handle type="source" position={Position.Right} id="false" />false</span></div></div>
 }
 
 const nodeTypes = { workflow: WorkflowFlowNode, condition: ConditionFlowNode }
@@ -1327,7 +1328,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     if (selectedEdgeId !== undefined && !selectedEdgeIds.includes(selectedEdgeId)) selectedEdgeIds.push(selectedEdgeId)
     if (recordHistory) setHistory((current) => current === undefined ? createWorkflowHistory(next) : recordWorkflowHistory(current, next))
     setSelected(next)
-    setNodes(preserveWorkflowNodeSelection(flowNodes(next, currentRun), selectedNodeIds))
+    setNodes(preserveWorkflowNodeSelection(workflowFlowNodes(next, currentRun), selectedNodeIds))
     setEdges(preserveWorkflowEdgeSelection(flowEdges(next), selectedEdgeIds))
     setSelectedNodeId((current) => next.nodes.some((node) => node.id === current) ? current : undefined)
     setSelectedEdgeId((current) => next.edges.some((edge) => edge.id === current) ? current : undefined)
@@ -1343,7 +1344,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setSelectedNodeId(undefined)
     setSelectedEdgeId(undefined)
     setContextMenu(undefined)
-    setNodes(flowNodes(userFacingWorkflow))
+    setNodes(workflowFlowNodes(userFacingWorkflow))
     setEdges(flowEdges(userFacingWorkflow))
     setCurrentRun(undefined)
     setSelectedRunNodeId(undefined)
@@ -1397,7 +1398,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const selectedEdgeIds = edges.filter((edge) => edge.selected === true).map((edge) => edge.id)
       if (selectedNodeId !== undefined && !selectedNodeIds.includes(selectedNodeId)) selectedNodeIds.push(selectedNodeId)
       if (selectedEdgeId !== undefined && !selectedEdgeIds.includes(selectedEdgeId)) selectedEdgeIds.push(selectedEdgeId)
-      setNodes(preserveWorkflowNodeSelection(flowNodes(saved, currentRun), selectedNodeIds))
+      setNodes(preserveWorkflowNodeSelection(workflowFlowNodes(saved, currentRun), selectedNodeIds))
       setEdges(preserveWorkflowEdgeSelection(flowEdges(saved), selectedEdgeIds))
       setSelectedNodeId((current) => saved.nodes.some((node) => node.id === current) ? current : undefined)
       setMessage(copy.workflowSaved)
@@ -1497,7 +1498,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     const pasted = duplicateWorkflowNodes(copied, (node) => id(node.type), offset)
     const next = { ...current, nodes: [...current.nodes, ...pasted] }
     applyDefinition(next)
-    setNodes(flowNodes(next, currentRun).map((node) => ({ ...node, selected: pasted.some((candidate) => candidate.id === node.id) })))
+    setNodes(workflowFlowNodes(next, currentRun).map((node) => ({ ...node, selected: pasted.some((candidate) => candidate.id === node.id) })))
     setSelectedNodeId(pasted.at(-1)?.id)
     setSelectedEdgeId(undefined)
     setMessage(`已粘贴 ${pasted.length} 个节点`)
@@ -1988,7 +1989,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <button key={runRecord.id} type="button" className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''}`} onClick={() => selectRun(runRecord)}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {runRecord.startedAt ?? 'queued'}</span></button>)}</div>}
             </aside> : <button type="button" className="workflow-sidebar-toggle workflow-sidebar-toggle-floating" aria-label={copy.workflowShowRunSidebar} title={copy.workflowShowRunSidebar} onClick={() => setShowRunSidebar(true)}>›</button>}
             <div ref={executionMainRef} className="workflow-execution-main" style={{ '--workflow-execution-detail-height': `${executionDetailHeight}px` } as CSSProperties}>
-              <div className="workflow-execution-canvas"><ReactFlow {...WORKFLOW_CANVAS_INTERACTION_PROPS} nodes={flowNodes(selected, currentRun, selectedRunNodeId)} edges={flowEdges(selected)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} onPaneClick={() => setSelectedRunNodeId(undefined)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
+              <div className="workflow-execution-canvas"><ReactFlow {...WORKFLOW_CANVAS_INTERACTION_PROPS} nodes={workflowFlowNodes(selected, currentRun, selectedRunNodeId)} edges={flowEdges(selected)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} onPaneClick={() => setSelectedRunNodeId(undefined)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
               <div className="workflow-execution-resize-handle" role="separator" aria-orientation="horizontal" aria-label={copy.workflowResizeExecutionPanel} onPointerDown={beginExecutionResize}><span /></div>
               <WorkflowExecutionReview copy={copy} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => void cancel()} onApprove={() => void approve(true)} onReject={() => void approve(false)} onResume={() => void resume()} onSelectNode={setSelectedRunNodeId} onCopyOutput={copyOutput} onOpenOutputWindow={openOutputWindow} outputFontScale={outputFontScale} onIncreaseOutputFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseOutputFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} />
             </div>

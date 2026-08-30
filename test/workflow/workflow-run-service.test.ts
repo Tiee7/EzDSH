@@ -412,6 +412,37 @@ describe('workflow run service', () => {
     expect(new Set(generated.workflow.nodes.map((node) => `${node.position.x},${node.position.y}`)).size).toBe(generated.workflow.nodes.length)
   })
 
+  it('adds explicit true and false ports to AI-generated condition exits', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-generation-condition-ports-'))
+    const workflowStore = new WorkflowStore(dir)
+    const complete = vi.fn(async () => JSON.stringify({
+      name: '企业分析', description: '', nodes: [
+        { id: 'input', type: 'input', label: '输入', config: {}, position: { x: 0, y: 0 } },
+        { id: 'listed', type: 'condition', label: '是否上市', config: { operator: 'truthy' }, position: { x: 200, y: 0 } },
+        { id: 'public', type: 'ai-task', label: '上市分析', config: { instruction: '分析上市公司', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 400, y: -80 } },
+        { id: 'private', type: 'ai-task', label: '未上市分析', config: { instruction: '分析未上市公司', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 400, y: 80 } },
+        { id: 'output', type: 'output', label: '输出', config: {}, position: { x: 600, y: 0 } },
+      ],
+      edges: [
+        { id: 'input-listed', source: 'input', target: 'listed' },
+        { id: 'listed-public', source: 'listed', target: 'public' },
+        { id: 'listed-private', source: 'listed', target: 'private' },
+        { id: 'public-output', source: 'public', target: 'output' },
+        { id: 'private-output', source: 'private', target: 'output' },
+      ],
+    }))
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      lightweightClient: { complete },
+    })
+
+    const generated = await service.generate({ prompt: '为企业生成分析流程' })
+
+    expect(generated.workflow.edges.filter((edge) => edge.source === 'listed').map((edge) => edge.sourcePort)).toEqual(['true', 'false'])
+  })
+
   it('executes a condition branch and checkpoints each node', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-run-'))
     const workflowStore = new WorkflowStore(dir)
@@ -430,6 +461,70 @@ describe('workflow run service', () => {
     expect(result.nodeStates.find((state) => state.nodeId === 'no')?.status).toBe('skipped')
     expect(result.nodeStates.every((state) => typeof state.elapsedMs === 'number')).toBe(true)
     expect(result.events.some((event) => event.type === 'node-completed')).toBe(true)
+  })
+
+  it('treats legacy condition exits without a port as one exclusive true/false pair', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-legacy-condition-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      ...graph(),
+      id: 'workflow-legacy-condition',
+      edges: graph().edges.map((edge) => edge.source === 'check' ? { ...edge, sourcePort: undefined } : edge),
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, 'yes')).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.nodeStates.find((state) => state.nodeId === 'yes')?.status).toBe('completed')
+    expect(result.nodeStates.find((state) => state.nodeId === 'no')?.status).toBe('skipped')
+  })
+
+  it('runs independent ready branches concurrently and waits for their join', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-concurrent-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      schemaVersion: 2, id: 'workflow-concurrent', name: 'Concurrent', description: '', revision: 1, enabled: true,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'research', type: 'ai-task', label: 'Research', config: { instruction: 'research', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 240, y: -80 } },
+        { id: 'risk', type: 'ai-task', label: 'Risk', config: { instruction: 'risk', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 240, y: 80 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 480, y: 0 } },
+      ],
+      edges: [
+        { id: 'input-research', source: 'input', target: 'research' },
+        { id: 'input-risk', source: 'input', target: 'risk' },
+        { id: 'research-output', source: 'research', target: 'output', targetPort: 'research' },
+        { id: 'risk-output', source: 'risk', target: 'output', targetPort: 'risk' },
+      ],
+    })
+    let activeCalls = 0
+    let maxActiveCalls = 0
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      lightweightClient: {
+        complete: async ({ prompt }) => {
+          activeCalls += 1
+          maxActiveCalls = Math.max(maxActiveCalls, activeCalls)
+          await new Promise((resolve) => setTimeout(resolve, 25))
+          activeCalls -= 1
+          return prompt.includes('research') ? 'research-result' : 'risk-result'
+        },
+      },
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, 'brief')).id)
+
+    expect(result.status).toBe('completed')
+    expect(maxActiveCalls).toBe(2)
+    expect(result.output).toEqual({ research: 'research-result', risk: 'risk-result' })
   })
 
   it('waits for every connected upstream node and passes named values into a multi-input join', async () => {

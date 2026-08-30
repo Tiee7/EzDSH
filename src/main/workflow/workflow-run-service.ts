@@ -173,7 +173,7 @@ export class WorkflowRunService {
     const nodeMap = new Map(workflow.nodes.map((candidate) => [candidate.id, candidate]))
     const stateMap = new Map(record.nodeStates.map((candidate) => [candidate.nodeId, candidate]))
     state.status = 'completed'
-    state.output = this.previousValue(incoming.filter((edge) => this.isEdgeActive(edge, nodeMap, stateMap, outputs)), outputs, record.input)
+    state.output = this.previousValue(incoming.filter((edge) => this.isEdgeActive(edge, workflow.edges, nodeMap, stateMap, outputs)), outputs, record.input)
     state.completedAt = new Date().toISOString()
     state.elapsedMs = 0
     state.error = undefined
@@ -293,66 +293,39 @@ export class WorkflowRunService {
       const outputs = new Map<string, WorkflowValue>()
       for (const state of record.nodeStates) if (state.output !== undefined) outputs.set(state.nodeId, state.output)
 
-      for (const nodeId of order) {
-        const node = nodeMap.get(nodeId)
-        const state = stateMap.get(nodeId)
-        if (node === undefined || state === undefined) continue
-        if (state.status === 'completed') continue
-        if (active.cancelled) {
-          state.status = active.pauseRequested ? 'pending' : 'cancelled'
-          state.completedAt = new Date().toISOString()
-          state.elapsedMs ??= 0
-          record.status = active.pauseRequested ? 'paused' : 'cancelled'
-          record.error = active.pauseRequested ? '应用正在切换工作区，运行已暂停。' : '用户取消了运行'
-          record.completedAt = new Date().toISOString()
-          await this.save(record, active.pauseRequested ? 'run-paused' : 'run-cancelled', record.error, node.id)
-          break
-        }
-        const incoming = workflow.edges.filter((edge) => edge.target === node.id)
-        const activeIncoming = incoming.filter((edge) => this.isEdgeActive(edge, nodeMap, stateMap, outputs))
-        if (incoming.length > 0 && activeIncoming.length === 0) {
-          state.status = 'skipped'
-          state.completedAt = new Date().toISOString()
-          state.elapsedMs = 0
-          await this.save(record, 'node-skipped', '条件分支未命中', node.id)
-          continue
-        }
-        state.status = 'running'
-        state.startedAt = new Date().toISOString()
-        const executionStartedAt = Date.now()
-        await this.save(record, 'node-started', `开始执行节点：${node.label}`, node.id)
-        try {
-          const previous = this.previousValue(activeIncoming, outputs, record.input)
-          state.input = cloneWorkflow(previous)
-          const output = await this.executeNode(node, record.input, previous, record.allowShellFile, active, record)
-          state.status = 'completed'
-          state.output = cloneWorkflow(output)
-          state.completedAt = new Date().toISOString()
-          state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
-          outputs.set(node.id, output)
-          await this.save(record, 'node-completed', `节点完成：${node.label}`, node.id)
-        } catch (error) {
-          if (error instanceof WorkflowApprovalRequired) {
-            state.status = 'pending'
-            state.startedAt = undefined
-            state.completedAt = undefined
+      const incomingByNode = new Map(workflow.nodes.map((node) => [node.id, workflow.edges.filter((edge) => edge.target === node.id)]))
+      const pending = new Set(order.filter((nodeId) => stateMap.get(nodeId)?.status === 'pending'))
+      while (pending.size > 0 && !active.cancelled) {
+        const ready = order.flatMap((nodeId) => {
+          if (!pending.has(nodeId)) return []
+          const incoming = incomingByNode.get(nodeId) ?? []
+          return incoming.every((edge) => isTerminalNodeState(stateMap.get(edge.source)?.status)) ? [nodeId] : []
+        })
+        if (ready.length === 0) throw new Error('Workflow 存在无法继续推进的依赖关系。')
+
+        const runnable: Array<{ node: WorkflowNode; state: WorkflowNodeRunState; incoming: WorkflowEdge[] }> = []
+        for (const nodeId of ready) {
+          pending.delete(nodeId)
+          const node = nodeMap.get(nodeId)
+          const state = stateMap.get(nodeId)
+          if (node === undefined || state === undefined) continue
+          const incoming = incomingByNode.get(node.id) ?? []
+          const activeIncoming = incoming.filter((edge) => this.isEdgeActive(edge, workflow.edges, nodeMap, stateMap, outputs))
+          if (incoming.length > 0 && activeIncoming.length === 0) {
+            state.status = 'skipped'
+            state.completedAt = new Date().toISOString()
             state.elapsedMs = 0
-            record.status = 'waiting-approval'
-            record.waitingApprovalNodeId = node.id
-            record.error = error.message
-            await this.save(record, 'approval-requested', error.message, node.id)
-            return
+            await this.save(record, 'node-skipped', '条件分支未命中', node.id)
+            continue
           }
-          state.status = active.pauseRequested ? 'pending' : active.cancelled ? 'cancelled' : 'failed'
-          state.error = error instanceof Error ? error.message : String(error)
-          state.completedAt = new Date().toISOString()
-          state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
-          record.status = active.pauseRequested ? 'paused' : active.cancelled ? 'cancelled' : 'failed'
-          record.error = state.error
-          record.completedAt = new Date().toISOString()
-          await this.save(record, active.pauseRequested ? 'run-paused' : active.cancelled ? 'run-cancelled' : 'node-failed', state.error, node.id)
-          return
+          runnable.push({ node, state, incoming: activeIncoming })
         }
+        if (runnable.length === 0) continue
+
+        const outcomes = await Promise.all(runnable.map(({ node, state, incoming }) => this.executeReadyNode(
+          node, state, incoming, record, outputs, active,
+        )))
+        if (outcomes.some((outcome) => outcome === 'waiting-approval' || outcome === 'stopped')) return
       }
 
       if (active.cancelled) {
@@ -386,6 +359,53 @@ export class WorkflowRunService {
     } finally {
       await this.archiveInternalSessions(runId, active).catch(() => undefined)
       this.active.delete(runId)
+    }
+  }
+
+  private async executeReadyNode(
+    node: WorkflowNode,
+    state: WorkflowNodeRunState,
+    incoming: WorkflowEdge[],
+    record: WorkflowRunRecord,
+    outputs: Map<string, WorkflowValue>,
+    active: ActiveRun,
+  ): Promise<'completed' | 'waiting-approval' | 'stopped'> {
+    state.status = 'running'
+    state.startedAt = new Date().toISOString()
+    const executionStartedAt = Date.now()
+    await this.save(record, 'node-started', `开始执行节点：${node.label}`, node.id)
+    try {
+      const previous = this.previousValue(incoming, outputs, record.input)
+      state.input = cloneWorkflow(previous)
+      const output = await this.executeNode(node, record.input, previous, record.allowShellFile, active, record)
+      state.status = 'completed'
+      state.output = cloneWorkflow(output)
+      state.completedAt = new Date().toISOString()
+      state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
+      outputs.set(node.id, output)
+      await this.save(record, 'node-completed', `节点完成：${node.label}`, node.id)
+      return 'completed'
+    } catch (error) {
+      if (error instanceof WorkflowApprovalRequired) {
+        state.status = 'pending'
+        state.startedAt = undefined
+        state.completedAt = undefined
+        state.elapsedMs = 0
+        record.status = 'waiting-approval'
+        record.waitingApprovalNodeId = node.id
+        record.error = error.message
+        await this.save(record, 'approval-requested', error.message, node.id)
+        return 'waiting-approval'
+      }
+      state.status = active.pauseRequested ? 'pending' : active.cancelled ? 'cancelled' : 'failed'
+      state.error = error instanceof Error ? error.message : String(error)
+      state.completedAt = new Date().toISOString()
+      state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
+      record.status = active.pauseRequested ? 'paused' : active.cancelled ? 'cancelled' : 'failed'
+      record.error = state.error
+      record.completedAt = new Date().toISOString()
+      await this.save(record, active.pauseRequested ? 'run-paused' : active.cancelled ? 'run-cancelled' : 'node-failed', state.error, node.id)
+      return 'stopped'
     }
   }
 
@@ -568,12 +588,14 @@ export class WorkflowRunService {
     return { runIds, sessionIds: removed }
   }
 
-  private isEdgeActive(edge: WorkflowEdge, nodeMap: Map<string, WorkflowNode>, stateMap: Map<string, WorkflowNodeRunState>, outputs: Map<string, WorkflowValue>): boolean {
+  private isEdgeActive(edge: WorkflowEdge, edges: WorkflowEdge[], nodeMap: Map<string, WorkflowNode>, stateMap: Map<string, WorkflowNodeRunState>, outputs: Map<string, WorkflowValue>): boolean {
     const sourceState = stateMap.get(edge.source)
     if (sourceState?.status !== 'completed') return false
     const source = nodeMap.get(edge.source)
-    if (source?.type !== 'condition' || edge.sourcePort === undefined || edge.sourcePort === 'default') return true
-    return (outputs.get(edge.source) === true) === (edge.sourcePort === 'true')
+    if (source?.type !== 'condition') return true
+    const sourcePort = conditionSourcePort(edge, edges)
+    if (sourcePort === undefined) return false
+    return (outputs.get(edge.source) === true) === (sourcePort === 'true')
   }
 
   private previousValue(incoming: WorkflowEdge[], outputs: Map<string, WorkflowValue>, input: WorkflowValue): WorkflowValue {
@@ -606,6 +628,22 @@ class WorkflowApprovalRequired extends Error {
     super(message)
     this.name = 'WorkflowApprovalRequired'
   }
+}
+
+function isTerminalNodeState(status: WorkflowNodeRunState['status'] | undefined): boolean {
+  return status === 'completed' || status === 'skipped' || status === 'failed' || status === 'cancelled'
+}
+
+/**
+ * Workflows saved before condition ports were required have unlabelled exits.
+ * Preserve their two-way intent deterministically (first exit = true, second = false)
+ * instead of treating every exit as active and running both branches.
+ */
+function conditionSourcePort(edge: WorkflowEdge, edges: WorkflowEdge[]): 'true' | 'false' | undefined {
+  if (edge.sourcePort === 'true' || edge.sourcePort === 'false') return edge.sourcePort
+  const legacyExits = edges.filter((candidate) => candidate.source === edge.source && candidate.sourcePort !== 'true' && candidate.sourcePort !== 'false')
+  const index = legacyExits.findIndex((candidate) => candidate.id === edge.id)
+  return index === 0 ? 'true' : index === 1 ? 'false' : undefined
 }
 
 function isRecord(value: WorkflowValue): value is { [key: string]: WorkflowValue } {
@@ -768,7 +806,33 @@ function repairGeneratedEdges(nodes: WorkflowNode[], edges: WorkflowEdge[]): Wor
     edgeIds.add(edgeId)
     incoming.add(target.id)
   }
-  return repaired
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  const conditionExits = new Map<string, WorkflowEdge[]>()
+  for (const edge of repaired) {
+    if (nodeById.get(edge.source)?.type !== 'condition') continue
+    conditionExits.set(edge.source, [...(conditionExits.get(edge.source) ?? []), edge])
+  }
+  const normalizedPorts = new Map<string, 'true' | 'false'>()
+  for (const exits of conditionExits.values()) {
+    const used = new Set<'true' | 'false'>()
+    for (const edge of exits) {
+      if ((edge.sourcePort === 'true' || edge.sourcePort === 'false') && !used.has(edge.sourcePort)) {
+        normalizedPorts.set(edge.id, edge.sourcePort)
+        used.add(edge.sourcePort)
+      }
+    }
+    for (const edge of exits) {
+      if (normalizedPorts.has(edge.id)) continue
+      const port = used.has('true') ? used.has('false') ? undefined : 'false' : 'true'
+      if (port === undefined) continue
+      normalizedPorts.set(edge.id, port)
+      used.add(port)
+    }
+  }
+  return repaired.map((edge) => {
+    const sourcePort = normalizedPorts.get(edge.id)
+    return sourcePort === undefined ? edge : { ...edge, sourcePort }
+  })
 }
 
 function generatedTerminalNodeId(nodes: WorkflowNode[], base: string): string {
@@ -801,7 +865,7 @@ function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[]): string 
     '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
     '文档必须包含 name、description、nodes、edges；nodes 必须包含一个 input 输入节点和一个 output 最终输出节点。每个 nodes 项必须有唯一的 id、type、label、config、position（{ "x": 数字, "y": 数字 }）；每个 edges 项必须有唯一的 id、source、target。source 和 target 必须是 nodes 中已有的 id。edges 必须表达所有前后依赖，不能留空（只有一个节点时例外），不能有循环。节点与连线结构遵循 docs/workflow-schema.md 中的 Workflow Schema v2。',
     'ai-task 用于轻量内联智能处理；employee 必须引用目录中真实存在的 employeeId，并填写非空 instruction；目录中不存在的员工 ID 禁止出现在 employee 节点中。如果目录中没有任何员工适合该职责，使用 ai-task 而不是编造员工。禁止输出旧版 agent 节点。',
-    'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds（数组）和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；transform.template 只能是 identity、json、extract-text、prepend、append。',
+    'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds（数组）和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；每个 condition 必须有且只应有两个下游连线，分别明确写 sourcePort: "true" 与 sourcePort: "false"，不能省略；transform.template 只能是 identity、json、extract-text、prepend、append。',
     '只有用户明确提供了 MCP 工具名时才生成 MCP 节点，否则使用 ai-task 或 employee，不要生成空 tool。',
     '不要生成 API Key、密码、Token、任意 JavaScript、eval 或 shell 控制符。文件路径必须是工作区相对路径。',
     `可用专业员工目录（只能引用其中的 employeeId）：${JSON.stringify(catalog)}`,

@@ -13,6 +13,22 @@ function graphWithRemovedNode(): WorkflowDefinition {
 }
 
 describe('WorkflowPage regressions', () => {
+  it('marks the currently running canvas node for an execution indicator', () => {
+    const workflow = createDefaultWorkflow('Execution status')
+    const runningNode = workflow.nodes.find((node) => node.type === 'ai-task')!
+    const run: WorkflowRunRecord = {
+      id: 'run-running', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'running', input: 'brief', events: [],
+      nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: node.id === runningNode.id ? 'running' : 'pending', elapsedMs: 0 })),
+    }
+
+    const node = workflowPage.workflowFlowNodes(workflow, run).find((candidate) => candidate.id === runningNode.id)
+
+    expect(node).toMatchObject({
+      className: 'workflow-flow-node-running',
+      data: { status: 'running', isRunning: true },
+    })
+  })
+
   it('keeps canvas deletions and edge deletions when inspector edits the workflow', () => {
     const workflow = graphWithRemovedNode()
     const agent = workflow.nodes.find((node) => node.type === 'ai-task')!
