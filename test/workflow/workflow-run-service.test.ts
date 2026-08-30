@@ -6,7 +6,7 @@ import { WorkflowRunService } from '../../src/main/workflow/workflow-run-service
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 import type { EmployeeCreateInput, EmployeeSnapshot } from '../../src/shared/employees.js'
-import type { WorkflowDefinition, WorkflowNode, WorkflowOutputMode } from '../../src/shared/workflow.js'
+import { validateWorkflow, type WorkflowDefinition, type WorkflowNode, type WorkflowOutputMode } from '../../src/shared/workflow.js'
 
 function graph(): WorkflowDefinition {
   return {
@@ -380,6 +380,36 @@ describe('workflow run service', () => {
     expect(generated.createdEmployees).toHaveLength(0)
     expect(generated.workflow.nodes.some((node) => node.type === 'ai-task')).toBe(true)
     expect(complete).toHaveBeenCalledTimes(1)
+  })
+
+  it('repairs an incomplete AI graph into a valid, connected, laid-out draft', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-generation-repair-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const complete = vi.fn(async () => JSON.stringify({
+      name: '公司分析', description: '', nodes: [
+        { id: 'input', type: 'input', label: '公司名称', config: {}, position: { x: 0, y: 0 } },
+        { id: 'identify-company', type: 'employee', label: '识别企业', config: { employeeId: '', instruction: '', outputMode: 'text' }, position: { x: 0, y: 0 } },
+        { id: 'status-condition', type: 'condition', label: '是否上市', config: { operator: 'is-public' }, position: { x: 0, y: 0 } },
+        { id: 'public-analysis', type: 'employee', label: '上市公司财务分析', config: { employeeId: 'made-up-analyst', instruction: '', outputMode: 'text' }, position: { x: 0, y: 0 } },
+        { id: 'output', type: 'output', label: '分析报告', config: {}, position: { x: 0, y: 0 } },
+      ], edges: [],
+    }))
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      listEmployees: () => [],
+      lightweightClient: { complete },
+    })
+
+    const generated = await service.generate({ prompt: '分析一家企业' })
+
+    expect(validateWorkflow(generated.workflow)).toEqual({ valid: true, issues: [] })
+    expect(generated.workflow.nodes.filter((node) => node.type === 'employee')).toHaveLength(0)
+    expect(generated.workflow.nodes.find((node) => node.id === 'status-condition')).toMatchObject({ config: { operator: 'truthy' } })
+    expect(generated.workflow.edges).toHaveLength(generated.workflow.nodes.length - 1)
+    expect(new Set(generated.workflow.nodes.map((node) => `${node.position.x},${node.position.y}`)).size).toBe(generated.workflow.nodes.length)
   })
 
   it('executes a condition branch and checkpoints each node', async () => {

@@ -258,6 +258,19 @@ describe('WorkflowPage regressions', () => {
     expect(canvasEdges.map((edge) => [edge.source, edge.target])).toEqual(workflow.edges.map((edge) => [edge.source, edge.target]))
   })
 
+  it('automatically lays out a graph by dependency depth instead of trusting overlapping positions', () => {
+    const workflow = createDefaultWorkflow('Automatic layout')
+    const overlapping = { ...workflow, nodes: workflow.nodes.map((node) => ({ ...node, position: { x: 0, y: 0 } })) }
+
+    const laidOut = workflowPage.layoutWorkflowNodes(overlapping)
+
+    expect(laidOut.nodes.map((node) => node.position)).toEqual([
+      { x: 80, y: 180 },
+      { x: 344, y: 180 },
+      { x: 608, y: 180 },
+    ])
+  })
+
   it('uses drag selection by default and Space to pan the workflow canvas', () => {
     expect(workflowPage.WORKFLOW_CANVAS_INTERACTION_PROPS).toMatchObject({
       selectionOnDrag: true,

@@ -26,6 +26,7 @@ import '@xyflow/react/dist/style.css'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
 import type { EmployeeSnapshot } from '../../shared/employees.js'
 import { createShortVideoContentWorkflow, SHORT_VIDEO_EMPLOYEE_IDS } from '../../shared/workflow-templates.js'
+import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import {
   cloneWorkflow,
   createDefaultWorkflow,
@@ -46,6 +47,8 @@ import {
   type WorkflowValue,
 } from '../../shared/workflow.js'
 import './workflow.css'
+
+export { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 
 interface WorkflowPageProps {
   copy: AppCopy
@@ -1521,6 +1524,14 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     focusWorkflowCanvas()
   }
 
+  const autoLayout = (): void => {
+    const current = currentDefinition()
+    if (current === undefined) return
+    applyDefinition(layoutWorkflowNodes(current))
+    setMessage('已按流程依赖自动优化排版。')
+    requestAnimationFrame(() => { void fitViewRef.current?.() })
+  }
+
   const undo = (): void => {
     if (history === undefined) return
     const next = undoWorkflowHistory(history)
@@ -1907,6 +1918,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             <section className="workflow-editor-panel">
               <div className="workflow-editor-toolbar">
                 <WorkflowNodeLibrary onAdd={addNode} />
+                <button type="button" className="workflow-button-quiet workflow-auto-layout-button" onClick={autoLayout} disabled={busy}>自动排版</button>
                 <p className="workflow-editor-flow-hint">一个节点可连接多个下游；多路输入会等待所有可用上游完成，并按节点 ID 汇聚传入。</p>
               </div>
               <div ref={workflowCanvasRef} className="workflow-canvas" tabIndex={0} onPointerDownCapture={focusWorkflowCanvas} onKeyDown={onCanvasKeyDown}>

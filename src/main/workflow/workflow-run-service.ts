@@ -19,7 +19,8 @@ import type {
 import { EMPLOYEE_CAPABILITIES } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
-import { cloneWorkflow, isWorkflowValue, normalizeWorkflow } from '../../shared/workflow.js'
+import { cloneWorkflow, isWorkflowValue, normalizeWorkflow, validateWorkflow } from '../../shared/workflow.js'
+import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
 import { WorkflowRunStore } from './workflow-run-store.js'
@@ -242,16 +243,18 @@ export class WorkflowRunService {
     })
     const raw = extractJsonDocument(text)
     const candidate = typeof raw === 'object' && raw !== null ? { ...(raw as Record<string, unknown>), id: `workflow-${randomUUID()}` } : raw
-    const workflow = normalizeWorkflow(request.name?.trim() === '' || request.name === undefined
+    const normalizedWorkflow = normalizeWorkflow(request.name?.trim() === '' || request.name === undefined
       ? candidate
       : { ...(candidate as Record<string, unknown>), name: request.name.trim() })
-    if (workflow === undefined) throw new Error('AI 返回的 Workflow 文档格式无效')
-    // Return the normalized draft even when validation finds editable issues. The
-    // renderer opens it in the editor so the user can correct, save, or cancel it.
+    if (normalizedWorkflow === undefined) throw new Error('AI 返回的 Workflow 文档格式无效')
+    const repaired = repairGeneratedWorkflow(normalizedWorkflow, finalCatalog)
+    const workflow = layoutWorkflowNodes(repaired.workflow)
+    const validation = validateWorkflow(workflow)
+    if (!validation.valid) throw new Error(`AI 返回的 Workflow 不符合结构规范：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join('；')}`)
     return {
       workflow,
       createdEmployees,
-      ...(employeeWarnings.length > 0 ? { employeeWarnings } : {}),
+      ...(employeeWarnings.length + repaired.warnings.length > 0 ? { employeeWarnings: [...employeeWarnings, ...repaired.warnings] } : {}),
     }
   }
 
@@ -677,13 +680,110 @@ function employeeSpecToCreateInput(value: unknown): EmployeeCreateInput | undefi
   }
 }
 
+const GENERATION_CONDITION_OPERATORS = new Set<ConditionOperator>(['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'])
+
+function generatedInstruction(label: string): string {
+  return `请根据上游输入，以「${label}」的职责完成分析，并输出客观、可核验的结果。`
+}
+
+function comparableEmployeeText(value: string): string {
+  return value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function findGeneratedEmployee(node: Extract<WorkflowNode, { type: 'employee' }>, catalog: EmployeeCatalogEntry[]): EmployeeCatalogEntry | undefined {
+  const requestedId = node.config.employeeId.trim()
+  const exact = catalog.find((employee) => employee.id === requestedId && employee.enabled)
+  if (exact !== undefined) return exact
+  const terms = [node.label, requestedId].map(comparableEmployeeText).filter((value) => value.length >= 2)
+  return catalog.find((employee) => employee.enabled && terms.some((term) => {
+    const candidates = [employee.id, employee.name, employee.role].map(comparableEmployeeText)
+    return candidates.some((candidate) => candidate === term || candidate.includes(term) || term.includes(candidate))
+  }))
+}
+
+function repairGeneratedNode(node: WorkflowNode, catalog: EmployeeCatalogEntry[], warnings: string[]): WorkflowNode {
+  switch (node.type) {
+    case 'employee': {
+      const employee = findGeneratedEmployee(node, catalog)
+      const instruction = node.config.instruction.trim() || generatedInstruction(node.label)
+      if (employee !== undefined) return { ...node, config: { ...node.config, employeeId: employee.id, instruction } }
+      warnings.push(`节点「${node.label}」引用的员工不可用，已安全改为智能处理节点。`)
+      return { ...node, type: 'ai-task', config: { instruction, mode: 'single', skillIds: [], outputMode: node.config.outputMode } }
+    }
+    case 'ai-task': return { ...node, config: { ...node.config, instruction: node.config.instruction.trim() || generatedInstruction(node.label) } }
+    case 'skill': {
+      if (node.config.skillId.trim() !== '') return { ...node, config: { ...node.config, instruction: node.config.instruction.trim() || generatedInstruction(node.label) } }
+      warnings.push(`节点「${node.label}」未提供 Skill ID，已安全改为智能处理节点。`)
+      return { ...node, type: 'ai-task', config: { instruction: node.config.instruction.trim() || generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
+    }
+    case 'mcp': {
+      if (node.config.tool.trim() !== '') return node
+      warnings.push(`节点「${node.label}」未提供 MCP 工具名，已安全改为智能处理节点。`)
+      return { ...node, type: 'ai-task', config: { instruction: node.config.instruction?.trim() || generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
+    }
+    case 'parallel': {
+      const instructions = node.config.instructions.filter((instruction) => instruction.trim() !== '')
+      return { ...node, config: { instructions: instructions.length > 0 ? instructions : [generatedInstruction(node.label)] } }
+    }
+    case 'loop': return { ...node, config: { ...node.config, instruction: node.config.instruction.trim() || generatedInstruction(node.label), maxIterations: node.config.maxIterations ?? 20 } }
+    case 'condition': return { ...node, config: { ...node.config, operator: GENERATION_CONDITION_OPERATORS.has(node.config.operator) ? node.config.operator : 'truthy' } }
+    case 'approval': return { ...node, config: { message: node.config.message.trim() || `请确认是否继续执行「${node.label}」后的步骤。` } }
+    case 'transform': return ['identity', 'json', 'extract-text', 'prepend', 'append'].includes(node.config.template) ? node : { ...node, config: { ...node.config, template: 'identity' } }
+    case 'shell': {
+      if (node.config.command.trim() !== '' && !/[[\]{}();|&<>`$\\]/u.test(node.config.command)) return node
+      warnings.push(`节点「${node.label}」包含不完整或不安全的 Shell 配置，已安全改为智能处理节点。`)
+      return { ...node, type: 'ai-task', config: { instruction: generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
+    }
+    case 'file': {
+      if (node.config.operation === 'read' || node.config.operation === 'write') {
+        if (node.config.path.trim() !== '' && !node.config.path.startsWith('/') && !/^[a-zA-Z]:[\\/]/u.test(node.config.path)) return node
+      }
+      warnings.push(`节点「${node.label}」包含无效文件配置，已安全改为智能处理节点。`)
+      return { ...node, type: 'ai-task', config: { instruction: generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
+    }
+    case 'input':
+    case 'output': return node
+  }
+}
+
+function repairGeneratedEdges(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowEdge[] {
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const repaired: WorkflowEdge[] = []
+  const edgeIds = new Set<string>()
+  const incoming = new Set<string>()
+  for (const edge of edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target) || edge.source === edge.target || edgeIds.has(edge.id)) continue
+    repaired.push(edge)
+    edgeIds.add(edge.id)
+    incoming.add(edge.target)
+  }
+  for (let index = 1; index < nodes.length; index += 1) {
+    const target = nodes[index]!
+    if (incoming.has(target.id)) continue
+    const source = nodes[index - 1]!
+    let edgeId = `edge-${source.id}-${target.id}`
+    let suffix = 2
+    while (edgeIds.has(edgeId)) edgeId = `edge-${source.id}-${target.id}-${suffix++}`
+    repaired.push({ id: edgeId, source: source.id, target: target.id, ...(source.type === 'condition' ? { sourcePort: 'true' as const } : {}) })
+    edgeIds.add(edgeId)
+    incoming.add(target.id)
+  }
+  return repaired
+}
+
+function repairGeneratedWorkflow(workflow: WorkflowDefinition, catalog: EmployeeCatalogEntry[]): { workflow: WorkflowDefinition; warnings: string[] } {
+  const warnings: string[] = []
+  const nodes = workflow.nodes.map((node) => repairGeneratedNode(node, catalog, warnings))
+  return { workflow: { ...workflow, nodes, edges: repairGeneratedEdges(nodes, workflow.edges) }, warnings }
+}
+
 function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[]): string {
   return [
     '你是 Workflow 架构助手。根据用户描述生成一个可审阅的 JSON 工作流文档。',
     '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
-    '文档必须包含 name、description、nodes、edges；节点 type 只能是 input、ai-task、employee、skill、mcp、parallel、loop、condition、approval、transform、output、shell、file。',
+    '文档必须包含 name、description、nodes、edges；每个 nodes 项必须有唯一的 id、type、label、config、position（{ "x": 数字, "y": 数字 }）；每个 edges 项必须有唯一的 id、source、target。source 和 target 必须是 nodes 中已有的 id。edges 必须表达所有前后依赖，不能留空（只有一个节点时例外），不能有循环。节点与连线结构遵循 docs/workflow-schema.md 中的 Workflow Schema v2。',
     'ai-task 用于轻量内联智能处理；employee 必须引用目录中真实存在的 employeeId，并填写非空 instruction；目录中不存在的员工 ID 禁止出现在 employee 节点中。如果目录中没有任何员工适合该职责，使用 ai-task 而不是编造员工。禁止输出旧版 agent 节点。',
-    'parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；transform.template 只能是 identity、json、extract-text、prepend、append。',
+    'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds（数组）和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；transform.template 只能是 identity、json、extract-text、prepend、append。',
     '只有用户明确提供了 MCP 工具名时才生成 MCP 节点，否则使用 ai-task 或 employee，不要生成空 tool。',
     '不要生成 API Key、密码、Token、任意 JavaScript、eval 或 shell 控制符。文件路径必须是工作区相对路径。',
     `可用专业员工目录（只能引用其中的 employeeId）：${JSON.stringify(catalog)}`,

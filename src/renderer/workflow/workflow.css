@@ -98,6 +98,7 @@
 .workflow-node-library > summary { list-style: none; border: 1px solid var(--ezdsh-panel-border-strong); border-radius: 8px; padding: 7px 10px; background: var(--ezdsh-panel-background); color: var(--ezdsh-text-body); cursor: pointer; font-size: 11px; font-weight: 700; }
 .workflow-node-library > summary::-webkit-details-marker { display: none; }
 .workflow-node-library[open] > summary { border-color: var(--ezdsh-brand); color: var(--ezdsh-brand); }
+.workflow-auto-layout-button { flex: none; padding: 7px 10px; color: var(--ezdsh-brand) !important; font-size: 11px; font-weight: 700; }
 .workflow-node-library-menu { position: absolute; z-index: 25; top: calc(100% + 7px); left: 0; display: grid; width: 392px; gap: 9px; border: 1px solid var(--ezdsh-panel-border-strong); border-radius: 10px; padding: 10px; background: var(--ezdsh-panel-background); box-shadow: 0 12px 34px rgba(15, 25, 40, .18); }
 .workflow-node-library-menu section { display: grid; gap: 5px; }
 .workflow-node-library-menu strong { color: var(--ezdsh-text-faint); font-size: 10px; font-weight: 800; }
