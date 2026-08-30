@@ -23,7 +23,7 @@ describe('workflow contract', () => {
       formatVersion: 1,
       exportedAt: '2026-08-31T00:00:00.000Z',
     })
-    expect(parseWorkflowExportDocument(JSON.parse(JSON.stringify(document)))).toEqual(workflow)
+    expect(parseWorkflowExportDocument(JSON.parse(JSON.stringify(document)))).toMatchObject({ workflow })
   })
 
   it('rejects malformed or unsupported workflow JSON before persistence', () => {
@@ -44,6 +44,42 @@ describe('workflow contract', () => {
         : node),
     })
     expect(() => parseWorkflowExportDocument(document)).toThrow('不能为空')
+  })
+
+  it('bundles referenced employee profiles and validates them on import', () => {
+    const workflow = createDefaultWorkflow('Employee workflow')
+    const aiTask = workflow.nodes.find((node) => node.type === 'ai-task')!
+    const employee = {
+      id: 'finance-analyst',
+      name: '财务分析师',
+      role: '财务研究专员',
+      description: '分析财务数据。',
+      businessBoundary: '只做客观分析。',
+      systemPrompt: '你是一名财务研究专员。',
+      operatingGuidelines: ['核对数据来源。'],
+      qualityStandards: ['结论可复核。'],
+      capabilities: ['research'] as const,
+      skillIds: [],
+      enabled: true,
+    }
+    const employeeWorkflow = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) => node.id === aiTask.id
+        ? { ...node, type: 'employee', config: { employeeId: employee.id, instruction: '分析上游数据。', outputMode: 'text' } } as never
+        : node),
+    }
+    const document = createWorkflowExportDocument(employeeWorkflow, '2026-08-31T00:00:00.000Z', [{
+      ...employee,
+      schemaVersion: 2,
+      version: 1,
+      builtIn: false,
+      createdAt: '2026-08-31T00:00:00.000Z',
+      updatedAt: '2026-08-31T00:00:00.000Z',
+    }])
+
+    expect(document.employees).toEqual([employee])
+    expect(parseWorkflowExportDocument(JSON.parse(JSON.stringify(document)))).toMatchObject({ workflow: employeeWorkflow, employees: [employee] })
+    expect(() => parseWorkflowExportDocument({ ...document, employees: [{ ...employee, capabilities: ['not-supported'] }] })).toThrow('capabilities')
   })
 
   it('migrates a V1 Agent node to a V2 AI task', () => {

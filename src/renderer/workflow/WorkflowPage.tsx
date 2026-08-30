@@ -24,7 +24,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
-import type { EmployeeSnapshot } from '../../shared/employees.js'
+import type { EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import {
   cloneWorkflow,
@@ -36,6 +36,8 @@ import {
   type ConditionOperator,
   type TransformTemplate,
   type WorkflowDefinition,
+  type WorkflowExportDocument,
+  type WorkflowExportEmployee,
   type WorkflowNode,
   type WorkflowNodeInputBinding,
   type WorkflowNodeOutputVariable,
@@ -185,10 +187,38 @@ export function workflowExportFileName(name: string): string {
   return `${safeName || 'workflow'}.json`
 }
 
-export function serializeWorkflowExport(workflow: WorkflowDefinition, exportedAt?: string): string {
-  return `${JSON.stringify(createWorkflowExportDocument(workflow, exportedAt), null, 2)}\n`
+export function serializeWorkflowExport(workflow: WorkflowDefinition, exportedAt?: string, employees?: readonly EmployeeSnapshot[]): string {
+  return `${JSON.stringify(createWorkflowExportDocument(workflow, exportedAt, employees), null, 2)}\n`
 }
 
+export function workflowEmployeeCreateInput(employee: WorkflowExportEmployee, id?: string): EmployeeCreateInput {
+  return {
+    ...(id === undefined ? {} : { id }),
+    name: employee.name,
+    role: employee.role,
+    description: employee.description,
+    businessBoundary: employee.businessBoundary,
+    systemPrompt: employee.systemPrompt,
+    operatingGuidelines: [...employee.operatingGuidelines],
+    qualityStandards: [...employee.qualityStandards],
+    capabilities: [...employee.capabilities],
+    skillIds: [...employee.skillIds],
+    enabled: employee.enabled,
+    builtIn: false,
+  }
+}
+
+function workflowEmployeeNameKey(name: string): string {
+  return name.trim().toLocaleLowerCase()
+}
+
+function parseWorkflowImportText(text: string, invalidMessage: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    throw new Error(invalidMessage)
+  }
+}
 
 export type WorkflowNodeAlignment = 'left' | 'center-horizontal' | 'right' | 'top' | 'center-vertical' | 'bottom' | 'distribute-horizontal' | 'distribute-vertical'
 
@@ -956,8 +986,8 @@ export interface WorkflowEditorActionsProps {
 export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel, onCancel, onSave, onExport, onRun }: WorkflowEditorActionsProps): JSX.Element {
   return <>
     <button type="button" className="workflow-button-quiet" onClick={onCancel} disabled={busy}>{draft ? copy.workflowCancelCreate : copy.workflowCancelEdit}</button>
-    <button type="button" className="workflow-button-primary workflow-save-button" onClick={onSave} disabled={busy}>{copy.workflowSave}</button>
     <button type="button" className="workflow-button-quiet" onClick={onExport} disabled={busy}>{copy.workflowExport}</button>
+    <button type="button" className="workflow-button-primary workflow-save-button" onClick={onSave} disabled={busy}>{copy.workflowSave}</button>
     <button type="button" className="workflow-button-primary" onClick={onRun} disabled={runDisabled}>{runLabel}</button>
   </>
 }
@@ -1472,7 +1502,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     const workflow = currentDefinition()
     if (workflow === undefined) return
     try {
-      const blob = new Blob([serializeWorkflowExport(workflow)], { type: 'application/json' })
+      const blob = new Blob([serializeWorkflowExport(workflow, undefined, employees)], { type: 'application/json' })
       if (typeof URL.createObjectURL !== 'function') throw new Error('当前环境不支持下载 Workflow JSON。')
       const url = URL.createObjectURL(blob)
       const anchor = window.document.createElement('a')
@@ -1486,6 +1516,68 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     }
   }
 
+  const importWorkflowDocument = async (document: WorkflowExportDocument): Promise<void> => {
+    const employeeNodes = document.workflow.nodes.filter((node): node is Extract<WorkflowNode, { type: 'employee' }> => node.type === 'employee')
+    const referencedEmployeeIds = [...new Set(employeeNodes.map((node) => node.config.employeeId.trim()).filter(Boolean))]
+    const bundledEmployees = new Map((document.employees ?? []).map((employee) => [employee.id, employee]))
+    const employeeIdMap = new Map<string, string>()
+    const employeesToCreate: WorkflowExportEmployee[] = []
+
+    for (const employeeId of referencedEmployeeIds) {
+      const bundledEmployee = bundledEmployees.get(employeeId)
+      const exactEmployee = employees.find((employee) => employee.id === employeeId && employee.enabled)
+      const sameNameEmployee = bundledEmployee === undefined
+        ? undefined
+        : employees.find((employee) => employee.enabled && workflowEmployeeNameKey(employee.name) === workflowEmployeeNameKey(bundledEmployee.name))
+      if (sameNameEmployee !== undefined) {
+        if (window.confirm(copy.workflowImportEmployeeReuseConfirm(sameNameEmployee.name))) {
+          employeeIdMap.set(employeeId, sameNameEmployee.id)
+          continue
+        }
+        if (bundledEmployee === undefined || !window.confirm(copy.workflowImportEmployeeCreateConfirm(bundledEmployee.name))) {
+          throw new Error(copy.workflowImportCancelled)
+        }
+        employeesToCreate.push(bundledEmployee)
+        continue
+      }
+      if (exactEmployee !== undefined) {
+        employeeIdMap.set(employeeId, exactEmployee.id)
+        continue
+      }
+      if (bundledEmployee === undefined) throw new Error(copy.workflowImportEmployeeMissing(employeeId))
+      if (!window.confirm(copy.workflowImportEmployeeCreateConfirm(bundledEmployee.name))) throw new Error(copy.workflowImportCancelled)
+      employeesToCreate.push(bundledEmployee)
+    }
+
+    const createdEmployees: EmployeeSnapshot[] = []
+    for (const employee of employeesToCreate) {
+      const conflictingId = employees.some((candidate) => candidate.id === employee.id)
+      const created = await window.EzDSH.employees.create(workflowEmployeeCreateInput(employee, conflictingId ? undefined : employee.id))
+      createdEmployees.push(created)
+      employeeIdMap.set(employee.id, created.id)
+    }
+    if (createdEmployees.length > 0) setEmployees((current) => [...createdEmployees, ...current])
+
+    const remappedWorkflow: WorkflowDefinition = {
+      ...document.workflow,
+      nodes: document.workflow.nodes.map((node) => {
+        if (node.type !== 'employee') return node
+        const mappedEmployeeId = employeeIdMap.get(node.config.employeeId.trim())
+        return mappedEmployeeId === undefined ? node : { ...node, config: { ...node.config, employeeId: mappedEmployeeId } }
+      }),
+    }
+    const imported = await window.EzDSH.workflows.create({
+      name: remappedWorkflow.name,
+      description: remappedWorkflow.description,
+      nodes: remappedWorkflow.nodes,
+      edges: remappedWorkflow.edges,
+      enabled: remappedWorkflow.enabled,
+    })
+    setWorkflows((current) => [imported, ...current.filter((workflow) => workflow.id !== imported.id)])
+    await open(imported)
+    setMessage(copy.workflowImported)
+  }
+
   const importWorkflowFile = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
     const file = event.currentTarget.files?.[0]
     event.currentTarget.value = ''
@@ -1493,17 +1585,21 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setBusy(true)
     setError('')
     try {
-      const parsed = parseWorkflowExportDocument(JSON.parse(await file.text()) as unknown)
-      const imported = await window.EzDSH.workflows.create({
-        name: parsed.name,
-        description: parsed.description,
-        nodes: parsed.nodes,
-        edges: parsed.edges,
-        enabled: parsed.enabled,
-      })
-      setWorkflows((current) => [imported, ...current.filter((workflow) => workflow.id !== imported.id)])
-      await open(imported)
-      setMessage(copy.workflowImported)
+      await importWorkflowDocument(parseWorkflowExportDocument(parseWorkflowImportText(await file.text(), copy.workflowImportInvalidJson)))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const importWorkflowClipboard = async (): Promise<void> => {
+    setBusy(true)
+    setError('')
+    try {
+      if (navigator.clipboard?.readText === undefined) throw new Error(copy.workflowClipboardReadFailed)
+      const text = await navigator.clipboard.readText()
+      await importWorkflowDocument(parseWorkflowExportDocument(parseWorkflowImportText(text, copy.workflowClipboardInvalid)))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
     } finally {
@@ -1938,8 +2034,13 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           </div>
           <div className="workflow-browser-actions">
             <button type="button" className="workflow-button-primary" onClick={() => void create()} disabled={busy}>{copy.workflowNew}</button>
-            <button type="button" className="workflow-button-quiet" onClick={() => workflowImportInputRef.current?.click()} disabled={busy}>{copy.workflowImportJson}</button>
-            <input ref={workflowImportInputRef} className="workflow-file-input" type="file" accept="application/json,.json" aria-label={copy.workflowImportJson} onChange={(event) => void importWorkflowFile(event)} />
+            <div className="workflow-import-split" role="group" aria-label={copy.workflowImport}>
+              <button type="button" className="workflow-button-primary workflow-import-main" onClick={() => workflowImportInputRef.current?.click()} disabled={busy}>{copy.workflowImport}</button>
+              <button type="button" className="workflow-button-quiet workflow-import-clipboard-button" onClick={() => void importWorkflowClipboard()} disabled={busy} aria-label={copy.workflowImportClipboard} title={copy.workflowImportClipboard}>
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5h6m-5-2h4a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v12H4V8a2 2 0 0 1 2-2h2V5a2 2 0 0 1 2-2Zm-1 9 3 3 5-5" /></svg>
+              </button>
+            </div>
+            <input ref={workflowImportInputRef} className="workflow-file-input" type="file" accept="application/json,.json" aria-label={copy.workflowImport} onChange={(event) => void importWorkflowFile(event)} />
           </div>
         </header>
         <main className="workflow-browser-content">

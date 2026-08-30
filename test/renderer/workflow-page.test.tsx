@@ -346,6 +346,37 @@ describe('WorkflowPage regressions', () => {
     expect(serialized.endsWith('\n')).toBe(true)
   })
 
+  it('bundles referenced employee profiles in exported workflow JSON', () => {
+    const workflow = createDefaultWorkflow('Employee export')
+    const employeeNode = workflow.nodes.find((node) => node.type === 'ai-task')!
+    const employeeWorkflow = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) => node.id === employeeNode.id
+        ? { ...node, type: 'employee', config: { employeeId: 'finance-analyst', instruction: '分析数据。', outputMode: 'text' } } as never
+        : node),
+    }
+    const employees = [{
+      schemaVersion: 2,
+      version: 1,
+      id: 'finance-analyst',
+      name: '财务分析师',
+      role: '财务研究专员',
+      description: '分析财务数据。',
+      businessBoundary: '只做客观分析。',
+      systemPrompt: '你是一名财务研究专员。',
+      operatingGuidelines: ['核对数据来源。'],
+      qualityStandards: ['结论可复核。'],
+      capabilities: ['research'] as const,
+      skillIds: [],
+      enabled: true,
+      builtIn: false,
+      createdAt: '2026-08-31T00:00:00.000Z',
+      updatedAt: '2026-08-31T00:00:00.000Z',
+    }]
+
+    expect(JSON.parse(workflowPage.serializeWorkflowExport(employeeWorkflow, undefined, employees))).toMatchObject({ employees: [{ id: 'finance-analyst', name: '财务分析师' }] })
+  })
+
   it('exposes each persisted node output and error for execution debugging', () => {
     const workflow = createDefaultWorkflow('Debug run')
     const node = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
@@ -624,7 +655,10 @@ describe('WorkflowPage regressions', () => {
     expect(markup).toContain('workflow-employee-select')
     expect(markup).toContain('智能处理')
     expect(markup).toContain('专业员工')
-    expect(markup).toContain('导入 JSON')
+    expect(markup).toContain('导入')
+    expect(markup).toContain('从剪贴板导入')
+    expect(markup).toContain('workflow-import-split')
+    expect(markup).not.toContain('导入 JSON')
     expect(markup).not.toContain('短视频内容运营')
     expect(markup).not.toContain('Employee ID')
     expect(markup).not.toContain('Agent')
@@ -675,7 +709,9 @@ describe('WorkflowPage regressions', () => {
     expect(draftMarkup).toContain('保存')
     expect(draftMarkup).toContain('workflow-save-button')
     expect(editMarkup).toContain('取消编辑')
-    expect(editMarkup).toContain('导出 JSON')
+    expect(editMarkup).toContain('导出')
+    expect(editMarkup).not.toContain('导出 JSON')
+    expect(editMarkup.indexOf('导出')).toBeLessThan(editMarkup.indexOf('保存'))
   })
 
   it('renders common actions in the workflow canvas context menu', () => {

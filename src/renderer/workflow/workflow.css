@@ -45,6 +45,11 @@
 .workflow-button-primary { border-color: var(--ezdsh-brand) !important; background: var(--ezdsh-brand) !important; color: #fff !important; }
 .workflow-save-button { border-color: var(--ezdsh-accent-green) !important; background: var(--ezdsh-accent-green) !important; color: #fff !important; }
 .workflow-button-quiet { color: var(--ezdsh-text-muted) !important; }
+.workflow-import-split { display: inline-flex; align-items: stretch; }
+.workflow-import-split > button { border-radius: 0; }
+.workflow-import-split > button:first-child { border-radius: 8px 0 0 8px; }
+.workflow-import-split > button:last-child { margin-left: -1px; border-radius: 0 8px 8px 0; padding-right: 10px; padding-left: 10px; }
+.workflow-import-clipboard-button svg { display: block; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .workflow-file-input { display: none; }
 .workflow-danger-button { color: var(--ezdsh-accent-red) !important; }
 

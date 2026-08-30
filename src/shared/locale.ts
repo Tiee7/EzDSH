@@ -298,7 +298,15 @@ export interface AppCopy {
   workflowCollapseInput: string
   workflowGoUpstream: string
   workflowExport: string
-  workflowImportJson: string
+  workflowImport: string
+  workflowImportClipboard: string
+  workflowClipboardInvalid: string
+  workflowClipboardReadFailed: string
+  workflowImportInvalidJson: string
+  workflowImportEmployeeCreateConfirm: (name: string) => string
+  workflowImportEmployeeReuseConfirm: (name: string) => string
+  workflowImportEmployeeMissing: (id: string) => string
+  workflowImportCancelled: string
   workflowExported: string
   workflowImported: string
   workflowGenerate: string
@@ -965,10 +973,18 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowExpandInput: '展开输入',
     workflowCollapseInput: '收起输入',
     workflowGoUpstream: '到上游',
-    workflowExport: '导出 JSON',
-    workflowImportJson: '导入 JSON',
-    workflowExported: '工作流 JSON 已导出',
-    workflowImported: '工作流 JSON 已导入，可继续编辑。',
+    workflowExport: '导出',
+    workflowImport: '导入',
+    workflowImportClipboard: '从剪贴板导入',
+    workflowClipboardInvalid: '剪贴板内的数据格式不正确',
+    workflowClipboardReadFailed: '无法读取剪贴板内容，请检查权限。',
+    workflowImportInvalidJson: '导入文件不是有效的 JSON。',
+    workflowImportEmployeeCreateConfirm: (name) => `工作流需要员工「${name}」，本地不存在。是否创建该员工？`,
+    workflowImportEmployeeReuseConfirm: (name) => `检测到同名员工「${name}」，是否调用现有员工？`,
+    workflowImportEmployeeMissing: (id) => `工作流引用的员工「${id}」不存在，且导出文件未提供员工档案。`,
+    workflowImportCancelled: '导入已取消。',
+    workflowExported: '工作流已导出',
+    workflowImported: '工作流已导入，可继续编辑。',
     workflowGenerate: 'AI 生成',
     workflowGenerateHint: '描述你想自动化的任务，AI 会生成草稿并直接进入编辑器；确认后保存或取消，不会直接执行。',
     workflowGeneratePlaceholder: '例如：读取项目说明，交给智能处理节点总结，再把结果写入 summary.md',
@@ -1632,10 +1648,18 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowExpandInput: 'Expand input',
     workflowCollapseInput: 'Collapse input',
     workflowGoUpstream: 'Go upstream',
-    workflowExport: 'Export JSON',
-    workflowImportJson: 'Import JSON',
-    workflowExported: 'Workflow JSON exported',
-    workflowImported: 'Workflow JSON imported and ready to edit.',
+    workflowExport: 'Export',
+    workflowImport: 'Import',
+    workflowImportClipboard: 'Import from clipboard',
+    workflowClipboardInvalid: 'Clipboard data format is invalid.',
+    workflowClipboardReadFailed: 'Unable to read the clipboard. Check permissions.',
+    workflowImportInvalidJson: 'The import file is not valid JSON.',
+    workflowImportEmployeeCreateConfirm: (name) => `Workflow requires employee “${name}”, but it is not installed. Create this employee?`,
+    workflowImportEmployeeReuseConfirm: (name) => `An employee named “${name}” already exists. Use the existing employee?`,
+    workflowImportEmployeeMissing: (id) => `Workflow references employee “${id}”, but the export has no employee profile.`,
+    workflowImportCancelled: 'Import cancelled.',
+    workflowExported: 'Workflow exported',
+    workflowImported: 'Workflow imported and ready to edit.',
     workflowGenerate: 'Generate with AI',
     workflowGenerateHint: 'Describe the task to automate. AI creates a draft and opens it in the editor; save or cancel after review, and never executes it directly.',
     workflowGeneratePlaceholder: 'For example: read the project brief, summarize it with AI Processing, then write the result to summary.md',

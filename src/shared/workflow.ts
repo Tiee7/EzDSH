@@ -1,5 +1,5 @@
 /** The persisted workflow document format. Keep this independent from React Flow. */
-import type { EmployeeSnapshot } from './employees.js'
+import { EMPLOYEE_CAPABILITIES, type EmployeeSnapshot } from './employees.js'
 
 export const WORKFLOW_SCHEMA_VERSION = 2 as const
 /** Stable envelope identifier for files exchanged through the workflow UI. */
@@ -178,12 +178,16 @@ export interface WorkflowDefinition {
   lastRunId?: string
 }
 
+/** Employee profile bundled with an exchange document when a workflow references it. */
+export type WorkflowExportEmployee = Omit<EmployeeSnapshot, 'schemaVersion' | 'version' | 'createdAt' | 'updatedAt' | 'builtIn'>
+
 /** Versioned, JSON-only interchange document for workflow import/export. */
 export interface WorkflowExportDocument {
   format: typeof WORKFLOW_EXPORT_FORMAT
   formatVersion: typeof WORKFLOW_EXPORT_FORMAT_VERSION
   exportedAt: string
   workflow: WorkflowDefinition
+  employees?: WorkflowExportEmployee[]
 }
 
 export type WorkflowCreateInput = Pick<WorkflowDefinition, 'name' | 'description' | 'nodes' | 'edges'> & {
@@ -489,17 +493,74 @@ export function normalizeWorkflow(raw: unknown): WorkflowDefinition | undefined 
 }
 
 /** Create the canonical JSON envelope used by the workflow editor's export action. */
-export function createWorkflowExportDocument(workflow: WorkflowDefinition, exportedAt = new Date().toISOString()): WorkflowExportDocument {
+export function createWorkflowExportDocument(workflow: WorkflowDefinition, exportedAt = new Date().toISOString(), employees: readonly EmployeeSnapshot[] = []): WorkflowExportDocument {
+  const referencedEmployeeIds = new Set(workflow.nodes.flatMap((node) => node.type === 'employee' && node.config.employeeId.trim() !== '' ? [node.config.employeeId] : []))
+  const bundledEmployees = employees
+    .filter((employee) => referencedEmployeeIds.has(employee.id))
+    .map(({ id, name, role, description, businessBoundary, systemPrompt, operatingGuidelines, qualityStandards, capabilities, skillIds, enabled }) => ({
+      id,
+      name,
+      role,
+      description,
+      businessBoundary,
+      systemPrompt,
+      operatingGuidelines: [...operatingGuidelines],
+      qualityStandards: [...qualityStandards],
+      capabilities: [...capabilities],
+      skillIds: [...skillIds],
+      enabled,
+    }))
   return {
     format: WORKFLOW_EXPORT_FORMAT,
     formatVersion: WORKFLOW_EXPORT_FORMAT_VERSION,
     exportedAt,
     workflow: cloneWorkflow(workflow),
+    ...(bundledEmployees.length === 0 ? {} : { employees: bundledEmployees }),
   }
 }
 
+function parseWorkflowExportEmployees(value: unknown): WorkflowExportEmployee[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('Workflow 文件的 employees 必须是数组。')
+  const ids = new Set<string>()
+  return value.map((rawEmployee, index) => {
+    if (!isRecord(rawEmployee)) throw new Error(`Workflow 文件的 employees.${index} 不是有效的员工档案。`)
+    const requiredTextFields = ['id', 'name', 'role', 'systemPrompt'] as const
+    for (const field of requiredTextFields) {
+      if (typeof rawEmployee[field] !== 'string' || rawEmployee[field].trim() === '') throw new Error(`Workflow 文件的 employees.${index}.${field} 不能为空。`)
+    }
+    if (typeof rawEmployee.description !== 'string' || typeof rawEmployee.businessBoundary !== 'string') throw new Error(`Workflow 文件的 employees.${index}.description 或 businessBoundary 无效。`)
+    const employeeId = rawEmployee.id as string
+    if (!/^[a-z0-9][a-z0-9._-]*$/u.test(employeeId)) throw new Error(`Workflow 文件的 employees.${index}.id 无效。`)
+    if (ids.has(employeeId)) throw new Error(`Workflow 文件的 employees.${index}.id 重复。`)
+    ids.add(employeeId)
+    const operatingGuidelines = rawEmployee.operatingGuidelines
+    const qualityStandards = rawEmployee.qualityStandards
+    const capabilities = rawEmployee.capabilities
+    const skillIds = rawEmployee.skillIds
+    if (!Array.isArray(operatingGuidelines) || operatingGuidelines.some((item) => typeof item !== 'string')) throw new Error(`Workflow 文件的 employees.${index}.operatingGuidelines 无效。`)
+    if (!Array.isArray(qualityStandards) || qualityStandards.some((item) => typeof item !== 'string')) throw new Error(`Workflow 文件的 employees.${index}.qualityStandards 无效。`)
+    if (!Array.isArray(capabilities) || capabilities.some((item) => typeof item !== 'string' || !(EMPLOYEE_CAPABILITIES as readonly string[]).includes(item))) throw new Error(`Workflow 文件的 employees.${index}.capabilities 无效。`)
+    if (!Array.isArray(skillIds) || skillIds.some((item) => typeof item !== 'string')) throw new Error(`Workflow 文件的 employees.${index}.skillIds 无效。`)
+    if (typeof rawEmployee.enabled !== 'boolean') throw new Error(`Workflow 文件的 employees.${index}.enabled 无效。`)
+    return {
+      id: employeeId,
+      name: rawEmployee.name as string,
+      role: rawEmployee.role as string,
+      description: rawEmployee.description as string,
+      businessBoundary: rawEmployee.businessBoundary as string,
+      systemPrompt: rawEmployee.systemPrompt as string,
+      operatingGuidelines: [...operatingGuidelines] as string[],
+      qualityStandards: [...qualityStandards] as string[],
+      capabilities: [...capabilities] as WorkflowExportEmployee['capabilities'],
+      skillIds: [...skillIds] as string[],
+      enabled: rawEmployee.enabled,
+    }
+  })
+}
+
 /** Parse and validate a canonical workflow export before it is persisted. */
-export function parseWorkflowExportDocument(raw: unknown): WorkflowDefinition {
+export function parseWorkflowExportDocument(raw: unknown): WorkflowExportDocument {
   if (!isRecord(raw)) throw new Error('Workflow JSON 必须是对象。')
   if (raw.format !== WORKFLOW_EXPORT_FORMAT) throw new Error(`Workflow JSON 的 format 无效，应为「${WORKFLOW_EXPORT_FORMAT}」。`)
   if (raw.formatVersion !== WORKFLOW_EXPORT_FORMAT_VERSION) throw new Error(`不支持的 Workflow 文件版本：${String(raw.formatVersion)}。`)
@@ -522,7 +583,14 @@ export function parseWorkflowExportDocument(raw: unknown): WorkflowDefinition {
   if (workflow.nodes.length !== rawNodes.length || workflow.edges.length !== rawEdges.length) throw new Error('Workflow 文件包含无法解析的节点或连线，未导入任何内容。')
   const result = validateWorkflow(workflow)
   if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, '导入工作流'))
-  return workflow
+  const employees = parseWorkflowExportEmployees(raw.employees)
+  return {
+    format: WORKFLOW_EXPORT_FORMAT,
+    formatVersion: WORKFLOW_EXPORT_FORMAT_VERSION,
+    exportedAt: raw.exportedAt,
+    workflow,
+    ...(employees.length === 0 ? {} : { employees }),
+  }
 }
 
 /** Validate a workflow before it enters persistence or execution. */
