@@ -267,6 +267,16 @@ describe('WorkflowPage regressions', () => {
     expect(workflowPage.workflowNodeHandleLayout('condition')).toEqual({ input: 'left', output: 'right' })
   })
 
+  it('provides a distinct accessible type icon for every workflow node type', () => {
+    const types: WorkflowNodeType[] = ['input', 'ai-task', 'employee', 'skill', 'mcp', 'parallel', 'loop', 'condition', 'approval', 'transform', 'output', 'shell', 'file']
+
+    for (const type of types) {
+      const markup = renderToStaticMarkup(<workflowPage.WorkflowNodeTypeIcon type={type} />)
+      expect(markup).toContain(`data-node-icon="${type}"`)
+      expect(markup).toContain(`workflow-node-type-${type}`)
+    }
+  })
+
   it('maps the persisted default output port to the custom node default handle', () => {
     const workflow = createDefaultWorkflow('Default port')
     const edge = workflow.edges[0]!

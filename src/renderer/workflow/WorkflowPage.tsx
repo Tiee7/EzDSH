@@ -83,6 +83,22 @@ const NODE_LIBRARY_GROUPS: Array<{ label: string; types: WorkflowNodeType[] }> =
   { label: '本地工具', types: ['shell', 'file'] },
 ]
 
+const workflowNodeIconPath: Record<WorkflowNodeType, string> = {
+  input: 'M4 12h12m-5-5 5 5-5 5M19 5v14',
+  'ai-task': 'm12 3 1.4 4.6L18 9l-4.6 1.4L12 15l-1.4-4.6L6 9l4.6-1.4L12 3Zm6 11 .7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14Z',
+  employee: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0',
+  skill: 'M8 4h8v4h4v8h-4v4H8v-4H4V8h4V4Z',
+  mcp: 'M8.5 15.5 5 19l-2-2 3.5-3.5m9-4L19 6l-2-2-3.5 3.5M8 16l8-8',
+  parallel: 'M5 5h4l5 7h5M5 19h4l5-7h5M5 12h4',
+  loop: 'M20 11a8 8 0 0 0-14.7-4L3 10m0 0V4m0 6h6m-5 3a8 8 0 0 0 14.7 4L21 14m0 0v6m0-6h-6',
+  condition: 'm12 3 8 9-8 9-8-9 8-9Z',
+  approval: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm-4-9 3 3 5-6',
+  transform: 'm14 4 6 6m-9-3-7 7a2 2 0 0 0 0 3l1 1a2 2 0 0 0 3 0l7-7M5 20h14',
+  output: 'M5 12h12m-5-5 5 5-5 5M5 5v14',
+  shell: 'm7 8 4 4-4 4m6 0h4M4 4h16v16H4V4Z',
+  file: 'M6 3h8l4 4v14H6V3Zm8 0v5h4',
+}
+
 function id(prefix: string): string {
   const suffix = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10)
   return `${prefix}-${suffix}`
@@ -261,7 +277,7 @@ function WorkflowFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element 
   const handles = workflowNodeHandleLayout(data.nodeType)
   return <div className={`workflow-flow-node ${selected ? 'workflow-flow-node-selected' : ''}`}>
     {handles.input === 'left' ? <Handle type="target" position={Position.Left} /> : null}
-    <span>{data.label}</span>
+    <div className="workflow-flow-node-content"><WorkflowNodeTypeIcon type={data.nodeType} /><span>{data.label}</span></div>
     {data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}
     {data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}
     {handles.output === 'right' ? <Handle type="source" position={Position.Right} /> : null}
@@ -269,7 +285,12 @@ function WorkflowFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element 
 }
 
 function ConditionFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element {
-  return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><span>{data.label}</span>{data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />true</span><span><Handle type="source" position={Position.Right} id="false" />false</span></div></div>
+  return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><div className="workflow-condition-node-content"><WorkflowNodeTypeIcon type={data.nodeType} /><span>{data.label}</span></div>{data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />true</span><span><Handle type="source" position={Position.Right} id="false" />false</span></div></div>
+}
+
+/** Compact Dify-style node type marker; the visible node label remains the accessible name. */
+export function WorkflowNodeTypeIcon({ type }: { type: WorkflowNodeType }): JSX.Element {
+  return <span className={`workflow-node-type-icon workflow-node-type-${type}`} data-node-icon={type} aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d={workflowNodeIconPath[type]} /></svg></span>
 }
 
 const nodeTypes = { workflow: WorkflowFlowNode, condition: ConditionFlowNode }
@@ -950,7 +971,7 @@ export function WorkflowMetadataDialog({ copy, name, description, onChangeName, 
 }
 
 function WorkflowNodeLibrary({ onAdd }: { onAdd: (type: WorkflowNodeType) => void }): JSX.Element {
-  return <details className="workflow-node-library"><summary>＋ 添加节点</summary><div className="workflow-node-library-menu">{NODE_LIBRARY_GROUPS.map((group) => <section key={group.label}><strong>{group.label}</strong><div>{group.types.map((type) => <button key={type} type="button" onClick={() => onAdd(type)}>{nodeTypeLabel[type]}</button>)}</div></section>)}</div></details>
+  return <details className="workflow-node-library"><summary>＋ 添加节点</summary><div className="workflow-node-library-menu">{NODE_LIBRARY_GROUPS.map((group) => <section key={group.label}><strong>{group.label}</strong><div>{group.types.map((type) => <button key={type} type="button" onClick={() => onAdd(type)}><WorkflowNodeTypeIcon type={type} /><span>{nodeTypeLabel[type]}</span></button>)}</div></section>)}</div></details>
 }
 
 export type WorkflowContextMenuTarget = 'canvas' | 'node' | 'edge' | 'selection'
@@ -1976,7 +1997,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             </section>
             <aside className="workflow-inspector">
               <section className="workflow-panel-card workflow-inspector-card">
-                <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowEditor}</span><h2>{copy.workflowInspector}</h2></div>{selectedNode ? <span className="workflow-type-badge">{nodeTypeLabel[selectedNode.type]}</span> : null}</div>
+                <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowEditor}</span><h2>{copy.workflowInspector}</h2></div>{selectedNode ? <span className="workflow-type-badge"><WorkflowNodeTypeIcon type={selectedNode.type} />{nodeTypeLabel[selectedNode.type]}</span> : null}</div>
                 {selectedNode === undefined ? <p className="workflow-muted">{copy.workflowNodeSelectHint}</p> : <>
                   <label>{copy.workflowNodeLabel}<input value={selectedNode.label} onChange={(event) => updateNode((node) => ({ ...node, label: event.target.value }))} /></label>
                   {selectedNode.type === 'input' ? null : <WorkflowNodeVariablesEditor workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} />}
