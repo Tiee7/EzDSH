@@ -2,6 +2,9 @@
 import type { EmployeeSnapshot } from './employees.js'
 
 export const WORKFLOW_SCHEMA_VERSION = 2 as const
+/** Stable envelope identifier for files exchanged through the workflow UI. */
+export const WORKFLOW_EXPORT_FORMAT = 'ezdsh.workflow' as const
+export const WORKFLOW_EXPORT_FORMAT_VERSION = 1 as const
 
 export const WORKFLOW_NODE_TYPES = [
   'input',
@@ -173,6 +176,14 @@ export interface WorkflowDefinition {
   createdAt: string
   updatedAt: string
   lastRunId?: string
+}
+
+/** Versioned, JSON-only interchange document for workflow import/export. */
+export interface WorkflowExportDocument {
+  format: typeof WORKFLOW_EXPORT_FORMAT
+  formatVersion: typeof WORKFLOW_EXPORT_FORMAT_VERSION
+  exportedAt: string
+  workflow: WorkflowDefinition
 }
 
 export type WorkflowCreateInput = Pick<WorkflowDefinition, 'name' | 'description' | 'nodes' | 'edges'> & {
@@ -475,6 +486,43 @@ export function normalizeWorkflow(raw: unknown): WorkflowDefinition | undefined 
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : createdAt,
     lastRunId: typeof raw.lastRunId === 'string' ? raw.lastRunId : undefined,
   }
+}
+
+/** Create the canonical JSON envelope used by the workflow editor's export action. */
+export function createWorkflowExportDocument(workflow: WorkflowDefinition, exportedAt = new Date().toISOString()): WorkflowExportDocument {
+  return {
+    format: WORKFLOW_EXPORT_FORMAT,
+    formatVersion: WORKFLOW_EXPORT_FORMAT_VERSION,
+    exportedAt,
+    workflow: cloneWorkflow(workflow),
+  }
+}
+
+/** Parse and validate a canonical workflow export before it is persisted. */
+export function parseWorkflowExportDocument(raw: unknown): WorkflowDefinition {
+  if (!isRecord(raw)) throw new Error('Workflow JSON 必须是对象。')
+  if (raw.format !== WORKFLOW_EXPORT_FORMAT) throw new Error(`Workflow JSON 的 format 无效，应为「${WORKFLOW_EXPORT_FORMAT}」。`)
+  if (raw.formatVersion !== WORKFLOW_EXPORT_FORMAT_VERSION) throw new Error(`不支持的 Workflow 文件版本：${String(raw.formatVersion)}。`)
+  if (typeof raw.exportedAt !== 'string' || Number.isNaN(Date.parse(raw.exportedAt))) throw new Error('Workflow 文件缺少有效的 exportedAt 时间。')
+  if (!isRecord(raw.workflow) || raw.workflow.schemaVersion !== WORKFLOW_SCHEMA_VERSION) throw new Error(`不支持的 Workflow Schema 版本，应为 ${WORKFLOW_SCHEMA_VERSION}。`)
+  const rawNodes = raw.workflow.nodes
+  const rawEdges = raw.workflow.edges
+  if (!Array.isArray(rawNodes) || !Array.isArray(rawEdges)) throw new Error('Workflow 文件必须包含 nodes 和 edges 数组。')
+  rawNodes.forEach((rawNode, index) => {
+    if (!isRecord(rawNode) || typeof rawNode.id !== 'string' || !isWorkflowNodeType(rawNode.type)) throw new Error(`Workflow 文件的 nodes.${index} 不是有效的 Schema V2 节点。`)
+    if (!isRecord(rawNode.config) || !isRecord(rawNode.position) || typeof rawNode.position.x !== 'number' || !Number.isFinite(rawNode.position.x) || typeof rawNode.position.y !== 'number' || !Number.isFinite(rawNode.position.y)) throw new Error(`Workflow 文件的 nodes.${index} 缺少有效的 config 或 position。`)
+  })
+  rawEdges.forEach((rawEdge, index) => {
+    if (!isRecord(rawEdge) || typeof rawEdge.id !== 'string' || typeof rawEdge.source !== 'string' || typeof rawEdge.target !== 'string') throw new Error(`Workflow 文件的 edges.${index} 不是有效的连线。`)
+    if (rawEdge.sourcePort !== undefined && rawEdge.sourcePort !== 'true' && rawEdge.sourcePort !== 'false' && rawEdge.sourcePort !== 'default') throw new Error(`Workflow 文件的 edges.${index}.sourcePort 无效。`)
+    if (rawEdge.targetPort !== undefined && typeof rawEdge.targetPort !== 'string') throw new Error(`Workflow 文件的 edges.${index}.targetPort 无效。`)
+  })
+  const workflow = normalizeWorkflow(raw.workflow)
+  if (workflow === undefined) throw new Error('Workflow 文件缺少有效的 workflow、nodes 或 edges 字段。')
+  if (workflow.nodes.length !== rawNodes.length || workflow.edges.length !== rawEdges.length) throw new Error('Workflow 文件包含无法解析的节点或连线，未导入任何内容。')
+  const result = validateWorkflow(workflow)
+  if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, '导入工作流'))
+  return workflow
 }
 
 /** Validate a workflow before it enters persistence or execution. */

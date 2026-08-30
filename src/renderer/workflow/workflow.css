@@ -45,7 +45,7 @@
 .workflow-button-primary { border-color: var(--ezdsh-brand) !important; background: var(--ezdsh-brand) !important; color: #fff !important; }
 .workflow-save-button { border-color: var(--ezdsh-accent-green) !important; background: var(--ezdsh-accent-green) !important; color: #fff !important; }
 .workflow-button-quiet { color: var(--ezdsh-text-muted) !important; }
-.workflow-template-button { border-color: color-mix(in srgb, var(--ezdsh-brand) 45%, var(--ezdsh-panel-border)) !important; background: color-mix(in srgb, var(--ezdsh-brand) 8%, transparent) !important; }
+.workflow-file-input { display: none; }
 .workflow-danger-button { color: var(--ezdsh-accent-red) !important; }
 
 .workflow-browser-content { flex: 1; min-height: 0; overflow: auto; padding: 34px 44px 50px; }

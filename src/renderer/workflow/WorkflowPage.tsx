@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   addEdge,
   applyEdgeChanges,
@@ -25,12 +25,13 @@ import {
 import '@xyflow/react/dist/style.css'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
 import type { EmployeeSnapshot } from '../../shared/employees.js'
-import { createShortVideoContentWorkflow, SHORT_VIDEO_EMPLOYEE_IDS } from '../../shared/workflow-templates.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import {
   cloneWorkflow,
+  createWorkflowExportDocument,
   createDefaultWorkflow,
   isWorkflowValue,
+  parseWorkflowExportDocument,
   type AiExecutionMode,
   type ConditionOperator,
   type TransformTemplate,
@@ -178,6 +179,16 @@ export function workflowFlowNodes(workflow: WorkflowDefinition, run?: WorkflowRu
     }
   })
 }
+/** Keep exported files portable and readable when a workflow name contains punctuation or path separators. */
+export function workflowExportFileName(name: string): string {
+  const safeName = name.trim().replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 80)
+  return `${safeName || 'workflow'}.json`
+}
+
+export function serializeWorkflowExport(workflow: WorkflowDefinition, exportedAt?: string): string {
+  return `${JSON.stringify(createWorkflowExportDocument(workflow, exportedAt), null, 2)}\n`
+}
+
 
 export type WorkflowNodeAlignment = 'left' | 'center-horizontal' | 'right' | 'top' | 'center-vertical' | 'bottom' | 'distribute-horizontal' | 'distribute-vertical'
 
@@ -938,13 +949,15 @@ export interface WorkflowEditorActionsProps {
   runLabel: string
   onCancel: () => void
   onSave: () => void
+  onExport: () => void
   onRun: () => void
 }
 
-export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel, onCancel, onSave, onRun }: WorkflowEditorActionsProps): JSX.Element {
+export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel, onCancel, onSave, onExport, onRun }: WorkflowEditorActionsProps): JSX.Element {
   return <>
     <button type="button" className="workflow-button-quiet" onClick={onCancel} disabled={busy}>{draft ? copy.workflowCancelCreate : copy.workflowCancelEdit}</button>
     <button type="button" className="workflow-button-primary workflow-save-button" onClick={onSave} disabled={busy}>{copy.workflowSave}</button>
+    <button type="button" className="workflow-button-quiet" onClick={onExport} disabled={busy}>{copy.workflowExport}</button>
     <button type="button" className="workflow-button-primary" onClick={onRun} disabled={runDisabled}>{runLabel}</button>
   </>
 }
@@ -1247,6 +1260,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [contextMenu, setContextMenu] = useState<WorkflowContextMenuState>()
   const workflowPageRef = useRef<HTMLDivElement>(null)
   const workflowCanvasRef = useRef<HTMLDivElement>(null)
+  const workflowImportInputRef = useRef<HTMLInputElement>(null)
   const executionMainRef = useRef<HTMLDivElement>(null)
   const executionResizeRef = useRef<{ startY: number; startHeight: number }>()
   const fitViewRef = useRef<(() => Promise<boolean>)>()
@@ -1449,6 +1463,49 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
       return undefined
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const exportWorkflow = (): void => {
+    const workflow = currentDefinition()
+    if (workflow === undefined) return
+    try {
+      const blob = new Blob([serializeWorkflowExport(workflow)], { type: 'application/json' })
+      if (typeof URL.createObjectURL !== 'function') throw new Error('当前环境不支持下载 Workflow JSON。')
+      const url = URL.createObjectURL(blob)
+      const anchor = window.document.createElement('a')
+      anchor.href = url
+      anchor.download = workflowExportFileName(workflow.name)
+      anchor.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+      setMessage(copy.workflowExported)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    }
+  }
+
+  const importWorkflowFile = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (file === undefined) return
+    setBusy(true)
+    setError('')
+    try {
+      const parsed = parseWorkflowExportDocument(JSON.parse(await file.text()) as unknown)
+      const imported = await window.EzDSH.workflows.create({
+        name: parsed.name,
+        description: parsed.description,
+        nodes: parsed.nodes,
+        edges: parsed.edges,
+        enabled: parsed.enabled,
+      })
+      setWorkflows((current) => [imported, ...current.filter((workflow) => workflow.id !== imported.id)])
+      await open(imported)
+      setMessage(copy.workflowImported)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
     } finally {
       setBusy(false)
     }
@@ -1851,28 +1908,6 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed) } finally { setBusy(false) }
   }
 
-  const createContentTemplate = async (): Promise<void> => {
-    const missing = Object.values(SHORT_VIDEO_EMPLOYEE_IDS).filter(
-      (requiredId) => !employees.some((employee) => employee.id === requiredId && employee.enabled),
-    )
-    if (missing.length > 0) {
-      setError(copy.workflowTemplateMissingEmployees(missing.join(', ')))
-      return
-    }
-    setBusy(true)
-    setError('')
-    try {
-      const created = await window.EzDSH.workflows.create(createShortVideoContentWorkflow())
-      setWorkflows((current) => [created, ...current.filter((workflow) => workflow.id !== created.id)])
-      await open(created)
-      setMessage(copy.workflowContentTemplateCreated)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const statusLabel = (status: WorkflowRunRecord['status']): string => ({ queued: copy.workflowNodePending, running: copy.workflowRunning, paused: copy.workflowRunPaused, 'waiting-approval': copy.workflowWaitingApproval, completed: copy.workflowRunCompleted, failed: copy.workflowRunFailed, cancelled: copy.workflowRunCancelled })[status]
 
   const dismissContextMenu = (): void => setContextMenu(undefined)
@@ -1903,7 +1938,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           </div>
           <div className="workflow-browser-actions">
             <button type="button" className="workflow-button-primary" onClick={() => void create()} disabled={busy}>{copy.workflowNew}</button>
-            <button type="button" className="workflow-template-button" onClick={() => void createContentTemplate()} disabled={busy}>{copy.workflowContentTemplate}</button>
+            <button type="button" className="workflow-button-quiet" onClick={() => workflowImportInputRef.current?.click()} disabled={busy}>{copy.workflowImportJson}</button>
+            <input ref={workflowImportInputRef} className="workflow-file-input" type="file" accept="application/json,.json" aria-label={copy.workflowImportJson} onChange={(event) => void importWorkflowFile(event)} />
           </div>
         </header>
         <main className="workflow-browser-content">
@@ -1955,6 +1991,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               runLabel={currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}
               onCancel={exitWorkspace}
               onSave={() => void save()}
+              onExport={exportWorkflow}
               onRun={() => void openRunSetup()}
             /> : <>
               <button type="button" className="workflow-button-primary workflow-save-button" onClick={() => void save()} disabled={busy}>{copy.workflowSave}</button>

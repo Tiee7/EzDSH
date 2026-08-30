@@ -337,6 +337,15 @@ describe('WorkflowPage regressions', () => {
     expect(workflowPage.buildWorkflowLaunchInput(fields, { task: '准备今天的选题' })).toEqual({ task: '准备今天的选题' })
   })
 
+  it('serializes portable workflow JSON and creates a safe download name', () => {
+    const workflow = createDefaultWorkflow('公司/财务分析: 2026')
+    const serialized = workflowPage.serializeWorkflowExport(workflow, '2026-08-31T00:00:00.000Z')
+
+    expect(workflowPage.workflowExportFileName(workflow.name)).toBe('公司-财务分析-2026.json')
+    expect(JSON.parse(serialized)).toMatchObject({ format: 'ezdsh.workflow', formatVersion: 1, workflow: { id: workflow.id } })
+    expect(serialized.endsWith('\n')).toBe(true)
+  })
+
   it('exposes each persisted node output and error for execution debugging', () => {
     const workflow = createDefaultWorkflow('Debug run')
     const node = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
@@ -607,7 +616,7 @@ describe('WorkflowPage regressions', () => {
     expect(historyMarkup).not.toContain('调试运行')
   })
 
-  it('offers employees and lightweight AI processing to developers without exposing Agent', () => {
+  it('offers employees and lightweight AI processing without the retired content template entry point', () => {
     const markup = renderToStaticMarkup(<workflowPage.WorkflowPage copy={getAppCopy('zh')} locale="zh" developerMode />)
 
     expect(markup).toContain('workflow-page-browser')
@@ -615,7 +624,8 @@ describe('WorkflowPage regressions', () => {
     expect(markup).toContain('workflow-employee-select')
     expect(markup).toContain('智能处理')
     expect(markup).toContain('专业员工')
-    expect(markup).toContain('短视频内容运营')
+    expect(markup).toContain('导入 JSON')
+    expect(markup).not.toContain('短视频内容运营')
     expect(markup).not.toContain('Employee ID')
     expect(markup).not.toContain('Agent')
   })
@@ -654,10 +664,10 @@ describe('WorkflowPage regressions', () => {
 
   it('keeps editor history keyboard-only and uses a green save action', () => {
     const draftMarkup = renderToStaticMarkup(
-      <workflowPage.WorkflowEditorActions copy={getAppCopy('zh')} draft busy={false} runDisabled={false} runLabel="运行" onCancel={vi.fn()} onSave={vi.fn()} onRun={vi.fn()} />,
+      <workflowPage.WorkflowEditorActions copy={getAppCopy('zh')} draft busy={false} runDisabled={false} runLabel="运行" onCancel={vi.fn()} onSave={vi.fn()} onExport={vi.fn()} onRun={vi.fn()} />,
     )
     const editMarkup = renderToStaticMarkup(
-      <workflowPage.WorkflowEditorActions copy={getAppCopy('zh')} draft={false} busy={false} runDisabled={false} runLabel="运行" onCancel={vi.fn()} onSave={vi.fn()} onRun={vi.fn()} />,
+      <workflowPage.WorkflowEditorActions copy={getAppCopy('zh')} draft={false} busy={false} runDisabled={false} runLabel="运行" onCancel={vi.fn()} onSave={vi.fn()} onExport={vi.fn()} onRun={vi.fn()} />,
     )
 
     expect(draftMarkup).not.toContain('撤销')
@@ -665,6 +675,7 @@ describe('WorkflowPage regressions', () => {
     expect(draftMarkup).toContain('保存')
     expect(draftMarkup).toContain('workflow-save-button')
     expect(editMarkup).toContain('取消编辑')
+    expect(editMarkup).toContain('导出 JSON')
   })
 
   it('renders common actions in the workflow canvas context menu', () => {

@@ -297,6 +297,10 @@ export interface AppCopy {
   workflowExpandInput: string
   workflowCollapseInput: string
   workflowGoUpstream: string
+  workflowExport: string
+  workflowImportJson: string
+  workflowExported: string
+  workflowImported: string
   workflowGenerate: string
   workflowGenerateHint: string
   workflowGeneratePlaceholder: string
@@ -331,9 +335,6 @@ export interface AppCopy {
   workflowImportEmployee: string
   workflowSelectEmployee: string
   workflowImportedEmployee: string
-  workflowContentTemplate: string
-  workflowContentTemplateCreated: string
-  workflowTemplateMissingEmployees: (ids: string) => string
   workflowEmployeeProfile: string
   employeeCapabilityResearch: string
   employeeCapabilityCopywriting: string
@@ -964,6 +965,10 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowExpandInput: '展开输入',
     workflowCollapseInput: '收起输入',
     workflowGoUpstream: '到上游',
+    workflowExport: '导出 JSON',
+    workflowImportJson: '导入 JSON',
+    workflowExported: '工作流 JSON 已导出',
+    workflowImported: '工作流 JSON 已导入，请确认后保存。',
     workflowGenerate: 'AI 生成',
     workflowGenerateHint: '描述你想自动化的任务，AI 会生成草稿并直接进入编辑器；确认后保存或取消，不会直接执行。',
     workflowGeneratePlaceholder: '例如：读取项目说明，交给智能处理节点总结，再把结果写入 summary.md',
@@ -998,9 +1003,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowImportEmployee: '为员工创建工作流',
     workflowSelectEmployee: '选择员工',
     workflowImportedEmployee: '已创建员工工作流',
-    workflowContentTemplate: '短视频内容运营',
-    workflowContentTemplateCreated: '短视频内容运营工作流已创建',
-    workflowTemplateMissingEmployees: (ids) => `缺少或未启用模板所需员工：${ids}`,
     workflowEmployeeProfile: '员工档案',
     employeeCapabilityResearch: '资料研究',
     employeeCapabilityCopywriting: '文案创作',
@@ -1630,6 +1632,10 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowExpandInput: 'Expand input',
     workflowCollapseInput: 'Collapse input',
     workflowGoUpstream: 'Go upstream',
+    workflowExport: 'Export JSON',
+    workflowImportJson: 'Import JSON',
+    workflowExported: 'Workflow JSON exported',
+    workflowImported: 'Workflow JSON imported. Review it, then save.',
     workflowGenerate: 'Generate with AI',
     workflowGenerateHint: 'Describe the task to automate. AI creates a draft and opens it in the editor; save or cancel after review, and never executes it directly.',
     workflowGeneratePlaceholder: 'For example: read the project brief, summarize it with AI Processing, then write the result to summary.md',
@@ -1664,9 +1670,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowImportEmployee: 'Create workflow for employee',
     workflowSelectEmployee: 'Select employee',
     workflowImportedEmployee: 'Employee workflow created',
-    workflowContentTemplate: 'Short-video content operations',
-    workflowContentTemplateCreated: 'Short-video content workflow created',
-    workflowTemplateMissingEmployees: (ids) => `Required employees are missing or disabled: ${ids}`,
     workflowEmployeeProfile: 'Employee profile',
     employeeCapabilityResearch: 'Research',
     employeeCapabilityCopywriting: 'Copywriting',

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDefaultWorkflow, formatWorkflowValidationIssues, normalizeWorkflow, validateWorkflow } from '../../src/shared/workflow.js'
+import { createDefaultWorkflow, createWorkflowExportDocument, formatWorkflowValidationIssues, normalizeWorkflow, parseWorkflowExportDocument, validateWorkflow } from '../../src/shared/workflow.js'
 
 describe('workflow contract', () => {
   it('creates a valid starter graph', () => {
@@ -12,6 +12,38 @@ describe('workflow contract', () => {
       label: '智能处理',
       config: { mode: 'single', outputMode: 'text', skillIds: [] },
     })
+  })
+
+  it('round-trips the versioned JSON export envelope', () => {
+    const workflow = createDefaultWorkflow('Portable workflow')
+    const document = createWorkflowExportDocument(workflow, '2026-08-31T00:00:00.000Z')
+
+    expect(document).toMatchObject({
+      format: 'ezdsh.workflow',
+      formatVersion: 1,
+      exportedAt: '2026-08-31T00:00:00.000Z',
+    })
+    expect(parseWorkflowExportDocument(JSON.parse(JSON.stringify(document)))).toEqual(workflow)
+  })
+
+  it('rejects malformed or unsupported workflow JSON before persistence', () => {
+    expect(() => parseWorkflowExportDocument({})).toThrow('Workflow JSON')
+    expect(() => parseWorkflowExportDocument({ format: 'ezdsh.workflow', formatVersion: 99, exportedAt: '2026-08-31T00:00:00.000Z', workflow: {} })).toThrow('文件版本')
+
+    const workflow = createDefaultWorkflow('Invalid portable workflow')
+    const malformedNodeDocument = createWorkflowExportDocument({
+      ...workflow,
+      nodes: [...workflow.nodes, { id: 'unknown', type: 'not-a-node', label: 'Unknown', config: {}, position: { x: 0, y: 0 } } as never],
+    })
+    expect(() => parseWorkflowExportDocument(malformedNodeDocument)).toThrow('Schema V2 节点')
+
+    const document = createWorkflowExportDocument({
+      ...workflow,
+      nodes: workflow.nodes.map((node, index) => index === 1
+        ? { ...node, config: { ...node.config, instruction: '' } } as never
+        : node),
+    })
+    expect(() => parseWorkflowExportDocument(document)).toThrow('不能为空')
   })
 
   it('migrates a V1 Agent node to a V2 AI task', () => {

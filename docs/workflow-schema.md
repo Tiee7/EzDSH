@@ -1,6 +1,6 @@
 # Workflow Schema v2
 
-AI workflow generation, import, export and persistence all use this JSON document. A document is valid only when it satisfies the required fields and node rules below.
+AI workflow generation, persistence and the `workflow` field inside an import/export document use this JSON definition. The UI exchange envelope is documented in `docs/workflow-json.md`; a workflow is valid only when it satisfies the required fields and node rules below.
 
 ```json
 {
