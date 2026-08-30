@@ -23,6 +23,8 @@ import type {
 } from '../shared/external-services.js'
 import type {
   EmployeeCreateInput,
+  EmployeeGenerateRequest,
+  EmployeeGeneratedProfile,
   EmployeeProjectSummary,
   EmployeeRunRequest,
   EmployeeRunResult,
@@ -35,6 +37,7 @@ import type {
   WorkflowCreateInput,
   WorkflowDefinition,
   WorkflowGenerateRequest,
+  WorkflowGenerateResult,
   WorkflowRunOptions,
   WorkflowRunRecord,
   WorkflowUpdateInput,
@@ -112,6 +115,7 @@ const bridge: EzDSHBridge = {
     createSession: (projectId: string, title?: string) => invoke<EmployeeSessionSummary>('employees:create-session', projectId, title),
     listSessionLocks: () => invoke<EmployeeSessionLock[]>('employees:list-session-locks'),
     forceUnlockSession: (sessionId: string) => invoke<void>('employees:force-unlock-session', sessionId),
+    generate: (request: EmployeeGenerateRequest) => invoke<EmployeeGeneratedProfile>('employees:generate', request),
     create: (input: EmployeeCreateInput) => invoke<EmployeeSnapshot>('employees:create', input),
     update: (id: string, input: EmployeeUpdateInput) => invoke<EmployeeSnapshot>('employees:update', id, input),
     remove: (id: string) => invoke<void>('employees:remove', id),
@@ -135,7 +139,7 @@ const bridge: EzDSHBridge = {
     update: (id: string, input: WorkflowUpdateInput) => invoke<WorkflowDefinition>('workflows:update', id, input),
     remove: (id: string) => invoke<void>('workflows:remove', id),
     duplicate: (id: string) => invoke<WorkflowDefinition>('workflows:duplicate', id),
-    generate: (request: WorkflowGenerateRequest) => invoke<WorkflowDefinition>('workflows:generate', request),
+    generate: (request: WorkflowGenerateRequest) => invoke<WorkflowGenerateResult>('workflows:generate', request),
     importEmployee: (employeeId: string) => invoke<WorkflowDefinition>('workflows:import-employee', employeeId),
     listRuns: (workflowId?: string) => invoke<WorkflowRunRecord[]>('workflow-runs:list', workflowId),
     getRun: (runId: string) => invoke<WorkflowRunRecord | undefined>('workflow-runs:get', runId),
@@ -204,7 +208,7 @@ const bridge: EzDSHBridge = {
   providers: {
     listDefinitions: () => invoke('providers:list-definitions'),
     getStatus: () => invoke('providers:get-status'),
-    listWorkflowModels: () => invoke<WorkflowModelOption[]>('providers:list-workflow-models'),
+    listWorkflowModels: (refresh = false) => invoke<WorkflowModelOption[]>('providers:list-workflow-models', refresh),
     testConnection: (input) => invoke('providers:test-connection', input),
     listModels: (input) => invoke('providers:list-models', input),
     getProfile: (providerId) => invoke('providers:get-profile', providerId),

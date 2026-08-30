@@ -46,6 +46,8 @@ import type {
 } from './external-services.js'
 import type {
   EmployeeCreateInput,
+  EmployeeGenerateRequest,
+  EmployeeGeneratedProfile,
   EmployeeProjectSummary,
   EmployeeRunRequest,
   EmployeeRunResult,
@@ -58,6 +60,7 @@ import type {
   WorkflowCreateInput,
   WorkflowDefinition,
   WorkflowGenerateRequest,
+  WorkflowGenerateResult,
   WorkflowRunOptions,
   WorkflowRunRecord,
   WorkflowUpdateInput,
@@ -122,6 +125,7 @@ export interface EzDSHBridge {
     createSession(projectId: string, title?: string): Promise<EmployeeSessionSummary>
     listSessionLocks(): Promise<EmployeeSessionLock[]>
     forceUnlockSession(sessionId: string): Promise<void>
+    generate(request: EmployeeGenerateRequest): Promise<EmployeeGeneratedProfile>
     create(input: EmployeeCreateInput): Promise<EmployeeSnapshot>
     update(id: string, input: EmployeeUpdateInput): Promise<EmployeeSnapshot>
     remove(id: string): Promise<void>
@@ -137,7 +141,7 @@ export interface EzDSHBridge {
     update(id: string, input: WorkflowUpdateInput): Promise<WorkflowDefinition>
     remove(id: string): Promise<void>
     duplicate(id: string): Promise<WorkflowDefinition>
-    generate(request: WorkflowGenerateRequest): Promise<WorkflowDefinition>
+    generate(request: WorkflowGenerateRequest): Promise<WorkflowGenerateResult>
     importEmployee(employeeId: string): Promise<WorkflowDefinition>
     listRuns(workflowId?: string): Promise<WorkflowRunRecord[]>
     getRun(runId: string): Promise<WorkflowRunRecord | undefined>
@@ -181,7 +185,7 @@ export interface EzDSHBridge {
   providers: {
     listDefinitions(): Promise<ProviderDefinition[]>
     getStatus(): Promise<ProviderStatus[]>
-    listWorkflowModels(): Promise<WorkflowModelOption[]>
+    listWorkflowModels(refresh?: boolean): Promise<WorkflowModelOption[]>
     testConnection(input: TestProviderInput): Promise<TestConnectionResult>
     listModels(input: ListModelsInput): Promise<ProviderModel[]>
     getProfile(providerId: string): Promise<ProviderProfile | undefined>

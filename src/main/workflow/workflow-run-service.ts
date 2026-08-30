@@ -6,6 +6,7 @@ import type {
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowGenerateRequest,
+  WorkflowGenerateResult,
   WorkflowNode,
   WorkflowNodeRunState,
   WorkflowRunEvent,
@@ -15,8 +16,10 @@ import type {
   WorkflowModelSelection,
   ConditionOperator,
 } from '../../shared/workflow.js'
-import type { EmployeeSnapshot } from '../../shared/employees.js'
-import { cloneWorkflow, isWorkflowValue, normalizeWorkflow, validateWorkflow } from '../../shared/workflow.js'
+import { EMPLOYEE_CAPABILITIES } from '../../shared/employees.js'
+import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
+import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
+import { cloneWorkflow, isWorkflowValue, normalizeWorkflow } from '../../shared/workflow.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
 import { WorkflowRunStore } from './workflow-run-store.js'
@@ -31,6 +34,11 @@ export interface WorkflowRunServiceOptions {
   workspaceRoot: string
   createClient: () => WorkflowSessionClient
   resolveEmployee: (id: string) => EmployeeSnapshot | undefined
+  listEmployees?: () => EmployeeSnapshot[]
+  /** Creates and persists a professional employee profile. Absent ⇒ AI generation never creates employees. */
+  createEmployee?: (input: EmployeeCreateInput) => Promise<EmployeeSnapshot>
+  /** Locale for natural-language fields in AI-generated employee profiles. */
+  getLocale?: () => AppLocale
   lightweightClient?: Pick<WorkflowLightweightClient, 'complete'>
   mcpClient?: Pick<WorkflowMcpClient, 'call'>
   internalSessionStore?: WorkflowInternalSessionStore
@@ -107,7 +115,7 @@ export class WorkflowRunService {
     if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
     const workflow = this.options.workflowStore.get(workflowId)
     if (workflow === undefined) throw new Error(`Workflow not found: ${workflowId}`)
-    assertValidWorkflow(workflow)
+    assertValidWorkflow(workflow, '启动运行')
     const record = this.createRecord(workflow, input, options)
     await this.save(record, 'run-created', '运行已排队')
     void this.execute(record.id)
@@ -129,6 +137,7 @@ export class WorkflowRunService {
         node.error = undefined
         node.startedAt = undefined
         node.completedAt = undefined
+        node.input = undefined
         node.output = undefined
       }
     }
@@ -190,16 +199,41 @@ export class WorkflowRunService {
     return this.options.runStore.get(runId) ?? record
   }
 
-  async generate(request: WorkflowGenerateRequest): Promise<WorkflowDefinition> {
+  async generate(request: WorkflowGenerateRequest): Promise<WorkflowGenerateResult> {
     if (request.prompt.trim() === '') throw new Error('AI 生成需求不能为空')
+    const existingEmployees = this.options.listEmployees?.() ?? []
+    const catalogEntries = existingEmployees.map(employeeCatalogEntry)
+    const createdEmployees: EmployeeSnapshot[] = []
+    const employeeWarnings: string[] = []
+    const canCreateEmployees = this.options.createEmployee !== undefined && request.createEmployees !== false
+    if (canCreateEmployees) {
+      try {
+        const planText = await this.lightweightClient.complete({
+          systemPrompt: buildEmployeePlanPrompt(catalogEntries, this.options.getLocale?.() ?? DEFAULT_APP_LOCALE),
+          prompt: `用户需求：${request.prompt.slice(0, 8_000)}`,
+          outputMode: 'json',
+        })
+        const plan = extractJsonDocument(planText)
+        const specs = isUnknownRecord(plan) && Array.isArray(plan.employees) ? plan.employees : []
+        for (const spec of specs) {
+          const input = employeeSpecToCreateInput(spec)
+          if (input === undefined) {
+            employeeWarnings.push('AI 规划的员工档案格式无效，已跳过。')
+            continue
+          }
+          try {
+            createdEmployees.push(await this.options.createEmployee!(input))
+          } catch (error) {
+            employeeWarnings.push(`员工「${input.name}」创建失败：${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+      } catch (error) {
+        employeeWarnings.push(`员工规划失败，仅使用现有员工：${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const finalCatalog = [...catalogEntries, ...createdEmployees.map(employeeCatalogEntry)]
     const text = await this.lightweightClient.complete({
-      systemPrompt: [
-        '你是 Workflow 架构助手。根据用户描述生成一个可审阅的 JSON 工作流文档。',
-        '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
-        '文档必须包含 name、description、nodes、edges；节点 type 只能是 input、ai-task、employee、skill、mcp、parallel、loop、condition、approval、transform、output、shell、file。',
-        'ai-task 用于轻量内联智能处理；employee 必须引用已有 employeeId。禁止输出旧版 agent 节点。',
-        '不要生成 API Key、密码、Token、任意 JavaScript、eval 或 shell 控制符。文件路径必须是工作区相对路径。',
-      ].join('\n'),
+      systemPrompt: buildWorkflowGenerationPrompt(finalCatalog),
       prompt: `用户需求：${request.prompt.slice(0, 8_000)}`,
       outputMode: 'json',
     })
@@ -209,9 +243,13 @@ export class WorkflowRunService {
       ? candidate
       : { ...(candidate as Record<string, unknown>), name: request.name.trim() })
     if (workflow === undefined) throw new Error('AI 返回的 Workflow 文档格式无效')
-    const validation = validateWorkflow(workflow)
-    if (!validation.valid) throw new Error(validation.issues.map((issue) => issue.message).join('\n'))
-    return workflow
+    // Return the normalized draft even when validation finds editable issues. The
+    // renderer opens it in the editor so the user can correct, save, or cancel it.
+    return {
+      workflow,
+      createdEmployees,
+      ...(employeeWarnings.length > 0 ? { employeeWarnings } : {}),
+    }
   }
 
   private createRecord(workflow: WorkflowDefinition, input: WorkflowValue, options: WorkflowRunOptions): WorkflowRunRecord {
@@ -238,7 +276,7 @@ export class WorkflowRunService {
       if (record === undefined) return
       const workflow = this.options.workflowStore.get(record.workflowId)
       if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
-      assertValidWorkflow(workflow)
+      assertValidWorkflow(workflow, '运行工作流')
       record.status = 'running'
       record.startedAt ??= new Date().toISOString()
       await this.save(record, 'run-started', '运行开始')
@@ -275,6 +313,7 @@ export class WorkflowRunService {
         await this.save(record, 'node-started', `开始执行节点：${node.label}`, node.id)
         try {
           const previous = this.previousValue(node.id, incoming, outputs, record.input)
+          state.input = cloneWorkflow(previous)
           const output = await this.executeNode(node, record.input, previous, record.allowShellFile, active, record)
           state.status = 'completed'
           state.output = cloneWorkflow(output)
@@ -550,6 +589,87 @@ class WorkflowApprovalRequired extends Error {
 
 function isRecord(value: WorkflowValue): value is { [key: string]: WorkflowValue } {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+interface EmployeeCatalogEntry {
+  id: string
+  name: string
+  role: string
+  description: string
+  businessBoundary: string
+  capabilities: string[]
+  skillIds: string[]
+  enabled: boolean
+}
+
+function employeeCatalogEntry(employee: EmployeeSnapshot): EmployeeCatalogEntry {
+  return {
+    id: employee.id,
+    name: employee.name,
+    role: employee.role,
+    description: employee.description,
+    businessBoundary: employee.businessBoundary,
+    capabilities: [...employee.capabilities],
+    skillIds: [...employee.skillIds],
+    enabled: employee.enabled,
+  }
+}
+
+function buildEmployeePlanPrompt(catalog: EmployeeCatalogEntry[], locale: AppLocale): string {
+  const languageInstruction = locale === 'zh'
+    ? '所有自然语言字段必须使用简体中文，包括 name、role、description、businessBoundary、systemPrompt、operatingGuidelines 和 qualityStandards。'
+    : 'All natural-language fields must be written in English, including name, role, description, businessBoundary, systemPrompt, operatingGuidelines, and qualityStandards.'
+  return [
+    '你是 EZDSH 的 Workflow 员工规划助手。根据用户对工作流的描述，判断需要哪些专业员工（AI Employee）参与，并输出需要新建的员工档案。',
+    `已有员工目录（优先复用，不要重复创建职责相同的员工）：${JSON.stringify(catalog)}`,
+    '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
+    'JSON 必须是一个对象：{"employees": [ { "name": "...", "role": "...", "description": "...", "businessBoundary": "...", "systemPrompt": "...", "operatingGuidelines": ["..."], "qualityStandards": ["..."], "capabilities": ["research"], "skillIds": [] } ]}',
+    '只有确实需要新建的员工才放进 employees；如果已有目录中的员工能承担全部职责，输出 {"employees": []}。',
+    'capabilities 只能使用 research、copywriting、image-generation、file-read、file-write、workflow；skillIds 必须是技能 ID 字符串数组。',
+    '不要输出 id、version、schemaVersion、createdAt、updatedAt 或 builtIn；不要生成 API Key、密码、Token、任意代码或危险命令。',
+    languageInstruction,
+  ].join('\n')
+}
+
+function employeeSpecToCreateInput(value: unknown): EmployeeCreateInput | undefined {
+  if (!isUnknownRecord(value)) return undefined
+  const readString = (key: string): string => (typeof value[key] === 'string' ? (value[key] as string).trim() : '')
+  const readStringArray = (key: string): string[] => Array.isArray(value[key]) ? (value[key] as unknown[]).filter((item): item is string => typeof item === 'string') : []
+  const name = readString('name')
+  const role = readString('role')
+  const systemPrompt = readString('systemPrompt')
+  if (name === '' || role === '' || systemPrompt === '') return undefined
+  const description = readString('description')
+  const capabilities = readStringArray('capabilities').filter((capability): capability is EmployeeCapability => (EMPLOYEE_CAPABILITIES as readonly string[]).includes(capability))
+  return {
+    name,
+    role,
+    description,
+    businessBoundary: readString('businessBoundary') || description,
+    systemPrompt,
+    operatingGuidelines: readStringArray('operatingGuidelines'),
+    qualityStandards: readStringArray('qualityStandards'),
+    capabilities,
+    skillIds: readStringArray('skillIds'),
+    enabled: true,
+  }
+}
+
+function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[]): string {
+  return [
+    '你是 Workflow 架构助手。根据用户描述生成一个可审阅的 JSON 工作流文档。',
+    '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
+    '文档必须包含 name、description、nodes、edges；节点 type 只能是 input、ai-task、employee、skill、mcp、parallel、loop、condition、approval、transform、output、shell、file。',
+    'ai-task 用于轻量内联智能处理；employee 必须引用目录中真实存在的 employeeId，并填写非空 instruction；目录中不存在的员工 ID 禁止出现在 employee 节点中。如果目录中没有任何员工适合该职责，使用 ai-task 而不是编造员工。禁止输出旧版 agent 节点。',
+    'parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；transform.template 只能是 identity、json、extract-text、prepend、append。',
+    '只有用户明确提供了 MCP 工具名时才生成 MCP 节点，否则使用 ai-task 或 employee，不要生成空 tool。',
+    '不要生成 API Key、密码、Token、任意 JavaScript、eval 或 shell 控制符。文件路径必须是工作区相对路径。',
+    `可用专业员工目录（只能引用其中的 employeeId）：${JSON.stringify(catalog)}`,
+  ].join('\n')
 }
 
 function normalizeModelSelection(value: unknown): WorkflowModelSelection | undefined {

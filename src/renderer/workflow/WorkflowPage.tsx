@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
   Background,
   ControlButton,
   Controls,
@@ -8,12 +10,17 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  useReactFlow,
   useEdgesState,
   useNodesState,
   type Connection,
+  type EdgeChange,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
+  type SetCenter,
+  type XYPosition,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
@@ -74,6 +81,60 @@ function id(prefix: string): string {
 const WORKFLOW_FLOW_NODE_WIDTH = 184
 const WORKFLOW_FLOW_NODE_HEIGHT = 64
 
+export const WORKFLOW_CANVAS_INTERACTION_PROPS = {
+  selectionOnDrag: true,
+  panOnDrag: false,
+  panActivationKeyCode: 'Space',
+} as const
+
+export const WORKFLOW_MINIMAP_INTERACTION_PROPS = {
+  pannable: true,
+} as const
+
+/** The minimap is a direct navigation surface: a click pans to that map position without changing zoom. */
+export function centerWorkflowFromMiniMap(setCenter: SetCenter, position: XYPosition, zoom: number): void {
+  void setCenter(position.x, position.y, { duration: 180, zoom })
+}
+
+export interface WorkflowHistoryState {
+  past: WorkflowDefinition[]
+  present: WorkflowDefinition
+  future: WorkflowDefinition[]
+}
+
+export function createWorkflowHistory(workflow: WorkflowDefinition): WorkflowHistoryState {
+  return { past: [], present: cloneWorkflow(workflow), future: [] }
+}
+
+export function recordWorkflowHistory(history: WorkflowHistoryState, workflow: WorkflowDefinition): WorkflowHistoryState {
+  if (JSON.stringify(history.present) === JSON.stringify(workflow)) return history
+  return {
+    past: [...history.past, cloneWorkflow(history.present)],
+    present: cloneWorkflow(workflow),
+    future: [],
+  }
+}
+
+export function undoWorkflowHistory(history: WorkflowHistoryState): WorkflowHistoryState {
+  const previous = history.past.at(-1)
+  if (previous === undefined) return history
+  return {
+    past: history.past.slice(0, -1),
+    present: cloneWorkflow(previous),
+    future: [cloneWorkflow(history.present), ...history.future],
+  }
+}
+
+export function redoWorkflowHistory(history: WorkflowHistoryState): WorkflowHistoryState {
+  const next = history.future[0]
+  if (next === undefined) return history
+  return {
+    past: [...history.past, cloneWorkflow(history.present)],
+    present: cloneWorkflow(next),
+    future: history.future.slice(1),
+  }
+}
+
 function flowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, selectedNodeId?: string): FlowNode[] {
   const states = new Map(run?.nodeStates.map((state) => [state.nodeId, state]))
   return workflow.nodes.map((node) => {
@@ -90,6 +151,57 @@ function flowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, select
       className: status === undefined ? undefined : `workflow-flow-node-${status}`,
     }
   })
+}
+
+export type WorkflowNodeAlignment = 'left' | 'center-horizontal' | 'right' | 'top' | 'center-vertical' | 'bottom' | 'distribute-horizontal' | 'distribute-vertical'
+
+/** Align or evenly distribute selected nodes while preserving the other axis. */
+export function alignWorkflowNodes(workflow: WorkflowDefinition, nodeIds: string[], alignment: WorkflowNodeAlignment): WorkflowDefinition {
+  const selectedIds = new Set(nodeIds)
+  const selectedNodes = workflow.nodes.filter((node) => selectedIds.has(node.id))
+  const minimumNodeCount = alignment === 'distribute-horizontal' || alignment === 'distribute-vertical' ? 3 : 2
+  if (selectedNodes.length < minimumNodeCount) return workflow
+
+  const minX = Math.min(...selectedNodes.map((node) => node.position.x))
+  const minY = Math.min(...selectedNodes.map((node) => node.position.y))
+  const maxX = Math.max(...selectedNodes.map((node) => node.position.x + WORKFLOW_FLOW_NODE_WIDTH))
+  const maxY = Math.max(...selectedNodes.map((node) => node.position.y + WORKFLOW_FLOW_NODE_HEIGHT))
+  const horizontalCenter = (minX + maxX) / 2 - WORKFLOW_FLOW_NODE_WIDTH / 2
+  const verticalCenter = (minY + maxY) / 2 - WORKFLOW_FLOW_NODE_HEIGHT / 2
+  const distributedX = new Map<string, number>()
+  const distributedY = new Map<string, number>()
+  if (alignment === 'distribute-horizontal') {
+    const ordered = [...selectedNodes].sort((left, right) => left.position.x - right.position.x || left.position.y - right.position.y || left.id.localeCompare(right.id))
+    const start = ordered[0]!.position.x
+    const end = ordered.at(-1)!.position.x
+    const step = (end - start) / (ordered.length - 1)
+    ordered.forEach((node, index) => distributedX.set(node.id, start + step * index))
+  }
+  if (alignment === 'distribute-vertical') {
+    const ordered = [...selectedNodes].sort((top, bottom) => top.position.y - bottom.position.y || top.position.x - bottom.position.x || top.id.localeCompare(bottom.id))
+    const start = ordered[0]!.position.y
+    const end = ordered.at(-1)!.position.y
+    const step = (end - start) / (ordered.length - 1)
+    ordered.forEach((node, index) => distributedY.set(node.id, start + step * index))
+  }
+
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((node) => {
+      if (!selectedIds.has(node.id)) return node
+      const x = alignment === 'left' ? minX
+        : alignment === 'center-horizontal' ? horizontalCenter
+          : alignment === 'right' ? maxX - WORKFLOW_FLOW_NODE_WIDTH
+            : alignment === 'distribute-horizontal' ? distributedX.get(node.id) ?? node.position.x
+            : node.position.x
+      const y = alignment === 'top' ? minY
+        : alignment === 'center-vertical' ? verticalCenter
+          : alignment === 'bottom' ? maxY - WORKFLOW_FLOW_NODE_HEIGHT
+            : alignment === 'distribute-vertical' ? distributedY.get(node.id) ?? node.position.y
+            : node.position.y
+      return { ...node, position: { x, y } }
+    }),
+  }
 }
 
 export function workflowMiniMapNodeColor(status: WorkflowNodeRunStatus | undefined): string {
@@ -111,6 +223,7 @@ export interface WorkflowNodeRunDetail {
   node: WorkflowNode
   state: WorkflowNodeRunState
   events: WorkflowRunRecord['events']
+  upstreamNodes: WorkflowNode[]
 }
 
 /** Join a selected canvas node to the output, error, and events persisted for this run. */
@@ -119,7 +232,12 @@ export function getWorkflowNodeRunDetail(workflow: WorkflowDefinition, run: Work
   const node = workflow.nodes.find((candidate) => candidate.id === nodeId)
   const state = run.nodeStates.find((candidate) => candidate.nodeId === nodeId)
   if (node === undefined || state === undefined) return undefined
-  return { node, state, events: run.events.filter((event) => event.nodeId === nodeId) }
+  const upstreamIds = workflow.edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source)
+  const upstreamNodes = upstreamIds.flatMap((upstreamId) => {
+    const upstream = workflow.nodes.find((candidate) => candidate.id === upstreamId)
+    return upstream === undefined ? [] : [upstream]
+  })
+  return { node, state, events: run.events.filter((event) => event.nodeId === nodeId), upstreamNodes }
 }
 
 export function workflowNodeHandleLayout(nodeType: WorkflowNodeType): { input?: 'left'; output?: 'right' } {
@@ -152,6 +270,11 @@ interface WorkflowCanvasToolsProps {
 
 /** Shared, deterministic canvas chrome for editing and execution views. */
 export function WorkflowCanvasTools({ copy, showMiniMap, onToggleMiniMap }: WorkflowCanvasToolsProps): JSX.Element {
+  const { getZoom, setCenter } = useReactFlow()
+  const onMiniMapClick = useCallback((_event: ReactMouseEvent, position: XYPosition): void => {
+    centerWorkflowFromMiniMap(setCenter, position, getZoom())
+  }, [getZoom, setCenter])
+
   return <>
     <Controls>
       <ControlButton
@@ -164,19 +287,30 @@ export function WorkflowCanvasTools({ copy, showMiniMap, onToggleMiniMap }: Work
         <span className="workflow-minimap-control-glyph" aria-hidden="true">{showMiniMap ? '▧' : '▦'}</span>
       </ControlButton>
     </Controls>
-    {showMiniMap ? <MiniMap nodeColor={workflowMiniMapNodeColorFromNode} nodeStrokeColor="var(--ezdsh-panel-border-strong)" maskColor="color-mix(in srgb, var(--ezdsh-code-background) 76%, transparent)" /> : null}
+    {showMiniMap ? <MiniMap {...WORKFLOW_MINIMAP_INTERACTION_PROPS} onClick={onMiniMapClick} nodeColor={workflowMiniMapNodeColorFromNode} nodeStrokeColor="var(--ezdsh-panel-border-strong)" maskColor="color-mix(in srgb, var(--ezdsh-code-background) 76%, transparent)" /> : null}
   </>
 }
 
-function flowEdges(workflow: WorkflowDefinition): Edge[] {
+export function workflowFlowEdges(workflow: WorkflowDefinition): Edge[] {
   return workflow.edges.map((edge) => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    sourceHandle: edge.sourcePort,
-    targetHandle: edge.targetPort,
+    // React Flow's ordinary node output uses an unnamed handle. Persisted
+    // `default` is the workflow-level name for that handle, not a React Flow
+    // handle id.
+    ...(edge.sourcePort === undefined || edge.sourcePort === 'default' ? {} : { sourceHandle: edge.sourcePort }),
+    ...(edge.targetPort === undefined || edge.targetPort === 'default' ? {} : { targetHandle: edge.targetPort }),
     label: edge.sourcePort === undefined || edge.sourcePort === 'default' ? undefined : edge.sourcePort,
   }))
+}
+
+const flowEdges = workflowFlowEdges
+
+/** Render from the persisted graph and only borrow transient selection state. */
+export function workflowCanvasEdges(workflow: WorkflowDefinition, transientEdges: ReadonlyArray<Pick<Edge, 'id' | 'selected'>>): Edge[] {
+  const selectedById = new Map(transientEdges.map((edge) => [edge.id, edge.selected]))
+  return workflowFlowEdges(workflow).map((edge) => ({ ...edge, selected: selectedById.get(edge.id) ?? false }))
 }
 
 function toWorkflowNodes(nodes: FlowNode[], source: WorkflowNode[]): WorkflowNode[] {
@@ -213,8 +347,66 @@ export function removeWorkflowNode(workflow: WorkflowDefinition, nodeId: string)
   }
 }
 
+export interface WorkflowSelection {
+  nodeId?: string
+  nodeIds?: string[]
+  edgeId?: string
+  edgeIds?: string[]
+}
+
+/** Read all selected canvas objects so keyboard deletion can preserve React Flow multi-selection. */
+export function workflowSelectionFromFlowState(nodes: ReadonlyArray<Pick<Node, 'id' | 'selected'>>, edges: ReadonlyArray<Pick<Edge, 'id' | 'selected'>>): WorkflowSelection {
+  return {
+    nodeIds: nodes.filter((node) => node.selected === true).map((node) => node.id),
+    edgeIds: edges.filter((edge) => edge.selected === true).map((edge) => edge.id),
+  }
+}
+
+/** Remove exactly the selected canvas objects; deleting an edge must never delete either endpoint. */
+export function removeWorkflowSelection(workflow: WorkflowDefinition, selection: WorkflowSelection): WorkflowDefinition {
+  const nodeIds = new Set(selection.nodeIds ?? [])
+  const edgeIds = new Set(selection.edgeIds ?? [])
+  if (selection.nodeId !== undefined) nodeIds.add(selection.nodeId)
+  if (selection.edgeId !== undefined) edgeIds.add(selection.edgeId)
+  if (nodeIds.size > 0) {
+    return {
+      ...workflow,
+      nodes: workflow.nodes.filter((node) => !nodeIds.has(node.id)),
+      edges: workflow.edges.filter((edge) => !edgeIds.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)),
+    }
+  }
+  if (edgeIds.size > 0) return { ...workflow, edges: workflow.edges.filter((edge) => !edgeIds.has(edge.id)) }
+  return workflow
+}
+
 export function isWorkflowFormElement(element: Pick<HTMLElement, 'tagName' | 'isContentEditable'>): boolean {
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName.toUpperCase()) || element.isContentEditable
+}
+
+export type WorkflowKeyboardAction = 'undo' | 'redo' | 'select-all' | 'save'
+
+export function workflowKeyboardAction(event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey'>): WorkflowKeyboardAction | undefined {
+  if (!event.metaKey && !event.ctrlKey) return undefined
+  const key = event.key.toLowerCase()
+  if (key === 'z') return event.shiftKey ? 'redo' : 'undo'
+  if (key === 'y' && !event.shiftKey) return 'redo'
+  if (key === 'a' && !event.shiftKey) return 'select-all'
+  if (key === 's' && !event.shiftKey) return 'save'
+  return undefined
+}
+
+export function selectAllWorkflowNodes<T extends Node>(nodes: ReadonlyArray<T>): T[] {
+  return nodes.map((node) => ({ ...node, selected: true }))
+}
+
+export function preserveWorkflowNodeSelection<T extends Node>(nodes: ReadonlyArray<T>, selectedNodeIds: ReadonlyArray<string>): T[] {
+  const selectedIds = new Set(selectedNodeIds)
+  return nodes.map((node) => ({ ...node, selected: selectedIds.has(node.id) }))
+}
+
+function preserveWorkflowEdgeSelection<T extends Edge>(edges: ReadonlyArray<T>, selectedEdgeIds: ReadonlyArray<string>): T[] {
+  const selectedIds = new Set(selectedEdgeIds)
+  return edges.map((edge) => ({ ...edge, selected: selectedIds.has(edge.id) }))
 }
 
 function newNode(type: WorkflowNodeType, index: number): WorkflowNode {
@@ -239,6 +431,297 @@ function newNode(type: WorkflowNodeType, index: number): WorkflowNode {
 function formatValue(value: WorkflowValue | undefined): string {
   if (value === undefined) return ''
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+}
+
+export type WorkflowOutputView = 'markdown' | 'json'
+
+function parseWorkflowJsonText(value: string): WorkflowValue | undefined {
+  const candidates = [value.trim()]
+  const fenced = value.trim().match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/iu)
+  if (fenced?.[1] !== undefined) candidates.push(fenced[1].trim())
+  for (const candidate of candidates) {
+    if (candidate === '') continue
+    try {
+      const parsed: unknown = JSON.parse(candidate)
+      if (isWorkflowValue(parsed)) return parsed
+    } catch {
+      // A text response is allowed to be invalid JSON; Markdown is the fallback view.
+    }
+  }
+  return undefined
+}
+
+/** Prefer a structured JSON view for object/array payloads, otherwise render text as Markdown. */
+export function detectWorkflowOutputView(value: WorkflowValue | undefined): WorkflowOutputView {
+  if (typeof value !== 'string') return 'json'
+  const parsed = parseWorkflowJsonText(value)
+  return parsed !== undefined && typeof parsed === 'object' && parsed !== null ? 'json' : 'markdown'
+}
+
+function formatWorkflowJson(value: WorkflowValue): string {
+  const parsed = typeof value === 'string' ? parseWorkflowJsonText(value) : value
+  return parsed === undefined ? value : JSON.stringify(parsed, null, 2)
+}
+
+function workflowJsonKind(value: WorkflowValue): string {
+  if (Array.isArray(value)) return `数组 · ${value.length}`
+  if (value !== null && typeof value === 'object') return `对象 · ${Object.keys(value).length}`
+  if (value === null) return 'null'
+  return typeof value
+}
+
+function WorkflowJsonTree({ value, label = '结果集', depth = 0 }: { value: WorkflowValue; label?: string; depth?: number }): JSX.Element {
+  const isContainer = value !== null && typeof value === 'object'
+  if (!isContainer) return <div className="workflow-json-value"><span className="workflow-json-key">{label}</span><code>{JSON.stringify(value)}</code></div>
+  const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item] as const) : Object.entries(value)
+  return <details className="workflow-json-tree" open={depth < 1}>
+    <summary><span className="workflow-json-key">{label}</span><span className="workflow-json-kind">{workflowJsonKind(value)}</span></summary>
+    <div className="workflow-json-children">
+      {entries.length === 0 ? <span className="workflow-json-empty">{Array.isArray(value) ? '[]' : '{}'}</span> : entries.map(([key, child]) => <WorkflowJsonTree key={`${depth}-${key}`} value={child} label={key} depth={depth + 1} />)}
+    </div>
+  </details>
+}
+
+function renderWorkflowMarkdownInline(value: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  const pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_/gu
+  let cursor = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(value)) !== null) {
+    if (match.index > cursor) nodes.push(value.slice(cursor, match.index))
+    if (match[1] !== undefined && match[2] !== undefined) {
+      nodes.push(<a key={`link-${match.index}`} href={match[2]} target="_blank" rel="noreferrer">{match[1]}</a>)
+    } else if (match[3] !== undefined) {
+      nodes.push(<code key={`code-${match.index}`}>{match[3]}</code>)
+    } else if (match[4] !== undefined || match[5] !== undefined) {
+      nodes.push(<strong key={`strong-${match.index}`}>{match[4] ?? match[5]}</strong>)
+    } else if (match[6] !== undefined || match[7] !== undefined) {
+      nodes.push(<em key={`em-${match.index}`}>{match[6] ?? match[7]}</em>)
+    }
+    cursor = pattern.lastIndex
+  }
+  if (cursor < value.length) nodes.push(value.slice(cursor))
+  return nodes
+}
+
+function renderWorkflowMarkdownBlocks(markdown: string): JSX.Element[] {
+  const lines = markdown.replace(/\r\n?/gu, '\n').split('\n')
+  const blocks: JSX.Element[] = []
+  let index = 0
+  while (index < lines.length) {
+    const line = lines[index] ?? ''
+    if (line.trim() === '') {
+      index += 1
+      continue
+    }
+    const fence = line.match(/^\s*```\s*([\w-]*)\s*$/u)
+    if (fence !== null) {
+      const codeLines: string[] = []
+      index += 1
+      while (index < lines.length && !/^\s*```\s*$/u.test(lines[index] ?? '')) {
+        codeLines.push(lines[index] ?? '')
+        index += 1
+      }
+      if (index < lines.length) index += 1
+      blocks.push(<pre key={`code-block-${index}`} className="workflow-output-markdown-code"><code className={fence[1] === '' ? undefined : `language-${fence[1]}`}>{codeLines.join('\n')}</code></pre>)
+      continue
+    }
+    const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/u)
+    if (heading !== null) {
+      const level = heading[1]?.length ?? 1
+      const Heading = `h${level}` as keyof JSX.IntrinsicElements
+      blocks.push(<Heading key={`heading-${index}`}>{renderWorkflowMarkdownInline(heading[2] ?? '')}</Heading>)
+      index += 1
+      continue
+    }
+    if (/^\s*(?:[-*_]\s*){3,}$/u.test(line)) {
+      blocks.push(<hr key={`rule-${index}`} />)
+      index += 1
+      continue
+    }
+    const listItem = line.match(/^\s*([-+*]|\d+[.)])\s+(.+)$/u)
+    if (listItem !== null) {
+      const ordered = /^\d/u.test(listItem[1] ?? '')
+      const items: string[] = []
+      while (index < lines.length) {
+        const item = (lines[index] ?? '').match(/^\s*([-+*]|\d+[.)])\s+(.+)$/u)
+        if (item === null || /^\d/u.test(item[1] ?? '') !== ordered) break
+        items.push(item[2] ?? '')
+        index += 1
+      }
+      const List = ordered ? 'ol' : 'ul'
+      blocks.push(<List key={`list-${index}`}>{items.map((item, itemIndex) => <li key={`${index}-${itemIndex}`}>{renderWorkflowMarkdownInline(item)}</li>)}</List>)
+      continue
+    }
+    if (/^\s*>/u.test(line)) {
+      const quoteLines: string[] = []
+      while (index < lines.length && /^\s*>/u.test(lines[index] ?? '')) {
+        quoteLines.push((lines[index] ?? '').replace(/^\s*>\s?/u, ''))
+        index += 1
+      }
+      blocks.push(<blockquote key={`quote-${index}`}>{renderWorkflowMarkdownInline(quoteLines.join('\n'))}</blockquote>)
+      continue
+    }
+    const paragraphLines: string[] = []
+    while (index < lines.length) {
+      const paragraphLine = lines[index] ?? ''
+      if (paragraphLine.trim() === '' || /^\s*```\s*[\w-]*\s*$/u.test(paragraphLine) || /^\s*(?:#{1,6})\s+/.test(paragraphLine) || /^\s*(?:[-+*]|\d+[.)])\s+/.test(paragraphLine) || /^\s*>/u.test(paragraphLine)) break
+      paragraphLines.push(paragraphLine)
+      index += 1
+    }
+    blocks.push(<p key={`paragraph-${index}`}>{renderWorkflowMarkdownInline(paragraphLines.join(' '))}</p>)
+  }
+  return blocks
+}
+
+export interface WorkflowOutputViewerProps {
+  copy: AppCopy
+  value: WorkflowValue
+  label?: string
+  onCopy?: () => void | Promise<void>
+  onOpenWindow?: () => void
+  fontScale?: number
+  onIncreaseFont?: () => void
+  onDecreaseFont?: () => void
+}
+
+/** Readable, safe output rendering with automatic detection and explicit Markdown/JSON overrides. */
+export function WorkflowOutputViewer({ copy, value, label, onCopy, onOpenWindow, fontScale = 1, onIncreaseFont, onDecreaseFont }: WorkflowOutputViewerProps): JSX.Element {
+  const detectedView = useMemo(() => detectWorkflowOutputView(value), [value])
+  const [view, setView] = useState<WorkflowOutputView>(detectedView)
+  const [copied, setCopied] = useState(false)
+  useEffect(() => setView(detectedView), [detectedView])
+  const copyOutput = async (): Promise<void> => {
+    try {
+      const outputText = formatValue(value)
+      if (navigator.clipboard?.writeText !== undefined) {
+        await navigator.clipboard.writeText(outputText)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = outputText
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.append(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        textarea.remove()
+      }
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1_800)
+      await onCopy?.()
+    } catch {
+      // Clipboard permissions are optional; the output remains available for manual selection.
+    }
+  }
+  const text = formatValue(value)
+  return <div className="workflow-output workflow-output-viewer" style={{ '--workflow-output-scale': String(fontScale) } as CSSProperties}>
+    <div className="workflow-output-header">
+      <strong>{label ?? copy.workflowOutput}</strong>
+      <div className="workflow-output-actions">
+        <button type="button" className="workflow-output-action-button" onClick={() => void copyOutput()}>{copied ? copy.workflowOutputCopied : copy.workflowCopyOutput}</button>
+        {onOpenWindow !== undefined ? <button type="button" className="workflow-output-action-button" onClick={onOpenWindow}>{copy.workflowOpenOutputWindow}</button> : null}
+        {onDecreaseFont !== undefined ? <button type="button" className="workflow-output-font-button" aria-label={copy.workflowDecreaseFont} title={copy.workflowDecreaseFont} onClick={onDecreaseFont}>−</button> : null}
+        {onIncreaseFont !== undefined ? <button type="button" className="workflow-output-font-button" aria-label={copy.workflowIncreaseFont} title={copy.workflowIncreaseFont} onClick={onIncreaseFont}>+</button> : null}
+        <div className="workflow-output-view-switch" role="group" aria-label={copy.workflowOutputViewLabel}>
+          <button type="button" className={view === 'markdown' ? 'workflow-output-view-active' : ''} aria-pressed={view === 'markdown'} onClick={() => setView('markdown')}>{copy.workflowOutputMarkdown}</button>
+          <button type="button" className={view === 'json' ? 'workflow-output-view-active' : ''} aria-pressed={view === 'json'} onClick={() => setView('json')}>{copy.workflowOutputJson}</button>
+        </div>
+      </div>
+    </div>
+    {view === 'json' ? <div className="workflow-output-json"><WorkflowJsonTree value={typeof value === 'string' ? parseWorkflowJsonText(value) ?? value : value} /></div> : <div className="workflow-output-markdown">{renderWorkflowMarkdownBlocks(text)}</div>}
+  </div>
+}
+
+export interface WorkflowOutputWindowState {
+  id: string
+  title: string
+  value: WorkflowValue
+}
+
+function WorkflowOutputFloatingWindow({ copy, item, index, fontScale, onClose, onCopy, onIncreaseFont, onDecreaseFont }: WorkflowOutputFloatingWindowsProps & { item: WorkflowOutputWindowState; index: number }): JSX.Element {
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number }>()
+  useEffect(() => {
+    const move = (event: PointerEvent): void => {
+      const drag = dragRef.current
+      if (drag === undefined || drag.pointerId !== event.pointerId) return
+      setPosition({ x: drag.originX + event.clientX - drag.startX, y: drag.originY + event.clientY - drag.startY })
+    }
+    const end = (event: PointerEvent): void => {
+      if (dragRef.current?.pointerId === event.pointerId) dragRef.current = undefined
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', end)
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', end) }
+  }, [])
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    dragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: position.x, originY: position.y }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }
+  return <section className="workflow-output-window" style={{ '--workflow-window-index': String(index), transform: `translate(${position.x}px, ${position.y}px)` } as CSSProperties}>
+    <div className="workflow-output-window-header workflow-output-window-drag-handle" onPointerDown={startDrag} title={copy.workflowDragOutputWindow}><strong>{item.title}</strong><button type="button" aria-label={copy.workflowCloseOutputWindow} title={copy.workflowCloseOutputWindow} onPointerDown={(event) => event.stopPropagation()} onClick={() => onClose(item.id)}>×</button></div>
+    <WorkflowOutputViewer copy={copy} value={item.value} fontScale={fontScale} onCopy={() => onCopy(item.value)} onIncreaseFont={onIncreaseFont} onDecreaseFont={onDecreaseFont} />
+  </section>
+}
+
+export function clampWorkflowExecutionDetailHeight(height: number, containerHeight: number): number {
+  const maximum = Math.max(180, containerHeight - 240)
+  return Math.min(Math.max(height, 180), maximum)
+}
+
+export interface WorkflowRunSummary {
+  count: number
+  unviewedCount: number
+  firstUnviewedRun?: WorkflowRunRecord
+}
+
+export function summarizeWorkflowRuns(runs: WorkflowRunRecord[], viewedRunIds: ReadonlySet<string>): WorkflowRunSummary {
+  const unviewed = runs.filter((run) => !viewedRunIds.has(run.id))
+  return {
+    count: runs.length,
+    unviewedCount: unviewed.length,
+    ...(unviewed[0] === undefined ? {} : { firstUnviewedRun: unviewed[0] }),
+  }
+}
+
+const WORKFLOW_VIEWED_RUNS_STORAGE_KEY = 'ezdsh.workflow.viewed-run-ids'
+
+function readViewedWorkflowRunIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set()
+  try {
+    const raw = window.localStorage.getItem(WORKFLOW_VIEWED_RUNS_STORAGE_KEY)
+    const parsed = raw === null ? [] : JSON.parse(raw) as unknown
+    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function persistViewedWorkflowRunIds(ids: ReadonlySet<string>): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(WORKFLOW_VIEWED_RUNS_STORAGE_KEY, JSON.stringify([...ids]))
+  } catch {
+    // Viewing remains a valid in-memory action when local storage is unavailable.
+  }
+}
+
+interface WorkflowOutputFloatingWindowsProps {
+  copy: AppCopy
+  windows: WorkflowOutputWindowState[]
+  fontScale: number
+  onClose: (id: string) => void
+  onCopy: (value: WorkflowValue) => void | Promise<void>
+  onIncreaseFont: () => void
+  onDecreaseFont: () => void
+}
+
+export function WorkflowOutputFloatingWindows({ copy, windows, fontScale, onClose, onCopy, onIncreaseFont, onDecreaseFont }: WorkflowOutputFloatingWindowsProps): JSX.Element {
+  return <div className="workflow-output-windows" aria-label={copy.workflowOutputWindow}>
+    {windows.map((item, index) => <WorkflowOutputFloatingWindow key={item.id} copy={copy} item={item} index={index} fontScale={fontScale} onClose={onClose} onCopy={onCopy} onIncreaseFont={onIncreaseFont} onDecreaseFont={onDecreaseFont} />)}
+  </div>
 }
 
 export interface WorkflowLaunchField {
@@ -311,11 +794,116 @@ export function userFacingWorkflowText(value: string, locale: AppLocale): string
 interface WorkflowToastProps {
   message: string
   copy: AppCopy
+  actionLabel?: string
+  onAction?: () => void
   onDismiss: () => void
 }
 
-export function WorkflowToast({ message, copy, onDismiss }: WorkflowToastProps): JSX.Element {
-  return <div className="workflow-toast" role="status"><span>{message}</span><button type="button" aria-label={copy.workflowDismiss} onClick={onDismiss}>×</button></div>
+export function WorkflowToast({ message, copy, actionLabel, onAction, onDismiss }: WorkflowToastProps): JSX.Element {
+  return <div className="workflow-toast" role="status"><span>{message}</span>{actionLabel !== undefined && onAction !== undefined ? <button type="button" className="workflow-toast-action" onClick={onAction}>{actionLabel}</button> : null}<button type="button" aria-label={copy.workflowDismiss} onClick={onDismiss}>×</button></div>
+}
+
+export interface WorkflowEditorActionsProps {
+  copy: AppCopy
+  draft: boolean
+  busy: boolean
+  runDisabled: boolean
+  runLabel: string
+  onCancel: () => void
+  onSave: () => void
+  onRun: () => void
+}
+
+export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel, onCancel, onSave, onRun }: WorkflowEditorActionsProps): JSX.Element {
+  return <>
+    <button type="button" className="workflow-button-quiet" onClick={onCancel} disabled={busy}>{draft ? copy.workflowCancelCreate : copy.workflowCancelEdit}</button>
+    <button type="button" className="workflow-button-primary workflow-save-button" onClick={onSave} disabled={busy}>{copy.workflowSave}</button>
+    <button type="button" className="workflow-button-primary" onClick={onRun} disabled={runDisabled}>{runLabel}</button>
+  </>
+}
+
+export type WorkflowContextMenuTarget = 'canvas' | 'node' | 'edge' | 'selection'
+
+export interface WorkflowContextMenuProps {
+  copy: AppCopy
+  target: WorkflowContextMenuTarget
+  x: number
+  y: number
+  canUndo: boolean
+  canRedo: boolean
+  busy: boolean
+  selectedNodeCount?: number
+  runDisabled?: boolean
+  cancelLabel?: string
+  onUndo: () => void
+  onRedo: () => void
+  onDelete: () => void
+  onAlign?: (alignment: WorkflowNodeAlignment) => void
+  onFitView: () => void
+  onSave: () => void
+  onRun: () => void
+  onCancel: () => void
+}
+
+export function clampWorkflowContextMenuPosition(x: number, y: number, menuWidth: number, menuHeight: number, viewportWidth: number, viewportHeight: number, gutter = 8): { left: number; top: number } {
+  const maxLeft = Math.max(gutter, viewportWidth - menuWidth - gutter)
+  const maxTop = Math.max(gutter, viewportHeight - menuHeight - gutter)
+  return {
+    left: Math.min(Math.max(gutter, x), maxLeft),
+    top: Math.min(Math.max(gutter, y), maxTop),
+  }
+}
+
+/** Context actions are deliberately on-demand so the canvas remains uncluttered during normal editing. */
+export function WorkflowContextMenu({ copy, target, x, y, canUndo, canRedo, busy, selectedNodeCount = 0, runDisabled = false, cancelLabel, onUndo, onRedo, onDelete, onAlign, onFitView, onSave, onRun, onCancel }: WorkflowContextMenuProps): JSX.Element {
+  const deleteLabel = target === 'edge' ? copy.workflowDeleteEdge : target === 'selection' ? copy.workflowDeleteSelection : copy.workflowDeleteNode
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPosition, setMenuPosition] = useState({ left: x, top: y })
+  const [menuPositioned, setMenuPositioned] = useState(false)
+
+  useEffect(() => {
+    setMenuPositioned(false)
+    const updatePosition = (): void => {
+      const menu = menuRef.current
+      if (menu === null) return
+      setMenuPosition(clampWorkflowContextMenuPosition(x, y, menu.offsetWidth, menu.offsetHeight, window.innerWidth, window.innerHeight))
+      setMenuPositioned(true)
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    return () => window.removeEventListener('resize', updatePosition)
+  }, [x, y])
+
+  return <div ref={menuRef} className="workflow-context-menu" role="menu" aria-label={copy.workflowContextMenu} style={{ left: menuPosition.left, top: menuPosition.top, visibility: menuPositioned ? 'visible' : 'hidden' }}>
+    <button type="button" role="menuitem" onClick={onUndo} disabled={!canUndo || busy}>{copy.workflowUndo}<kbd>⌘Z</kbd></button>
+    <button type="button" role="menuitem" onClick={onRedo} disabled={!canRedo || busy}>{copy.workflowRedo}<kbd>⇧⌘Z</kbd></button>
+    {target !== 'canvas' ? <button type="button" role="menuitem" className="workflow-context-menu-danger" onClick={onDelete} disabled={busy}>{deleteLabel}<kbd>Delete</kbd></button> : null}
+    {selectedNodeCount >= 2 && onAlign !== undefined ? <><div className="workflow-context-menu-divider" role="separator" /><div className="workflow-context-menu-align-label">{copy.workflowAlign}</div><div className="workflow-context-menu-align-grid">
+      <button type="button" role="menuitem" onClick={() => onAlign('left')} disabled={busy}>{copy.workflowAlignLeft}</button>
+      <button type="button" role="menuitem" onClick={() => onAlign('center-horizontal')} disabled={busy}>{copy.workflowAlignCenterHorizontal}</button>
+      <button type="button" role="menuitem" onClick={() => onAlign('right')} disabled={busy}>{copy.workflowAlignRight}</button>
+      <button type="button" role="menuitem" onClick={() => onAlign('top')} disabled={busy}>{copy.workflowAlignTop}</button>
+      <button type="button" role="menuitem" onClick={() => onAlign('center-vertical')} disabled={busy}>{copy.workflowAlignCenterVertical}</button>
+      <button type="button" role="menuitem" onClick={() => onAlign('bottom')} disabled={busy}>{copy.workflowAlignBottom}</button>
+    </div>{selectedNodeCount >= 3 ? <><div className="workflow-context-menu-divider" role="separator" /><div className="workflow-context-menu-align-label">{copy.workflowDistribute}</div><div className="workflow-context-menu-distribute-grid">
+      <button type="button" role="menuitem" onClick={() => onAlign('distribute-horizontal')} disabled={busy}>{copy.workflowDistributeHorizontal}</button>
+      <button type="button" role="menuitem" onClick={() => onAlign('distribute-vertical')} disabled={busy}>{copy.workflowDistributeVertical}</button>
+    </div></> : null}</> : null}
+    <div className="workflow-context-menu-divider" role="separator" />
+    <button type="button" role="menuitem" onClick={onFitView} disabled={busy}>{copy.workflowFitView}</button>
+    <button type="button" role="menuitem" onClick={onSave} disabled={busy}>{copy.workflowSave}<kbd>⌘S</kbd></button>
+    <button type="button" role="menuitem" onClick={onRun} disabled={busy || runDisabled}>{copy.workflowRun}</button>
+    <button type="button" role="menuitem" onClick={onCancel} disabled={busy}>{cancelLabel ?? copy.workflowCancelEdit}</button>
+  </div>
+}
+
+function WorkflowFitViewBridge({ onReady }: { onReady: (fitView: (() => Promise<boolean>) | undefined) => void }): JSX.Element {
+  const { fitView } = useReactFlow()
+  useEffect(() => {
+    onReady(fitView)
+    return () => onReady(undefined)
+  }, [fitView, onReady])
+  return <></>
 }
 
 interface WorkflowRunLaunchDialogProps {
@@ -327,8 +915,10 @@ interface WorkflowRunLaunchDialogProps {
   allowShellFile: boolean
   debug: boolean
   busy: boolean
+  modelLoading: boolean
   onChangeValue: (key: string, value: string) => void
   onChangeModel: (value: WorkflowModelSelection | undefined) => void
+  onRefreshModels: () => void
   onChangeAllowShellFile: (value: boolean) => void
   onChangeDebug: (value: boolean) => void
   onClose: () => void
@@ -344,8 +934,10 @@ export function WorkflowRunLaunchDialog({
   allowShellFile,
   debug,
   busy,
+  modelLoading,
   onChangeValue,
   onChangeModel,
+  onRefreshModels,
   onChangeAllowShellFile,
   onChangeDebug,
   onClose,
@@ -359,9 +951,9 @@ export function WorkflowRunLaunchDialog({
       </div>
       <div className="workflow-launch-fields">
         {fields.length === 0 ? <p className="workflow-muted">{copy.workflowNoLaunchInputs}</p> : fields.map((field) => <label key={field.id} className="workflow-launch-field"><span>{field.label}</span><textarea aria-label={field.label} value={values[field.key] ?? ''} onChange={(event) => onChangeValue(field.key, event.target.value)} placeholder={field.defaultValue === undefined ? copy.workflowInputHint : undefined} /></label>)}
-        <label className="workflow-launch-field"><span>{copy.workflowModel}</span><select value={modelSelection === undefined ? '' : workflowModelOptionKey(modelSelection)} onChange={(event) => onChangeModel(modelOptions.find((option) => workflowModelOptionKey(option) === event.target.value))}><option value="">{copy.workflowUseDefaultModel}</option>{modelOptions.map((option) => <option key={workflowModelOptionKey(option)} value={workflowModelOptionKey(option)}>{option.providerName} · {option.modelName ?? option.modelId}</option>)}</select><small>{copy.workflowModelHint}</small></label>
-        <label className="workflow-checkbox"><input type="checkbox" checked={allowShellFile} onChange={(event) => onChangeAllowShellFile(event.target.checked)} /> <span>{copy.workflowAllowShellFile}<small>{copy.workflowAllowShellFileHint}</small></span></label>
-        <label className="workflow-checkbox"><input type="checkbox" checked={debug} onChange={(event) => onChangeDebug(event.target.checked)} /> <span>{copy.workflowDebugRun}<small>{copy.workflowDebugRunHint}</small></span></label>
+        <label className="workflow-launch-field"><span>{copy.workflowModel}</span><div className="workflow-model-control"><select value={modelSelection === undefined ? '' : workflowModelOptionKey(modelSelection)} onChange={(event) => onChangeModel(modelOptions.find((option) => workflowModelOptionKey(option) === event.target.value))}><option value="">{copy.workflowUseDefaultModel}</option>{modelOptions.map((option) => <option key={workflowModelOptionKey(option)} value={workflowModelOptionKey(option)}>{option.providerName} · {option.modelName ?? option.modelId}</option>)}</select><button type="button" className="workflow-button-quiet workflow-model-refresh" onClick={onRefreshModels} disabled={busy || modelLoading}>{modelLoading ? copy.workflowRefreshingModels : copy.workflowRefreshModels}</button></div><small className="workflow-launch-note">{modelOptions.length === 0 ? copy.workflowNoModels : copy.workflowModelHint}</small></label>
+        <label className="workflow-checkbox"><input type="checkbox" checked={allowShellFile} onChange={(event) => onChangeAllowShellFile(event.target.checked)} /> <span>{copy.workflowAllowShellFile}<small className="workflow-launch-note">{copy.workflowAllowShellFileHint}</small></span></label>
+        <label className="workflow-checkbox"><input type="checkbox" checked={debug} onChange={(event) => onChangeDebug(event.target.checked)} /> <span>{copy.workflowDebugRun}<small className="workflow-launch-note">{copy.workflowDebugRunHint}</small></span></label>
       </div>
       <div className="workflow-launch-dialog-actions"><button type="button" className="workflow-button-quiet" onClick={onClose} disabled={busy}>{copy.workflowCancelSetup}</button><button type="button" className="workflow-button-primary" onClick={onStart} disabled={busy}>{busy ? copy.workflowRunning : copy.workflowStartRun}</button></div>
     </section>
@@ -372,31 +964,68 @@ interface WorkflowExecutionReviewProps {
   copy: AppCopy
   run: WorkflowRunRecord | undefined
   nodeDetail?: WorkflowNodeRunDetail
+  selectedNode?: WorkflowNode
   statusLabel: (status: WorkflowRunRecord['status']) => string
   onCancel: () => void
   onApprove: () => void
   onReject: () => void
   onResume: () => void
+  onSelectNode?: (nodeId: string) => void
+  onCopyOutput?: (value: WorkflowValue) => void | Promise<void>
+  onOpenOutputWindow?: (key: string, title: string, value: WorkflowValue) => void
+  outputFontScale?: number
+  onIncreaseOutputFont?: () => void
+  onDecreaseOutputFont?: () => void
+}
+
+function WorkflowInputPreview({ copy, value, derived, upstreamNodes, onSelectNode }: { copy: AppCopy; value: WorkflowValue | undefined; derived: boolean; upstreamNodes: WorkflowNode[]; onSelectNode?: (nodeId: string) => void }): JSX.Element | null {
+  const [expanded, setExpanded] = useState(false)
+  if (value === undefined) return <p className="workflow-muted">{copy.workflowNodeNoInput}</p>
+  const text = formatValue(value)
+  const long = text.split('\n').length > 2 || text.length > 180
+  return <div className="workflow-node-input">
+    <div className="workflow-node-data-heading"><strong>{copy.workflowNodeInput}</strong><span className="workflow-input-source">{derived ? copy.workflowInputFromUpstream : copy.workflowManualInput}</span></div>
+    <pre className={`workflow-node-input-preview ${long && !expanded ? 'workflow-node-input-preview-collapsed' : ''}`}><code>{text}</code></pre>
+    {long ? <button type="button" className="workflow-inline-button" onClick={() => setExpanded((current) => !current)}>{expanded ? copy.workflowCollapseInput : copy.workflowExpandInput}</button> : null}
+    {derived && onSelectNode !== undefined ? <div className="workflow-upstream-actions">{upstreamNodes.map((upstream) => <button key={upstream.id} type="button" className="workflow-inline-button" onClick={() => onSelectNode(upstream.id)}>{copy.workflowGoUpstream}{upstreamNodes.length > 1 ? `：${upstream.label}` : ''}</button>)}</div> : null}
+  </div>
 }
 
 /** Read-only run-history inspector. All launch configuration stays in WorkflowRunLaunchDialog. */
-export function WorkflowExecutionReview({ copy, run, nodeDetail, statusLabel, onCancel, onApprove, onReject, onResume }: WorkflowExecutionReviewProps): JSX.Element {
+export function WorkflowExecutionReview({ copy, run, nodeDetail, selectedNode, statusLabel, onCancel, onApprove, onReject, onResume, onSelectNode, onCopyOutput, onOpenOutputWindow, outputFontScale = 1, onIncreaseOutputFont, onDecreaseOutputFont }: WorkflowExecutionReviewProps): JSX.Element {
+  const inspectedNode = nodeDetail?.node ?? selectedNode
+  const inspectedState = nodeDetail?.state ?? (selectedNode === undefined ? undefined : { nodeId: selectedNode.id, status: 'pending' as const })
+  const inspectedEvents = nodeDetail?.events ?? []
+  const outputViewerProps = (key: string, title: string, value: WorkflowValue): WorkflowOutputViewerProps => ({
+    copy,
+    value,
+    label: title,
+    onCopy: onCopyOutput === undefined ? undefined : () => onCopyOutput(value),
+    onOpenWindow: onOpenOutputWindow === undefined ? undefined : () => onOpenOutputWindow(key, title, value),
+    fontScale: outputFontScale,
+    onIncreaseFont: onIncreaseOutputFont,
+    onDecreaseFont: onDecreaseOutputFont,
+  })
   return <section className="workflow-execution-detail">
-    <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowExecutions}</span><h2>{run ? statusLabel(run.status) : copy.workflowChooseRun}</h2>{run ? <p className="workflow-run-meta">{run.id} · {run.startedAt ?? copy.workflowNodePending}</p> : null}</div>{run ? <span className={`workflow-status-pill workflow-status-${run.status}`}>{statusLabel(run.status)}</span> : null}</div>
+    <div className="workflow-execution-compact-heading">{run ? <><span className={`workflow-status-pill workflow-status-${run.status}`}>{statusLabel(run.status)}</span><span className="workflow-run-id">{run.id}</span></> : <span className="workflow-muted">{copy.workflowChooseRun}</span>}</div>
     {run === undefined ? <p className="workflow-muted">{copy.workflowChooseRun}</p> : <>
       <div className="workflow-execution-actions">
         {run.status === 'running' || run.status === 'queued' || run.status === 'waiting-approval' ? <button type="button" className="workflow-danger-button" onClick={onCancel}>{copy.workflowCancel}</button> : null}
         {run.status === 'waiting-approval' ? <><button type="button" onClick={onApprove}>{copy.workflowApprove}</button><button type="button" className="workflow-danger-button" onClick={onReject}>{copy.workflowReject}</button></> : null}
         {run.status === 'paused' || run.status === 'failed' ? <button type="button" onClick={onResume}>{copy.workflowResume}</button> : null}
       </div>
-      {run.output !== undefined ? <div className="workflow-output"><strong>{copy.workflowOutput}</strong><pre>{formatValue(run.output)}</pre></div> : null}
-      {run.error !== undefined ? <div className="workflow-error">{run.error}</div> : null}
-      {nodeDetail === undefined ? <p className="workflow-node-result-hint">{copy.workflowNodeResultHint}</p> : <section className="workflow-node-result">
-        <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowNodeResult}</span><strong>{nodeDetail.node.label}</strong></div><span className={`workflow-status-pill workflow-status-${nodeDetail.state.status}`}>{nodeStatusLabel(nodeDetail.state.status, copy)}</span></div>
-        <div className="workflow-node-result-meta">{nodeDetail.state.startedAt ? <span>{copy.workflowNodeStartedAt}: {nodeDetail.state.startedAt}</span> : null}{nodeDetail.state.completedAt ? <span>{copy.workflowNodeCompletedAt}: {nodeDetail.state.completedAt}</span> : null}</div>
-        {nodeDetail.state.output === undefined ? <p className="workflow-muted">{copy.workflowNodeNoOutput}</p> : <div className="workflow-output"><strong>{copy.workflowOutput}</strong><pre>{formatValue(nodeDetail.state.output)}</pre></div>}
-        {nodeDetail.state.error !== undefined ? <div className="workflow-error">{nodeDetail.state.error}</div> : null}
-        {nodeDetail.events.length > 0 ? <div className="workflow-node-events"><strong>{copy.workflowNodeEvents}</strong>{nodeDetail.events.map((event) => <p key={event.id}><time>{event.time}</time><span>{event.message ?? event.type}</span></p>)}</div> : null}
+      {inspectedNode === undefined || inspectedState === undefined ? <>
+        <WorkflowOutputViewer {...outputViewerProps('input', copy.workflowInput, run.input)} />
+        {run.output !== undefined ? <WorkflowOutputViewer {...outputViewerProps('final', copy.workflowOutput, run.output)} /> : null}
+        {run.error !== undefined ? <div className="workflow-error">{run.error}</div> : null}
+        <p className="workflow-node-result-hint">{copy.workflowNodeResultHint}</p>
+      </> : <section className="workflow-node-result">
+        <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowNodeResult}</span><strong>{inspectedNode.label}</strong></div><span className={`workflow-status-pill workflow-status-${inspectedState.status}`}>{nodeStatusLabel(inspectedState.status, copy)}</span></div>
+        <div className="workflow-node-result-meta">{inspectedState.startedAt ? <span>{copy.workflowNodeStartedAt}: {inspectedState.startedAt}</span> : null}{inspectedState.completedAt ? <span>{copy.workflowNodeCompletedAt}: {inspectedState.completedAt}</span> : null}</div>
+        <WorkflowInputPreview copy={copy} value={inspectedState.input ?? (inspectedNode.type === 'input' ? run.input : undefined)} derived={(nodeDetail?.upstreamNodes.length ?? 0) > 0} upstreamNodes={nodeDetail?.upstreamNodes ?? []} onSelectNode={onSelectNode} />
+        {inspectedState.output === undefined ? <p className="workflow-muted">{copy.workflowNodeNoOutput}</p> : <WorkflowOutputViewer {...outputViewerProps(inspectedNode.id, copy.workflowNodeOutput, inspectedState.output)} />}
+        {inspectedState.error !== undefined ? <div className="workflow-error">{inspectedState.error}</div> : null}
+        {inspectedEvents.length > 0 ? <div className="workflow-node-events"><strong>{copy.workflowNodeEvents}</strong>{inspectedEvents.map((event) => <p key={event.id}><time>{event.time}</time><span>{event.message ?? event.type}</span></p>)}</div> : null}
       </section>}
     </>}
   </section>
@@ -416,6 +1045,15 @@ interface WorkflowRunSetup {
   modelSelection?: WorkflowModelSelection
   allowShellFile: boolean
   debug: boolean
+  modelLoading: boolean
+}
+
+interface WorkflowContextMenuState {
+  x: number
+  y: number
+  target: WorkflowContextMenuTarget
+  nodeId?: string
+  edgeId?: string
 }
 
 export function WorkflowPage({ copy, locale, developerMode: _developerMode = false, onWorkspaceModeChange }: WorkflowPageProps): JSX.Element {
@@ -424,24 +1062,65 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [employeeId, setEmployeeId] = useState('')
   const [selected, setSelected] = useState<WorkflowDefinition>()
   const [draft, setDraft] = useState(false)
+  const [history, setHistory] = useState<WorkflowHistoryState>()
   const [workspaceView, setWorkspaceView] = useState<WorkflowWorkspaceView>('editor')
   const [selectedNodeId, setSelectedNodeId] = useState<string>()
-  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string>()
+  const [nodes, setNodes] = useNodesState<FlowNode>([])
+  const [edges, setEdges] = useEdgesState([])
   const [runs, setRuns] = useState<WorkflowRunRecord[]>([])
+  const [workflowRunSummaries, setWorkflowRunSummaries] = useState<Record<string, WorkflowRunSummary>>({})
+  const [viewedRunIds, setViewedRunIds] = useState<Set<string>>(() => readViewedWorkflowRunIds())
   const [currentRun, setCurrentRun] = useState<WorkflowRunRecord>()
   const [selectedRunNodeId, setSelectedRunNodeId] = useState<string>()
+  const [showRunSidebar, setShowRunSidebar] = useState(true)
+  const [outputFontScale, setOutputFontScale] = useState(1)
+  const [outputWindows, setOutputWindows] = useState<WorkflowOutputWindowState[]>([])
+  const [executionDetailHeight, setExecutionDetailHeight] = useState(280)
   const [showMiniMap, setShowMiniMap] = useState(true)
   const [runSetup, setRunSetup] = useState<WorkflowRunSetup>()
   const [generationPrompt, setGenerationPrompt] = useState('')
+  const [deletedWorkflow, setDeletedWorkflow] = useState<WorkflowDefinition>()
+  const [contextMenu, setContextMenu] = useState<WorkflowContextMenuState>()
+  const workflowPageRef = useRef<HTMLDivElement>(null)
+  const workflowCanvasRef = useRef<HTMLDivElement>(null)
+  const executionMainRef = useRef<HTMLDivElement>(null)
+  const executionResizeRef = useRef<{ startY: number; startHeight: number }>()
+  const fitViewRef = useRef<(() => Promise<boolean>)>()
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+
+  const rememberFitView = useCallback((fitView: (() => Promise<boolean>) | undefined): void => {
+    fitViewRef.current = fitView
+  }, [])
+
+  useEffect(() => {
+    if (contextMenu === undefined) return
+    const dismissOutside = (event: MouseEvent): void => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.workflow-context-menu') !== null) return
+      setContextMenu(undefined)
+    }
+    const dismissWithEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setContextMenu(undefined)
+    }
+    window.addEventListener('mousedown', dismissOutside)
+    window.addEventListener('keydown', dismissWithEscape)
+    return () => {
+      window.removeEventListener('mousedown', dismissOutside)
+      window.removeEventListener('keydown', dismissWithEscape)
+    }
+  }, [contextMenu])
 
   useEffect(() => {
     if (message === '') return
     const timeout = window.setTimeout(() => setMessage(''), 3_000)
     return () => window.clearTimeout(timeout)
+  }, [message])
+
+  useEffect(() => {
+    if (message === '') setDeletedWorkflow(undefined)
   }, [message])
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -450,12 +1129,21 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     try {
       const list = await window.EzDSH.workflows.list()
       setWorkflows(list)
+      const summaries = await Promise.all(list.map(async (workflow) => {
+        try {
+          const workflowRuns = await window.EzDSH.workflows.listRuns(workflow.id)
+          return [workflow.id, summarizeWorkflowRuns(workflowRuns, viewedRunIds)] as const
+        } catch {
+          return [workflow.id, { count: 0, unviewedCount: 0 }] as const
+        }
+      }))
+      setWorkflowRunSummaries(Object.fromEntries(summaries))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
     } finally {
       setBusy(false)
     }
-  }, [copy.workflowLoadFailed])
+  }, [copy.workflowLoadFailed, viewedRunIds])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -473,16 +1161,33 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   useEffect(() => { void refreshEmployees() }, [refreshEmployees])
 
+  const updateRunSummary = useCallback((workflowId: string, workflowRuns: WorkflowRunRecord[], viewed = viewedRunIds): void => {
+    setWorkflowRunSummaries((current) => ({ ...current, [workflowId]: summarizeWorkflowRuns(workflowRuns, viewed) }))
+  }, [viewedRunIds])
+
+  const markRunViewed = useCallback((run: WorkflowRunRecord, knownRuns?: WorkflowRunRecord[]): void => {
+    setViewedRunIds((current) => {
+      if (current.has(run.id)) return current
+      const next = new Set(current)
+      next.add(run.id)
+      persistViewedWorkflowRunIds(next)
+      const sourceRuns = knownRuns ?? (selected?.id === run.workflowId ? runs : undefined)
+      if (sourceRuns !== undefined) updateRunSummary(run.workflowId, sourceRuns, next)
+      return next
+    })
+  }, [runs, selected?.id, updateRunSummary])
+
   useEffect(() => {
     const unsubscribe = window.EzDSH.workflows.onStateChange((record) => {
       setRuns((current) => {
         const next = [record, ...current.filter((item) => item.id !== record.id)]
+        updateRunSummary(record.workflowId, next)
         return next.sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))
       })
       if (currentRun?.id === record.id) setCurrentRun(record)
     })
     return unsubscribe
-  }, [currentRun?.id])
+  }, [currentRun?.id, updateRunSummary])
 
   const selectedNode = useMemo(() => selected?.nodes.find((node) => node.id === selectedNodeId), [selected, selectedNodeId])
   const currentRunNodeDetail = useMemo(
@@ -494,31 +1199,55 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     ? undefined
     : mergeFlowStateIntoWorkflow(selected, nodes, edges)
 
-  const applyDefinition = (next: WorkflowDefinition): void => {
+  const applyDefinition = (next: WorkflowDefinition, recordHistory = true): void => {
+    const selectedNodeIds = nodes.filter((node) => node.selected === true).map((node) => node.id)
+    const selectedEdgeIds = edges.filter((edge) => edge.selected === true).map((edge) => edge.id)
+    if (selectedNodeId !== undefined && !selectedNodeIds.includes(selectedNodeId)) selectedNodeIds.push(selectedNodeId)
+    if (selectedEdgeId !== undefined && !selectedEdgeIds.includes(selectedEdgeId)) selectedEdgeIds.push(selectedEdgeId)
+    if (recordHistory) setHistory((current) => current === undefined ? createWorkflowHistory(next) : recordWorkflowHistory(current, next))
     setSelected(next)
-    setNodes(flowNodes(next, currentRun))
-    setEdges(flowEdges(next))
+    setNodes(preserveWorkflowNodeSelection(flowNodes(next, currentRun), selectedNodeIds))
+    setEdges(preserveWorkflowEdgeSelection(flowEdges(next), selectedEdgeIds))
+    setSelectedNodeId((current) => next.nodes.some((node) => node.id === current) ? current : undefined)
+    setSelectedEdgeId((current) => next.edges.some((edge) => edge.id === current) ? current : undefined)
   }
 
-  const open = async (workflow: WorkflowDefinition): Promise<void> => {
+  const open = async (workflow: WorkflowDefinition, isDraft = false): Promise<void> => {
     const userFacingWorkflow = { ...cloneWorkflow(workflow), description: userFacingWorkflowText(workflow.description, locale) }
     setSelected(userFacingWorkflow)
-    setDraft(false)
+    setHistory(createWorkflowHistory(userFacingWorkflow))
+    setDraft(isDraft)
     setWorkspaceView('editor')
     onWorkspaceModeChange?.(true)
     setSelectedNodeId(undefined)
+    setSelectedEdgeId(undefined)
+    setContextMenu(undefined)
     setNodes(flowNodes(userFacingWorkflow))
     setEdges(flowEdges(userFacingWorkflow))
     setCurrentRun(undefined)
     setSelectedRunNodeId(undefined)
-    try { setRuns(await window.EzDSH.workflows.listRuns(workflow.id)) } catch { setRuns([]) }
+    if (isDraft) {
+      setRuns([])
+      return
+    }
+    try {
+      const workflowRuns = await window.EzDSH.workflows.listRuns(workflow.id)
+      setRuns(workflowRuns)
+      updateRunSummary(workflow.id, workflowRuns)
+    } catch {
+      setRuns([])
+      updateRunSummary(workflow.id, [])
+    }
   }
 
   const exitWorkspace = (): void => {
     setSelected(undefined)
     setDraft(false)
+    setHistory(undefined)
     setWorkspaceView('editor')
     setSelectedNodeId(undefined)
+    setSelectedEdgeId(undefined)
+    setContextMenu(undefined)
     setCurrentRun(undefined)
     setSelectedRunNodeId(undefined)
     setRunSetup(undefined)
@@ -537,9 +1266,19 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const saved = draft ? await window.EzDSH.workflows.create(next) : await window.EzDSH.workflows.update(next.id, next)
       setSelected(saved)
       setDraft(false)
+      setHistory((current) => current === undefined ? createWorkflowHistory(saved) : {
+        past: current.past.map((item) => ({ ...cloneWorkflow(item), revision: saved.revision, updatedAt: saved.updatedAt })),
+        present: cloneWorkflow(saved),
+        future: current.future.map((item) => ({ ...cloneWorkflow(item), revision: saved.revision, updatedAt: saved.updatedAt })),
+      })
       setWorkflows((current) => [saved, ...current.filter((item) => item.id !== saved.id)])
-      setNodes(flowNodes(saved, currentRun))
-      setEdges(flowEdges(saved))
+      const selectedNodeIds = nodes.filter((node) => node.selected === true).map((node) => node.id)
+      const selectedEdgeIds = edges.filter((edge) => edge.selected === true).map((edge) => edge.id)
+      if (selectedNodeId !== undefined && !selectedNodeIds.includes(selectedNodeId)) selectedNodeIds.push(selectedNodeId)
+      if (selectedEdgeId !== undefined && !selectedEdgeIds.includes(selectedEdgeId)) selectedEdgeIds.push(selectedEdgeId)
+      setNodes(preserveWorkflowNodeSelection(flowNodes(saved, currentRun), selectedNodeIds))
+      setEdges(preserveWorkflowEdgeSelection(flowEdges(saved), selectedEdgeIds))
+      setSelectedNodeId((current) => saved.nodes.some((node) => node.id === current) ? current : undefined)
       setMessage(copy.workflowSaved)
       return saved
     } catch (reason) {
@@ -553,10 +1292,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const create = async (): Promise<void> => {
     setBusy(true)
     try {
-      const workflow = await window.EzDSH.workflows.create(createDefaultWorkflow(copy.workflowNew))
-      setWorkflows((current) => [workflow, ...current])
-      await open(workflow)
-      setMessage(copy.workflowSaved)
+      await open(createDefaultWorkflow(copy.workflowNew), true)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
     } finally { setBusy(false) }
@@ -576,9 +1312,11 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     if (selected === undefined || !window.confirm(copy.workflowDeleteConfirm(selected.name))) return
     setBusy(true)
     try {
+      const removedWorkflow = workflows.find((item) => item.id === selected.id) ?? selected
       await window.EzDSH.workflows.remove(selected.id)
       const remaining = workflows.filter((item) => item.id !== selected.id)
       setWorkflows(remaining)
+      setDeletedWorkflow(cloneWorkflow(removedWorkflow))
       setSelected(undefined)
       setNodes([])
       setEdges([])
@@ -587,7 +1325,25 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       setSelectedRunNodeId(undefined)
       setRunSetup(undefined)
       onWorkspaceModeChange?.(false)
+      setMessage(copy.workflowDeleted)
     } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed) } finally { setBusy(false) }
+  }
+
+  const restoreDeletedWorkflow = async (): Promise<void> => {
+    const candidate = deletedWorkflow
+    if (candidate === undefined) return
+    setBusy(true)
+    setError('')
+    try {
+      const restored = await window.EzDSH.workflows.create(candidate)
+      setWorkflows((current) => [restored, ...current.filter((item) => item.id !== restored.id)])
+      setDeletedWorkflow(undefined)
+      setMessage(copy.workflowRestored)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const addNode = (type: WorkflowNodeType): void => {
@@ -606,25 +1362,131 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     applyDefinition(next)
   }
 
-  const deleteSelectedNode = (): void => {
+  const deleteSelection = (selection?: WorkflowSelection): void => {
     const current = currentDefinition()
-    if (current === undefined || selectedNodeId === undefined) return
-    applyDefinition(removeWorkflowNode(current, selectedNodeId))
+    const flowSelection = workflowSelectionFromFlowState(nodes, edges)
+    const resolvedSelection: WorkflowSelection = selection ?? {
+      nodeIds: [...(flowSelection.nodeIds ?? []), ...(selectedNodeId === undefined ? [] : [selectedNodeId])],
+      edgeIds: [...(flowSelection.edgeIds ?? []), ...(selectedEdgeId === undefined ? [] : [selectedEdgeId])],
+    }
+    if (current === undefined || ((resolvedSelection.nodeIds?.length ?? 0) === 0 && (resolvedSelection.edgeIds?.length ?? 0) === 0)) return
+    const next = removeWorkflowSelection(current, resolvedSelection)
+    applyDefinition(next)
     setSelectedNodeId(undefined)
+    setSelectedEdgeId(undefined)
+  }
+
+  const alignSelectedNodes = (alignment: WorkflowNodeAlignment): void => {
+    const current = currentDefinition()
+    const selectedNodeIds = nodes.filter((node) => node.selected === true).map((node) => node.id)
+    if (current === undefined || selectedNodeIds.length < 2) return
+    applyDefinition(alignWorkflowNodes(current, selectedNodeIds, alignment))
+    setContextMenu(undefined)
+    focusWorkflowCanvas()
+  }
+
+  const undo = (): void => {
+    if (history === undefined) return
+    const next = undoWorkflowHistory(history)
+    if (next === history) return
+    setHistory(next)
+    applyDefinition(next.present, false)
+  }
+
+  const redo = (): void => {
+    if (history === undefined) return
+    const next = redoWorkflowHistory(history)
+    if (next === history) return
+    setHistory(next)
+    applyDefinition(next.present, false)
+  }
+
+  useEffect(() => {
+    if (selected === undefined || workspaceView !== 'editor') return
+    const handleGlobalKeyDown = (event: KeyboardEvent): void => {
+      const page = workflowPageRef.current
+      const pane = page?.closest('.workspace-pane')
+      if (pane !== null && pane !== undefined && !pane.classList.contains('workspace-pane-active')) return
+      const target = event.target
+      if (target instanceof HTMLElement && isWorkflowFormElement(target)) return
+      const action = workflowKeyboardAction(event)
+      if (action === undefined || action === 'select-all' || action === 'save') return
+      event.preventDefault()
+      event.stopPropagation()
+      if (action === 'redo') redo()
+      else undo()
+    }
+    window.addEventListener('keydown', handleGlobalKeyDown)
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown)
+  }, [history, selected, workspaceView])
+
+  const focusWorkflowCanvas = (): void => {
+    workflowCanvasRef.current?.focus({ preventScroll: true })
+  }
+
+  const selectAllNodes = (): void => {
+    setNodes((current) => selectAllWorkflowNodes(current))
+    setEdges((current) => current.map((edge) => ({ ...edge, selected: false })))
+    setSelectedNodeId(nodes.at(-1)?.id)
+    setSelectedEdgeId(undefined)
   }
 
   const onCanvasKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
-    if (event.key !== 'Backspace' && event.key !== 'Delete') return
     const target = event.target
     if (target instanceof HTMLElement && isWorkflowFormElement(target)) return
-    if (selectedNodeId === undefined) return
+    const action = workflowKeyboardAction(event)
+    if (action !== undefined) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (action === 'redo') redo()
+      else if (action === 'undo') undo()
+      else if (action === 'select-all') selectAllNodes()
+      else if (!busy) void save()
+      return
+    }
+    if (event.key !== 'Backspace' && event.key !== 'Delete') return
+    const flowSelection = workflowSelectionFromFlowState(nodes, edges)
+    if (selectedNodeId === undefined && selectedEdgeId === undefined && (flowSelection.nodeIds?.length ?? 0) === 0 && (flowSelection.edgeIds?.length ?? 0) === 0) return
     event.preventDefault()
-    deleteSelectedNode()
+    event.stopPropagation()
+    deleteSelection()
+  }
+
+  const onNodesChange = (changes: NodeChange<FlowNode>[]): void => {
+    const nextNodes = applyNodeChanges(changes, nodes)
+    setNodes(nextNodes)
+    if (changes.some((change) => change.type === 'select')) {
+      const selectedNodeIds = nextNodes.filter((node) => node.selected === true).map((node) => node.id)
+      setSelectedNodeId(selectedNodeIds.at(-1))
+      if (selectedNodeIds.length > 0) {
+        setSelectedEdgeId(undefined)
+      }
+    }
+    const shouldRecord = changes.some((change) => change.type === 'remove' || change.type === 'add' || change.type === 'replace' || (change.type === 'position' && change.dragging !== true))
+    if (!shouldRecord || selected === undefined) return
+    applyDefinition(mergeFlowStateIntoWorkflow(selected, nextNodes, edges))
+  }
+
+  const onEdgesChange = (changes: EdgeChange[]): void => {
+    const nextEdges = applyEdgeChanges(changes, edges)
+    setEdges(nextEdges)
+    if (changes.some((change) => change.type === 'select')) {
+      const selectedEdgeIds = nextEdges.filter((edge) => edge.selected === true).map((edge) => edge.id)
+      setSelectedEdgeId(selectedEdgeIds.at(-1))
+      if (selectedEdgeIds.length > 0) {
+        setSelectedNodeId(undefined)
+      }
+    }
+    const shouldRecord = changes.some((change) => change.type === 'remove' || change.type === 'add' || change.type === 'replace')
+    if (!shouldRecord || selected === undefined) return
+    applyDefinition(mergeFlowStateIntoWorkflow(selected, nodes, nextEdges))
   }
 
   const onConnect = useCallback((connection: Connection): void => {
-    setEdges((current) => addEdge({ ...connection, id: id('edge') }, current))
-  }, [setEdges])
+    if (selected === undefined) return
+    const nextEdges = addEdge({ ...connection, id: id('edge') }, edges)
+    applyDefinition(mergeFlowStateIntoWorkflow(selected, nodes, nextEdges))
+  }, [edges, nodes, selected])
 
   const openRunSetup = async (): Promise<void> => {
     if (selected === undefined) return
@@ -633,7 +1495,28 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     let modelOptions: WorkflowModelOption[] = []
     try { modelOptions = await window.EzDSH.providers.listWorkflowModels() } catch { /* The default model remains available if the optional catalog cannot load. */ }
     const fields = getWorkflowLaunchFields(saved)
-    setRunSetup({ workflowId: saved.id, fields, values: createWorkflowLaunchValues(fields), modelOptions, modelSelection: undefined, allowShellFile: false, debug: false })
+    setRunSetup({ workflowId: saved.id, fields, values: createWorkflowLaunchValues(fields), modelOptions, modelSelection: undefined, allowShellFile: false, debug: false, modelLoading: false })
+  }
+
+  const refreshRunModels = async (): Promise<void> => {
+    if (runSetup === undefined || runSetup.modelLoading) return
+    setRunSetup((current) => current === undefined ? current : { ...current, modelLoading: true })
+    try {
+      const modelOptions = await window.EzDSH.providers.listWorkflowModels(true)
+      setRunSetup((current) => {
+        if (current === undefined) return current
+        const selectedModel = current.modelSelection
+        const modelSelection = selectedModel !== undefined
+          && modelOptions.some((option) => workflowModelOptionKey(option) === workflowModelOptionKey(selectedModel))
+          ? selectedModel
+          : undefined
+        return { ...current, modelOptions, modelSelection }
+      })
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    } finally {
+      setRunSetup((current) => current === undefined ? current : { ...current, modelLoading: false })
+    }
   }
 
   const startRun = async (): Promise<void> => {
@@ -645,6 +1528,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       setCurrentRun(record)
       setSelectedRunNodeId(undefined)
       setRuns((current) => [record, ...current.filter((item) => item.id !== record.id)])
+      updateRunSummary(record.workflowId, [record, ...runs.filter((item) => item.id !== record.id)])
       setWorkspaceView('executions')
       setRunSetup(undefined)
     } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) } finally { setBusy(false) }
@@ -653,7 +1537,63 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const applyRunRecord = (record: WorkflowRunRecord): void => {
     setCurrentRun(record)
     setRuns((current) => [record, ...current.filter((item) => item.id !== record.id)])
+    updateRunSummary(record.workflowId, [record, ...runs.filter((item) => item.id !== record.id)])
   }
+
+  const selectRun = (record: WorkflowRunRecord): void => {
+    setCurrentRun(record)
+    setSelectedRunNodeId(undefined)
+    markRunViewed(record)
+  }
+
+  const openUnreadRun = (): void => {
+    const workflow = selected
+    const unread = workflow === undefined ? undefined : workflowRunSummaries[workflow.id]?.firstUnviewedRun
+    if (unread === undefined) return
+    setCurrentRun(unread)
+    setSelectedRunNodeId(undefined)
+    setWorkspaceView('executions')
+    markRunViewed(unread)
+  }
+
+  const openWorkflowUnreadRun = async (workflow: WorkflowDefinition, run: WorkflowRunRecord): Promise<void> => {
+    await open(workflow)
+    setCurrentRun(run)
+    setSelectedRunNodeId(undefined)
+    setWorkspaceView('executions')
+    markRunViewed(run)
+  }
+
+  const openOutputWindow = (key: string, title: string, value: WorkflowValue): void => {
+    const id = `${currentRun?.id ?? 'run'}:${key}`
+    setOutputWindows((current) => current.some((item) => item.id === id) ? current : [...current, { id, title, value }])
+  }
+
+  const copyOutput = (): void => setMessage(copy.workflowOutputCopied)
+
+  const beginExecutionResize = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const container = executionMainRef.current
+    if (container === null) return
+    event.preventDefault()
+    executionResizeRef.current = { startY: event.clientY, startHeight: executionDetailHeight }
+    container.setPointerCapture?.(event.pointerId)
+  }
+
+  useEffect(() => {
+    const move = (event: PointerEvent): void => {
+      const start = executionResizeRef.current
+      const container = executionMainRef.current
+      if (start === undefined || container === null) return
+      setExecutionDetailHeight(clampWorkflowExecutionDetailHeight(start.startHeight + start.startY - event.clientY, container.getBoundingClientRect().height))
+    }
+    const end = (): void => { executionResizeRef.current = undefined }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', end)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+    }
+  }, [])
 
   const cancel = async (): Promise<void> => {
     if (currentRun === undefined) return
@@ -676,14 +1616,16 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setError('')
     try {
       const generated = await window.EzDSH.workflows.generate({ prompt: generationPrompt, name: generationPrompt.slice(0, 48) })
-      setSelected(generated)
-      setDraft(true)
-      setWorkspaceView('editor')
-      onWorkspaceModeChange?.(true)
-      setNodes(flowNodes(generated))
-      setEdges(flowEdges(generated))
-      setSelectedNodeId(undefined)
-      setMessage(copy.workflowGenerated)
+      await open(generated.workflow, true)
+      if (generated.createdEmployees.length > 0) {
+        setMessage(copy.workflowGeneratedWithEmployees(generated.createdEmployees.map((employee) => employee.name).join('、')))
+        void refreshEmployees()
+      } else {
+        setMessage(copy.workflowGenerated)
+      }
+      if ((generated.employeeWarnings?.length ?? 0) > 0) {
+        setError(copy.workflowGeneratedEmployeeWarnings(generated.employeeWarnings!.join('；')))
+      }
     } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed) } finally { setBusy(false) }
   }
 
@@ -723,8 +1665,25 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const statusLabel = (status: WorkflowRunRecord['status']): string => ({ queued: copy.workflowNodePending, running: copy.workflowRunning, paused: copy.workflowRunPaused, 'waiting-approval': copy.workflowWaitingApproval, completed: copy.workflowRunCompleted, failed: copy.workflowRunFailed, cancelled: copy.workflowRunCancelled })[status]
 
+  const dismissContextMenu = (): void => setContextMenu(undefined)
+  const deleteContextMenuSelection = (): void => {
+    const target = contextMenu
+    setContextMenu(undefined)
+    if (target === undefined) return
+    if (target.target === 'selection') {
+      deleteSelection()
+      focusWorkflowCanvas()
+      return
+    }
+    deleteSelection({ nodeId: target.nodeId, edgeId: target.edgeId })
+    focusWorkflowCanvas()
+  }
+  const runFromContextMenu = (): void => { setContextMenu(undefined); void openRunSetup() }
+  const saveFromContextMenu = (): void => { setContextMenu(undefined); focusWorkflowCanvas(); void save() }
+  const fitViewFromContextMenu = (): void => { setContextMenu(undefined); focusWorkflowCanvas(); void fitViewRef.current?.() }
+
   return (
-    <div className={`workflow-page ${selected === undefined ? 'workflow-page-browser' : 'workflow-page-workspace'}`}>
+    <div ref={workflowPageRef} className={`workflow-page ${selected === undefined ? 'workflow-page-browser' : 'workflow-page-workspace'}`}>
       {selected === undefined ? <>
         <header className="workflow-browser-header">
           <div>
@@ -743,7 +1702,13 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             <button type="button" className="workflow-button-quiet" onClick={() => void refresh()} disabled={busy}>{copy.workflowRefresh}</button>
           </div>
           {workflows.length === 0 && !busy ? <div className="workflow-empty-card"><h3>{copy.workflowEmpty}</h3><button type="button" className="workflow-button-primary" onClick={() => void create()}>{copy.workflowNew}</button></div> : null}
-          {workflows.length > 0 ? <div className="workflow-browser-grid">{workflows.map((workflow) => <button key={workflow.id} type="button" className="workflow-file-card" onClick={() => void open(workflow)}><span className="workflow-file-card-mark">WF</span><span className="workflow-file-card-content"><strong>{workflow.name}</strong><span>{workflow.description ? userFacingWorkflowText(workflow.description, locale) : copy.workflowHint}</span><small>v{workflow.revision} · {workflow.nodes.length} nodes</small></span><span className="workflow-file-card-open">打开</span></button>)}</div> : null}
+          {workflows.length > 0 ? <div className="workflow-browser-grid">{workflows.map((workflow) => {
+            const summary = workflowRunSummaries[workflow.id] ?? { count: 0, unviewedCount: 0 }
+            return <article key={workflow.id} className="workflow-file-card">
+              <button type="button" className="workflow-file-card-main" onClick={() => void open(workflow)}><span className="workflow-file-card-mark">WF</span><span className="workflow-file-card-content"><strong>{workflow.name}</strong><span>{workflow.description ? userFacingWorkflowText(workflow.description, locale) : copy.workflowHint}</span><small>v{workflow.revision} · {workflow.nodes.length} nodes · {copy.workflowHistoryCount(summary.count)}</small></span><span className="workflow-file-card-open">打开</span></button>
+              {summary.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button" onClick={() => void openWorkflowUnreadRun(workflow, summary.firstUnviewedRun!)}>{copy.workflowUnviewedRuns(summary.unviewedCount)} · {copy.workflowViewUnviewedRun}</button> : null}
+            </article>
+          })}</div> : null}
           <div className="workflow-browser-tools">
             <section className="workflow-tool-card workflow-generate-card">
               <div><span className="workflow-kicker">{copy.workflowGenerate}</span><h3>{copy.workflowGenerate}</h3><p>{copy.workflowGenerateHint}</p></div>
@@ -767,10 +1732,24 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             <button type="button" role="tab" aria-selected={workspaceView === 'executions'} className={workspaceView === 'executions' ? 'workflow-view-active' : ''} onClick={() => setWorkspaceView('executions')}>{copy.workflowExecutions}</button>
           </div>
           <div className="workflow-workspace-actions">
-            <button type="button" className="workflow-button-quiet" onClick={() => void duplicate()} disabled={busy}>{copy.workflowDuplicate}</button>
-            <button type="button" className="workflow-button-quiet workflow-danger-button" onClick={() => void remove()} disabled={busy}>{copy.workflowDelete}</button>
-            <button type="button" className="workflow-button-quiet" onClick={() => void save()} disabled={busy}>{copy.workflowSave}</button>
-            <button type="button" className="workflow-button-primary" onClick={() => void openRunSetup()} disabled={busy || currentRun?.status === 'running'}>{currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}</button>
+            {workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)} · {copy.workflowViewUnviewedRun}</button> : null}
+            {!draft ? <>
+              <button type="button" className="workflow-button-quiet" onClick={() => void duplicate()} disabled={busy}>{copy.workflowDuplicate}</button>
+              <button type="button" className="workflow-button-quiet workflow-danger-button" onClick={() => void remove()} disabled={busy}>{copy.workflowDelete}</button>
+            </> : null}
+            {workspaceView === 'editor' ? <WorkflowEditorActions
+              copy={copy}
+              draft={draft}
+              busy={busy}
+              runDisabled={busy || currentRun?.status === 'running'}
+              runLabel={currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}
+              onCancel={exitWorkspace}
+              onSave={() => void save()}
+              onRun={() => void openRunSetup()}
+            /> : <>
+              <button type="button" className="workflow-button-primary workflow-save-button" onClick={() => void save()} disabled={busy}>{copy.workflowSave}</button>
+              <button type="button" className="workflow-button-primary" onClick={() => void openRunSetup()} disabled={busy || currentRun?.status === 'running'}>{currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}</button>
+            </>}
           </div>
         </header>
         <div className="workflow-workspace-body">
@@ -780,9 +1759,27 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                 <div className="workflow-editor-fields"><input aria-label={copy.workflowName} value={selected.name} onChange={(event) => { const current = currentDefinition(); if (current !== undefined) applyDefinition({ ...current, name: event.target.value }) }} /><input aria-label={copy.workflowDescription} className="workflow-description-input" value={selected.description} onChange={(event) => { const current = currentDefinition(); if (current !== undefined) applyDefinition({ ...current, description: event.target.value }) }} /></div>
                 <div className="workflow-node-buttons">{NODE_TYPES.map((type) => <button key={type} type="button" onClick={() => addNode(type)}>{nodeTypeLabel[type]}</button>)}</div>
               </div>
-              <div className="workflow-canvas" onKeyDown={onCanvasKeyDown}>
-                <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onNodeClick={(_event, node) => setSelectedNodeId(node.id)} fitView>
+              <div ref={workflowCanvasRef} className="workflow-canvas" tabIndex={0} onPointerDownCapture={focusWorkflowCanvas} onKeyDown={onCanvasKeyDown}>
+                <ReactFlow
+                  {...WORKFLOW_CANVAS_INTERACTION_PROPS}
+                  nodes={nodes}
+                  edges={workflowCanvasEdges(selected, edges)}
+                  nodeTypes={nodeTypes}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onConnect={onConnect}
+                  onNodeClick={(_event, node) => { setSelectedNodeId(node.id); setSelectedEdgeId(undefined) }}
+                  onEdgeClick={(_event, edge) => { setSelectedEdgeId(edge.id); setSelectedNodeId(undefined) }}
+                  onPaneClick={() => { setSelectedNodeId(undefined); setSelectedEdgeId(undefined); focusWorkflowCanvas() }}
+                  onNodeContextMenu={(event, node) => { event.preventDefault(); event.stopPropagation(); setSelectedNodeId(node.id); setSelectedEdgeId(undefined); setContextMenu({ x: event.clientX, y: event.clientY, target: 'node', nodeId: node.id }) }}
+                  onEdgeContextMenu={(event, edge) => { event.preventDefault(); event.stopPropagation(); setSelectedEdgeId(edge.id); setSelectedNodeId(undefined); setContextMenu({ x: event.clientX, y: event.clientY, target: 'edge', edgeId: edge.id }) }}
+                  onSelectionContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setContextMenu({ x: event.clientX, y: event.clientY, target: 'selection' }) }}
+                  onPaneContextMenu={(event) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, target: 'canvas' }) }}
+                  deleteKeyCode={null}
+                  fitView
+                >
                   <Background gap={20} size={1} />
+                  <WorkflowFitViewBridge onReady={rememberFitView} />
                   <WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} />
                 </ReactFlow>
               </div>
@@ -818,20 +1815,23 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                 </>}
               </section>
             </aside>
-          </> : <section className="workflow-executions">
-            <aside className="workflow-run-sidebar">
-              <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowExecutions}</span><h2>{copy.workflowRunHistory}</h2></div><span className="workflow-run-count">{runs.length}</span></div>
-              {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <button key={runRecord.id} type="button" className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''}`} onClick={() => { setCurrentRun(runRecord); setSelectedRunNodeId(undefined) }}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {runRecord.startedAt ?? 'queued'}</span></button>)}</div>}
-            </aside>
-            <div className="workflow-execution-main">
-              <div className="workflow-execution-canvas"><ReactFlow nodes={flowNodes(selected, currentRun, selectedRunNodeId)} edges={flowEdges(selected)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
-              <WorkflowExecutionReview copy={copy} run={currentRun} nodeDetail={currentRunNodeDetail} statusLabel={statusLabel} onCancel={() => void cancel()} onApprove={() => void approve(true)} onReject={() => void approve(false)} onResume={() => void resume()} />
+          </> : <section className={`workflow-executions ${showRunSidebar ? '' : 'workflow-executions-sidebar-hidden'}`}>
+            {showRunSidebar ? <aside className="workflow-run-sidebar">
+              <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowExecutions}</span><h2>{copy.workflowRunHistory}</h2></div><div className="workflow-run-sidebar-heading-actions"><span className="workflow-run-count">{runs.length}</span><button type="button" className="workflow-sidebar-toggle" aria-label={copy.workflowHideRunSidebar} title={copy.workflowHideRunSidebar} onClick={() => setShowRunSidebar(false)}>‹</button></div></div>
+              {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <button key={runRecord.id} type="button" className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''}`} onClick={() => selectRun(runRecord)}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {runRecord.startedAt ?? 'queued'}</span></button>)}</div>}
+            </aside> : <button type="button" className="workflow-sidebar-toggle workflow-sidebar-toggle-floating" aria-label={copy.workflowShowRunSidebar} title={copy.workflowShowRunSidebar} onClick={() => setShowRunSidebar(true)}>›</button>}
+            <div ref={executionMainRef} className="workflow-execution-main" style={{ '--workflow-execution-detail-height': `${executionDetailHeight}px` } as CSSProperties}>
+              <div className="workflow-execution-canvas"><ReactFlow {...WORKFLOW_CANVAS_INTERACTION_PROPS} nodes={flowNodes(selected, currentRun, selectedRunNodeId)} edges={flowEdges(selected)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} onPaneClick={() => setSelectedRunNodeId(undefined)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
+              <div className="workflow-execution-resize-handle" role="separator" aria-orientation="horizontal" aria-label={copy.workflowResizeExecutionPanel} onPointerDown={beginExecutionResize}><span /></div>
+              <WorkflowExecutionReview copy={copy} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => void cancel()} onApprove={() => void approve(true)} onReject={() => void approve(false)} onResume={() => void resume()} onSelectNode={setSelectedRunNodeId} onCopyOutput={copyOutput} onOpenOutputWindow={openOutputWindow} outputFontScale={outputFontScale} onIncreaseOutputFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseOutputFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} />
             </div>
           </section>}
         </div>
       </>}
-      {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} allowShellFile={runSetup.allowShellFile} debug={runSetup.debug} busy={busy} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
-      {message ? <WorkflowToast message={message} copy={copy} onDismiss={() => setMessage('')} /> : null}
+      {outputWindows.length > 0 ? <WorkflowOutputFloatingWindows copy={copy} windows={outputWindows} fontScale={outputFontScale} onClose={(id) => setOutputWindows((current) => current.filter((item) => item.id !== id))} onCopy={copyOutput} onIncreaseFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} /> : null}
+      {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} allowShellFile={runSetup.allowShellFile} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
+      {contextMenu ? <WorkflowContextMenu copy={copy} target={contextMenu.target} x={contextMenu.x} y={contextMenu.y} selectedNodeCount={(contextMenu.target === 'canvas' || contextMenu.target === 'selection' || (contextMenu.nodeId !== undefined && nodes.some((node) => node.id === contextMenu.nodeId && node.selected === true))) ? nodes.filter((node) => node.selected === true).length : 0} canUndo={(history?.past.length ?? 0) > 0} canRedo={(history?.future.length ?? 0) > 0} busy={busy} runDisabled={currentRun?.status === 'running'} cancelLabel={draft ? copy.workflowCancelCreate : copy.workflowCancelEdit} onUndo={() => { dismissContextMenu(); undo(); focusWorkflowCanvas() }} onRedo={() => { dismissContextMenu(); redo(); focusWorkflowCanvas() }} onDelete={deleteContextMenuSelection} onAlign={alignSelectedNodes} onFitView={fitViewFromContextMenu} onSave={saveFromContextMenu} onRun={runFromContextMenu} onCancel={() => { dismissContextMenu(); exitWorkspace() }} /> : null}
+      {message ? <WorkflowToast message={message} copy={copy} actionLabel={deletedWorkflow === undefined ? undefined : copy.workflowUndoDelete} onAction={deletedWorkflow === undefined ? undefined : () => void restoreDeletedWorkflow()} onDismiss={() => setMessage('')} /> : null}
       {error ? <div className="workflow-error-banner" role="alert">{error}</div> : null}
     </div>
   )

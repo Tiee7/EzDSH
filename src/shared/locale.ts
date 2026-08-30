@@ -117,6 +117,15 @@ export interface AppCopy {
   employeesCreatingSession: string
   employeesSessionTitlePrompt: string
   employeesAdd: string
+  employeesDescribeNeed: string
+  employeesDescribeNeedHint: string
+  employeesDescribeNeedPlaceholder: string
+  employeesGenerate: string
+  employeesGenerating: string
+  employeesGeneratedHint: string
+  employeesGenerationRequired: string
+  employeesManualInput: string
+  employeesUseAiGeneration: string
   employeesAssignTask: string
   employeesEdit: string
   employeesDelete: string
@@ -182,6 +191,28 @@ export interface AppCopy {
   workflowDelete: string
   workflowDeleteConfirm: (name: string) => string
   workflowSave: string
+  workflowUndo: string
+  workflowRedo: string
+  workflowContextMenu: string
+  workflowDeleteNode: string
+  workflowDeleteEdge: string
+  workflowDeleteSelection: string
+  workflowFitView: string
+  workflowAlign: string
+  workflowAlignLeft: string
+  workflowAlignCenterHorizontal: string
+  workflowAlignRight: string
+  workflowAlignTop: string
+  workflowAlignCenterVertical: string
+  workflowAlignBottom: string
+  workflowDistribute: string
+  workflowDistributeHorizontal: string
+  workflowDistributeVertical: string
+  workflowCancelCreate: string
+  workflowCancelEdit: string
+  workflowDeleted: string
+  workflowUndoDelete: string
+  workflowRestored: string
   workflowSaved: string
   workflowDismiss: string
   workflowLoading: string
@@ -224,6 +255,9 @@ export interface AppCopy {
   workflowModel: string
   workflowUseDefaultModel: string
   workflowModelHint: string
+  workflowRefreshModels: string
+  workflowRefreshingModels: string
+  workflowNoModels: string
   workflowCancelSetup: string
   workflowNoLaunchInputs: string
   workflowCancel: string
@@ -237,13 +271,39 @@ export interface AppCopy {
   workflowRunHistory: string
   workflowNoRuns: string
   workflowInput: string
+  workflowNodeInput: string
+  workflowNodeOutput: string
+  workflowManualInput: string
+  workflowInputFromUpstream: string
+  workflowNodeNoInput: string
   workflowInputHint: string
   workflowOutput: string
+  workflowOutputViewLabel: string
+  workflowOutputMarkdown: string
+  workflowCopyOutput: string
+  workflowOpenOutputWindow: string
+  workflowOutputCopied: string
+  workflowDecreaseFont: string
+  workflowIncreaseFont: string
+  workflowHideRunSidebar: string
+  workflowShowRunSidebar: string
+  workflowResizeExecutionPanel: string
+  workflowHistoryCount: (count: number) => string
+  workflowUnviewedRuns: (count: number) => string
+  workflowViewUnviewedRun: string
+  workflowCloseOutputWindow: string
+  workflowOutputWindow: string
+  workflowDragOutputWindow: string
+  workflowExpandInput: string
+  workflowCollapseInput: string
+  workflowGoUpstream: string
   workflowGenerate: string
   workflowGenerateHint: string
   workflowGeneratePlaceholder: string
   workflowGenerating: string
   workflowGenerated: string
+  workflowGeneratedWithEmployees: (names: string) => string
+  workflowGeneratedEmployeeWarnings: (warnings: string) => string
   workflowAllowShellFile: string
   workflowAllowShellFileHint: string
   workflowDebugRun: string
@@ -724,6 +784,15 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     employeesCreatingSession: '正在新建会话…',
     employeesSessionTitlePrompt: '请输入会话标题（可留空使用默认标题）',
     employeesAdd: '新增员工',
+    employeesDescribeNeed: '描述你需要的员工',
+    employeesDescribeNeedHint: '用自然语言说明职责、工作范围、输出方式和质量要求，系统会生成可编辑的员工档案。',
+    employeesDescribeNeedPlaceholder: '例如：我需要一名负责抖音短视频选题和脚本的员工，面向职场新人，输出有依据、可直接拍摄的内容。',
+    employeesGenerate: '生成员工',
+    employeesGenerating: '正在生成…',
+    employeesGeneratedHint: '已根据描述生成，可继续修改字段后保存。',
+    employeesGenerationRequired: '请先描述你需要的员工并生成档案。',
+    employeesManualInput: '使用手工输入',
+    employeesUseAiGeneration: '切换到 AI 生成',
     employeesAssignTask: '指派任务',
     employeesEdit: '编辑员工',
     employeesDelete: '删除员工',
@@ -788,7 +857,29 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowDuplicate: '复制工作流',
     workflowDelete: '删除工作流',
     workflowDeleteConfirm: (name) => `确定删除工作流“${name}”？已有运行记录会保留。`,
-    workflowSave: '保存工作流',
+    workflowSave: '保存',
+    workflowUndo: '撤销',
+    workflowRedo: '重做',
+    workflowContextMenu: '工作流画布菜单',
+    workflowDeleteNode: '删除节点',
+    workflowDeleteEdge: '删除连线',
+    workflowDeleteSelection: '删除选中内容',
+    workflowFitView: '适配画布',
+    workflowAlign: '对齐节点',
+    workflowAlignLeft: '左对齐',
+    workflowAlignCenterHorizontal: '水平居中',
+    workflowAlignRight: '右对齐',
+    workflowAlignTop: '顶端对齐',
+    workflowAlignCenterVertical: '垂直居中',
+    workflowAlignBottom: '底端对齐',
+    workflowDistribute: '平均排布',
+    workflowDistributeHorizontal: '水平平均排布',
+    workflowDistributeVertical: '垂直平均排布',
+    workflowCancelCreate: '取消创建',
+    workflowCancelEdit: '取消编辑',
+    workflowDeleted: '工作流已删除',
+    workflowUndoDelete: '撤销删除',
+    workflowRestored: '工作流已恢复',
     workflowSaved: '工作流已保存',
     workflowDismiss: '关闭提示',
     workflowLoading: '正在加载工作流…',
@@ -831,6 +922,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowModel: '模型',
     workflowUseDefaultModel: '使用默认模型',
     workflowModelHint: '不选择时使用设置中配置的默认模型。',
+    workflowRefreshModels: '刷新模型',
+    workflowRefreshingModels: '刷新中…',
+    workflowNoModels: '暂无可用模型，请检查供应商配置后刷新。',
     workflowCancelSetup: '取消',
     workflowNoLaunchInputs: '这个工作流没有配置输入节点，可直接开始运行。',
     workflowCancel: '取消运行',
@@ -844,13 +938,39 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowRunHistory: '运行记录',
     workflowNoRuns: '还没有运行记录。',
     workflowInput: '运行输入',
+    workflowNodeInput: '节点输入',
+    workflowNodeOutput: '节点输出',
+    workflowManualInput: '手工输入',
+    workflowInputFromUpstream: '来自上游节点',
+    workflowNodeNoInput: '该节点还没有输入数据。',
     workflowInputHint: '请输入这个输入节点的值。',
     workflowOutput: '运行输出',
+    workflowOutputViewLabel: '输出查看方式',
+    workflowOutputMarkdown: 'Markdown',
+    workflowCopyOutput: '复制结果',
+    workflowOpenOutputWindow: '在浮层中打开',
+    workflowOutputCopied: '结果已复制',
+    workflowDecreaseFont: '减小字体',
+    workflowIncreaseFont: '增大字体',
+    workflowHideRunSidebar: '隐藏运行记录',
+    workflowShowRunSidebar: '显示运行记录',
+    workflowResizeExecutionPanel: '调整结果区域高度',
+    workflowHistoryCount: (count) => `${count} 条历史记录`,
+    workflowUnviewedRuns: (count) => `${count} 条未查看的执行结果`,
+    workflowViewUnviewedRun: '查看未读结果',
+    workflowCloseOutputWindow: '关闭结果浮层',
+    workflowOutputWindow: '结果浮层',
+    workflowDragOutputWindow: '拖动查看窗口',
+    workflowExpandInput: '展开输入',
+    workflowCollapseInput: '收起输入',
+    workflowGoUpstream: '到上游',
     workflowGenerate: 'AI 生成',
-    workflowGenerateHint: '描述你想自动化的任务，AI 只生成可审阅的 Workflow JSON，不会直接执行。',
+    workflowGenerateHint: '描述你想自动化的任务，AI 会生成草稿并直接进入编辑器；确认后保存或取消，不会直接执行。',
     workflowGeneratePlaceholder: '例如：读取项目说明，交给智能处理节点总结，再把结果写入 summary.md',
     workflowGenerating: '正在生成…',
-    workflowGenerated: '已生成草稿，请检查节点后保存。',
+    workflowGenerated: '已生成工作流草稿，请确认后保存或取消。',
+    workflowGeneratedWithEmployees: (names) => `已生成工作流草稿，并自动创建专业员工：${names}。员工已保存，可直接在“员工”页查看。`,
+    workflowGeneratedEmployeeWarnings: (warnings) => `员工创建提示：${warnings}`,
     workflowAllowShellFile: '允许 Shell / 文件节点',
     workflowAllowShellFileHint: '运行前需要显式允许；文件路径仍被限制在当前工作区内。',
     workflowDebugRun: '调试运行',
@@ -1330,6 +1450,15 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     employeesCreatingSession: 'Creating session…',
     employeesSessionTitlePrompt: 'Enter a session title. Leave it empty to use the default title.',
     employeesAdd: 'New employee',
+    employeesDescribeNeed: 'Describe the employee you need',
+    employeesDescribeNeedHint: 'Describe the responsibilities, scope, outputs, and quality bar in natural language. The system will generate an editable employee profile.',
+    employeesDescribeNeedPlaceholder: 'For example: I need a short-form video strategist who creates evidence-based topics and shoot-ready scripts for early-career professionals.',
+    employeesGenerate: 'Generate employee',
+    employeesGenerating: 'Generating…',
+    employeesGeneratedHint: 'Generated from your description. Review or edit the fields before saving.',
+    employeesGenerationRequired: 'Describe the employee you need and generate a profile first.',
+    employeesManualInput: 'Enter manually',
+    employeesUseAiGeneration: 'Switch to AI generation',
     employeesAssignTask: 'Assign task',
     employeesEdit: 'Edit employee',
     employeesDelete: 'Delete employee',
@@ -1394,7 +1523,29 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowDuplicate: 'Duplicate workflow',
     workflowDelete: 'Delete workflow',
     workflowDeleteConfirm: (name) => `Delete workflow “${name}”? Existing run records will be kept.`,
-    workflowSave: 'Save workflow',
+    workflowSave: 'Save',
+    workflowUndo: 'Undo',
+    workflowRedo: 'Redo',
+    workflowContextMenu: 'Workflow canvas menu',
+    workflowDeleteNode: 'Delete node',
+    workflowDeleteEdge: 'Delete edge',
+    workflowDeleteSelection: 'Delete selection',
+    workflowFitView: 'Fit canvas',
+    workflowAlign: 'Align nodes',
+    workflowAlignLeft: 'Align left',
+    workflowAlignCenterHorizontal: 'Align center horizontally',
+    workflowAlignRight: 'Align right',
+    workflowAlignTop: 'Align top',
+    workflowAlignCenterVertical: 'Align center vertically',
+    workflowAlignBottom: 'Align bottom',
+    workflowDistribute: 'Distribute evenly',
+    workflowDistributeHorizontal: 'Distribute horizontally',
+    workflowDistributeVertical: 'Distribute vertically',
+    workflowCancelCreate: 'Cancel creation',
+    workflowCancelEdit: 'Cancel editing',
+    workflowDeleted: 'Workflow deleted',
+    workflowUndoDelete: 'Undo delete',
+    workflowRestored: 'Workflow restored',
     workflowSaved: 'Workflow saved',
     workflowDismiss: 'Dismiss notification',
     workflowLoading: 'Loading workflows…',
@@ -1437,6 +1588,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowModel: 'Model',
     workflowUseDefaultModel: 'Use default model',
     workflowModelHint: 'When no model is selected, the configured default model is used.',
+    workflowRefreshModels: 'Refresh models',
+    workflowRefreshingModels: 'Refreshing…',
+    workflowNoModels: 'No available models. Check provider settings and refresh.',
     workflowCancelSetup: 'Cancel',
     workflowNoLaunchInputs: 'This workflow has no Input nodes configured and can run immediately.',
     workflowCancel: 'Cancel run',
@@ -1450,13 +1604,39 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowRunHistory: 'Run history',
     workflowNoRuns: 'No run records yet.',
     workflowInput: 'Run input',
+    workflowNodeInput: 'Node input',
+    workflowNodeOutput: 'Node output',
+    workflowManualInput: 'Manual input',
+    workflowInputFromUpstream: 'From upstream node',
+    workflowNodeNoInput: 'This node has no input data yet.',
     workflowInputHint: 'Enter a value for this Input node.',
     workflowOutput: 'Run output',
+    workflowOutputViewLabel: 'Output view',
+    workflowOutputMarkdown: 'Markdown',
+    workflowCopyOutput: 'Copy result',
+    workflowOpenOutputWindow: 'Open in floating window',
+    workflowOutputCopied: 'Result copied',
+    workflowDecreaseFont: 'Decrease font size',
+    workflowIncreaseFont: 'Increase font size',
+    workflowHideRunSidebar: 'Hide run history',
+    workflowShowRunSidebar: 'Show run history',
+    workflowResizeExecutionPanel: 'Resize result area',
+    workflowHistoryCount: (count) => `${count} history record${count === 1 ? '' : 's'}`,
+    workflowUnviewedRuns: (count) => `${count} unviewed run${count === 1 ? '' : 's'}`,
+    workflowViewUnviewedRun: 'View unviewed result',
+    workflowCloseOutputWindow: 'Close result window',
+    workflowOutputWindow: 'Result window',
+    workflowDragOutputWindow: 'Drag result window',
+    workflowExpandInput: 'Expand input',
+    workflowCollapseInput: 'Collapse input',
+    workflowGoUpstream: 'Go upstream',
     workflowGenerate: 'Generate with AI',
-    workflowGenerateHint: 'Describe the task to automate. AI only creates a reviewable Workflow JSON; it never executes it directly.',
+    workflowGenerateHint: 'Describe the task to automate. AI creates a draft and opens it in the editor; save or cancel after review, and never executes it directly.',
     workflowGeneratePlaceholder: 'For example: read the project brief, summarize it with AI Processing, then write the result to summary.md',
     workflowGenerating: 'Generating…',
-    workflowGenerated: 'Draft generated. Review the nodes before saving.',
+    workflowGenerated: 'Workflow draft generated. Review it, then save or cancel.',
+    workflowGeneratedWithEmployees: (names) => `Workflow draft generated and professional employees created: ${names}. They are saved and visible on the Employees page.`,
+    workflowGeneratedEmployeeWarnings: (warnings) => `Employee creation notice: ${warnings}`,
     workflowAllowShellFile: 'Allow Shell / File nodes',
     workflowAllowShellFileHint: 'Explicit permission is required before a run; file paths remain confined to the workspace.',
     workflowDebugRun: 'Debug run',

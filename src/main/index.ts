@@ -83,7 +83,7 @@ import type { MobileRemoteSnapshot } from '../shared/mobile-remote.js'
 import { ExternalServiceManager } from './external-services/external-service-manager.js'
 import type { ExternalServiceCreateInput, ExternalServiceUpdateInput } from '../shared/external-services.js'
 import { EmployeeService } from './employees/employee-service.js'
-import type { EmployeeCreateInput, EmployeeProjectSummary, EmployeeRunRequest, EmployeeSessionLock, EmployeeSessionSummary, EmployeeUpdateInput } from '../shared/employees.js'
+import type { EmployeeCreateInput, EmployeeGenerateRequest, EmployeeProjectSummary, EmployeeRunRequest, EmployeeSessionLock, EmployeeSessionSummary, EmployeeUpdateInput } from '../shared/employees.js'
 import { WorkflowStore } from './workflow/workflow-store.js'
 import { WorkflowRunStore } from './workflow/workflow-run-store.js'
 import { WorkflowRunService } from './workflow/workflow-run-service.js'
@@ -551,6 +551,8 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   employeeService = new EmployeeService({
     configPath: join(layout.state, 'employees.json'),
     cwd: layout.root,
+    lightweightClient,
+    getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
     createClient: createWorkflowSessionClient,
   })
   await employeeService.initialize().catch((error: unknown) => {
@@ -568,6 +570,12 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     workspaceRoot: layout.root,
     createClient: createWorkflowSessionClient,
     resolveEmployee: (id) => employeeService?.get(id),
+    listEmployees: () => employeeService?.list() ?? [],
+    createEmployee: (input) => {
+      if (employeeService === undefined) throw new Error('员工服务尚未就绪')
+      return employeeService.create(input)
+    },
+    getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
     lightweightClient,
     mcpClient: new WorkflowMcpClient({ patchPath: join(layout.harness, 'profiles', 'web', 'cordis.patch.yml') }),
     internalSessionStore: new WorkflowInternalSessionStore(layout.state),
@@ -1032,10 +1040,11 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
-  ipcMain.handle('providers:list-workflow-models', async (): Promise<IpcResult<Awaited<ReturnType<ProviderService['listWorkflowModels']>>>> => {
+  ipcMain.handle('providers:list-workflow-models', async (_event, refresh = false): Promise<IpcResult<Awaited<ReturnType<ProviderService['listWorkflowModels']>>>> => {
     try {
       if (providerService === undefined) throw new Error('Provider service is not ready')
-      return success(await providerService.listWorkflowModels())
+      if (typeof refresh !== 'boolean') throw new Error('刷新参数无效')
+      return success(await providerService.listWorkflowModels(refresh))
     } catch (error) {
       return failure(error)
     }
@@ -1187,6 +1196,7 @@ function registerIpcHandlers(): void {
       if (locale !== 'zh' && locale !== 'en') throw new Error(`Unsupported locale: ${String(locale)}`)
       if (localeService === undefined || userDataLayout === undefined) throw new Error('Locale service is not ready')
       await writeDshLocale(join(userDataLayout.harness, 'settings.yaml'), locale)
+      await localeService.reload()
       return success(undefined)
     } catch (error) {
       return failure(error)
@@ -1429,6 +1439,15 @@ function registerIpcHandlers(): void {
       if (employeeService === undefined) throw new Error('Employee service is not ready')
       await employeeService.forceUnlockSession(sessionId)
       return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:generate', async (_event, request: EmployeeGenerateRequest): Promise<IpcResult<Awaited<ReturnType<EmployeeService['generate']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      return success(await employeeService.generate(request))
     } catch (error) {
       return failure(error)
     }

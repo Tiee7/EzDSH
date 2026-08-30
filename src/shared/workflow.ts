@@ -1,4 +1,6 @@
 /** The persisted workflow document format. Keep this independent from React Flow. */
+import type { EmployeeSnapshot } from './employees.js'
+
 export const WORKFLOW_SCHEMA_VERSION = 2 as const
 
 export const WORKFLOW_NODE_TYPES = [
@@ -166,6 +168,8 @@ export interface WorkflowNodeRunState {
   status: WorkflowNodeRunStatus
   startedAt?: string
   completedAt?: string
+  /** The resolved value passed into this node, retained for run inspection. */
+  input?: WorkflowValue
   output?: WorkflowValue
   error?: string
 }
@@ -223,6 +227,16 @@ export interface WorkflowModelOption extends WorkflowModelSelection {
 export interface WorkflowGenerateRequest {
   prompt: string
   name?: string
+  /** Whether the generator may create missing employees for the workflow. Defaults to true. */
+  createEmployees?: boolean
+}
+
+/** Result of an AI workflow generation, including any employees created on the way. */
+export interface WorkflowGenerateResult {
+  workflow: WorkflowDefinition
+  createdEmployees: EmployeeSnapshot[]
+  /** Non-fatal warnings from the employee planning/creation phase. */
+  employeeWarnings?: string[]
 }
 
 export interface WorkflowValidationIssue {
@@ -233,6 +247,18 @@ export interface WorkflowValidationIssue {
 export interface WorkflowValidationResult {
   valid: boolean
   issues: WorkflowValidationIssue[]
+}
+
+/** Convert a low-level schema path into an actionable product-facing error. */
+export function formatWorkflowValidationIssues(workflow: WorkflowDefinition, issues: WorkflowValidationIssue[], action: string): string {
+  return issues.map((issue) => {
+    const nodeMatch = issue.path.match(/^nodes\.(\d+)(?:\.|$)/u)
+    const nodeIndex = nodeMatch?.[1] === undefined ? undefined : Number(nodeMatch[1])
+    const node = nodeIndex === undefined ? undefined : workflow.nodes[nodeIndex]
+    if (node !== undefined) return `Workflow「${workflow.name}」· ${action} · 节点「${node.label}」（类型：${node.type}，ID：${node.id}）· 配置路径：${issue.path} · ${issue.message}`
+    const target = issue.path === '' ? '工作流文档' : `字段「${issue.path}」`
+    return `Workflow「${workflow.name}」· ${action} · ${target} · ${issue.message}`
+  }).join('\n')
 }
 
 export function isWorkflowNodeType(value: unknown): value is WorkflowNodeType {

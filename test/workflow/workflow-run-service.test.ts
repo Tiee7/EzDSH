@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { WorkflowRunService } from '../../src/main/workflow/workflow-run-service.js'
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
-import type { EmployeeSnapshot } from '../../src/shared/employees.js'
+import type { EmployeeCreateInput, EmployeeSnapshot } from '../../src/shared/employees.js'
 import type { WorkflowDefinition, WorkflowNode, WorkflowOutputMode } from '../../src/shared/workflow.js'
 
 function graph(): WorkflowDefinition {
@@ -129,6 +129,7 @@ describe('workflow run service', () => {
 
     expect(result.status).toBe('completed')
     expect(result.output).toEqual({ decision: 'approve', issues: [] })
+    expect(result.nodeStates.find((state) => state.nodeId === 'employee')?.input).toEqual({ script: '内容' })
     expect(sendPrompt).toHaveBeenCalledWith('session-node', expect.stringContaining('只审核内容'))
     expect(sendPrompt).toHaveBeenCalledWith('session-node', expect.stringContaining('事实有依据'))
     await vi.waitFor(() => expect(archiveSession).toHaveBeenCalledWith('session-node'))
@@ -281,6 +282,104 @@ describe('workflow run service', () => {
     const disabledResult = await eventually(disabled.service, (await disabled.service.start(disabled.workflowId, {})).id)
     expect(disabledResult.status).toBe('failed')
     expect(disabledResult.error).toContain('content-reviewer')
+  })
+
+  it('includes existing employees in AI workflow generation context and returns an editable draft', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-generation-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const complete = vi.fn(async () => JSON.stringify({
+      name: '生成工作流', description: '', nodes: [
+        { id: 'input', type: 'input', label: '输入', config: {}, position: { x: 0, y: 0 } },
+        { id: 'employee-node', type: 'employee', label: '内容审核员', config: { employeeId: 'content-reviewer', instruction: '', outputMode: 'text' }, position: { x: 200, y: 0 } },
+      ], edges: [],
+    }))
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => reviewer(),
+      listEmployees: () => [reviewer()],
+      lightweightClient: { complete },
+    })
+
+    const generated = await service.generate({ prompt: '生成内容审核流程' })
+
+    expect(generated.workflow.nodes.some((node) => node.type === 'employee' && node.config.employeeId === 'content-reviewer')).toBe(true)
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: expect.stringContaining('content-reviewer') }))
+  })
+
+  it('plans and creates missing employees before generating the workflow', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-generation-employees-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const createEmployee = vi.fn(async (input: EmployeeCreateInput) => ({
+      schemaVersion: 2,
+      version: 1,
+      id: `employee-${input.name}`,
+      name: input.name,
+      role: input.role,
+      description: input.description,
+      businessBoundary: input.businessBoundary,
+      systemPrompt: input.systemPrompt,
+      operatingGuidelines: input.operatingGuidelines,
+      qualityStandards: input.qualityStandards,
+      capabilities: input.capabilities,
+      skillIds: input.skillIds,
+      enabled: true,
+      builtIn: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }))
+    const complete = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({ employees: [{ name: '财务分析师', role: '分析师', systemPrompt: '分析财务数据并给出建议', capabilities: ['research'] }] }))
+      .mockResolvedValueOnce(JSON.stringify({
+        name: '分析工作流', description: '', nodes: [
+          { id: 'input', type: 'input', label: '输入', config: {}, position: { x: 0, y: 0 } },
+          { id: 'employee-node', type: 'employee', label: '财务分析师', config: { employeeId: 'employee-财务分析师', instruction: '分析财报', outputMode: 'text' }, position: { x: 200, y: 0 } },
+        ], edges: [],
+      }))
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      listEmployees: () => [],
+      createEmployee,
+      lightweightClient: { complete },
+    })
+
+    const generated = await service.generate({ prompt: '为上市公司生成财务分析工作流' })
+
+    expect(createEmployee).toHaveBeenCalledTimes(1)
+    expect(createEmployee).toHaveBeenCalledWith(expect.objectContaining({ name: '财务分析师', role: '分析师' }))
+    expect(generated.createdEmployees).toHaveLength(1)
+    expect(generated.createdEmployees[0]?.id).toBe('employee-财务分析师')
+    expect(generated.workflow.nodes.some((node) => node.type === 'employee' && node.config.employeeId === 'employee-财务分析师')).toBe(true)
+    expect(complete).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps generating the workflow when employee creation is not wired', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-generation-no-create-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const complete = vi.fn(async () => JSON.stringify({
+      name: '简单工作流', description: '', nodes: [
+        { id: 'input', type: 'input', label: '输入', config: {}, position: { x: 0, y: 0 } },
+        { id: 'ai-task', type: 'ai-task', label: '处理', config: { instruction: '总结输入', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: '输出', config: {}, position: { x: 400, y: 0 } },
+      ], edges: [],
+    }))
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workspaceRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      lightweightClient: { complete },
+    })
+
+    const generated = await service.generate({ prompt: '简单总结任务' })
+
+    expect(generated.createdEmployees).toHaveLength(0)
+    expect(generated.workflow.nodes.some((node) => node.type === 'ai-task')).toBe(true)
+    expect(complete).toHaveBeenCalledTimes(1)
   })
 
   it('executes a condition branch and checkpoints each node', async () => {
