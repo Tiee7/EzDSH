@@ -388,11 +388,9 @@ describe('workflow run service', () => {
     const runStore = new WorkflowRunStore(dir)
     const complete = vi.fn(async () => JSON.stringify({
       name: '公司分析', description: '', nodes: [
-        { id: 'input', type: 'input', label: '公司名称', config: {}, position: { x: 0, y: 0 } },
         { id: 'identify-company', type: 'employee', label: '识别企业', config: { employeeId: '', instruction: '', outputMode: 'text' }, position: { x: 0, y: 0 } },
         { id: 'status-condition', type: 'condition', label: '是否上市', config: { operator: 'is-public' }, position: { x: 0, y: 0 } },
         { id: 'public-analysis', type: 'employee', label: '上市公司财务分析', config: { employeeId: 'made-up-analyst', instruction: '', outputMode: 'text' }, position: { x: 0, y: 0 } },
-        { id: 'output', type: 'output', label: '分析报告', config: {}, position: { x: 0, y: 0 } },
       ], edges: [],
     }))
     const service = new WorkflowRunService({
@@ -406,6 +404,8 @@ describe('workflow run service', () => {
     const generated = await service.generate({ prompt: '分析一家企业' })
 
     expect(validateWorkflow(generated.workflow)).toEqual({ valid: true, issues: [] })
+    expect(generated.workflow.nodes[0]).toMatchObject({ type: 'input', label: '输入' })
+    expect(generated.workflow.nodes.at(-1)).toMatchObject({ type: 'output', label: '最终输出' })
     expect(generated.workflow.nodes.filter((node) => node.type === 'employee')).toHaveLength(0)
     expect(generated.workflow.nodes.find((node) => node.id === 'status-condition')).toMatchObject({ config: { operator: 'truthy' } })
     expect(generated.workflow.edges).toHaveLength(generated.workflow.nodes.length - 1)

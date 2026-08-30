@@ -771,9 +771,27 @@ function repairGeneratedEdges(nodes: WorkflowNode[], edges: WorkflowEdge[]): Wor
   return repaired
 }
 
+function generatedTerminalNodeId(nodes: WorkflowNode[], base: string): string {
+  const existingIds = new Set(nodes.map((node) => node.id))
+  if (!existingIds.has(base)) return base
+  let suffix = 2
+  while (existingIds.has(`${base}-${suffix}`)) suffix += 1
+  return `${base}-${suffix}`
+}
+
+/** Generated workflows always have a runnable input and a visible final result. */
+function ensureGeneratedTerminalNodes(nodes: WorkflowNode[]): WorkflowNode[] {
+  const withInput = nodes.some((node) => node.type === 'input')
+    ? nodes
+    : [{ id: generatedTerminalNodeId(nodes, 'input'), type: 'input' as const, label: '输入', config: { name: 'task' }, position: { x: 0, y: 0 } }, ...nodes]
+  return withInput.some((node) => node.type === 'output')
+    ? withInput
+    : [...withInput, { id: generatedTerminalNodeId(withInput, 'output'), type: 'output' as const, label: '最终输出', config: {}, position: { x: 0, y: 0 } }]
+}
+
 function repairGeneratedWorkflow(workflow: WorkflowDefinition, catalog: EmployeeCatalogEntry[]): { workflow: WorkflowDefinition; warnings: string[] } {
   const warnings: string[] = []
-  const nodes = workflow.nodes.map((node) => repairGeneratedNode(node, catalog, warnings))
+  const nodes = ensureGeneratedTerminalNodes(workflow.nodes.map((node) => repairGeneratedNode(node, catalog, warnings)))
   return { workflow: { ...workflow, nodes, edges: repairGeneratedEdges(nodes, workflow.edges) }, warnings }
 }
 
@@ -781,7 +799,7 @@ function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[]): string 
   return [
     '你是 Workflow 架构助手。根据用户描述生成一个可审阅的 JSON 工作流文档。',
     '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
-    '文档必须包含 name、description、nodes、edges；每个 nodes 项必须有唯一的 id、type、label、config、position（{ "x": 数字, "y": 数字 }）；每个 edges 项必须有唯一的 id、source、target。source 和 target 必须是 nodes 中已有的 id。edges 必须表达所有前后依赖，不能留空（只有一个节点时例外），不能有循环。节点与连线结构遵循 docs/workflow-schema.md 中的 Workflow Schema v2。',
+    '文档必须包含 name、description、nodes、edges；nodes 必须包含一个 input 输入节点和一个 output 最终输出节点。每个 nodes 项必须有唯一的 id、type、label、config、position（{ "x": 数字, "y": 数字 }）；每个 edges 项必须有唯一的 id、source、target。source 和 target 必须是 nodes 中已有的 id。edges 必须表达所有前后依赖，不能留空（只有一个节点时例外），不能有循环。节点与连线结构遵循 docs/workflow-schema.md 中的 Workflow Schema v2。',
     'ai-task 用于轻量内联智能处理；employee 必须引用目录中真实存在的 employeeId，并填写非空 instruction；目录中不存在的员工 ID 禁止出现在 employee 节点中。如果目录中没有任何员工适合该职责，使用 ai-task 而不是编造员工。禁止输出旧版 agent 节点。',
     'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds（数组）和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；transform.template 只能是 identity、json、extract-text、prepend、append。',
     '只有用户明确提供了 MCP 工具名时才生成 MCP 节点，否则使用 ai-task 或 employee，不要生成空 tool。',
