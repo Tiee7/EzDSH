@@ -705,6 +705,15 @@ export function focusWorkflowOutputWindow(windows: ReadonlyArray<WorkflowOutputW
   return windows.map((window) => window.id === id ? { ...window, zIndex } : window)
 }
 
+/** Opened result windows always receive a stacking order above every existing window. */
+export function openWorkflowOutputWindow(windows: ReadonlyArray<WorkflowOutputWindowState>, id: string, title: string, value: WorkflowValue): WorkflowOutputWindowState[] {
+  const existing = windows.find((window) => window.id === id)
+  const next = existing === undefined
+    ? [...windows, createWorkflowOutputWindowState(id, title, value, windows.length)]
+    : windows.map((window) => window.id === id ? { ...window, title, value } : window)
+  return focusWorkflowOutputWindow(next, id)
+}
+
 function WorkflowOutputFloatingWindow({ copy, item, index, fontScale, onClose, onCopy, onMove, onFocus, onIncreaseFont, onDecreaseFont }: WorkflowOutputFloatingWindowsProps & { item: WorkflowOutputWindowState; index: number }): JSX.Element {
   const defaultPosition = useMemo(() => createWorkflowOutputWindowState(item.id, item.title, item.value, index).position, [index, item.id, item.title, item.value])
   const [fallbackPosition, setFallbackPosition] = useState(defaultPosition)
@@ -1715,11 +1724,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const openOutputWindow = (key: string, title: string, value: WorkflowValue): void => {
     const windowId = `${currentRun?.id ?? 'run'}:${key}`
-    setOutputWindows((current) => {
-      const existing = current.find((item) => item.id === windowId)
-      if (existing === undefined) return [...current, createWorkflowOutputWindowState(windowId, title, value, current.length)]
-      return focusWorkflowOutputWindow(current.map((item) => item.id === windowId ? { ...item, title, value } : item), windowId)
-    })
+    setOutputWindows((current) => openWorkflowOutputWindow(current, windowId, title, value))
   }
 
   const copyOutput = (): void => setMessage(copy.workflowOutputCopied)
@@ -1995,9 +2000,13 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} allowShellFile={runSetup.allowShellFile} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
       {contextMenu ? <WorkflowContextMenu copy={copy} target={contextMenu.target} x={contextMenu.x} y={contextMenu.y} selectedNodeCount={(contextMenu.target === 'canvas' || contextMenu.target === 'selection' || (contextMenu.nodeId !== undefined && nodes.some((node) => node.id === contextMenu.nodeId && node.selected === true))) ? nodes.filter((node) => node.selected === true).length : 0} canUndo={(history?.past.length ?? 0) > 0} canRedo={(history?.future.length ?? 0) > 0} busy={busy} runDisabled={currentRun?.status === 'running'} cancelLabel={draft ? copy.workflowCancelCreate : copy.workflowCancelEdit} onUndo={() => { dismissContextMenu(); undo(); focusWorkflowCanvas() }} onRedo={() => { dismissContextMenu(); redo(); focusWorkflowCanvas() }} onCopy={() => { copySelectedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} onPaste={() => { pasteCopiedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} canPaste={copiedWorkflowNodesRef.current.length > 0} onDelete={deleteContextMenuSelection} onAlign={alignSelectedNodes} onFitView={fitViewFromContextMenu} onSave={saveFromContextMenu} onRun={runFromContextMenu} onCancel={() => { dismissContextMenu(); exitWorkspace() }} /> : null}
       {message ? <WorkflowToast message={message} copy={copy} actionLabel={deletedWorkflow === undefined ? undefined : copy.workflowUndoDelete} onAction={deletedWorkflow === undefined ? undefined : () => void restoreDeletedWorkflow()} onDismiss={() => setMessage('')} /> : null}
-      {error ? <div className="workflow-error-banner" role="alert">{error}</div> : null}
+      {error ? <WorkflowErrorBanner message={error} copy={copy} onDismiss={() => setError('')} /> : null}
     </div>
   )
+}
+
+export function WorkflowErrorBanner({ message, copy, onDismiss }: { message: string; copy: AppCopy; onDismiss: () => void }): JSX.Element {
+  return <div className="workflow-error-banner" role="alert"><span>{message}</span><button type="button" aria-label={copy.workflowDismiss} title={copy.workflowDismiss} onClick={onDismiss}>×</button></div>
 }
 
 function OutputModeField({ copy, value, onChange }: { copy: AppCopy; value: WorkflowOutputMode; onChange: (value: WorkflowOutputMode) => void }): JSX.Element {

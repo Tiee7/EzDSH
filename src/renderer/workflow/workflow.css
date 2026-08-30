@@ -282,7 +282,9 @@
 .workflow-toast { top: 66px; display: flex; align-items: center; gap: 10px; color: var(--ezdsh-accent-green); }
 .workflow-toast button { border: 0 !important; padding: 0 !important; background: transparent !important; color: inherit; font-size: 16px; line-height: 1; }
 .workflow-toast button.workflow-toast-action { color: var(--ezdsh-brand); font-size: 11px; font-weight: 750; }
-.workflow-error-banner { bottom: 18px; max-width: min(560px, calc(100vw - 40px)); color: var(--ezdsh-accent-red); }
+.workflow-error-banner { bottom: 18px; display: flex; align-items: flex-start; gap: 10px; max-width: min(560px, calc(100vw - 40px)); color: var(--ezdsh-accent-red); }
+.workflow-error-banner span { min-width: 0; overflow-wrap: anywhere; }
+.workflow-error-banner button { flex: none; border: 0 !important; padding: 0 !important; background: transparent !important; color: inherit !important; font-size: 18px !important; line-height: 1; }
 
 @media (max-width: 1180px) {
   .workflow-browser-header, .workflow-browser-content { padding-left: 24px; padding-right: 24px; }

@@ -501,6 +501,16 @@ describe('WorkflowPage regressions', () => {
     expect(focused.find((window) => window.id === 'first')?.zIndex).toBeGreaterThan(focused.find((window) => window.id === 'second')?.zIndex ?? 0)
   })
 
+  it('opens a new result window above every previously focused window', () => {
+    const first = workflowPage.createWorkflowOutputWindowState('first', '第一个', 'first', 0)
+    const second = workflowPage.createWorkflowOutputWindowState('second', '第二个', 'second', 1)
+    const previouslyFocused = workflowPage.focusWorkflowOutputWindow([first, second], 'first')
+
+    const opened = workflowPage.openWorkflowOutputWindow(previouslyFocused, 'third', '第三个', 'third')
+
+    expect(opened.find((window) => window.id === 'third')?.zIndex).toBeGreaterThan(Math.max(...previouslyFocused.map((window) => window.zIndex ?? 0)))
+  })
+
   it('uses status-specific colors in the minimap and provides a map toggle component', () => {
     expect(workflowPage.workflowMiniMapNodeColor('completed')).toBe('#1f8a5c')
     expect(workflowPage.workflowMiniMapNodeColor('failed')).toBe('#c2453a')
@@ -588,6 +598,15 @@ describe('WorkflowPage regressions', () => {
     )
 
     expect(markup).toContain('工作流已保存')
+    expect(markup).toContain('关闭提示')
+  })
+
+  it('renders a dismiss action for workflow errors', () => {
+    const markup = renderToStaticMarkup(
+      <workflowPage.WorkflowErrorBanner message="保存失败" copy={getAppCopy('zh')} onDismiss={vi.fn()} />,
+    )
+
+    expect(markup).toContain('保存失败')
     expect(markup).toContain('关闭提示')
   })
 
