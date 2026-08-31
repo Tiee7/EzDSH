@@ -207,6 +207,7 @@
 .workflow-canvas .workflow-flow-node-running .workflow-flow-node, .workflow-execution-canvas .workflow-flow-node-running .workflow-flow-node, .workflow-canvas .workflow-flow-node-running .workflow-condition-node, .workflow-execution-canvas .workflow-flow-node-running .workflow-condition-node { border-style: dashed; }
 .workflow-canvas .workflow-flow-node-completed .workflow-flow-node, .workflow-execution-canvas .workflow-flow-node-completed .workflow-flow-node, .workflow-canvas .workflow-flow-node-completed .workflow-condition-node, .workflow-execution-canvas .workflow-flow-node-completed .workflow-condition-node { border-color: var(--ezdsh-accent-green); }
 .workflow-canvas .workflow-flow-node-failed .workflow-flow-node, .workflow-execution-canvas .workflow-flow-node-failed .workflow-flow-node, .workflow-canvas .workflow-flow-node-failed .workflow-condition-node, .workflow-execution-canvas .workflow-flow-node-failed .workflow-condition-node { border-color: var(--ezdsh-accent-red); }
+.workflow-canvas .workflow-flow-node-validation-error .workflow-flow-node, .workflow-canvas .workflow-flow-node-validation-error .workflow-condition-node { border-color: var(--ezdsh-accent-red); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ezdsh-accent-red) 22%, transparent), 0 6px 18px rgba(15, 25, 40, .08); }
 .workflow-canvas .workflow-flow-node-skipped, .workflow-execution-canvas .workflow-flow-node-skipped { opacity: .55; }
 .workflow-node-running-indicator { position: absolute; bottom: 7px; left: 8px; display: inline-flex; align-items: center; gap: 4px; color: var(--ezdsh-accent-orange); font-size: 9px; font-weight: 700; line-height: 1; }
 .workflow-node-running-indicator i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: workflow-node-running-dot .9s ease-in-out infinite; }
@@ -278,6 +279,9 @@
 .workflow-node-inspector-tabs button.workflow-node-inspector-tab-active { color: var(--ezdsh-text-heading); }
 .workflow-node-inspector-tabs button.workflow-node-inspector-tab-active::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; border-radius: 99px; background: var(--ezdsh-brand); content: ''; }
 .workflow-node-inspector-settings { min-height: 0; overflow: auto; padding: 4px 18px 24px; }
+.workflow-node-inspector-card.workflow-node-inspector-has-error .workflow-node-inspector-header { border-left: 3px solid var(--ezdsh-accent-red); padding-left: 15px; }
+.workflow-node-inspector-settings.workflow-node-inspector-settings-invalid { border-left: 3px solid var(--ezdsh-accent-red); padding-left: 15px; }
+.workflow-invalid-field { border-color: var(--ezdsh-accent-red) !important; box-shadow: 0 0 0 2px color-mix(in srgb, var(--ezdsh-accent-red) 18%, transparent) !important; }
 .workflow-node-inspector-settings > label { margin: 14px 0; }
 .workflow-node-inspector-settings > .workflow-variable-editor { margin-right: 0; margin-left: 0; }
 .workflow-node-last-run-empty { margin: 20px 18px; color: var(--ezdsh-text-faint); font-size: 11px; line-height: 1.5; }
@@ -290,6 +294,7 @@
 .workflow-prompt-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; color: var(--ezdsh-text-muted); font-size: 11px; }
 .workflow-prompt-field-heading > span:last-child { color: var(--ezdsh-text-faint); font-size: 10px; }
 .workflow-prompt-editor { overflow: visible; border: 2px solid var(--ezdsh-brand); border-radius: 10px; background: var(--ezdsh-panel-background); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ezdsh-brand) 12%, transparent); }
+.workflow-prompt-editor.workflow-invalid-field-container { border-color: var(--ezdsh-accent-red); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ezdsh-accent-red) 18%, transparent); }
 .workflow-prompt-editor textarea { display: block; min-height: 132px; border: 0; border-radius: 9px 9px 0 0; padding: 12px; background: transparent; box-shadow: none !important; resize: vertical; }
 .workflow-prompt-editor textarea:focus { box-shadow: none !important; }
 .workflow-prompt-editor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; border-top: 1px solid var(--ezdsh-panel-border); padding: 5px 7px 5px 10px; color: var(--ezdsh-text-faint); font-size: 10px; }

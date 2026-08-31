@@ -906,62 +906,65 @@ export function interpolateWorkflowVariables(template: string, variables: Record
 }
 
 function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowValidationIssue[]): void {
-  const add = (message: string): void => { issues.push({ path, message }) }
+  const add = (message: string, field?: string): void => { issues.push({ path: field === undefined ? path : `${path}.${field}`, message }) }
   switch (node.type) {
     case 'ai-task':
-      if (node.config.instruction.trim() === '') add('智能处理指令不能为空。')
-      if (node.config.mode !== 'single' && node.config.mode !== 'autonomous') add('智能处理执行模式无效。')
-      if (node.config.outputMode !== 'text' && node.config.outputMode !== 'json') add('智能处理输出格式无效。')
-      if (node.config.skillIds.some((id) => id.trim() === '' || /\s/u.test(id))) add('技能 ID 不能为空或包含空格。')
+      if (node.config.instruction.trim() === '') add('智能处理指令不能为空。', 'instruction')
+      if (node.config.mode !== 'single' && node.config.mode !== 'autonomous') add('智能处理执行模式无效。', 'mode')
+      if (node.config.outputMode !== 'text' && node.config.outputMode !== 'json') add('智能处理输出格式无效。', 'outputMode')
+      if (node.config.skillIds.some((id) => id.trim() === '' || /\s/u.test(id))) add('技能 ID 不能为空或包含空格。', 'skillIds')
       break
     case 'employee':
-      if (node.config.employeeId.trim() === '' || /\s/u.test(node.config.employeeId)) add('专业员工节点需要有效的员工 ID。')
-      if (node.config.instruction.trim() === '') add('专业员工节点指令不能为空。')
-      if (node.config.outputMode !== 'text' && node.config.outputMode !== 'json') add('专业员工输出格式无效。')
+      if (node.config.employeeId.trim() === '' || /\s/u.test(node.config.employeeId)) add('专业员工节点需要有效的员工 ID。', 'employeeId')
+      if (node.config.instruction.trim() === '') add('专业员工节点指令不能为空。', 'instruction')
+      if (node.config.outputMode !== 'text' && node.config.outputMode !== 'json') add('专业员工输出格式无效。', 'outputMode')
       break
-    case 'skill': if (node.config.skillId.trim() === '' || node.config.instruction.trim() === '') add('Skill 节点需要 skill ID 和指令。'); break
+    case 'skill':
+      if (node.config.skillId.trim() === '') add('Skill 节点需要 skill ID。', 'skillId')
+      if (node.config.instruction.trim() === '') add('Skill 节点需要指令。', 'instruction')
+      break
     case 'mcp':
-      if (node.config.tool.trim() === '') add('MCP 节点需要工具名。')
-      if (node.config.arguments !== undefined && !isWorkflowValue(node.config.arguments)) add('MCP 参数必须是 JSON 兼容对象。')
+      if (node.config.tool.trim() === '') add('MCP 节点需要工具名。', 'tool')
+      if (node.config.arguments !== undefined && !isWorkflowValue(node.config.arguments)) add('MCP 参数必须是 JSON 兼容对象。', 'arguments')
       break
-    case 'parallel': if (node.config.instructions.length === 0 || node.config.instructions.some((instruction) => instruction.trim() === '')) add('并行处理节点至少需要一条非空指令。'); break
-    case 'loop': if (node.config.instruction.trim() === '') add('循环处理节点指令不能为空。'); if (node.config.maxIterations !== undefined && (!Number.isInteger(node.config.maxIterations) || node.config.maxIterations < 1 || node.config.maxIterations > 100)) add('循环处理最大迭代次数必须是 1 到 100。'); break
-    case 'condition': if (!['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'].includes(node.config.operator)) add('条件判断操作符无效。'); break
-    case 'approval': if (node.config.message.trim() === '') add('人工审批节点需要审批提示。'); break
-    case 'transform': if (!['identity', 'json', 'extract-text', 'prepend', 'append'].includes(node.config.template)) add('数据转换模板无效。'); break
+    case 'parallel': if (node.config.instructions.length === 0 || node.config.instructions.some((instruction) => instruction.trim() === '')) add('并行处理节点至少需要一条非空指令。', 'instructions'); break
+    case 'loop': if (node.config.instruction.trim() === '') add('循环处理节点指令不能为空。', 'instruction'); if (node.config.maxIterations !== undefined && (!Number.isInteger(node.config.maxIterations) || node.config.maxIterations < 1 || node.config.maxIterations > 100)) add('循环处理最大迭代次数必须是 1 到 100。', 'maxIterations'); break
+    case 'condition': if (!['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'].includes(node.config.operator)) add('条件判断操作符无效。', 'operator'); break
+    case 'approval': if (node.config.message.trim() === '') add('人工审批节点需要审批提示。', 'message'); break
+    case 'transform': if (!['identity', 'json', 'extract-text', 'prepend', 'append', 'replace', 'text'].includes(node.config.template)) add('数据转换模板无效。', 'template'); break
     case 'shell':
-      if (node.config.command.trim() === '') add('Shell 命令不能为空。')
-      if (/[[\]{}();|&<>`$\\]/u.test(node.config.command)) add('Shell 命令包含不允许的控制字符；执行使用 shell:false。')
-      if (node.config.args.some((arg) => /[\r\n]/u.test(arg))) add('Shell 参数不能包含换行。')
+      if (node.config.command.trim() === '') add('Shell 命令不能为空。', 'command')
+      if (/[[\]{}();|&<>`$\\]/u.test(node.config.command)) add('Shell 命令包含不允许的控制字符；执行使用 shell:false。', 'command')
+      if (node.config.args.some((arg) => /[\r\n]/u.test(arg))) add('Shell 参数不能包含换行。', 'args')
       break
     case 'file':
-      if (node.config.path.trim() === '' || node.config.path.startsWith('/') || /^[a-zA-Z]:[\\/]/u.test(node.config.path)) add('File 路径必须是工作区内的相对路径。')
-      if (node.config.operation !== 'read' && node.config.operation !== 'write') add('File 操作必须是 read 或 write。')
+      if (node.config.path.trim() === '' || node.config.path.startsWith('/') || /^[a-zA-Z]:[\\/]/u.test(node.config.path)) add('File 路径必须是工作区内的相对路径。', 'path')
+      if (node.config.operation !== 'read' && node.config.operation !== 'write') add('File 操作必须是 read 或 write。', 'operation')
       break
     case 'http': {
-      if (node.config.url.trim() === '') add('HTTP 请求 URL 不能为空。')
+      if (node.config.url.trim() === '') add('HTTP 请求 URL 不能为空。', 'url')
       else {
         try {
           const url = new URL(node.config.url)
-          if (url.protocol !== 'http:' && url.protocol !== 'https:') add('HTTP 请求只允许 http 或 https URL。')
-        } catch { add('HTTP 请求 URL 无效。') }
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') add('HTTP 请求只允许 http 或 https URL。', 'url')
+        } catch { add('HTTP 请求 URL 无效。', 'url') }
       }
-      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(node.config.method)) add('HTTP 请求方法无效。')
-      if (!['auto', 'json', 'text'].includes(node.config.responseMode)) add('HTTP 响应格式无效。')
-      if (node.config.query !== undefined && (!isWorkflowValue(node.config.query) || Array.isArray(node.config.query))) add('HTTP 查询参数必须是 JSON 对象。')
-      if (node.config.timeoutMs !== undefined && (!Number.isInteger(node.config.timeoutMs) || node.config.timeoutMs < 1_000 || node.config.timeoutMs > 600_000)) add('HTTP 请求超时必须是 1000 到 600000 毫秒。')
+      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(node.config.method)) add('HTTP 请求方法无效。', 'method')
+      if (!['auto', 'json', 'text'].includes(node.config.responseMode)) add('HTTP 响应格式无效。', 'responseMode')
+      if (node.config.query !== undefined && (!isWorkflowValue(node.config.query) || Array.isArray(node.config.query))) add('HTTP 查询参数必须是 JSON 对象。', 'query')
+      if (node.config.timeoutMs !== undefined && (!Number.isInteger(node.config.timeoutMs) || node.config.timeoutMs < 1_000 || node.config.timeoutMs > 600_000)) add('HTTP 请求超时必须是 1000 到 600000 毫秒。', 'timeoutMs')
       for (const [name, value] of Object.entries(node.config.headers)) {
-        if (name.trim() === '' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(name) || typeof value !== 'string') add('HTTP 请求头名称或值无效。')
+        if (name.trim() === '' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(name) || typeof value !== 'string') add('HTTP 请求头名称或值无效。', 'headers')
       }
       break
     }
     case 'code':
-      if (node.config.language !== 'nodejs' && node.config.language !== 'python3') add('代码语言必须是 nodejs 或 python3。')
-      if (node.config.code.trim() === '') add('代码不能为空。')
-      if (node.config.timeoutMs !== undefined && (!Number.isInteger(node.config.timeoutMs) || node.config.timeoutMs < 1_000 || node.config.timeoutMs > 600_000)) add('代码超时必须是 1000 到 600000 毫秒。')
+      if (node.config.language !== 'nodejs' && node.config.language !== 'python3') add('代码语言必须是 nodejs 或 python3。', 'language')
+      if (node.config.code.trim() === '') add('代码不能为空。', 'code')
+      if (node.config.timeoutMs !== undefined && (!Number.isInteger(node.config.timeoutMs) || node.config.timeoutMs < 1_000 || node.config.timeoutMs > 600_000)) add('代码超时必须是 1000 到 600000 毫秒。', 'timeoutMs')
       break
     case 'output':
-      if (node.config.contentMode !== undefined && node.config.contentMode !== 'variable' && node.config.contentMode !== 'text') add('结束节点输出内容来源无效。')
+      if (node.config.contentMode !== undefined && node.config.contentMode !== 'variable' && node.config.contentMode !== 'text') add('结束节点输出内容来源无效。', 'contentMode')
       break
     case 'input':
       break

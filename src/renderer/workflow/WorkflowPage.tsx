@@ -32,8 +32,10 @@ import {
   cloneWorkflow,
   createWorkflowExportDocument,
   createDefaultWorkflow,
+  formatWorkflowValidationIssues,
   isWorkflowValue,
   parseWorkflowExportDocument,
+  validateWorkflow,
   type AiExecutionMode,
   type ConditionOperator,
   type WorkflowInputField,
@@ -56,6 +58,7 @@ import {
   type WorkflowModificationRecord,
   type WorkflowModifyResult,
   type WorkflowRunRecord,
+  type WorkflowValidationIssue,
   type WorkflowValue,
 } from '../../shared/workflow.js'
 import { WorkflowGenerationPage } from './WorkflowGenerationPage.js'
@@ -71,6 +74,25 @@ interface WorkflowPageProps {
 }
 
 type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; inputVariables?: string[]; outputVariables?: string[]; status?: WorkflowNodeRunStatus; duration?: string; isRunning?: boolean }>
+
+function workflowValidationNodeIndex(path: string): number | undefined {
+  const match = path.match(/^nodes\.(\d+)(?:\.|$)/u)
+  return match?.[1] === undefined ? undefined : Number(match[1])
+}
+
+function workflowValidationIssuesForNode(issues: readonly WorkflowValidationIssue[], nodeIndex: number): WorkflowValidationIssue[] {
+  return issues.filter((issue) => workflowValidationNodeIndex(issue.path) === nodeIndex)
+}
+
+function workflowValidationFieldClass(issues: readonly WorkflowValidationIssue[], nodeIndex: number, ...fields: string[]): string | undefined {
+  const base = `nodes.${nodeIndex}`
+  return issues.some((issue) => fields.some((field) => issue.path === `${base}.${field}` || issue.path === `${base}.config.${field}`)) ? 'workflow-invalid-field' : undefined
+}
+
+function workflowValidationConfigIssue(issues: readonly WorkflowValidationIssue[], nodeIndex: number): boolean {
+  const base = `nodes.${nodeIndex}.config`
+  return issues.some((issue) => issue.path === base || issue.path.startsWith(`${base}.`))
+}
 
 const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   input: 'Input',
@@ -209,11 +231,20 @@ export function redoWorkflowHistory(history: WorkflowHistoryState): WorkflowHist
   }
 }
 
-export function workflowFlowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, selectedNodeId?: string): FlowNode[] {
+export function workflowFlowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, selectedNodeId?: string, validationIssues: readonly WorkflowValidationIssue[] = []): FlowNode[] {
   const states = new Map(run?.nodeStates.map((state) => [state.nodeId, state]))
+  const validationNodeIds = new Set(validationIssues.flatMap((issue) => {
+    const nodeIndex = workflowValidationNodeIndex(issue.path)
+    const node = nodeIndex === undefined ? undefined : workflow.nodes[nodeIndex]
+    return node === undefined ? [] : [node.id]
+  }))
   return workflow.nodes.map((node) => {
     const status = states.get(node.id)?.status
     const statusMark = status === undefined || status === 'pending' ? '' : ` · ${status}`
+    const classNames = [
+      status === undefined ? undefined : `workflow-flow-node-${status}`,
+      validationNodeIds.has(node.id) ? 'workflow-flow-node-validation-error' : undefined,
+    ].filter((value): value is string => value !== undefined)
     return {
       id: node.id,
       type: node.type === 'condition' ? 'condition' : 'workflow',
@@ -222,7 +253,7 @@ export function workflowFlowNodes(workflow: WorkflowDefinition, run?: WorkflowRu
       height: (node.outputVariables?.length ?? 0) > 0 ? WORKFLOW_FLOW_NODE_WITH_OUTPUT_HEIGHT : WORKFLOW_FLOW_NODE_HEIGHT,
       selected: node.id === selectedNodeId,
       data: { label: `${node.label}${statusMark}`, nodeType: node.type, inputVariables: node.type === 'input' ? workflowInputFieldNames(node.config.fields) : (node.inputBindings ?? []).map((binding) => binding.name.trim()).filter(Boolean), outputVariables: (node.outputVariables ?? []).map((variable) => variable.name.trim()).filter(Boolean), status, isRunning: status === 'running', ...(run === undefined ? {} : { duration: formatWorkflowNodeDuration(states.get(node.id)?.elapsedMs) }) },
-      className: status === undefined ? undefined : `workflow-flow-node-${status}`,
+      className: classNames.length === 0 ? undefined : classNames.join(' '),
     }
   })
 }
@@ -1473,20 +1504,22 @@ interface WorkflowOutputNodeSettingsProps {
   workflow: WorkflowDefinition
   node: Extract<WorkflowNode, { type: 'output' }>
   onChange: (update: (node: WorkflowNode) => WorkflowNode) => void
+  validationIssues?: readonly WorkflowValidationIssue[]
+  nodeIndex?: number
 }
 
-export function WorkflowOutputNodeSettings({ workflow, node, onChange }: WorkflowOutputNodeSettingsProps): JSX.Element {
+export function WorkflowOutputNodeSettings({ workflow, node, onChange, validationIssues = [], nodeIndex = -1 }: WorkflowOutputNodeSettingsProps): JSX.Element {
   const contentMode = node.config.contentMode ?? 'variable'
   return <>
-    <label>输出内容来源<select value={contentMode} onChange={(event) => {
+    <WorkflowNodeVariablesEditor workflow={workflow} node={node} onChange={onChange} showOutputVariables={false} validationIssues={validationIssues} nodeIndex={nodeIndex} />
+    <label>输出内容来源<select className={workflowValidationFieldClass(validationIssues, nodeIndex, 'contentMode')} aria-invalid={workflowValidationFieldClass(validationIssues, nodeIndex, 'contentMode') !== undefined} value={contentMode} onChange={(event) => {
       const nextMode = event.target.value as 'variable' | 'text'
       onChange((current) => current.type === 'output' ? { ...current, config: { ...current.config, contentMode: nextMode } } : current)
     }}><option value="variable">变量</option><option value="text">自定义文本</option></select></label>
     <p className="workflow-muted">结束节点先接收输入变量，再决定直接转发变量，或用文本模板重组多个变量。</p>
-    <WorkflowNodeVariablesEditor workflow={workflow} node={node} onChange={onChange} showOutputVariables={false} />
     {contentMode === 'variable'
       ? <p className="workflow-muted">变量模式会转发已绑定的输入；绑定一个变量时返回其值，绑定多个变量时返回同名对象。如需再次处理，请切换到自定义文本或在结束节点前新增处理节点。</p>
-      : <WorkflowPromptField label="自定义输出文本" value={node.config.text ?? ''} workflow={workflow} node={node} field="outputText" onChange={(value) => onChange((current) => current.type === 'output' ? { ...current, config: { ...current.config, text: value } } : current)} onChangeNode={onChange} />}
+      : <WorkflowPromptField label="自定义输出文本" value={node.config.text ?? ''} workflow={workflow} node={node} field="outputText" invalid={workflowValidationFieldClass(validationIssues, nodeIndex, 'text') !== undefined} onChange={(value) => onChange((current) => current.type === 'output' ? { ...current, config: { ...current.config, text: value } } : current)} onChangeNode={onChange} />}
   </>
 }
 
@@ -1801,6 +1834,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [workflowValidationIssues, setWorkflowValidationIssues] = useState<WorkflowValidationIssue[]>([])
 
   const rememberFitView = useCallback((fitView: (() => Promise<boolean>) | undefined): void => {
     fitViewRef.current = fitView
@@ -1932,6 +1966,9 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }, [copy.workflowAiModifyReady, selected?.id])
 
   const selectedNode = useMemo(() => selected?.nodes.find((node) => node.id === selectedNodeId), [selected, selectedNodeId])
+  const selectedNodeIndex = useMemo(() => selected === undefined || selectedNodeId === undefined ? -1 : selected.nodes.findIndex((node) => node.id === selectedNodeId), [selected, selectedNodeId])
+  const selectedNodeValidationIssues = useMemo(() => selectedNodeIndex < 0 ? [] : workflowValidationIssuesForNode(workflowValidationIssues, selectedNodeIndex), [selectedNodeIndex, workflowValidationIssues])
+  const selectedNodeHasValidationError = selectedNodeValidationIssues.length > 0
   useEffect(() => { setNodeInspectorTab('settings') }, [selectedNodeId])
   useEffect(() => { setRunDeleteUnlocked(false) }, [selected?.id])
   const currentRunNodeDetail = useMemo(
@@ -1950,7 +1987,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     if (selectedEdgeId !== undefined && !selectedEdgeIds.includes(selectedEdgeId)) selectedEdgeIds.push(selectedEdgeId)
     if (recordHistory) setHistory((current) => current === undefined ? createWorkflowHistory(next) : recordWorkflowHistory(current, next))
     setSelected(next)
-    setNodes(preserveWorkflowNodeSelection(workflowFlowNodes(next, currentRun), selectedNodeIds))
+    setNodes(preserveWorkflowNodeSelection(workflowFlowNodes(next, currentRun, undefined, workflowValidationIssues), selectedNodeIds))
     setEdges(preserveWorkflowEdgeSelection(flowEdges(next), selectedEdgeIds))
     setSelectedNodeId((current) => next.nodes.some((node) => node.id === current) ? current : undefined)
     setSelectedEdgeId((current) => next.edges.some((edge) => edge.id === current) ? current : undefined)
@@ -1959,6 +1996,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const open = async (workflow: WorkflowDefinition, isDraft = false): Promise<void> => {
     const userFacingWorkflow = { ...cloneWorkflow(workflow), description: userFacingWorkflowText(workflow.description, locale) }
     setSelected(userFacingWorkflow)
+    setWorkflowValidationIssues([])
     setHistory(createWorkflowHistory(userFacingWorkflow))
     setDraft(isDraft)
     setWorkspaceView('editor')
@@ -1989,6 +2027,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setShowModifyDialog(false)
     setShowModificationHistory(false)
     setSelected(undefined)
+    setWorkflowValidationIssues([])
     setDraft(false)
     setHistory(undefined)
     setWorkspaceView('editor')
@@ -2040,10 +2079,23 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const save = async (): Promise<WorkflowDefinition | undefined> => {
     const next = currentDefinition()
     if (next === undefined) return undefined
-    setBusy(true)
+    const selectedNodeIds = nodes.filter((node) => node.selected === true).map((node) => node.id)
+    const selectedEdgeIds = edges.filter((edge) => edge.selected === true).map((edge) => edge.id)
+    if (selectedNodeId !== undefined && !selectedNodeIds.includes(selectedNodeId)) selectedNodeIds.push(selectedNodeId)
+    if (selectedEdgeId !== undefined && !selectedEdgeIds.includes(selectedEdgeId)) selectedEdgeIds.push(selectedEdgeId)
     setError('')
+    const validation = validateWorkflow(next)
+    if (!validation.valid) {
+      setWorkflowValidationIssues(validation.issues)
+      setNodes(preserveWorkflowNodeSelection(workflowFlowNodes(next, currentRun, undefined, validation.issues), selectedNodeIds))
+      setEdges(preserveWorkflowEdgeSelection(flowEdges(next), selectedEdgeIds))
+      setError(formatWorkflowValidationIssues(next, validation.issues, draft ? '创建工作流' : '保存工作流'))
+      return undefined
+    }
+    setBusy(true)
     try {
       const saved = draft ? await window.EzDSH.workflows.create(next) : await window.EzDSH.workflows.update(next.id, next)
+      setWorkflowValidationIssues([])
       setSelected(saved)
       setDraft(false)
       setHistory((current) => current === undefined ? createWorkflowHistory(saved) : {
@@ -2052,10 +2104,6 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
         future: current.future.map((item) => ({ ...cloneWorkflow(item), revision: saved.revision, updatedAt: saved.updatedAt })),
       })
       setWorkflows((current) => [saved, ...current.filter((item) => item.id !== saved.id)])
-      const selectedNodeIds = nodes.filter((node) => node.selected === true).map((node) => node.id)
-      const selectedEdgeIds = edges.filter((edge) => edge.selected === true).map((edge) => edge.id)
-      if (selectedNodeId !== undefined && !selectedNodeIds.includes(selectedNodeId)) selectedNodeIds.push(selectedNodeId)
-      if (selectedEdgeId !== undefined && !selectedEdgeIds.includes(selectedEdgeId)) selectedEdgeIds.push(selectedEdgeId)
       setNodes(preserveWorkflowNodeSelection(workflowFlowNodes(saved, currentRun), selectedNodeIds))
       setEdges(preserveWorkflowEdgeSelection(flowEdges(saved), selectedEdgeIds))
       setSelectedNodeId((current) => saved.nodes.some((node) => node.id === current) ? current : undefined)
@@ -2277,7 +2325,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     const pasted = duplicateWorkflowNodes(copied, (node) => id(node.type), offset)
     const next = { ...current, nodes: [...current.nodes, ...pasted] }
     applyDefinition(next)
-    setNodes(workflowFlowNodes(next, currentRun).map((node) => ({ ...node, selected: pasted.some((candidate) => candidate.id === node.id) })))
+    setNodes(workflowFlowNodes(next, currentRun, undefined, workflowValidationIssues).map((node) => ({ ...node, selected: pasted.some((candidate) => candidate.id === node.id) })))
     setSelectedNodeId(pasted.at(-1)?.id)
     setSelectedEdgeId(undefined)
     setMessage(`已粘贴 ${pasted.length} 个节点`)
@@ -2638,6 +2686,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }
   const toastActionLabel = deletedWorkflow !== undefined ? copy.workflowUndoDelete : pendingModificationId === undefined ? undefined : copy.workflowAiModifyReview
   const toastAction = deletedWorkflow !== undefined ? () => void restoreDeletedWorkflow() : pendingModificationId === undefined ? undefined : openPendingModification
+  const selectedNodeFieldClass = (...fields: string[]): string | undefined => selectedNodeIndex < 0 ? undefined : workflowValidationFieldClass(workflowValidationIssues, selectedNodeIndex, ...fields)
+  const selectedNodeConfigHasError = selectedNodeIndex >= 0 && workflowValidationConfigIssue(workflowValidationIssues, selectedNodeIndex)
 
   return (
     <div ref={workflowPageRef} className={`workflow-page ${selected === undefined ? 'workflow-page-browser' : 'workflow-page-workspace'}`}>
@@ -2752,34 +2802,34 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               </div>
             </section>
             <aside className="workflow-inspector">
-              <section className="workflow-panel-card workflow-inspector-card workflow-node-inspector-card">
+              <section className={`workflow-panel-card workflow-inspector-card workflow-node-inspector-card ${selectedNodeHasValidationError ? 'workflow-node-inspector-has-error' : ''}`}>
                 {selectedNode === undefined ? <div className="workflow-node-inspector-empty"><div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowEditor}</span><h2>{copy.workflowInspector}</h2></div></div><p className="workflow-muted">{copy.workflowNodeSelectHint}</p></div> : <>
                   <div className="workflow-node-inspector-header"><WorkflowNodeTypeIcon type={selectedNode.type} /><div><h2>{selectedNode.label}</h2><span>{nodeTypeLabel[selectedNode.type]}</span></div></div>
                   <div className="workflow-node-description"><textarea aria-label="节点描述" value={selectedNode.description ?? ''} placeholder="添加描述…" onChange={(event) => updateNode((node) => ({ ...node, description: event.target.value }))} /></div>
                   <div className="workflow-node-inspector-tabs" role="tablist" aria-label="节点配置视图"><button type="button" role="tab" aria-selected={nodeInspectorTab === 'settings'} className={nodeInspectorTab === 'settings' ? 'workflow-node-inspector-tab-active' : ''} onClick={() => setNodeInspectorTab('settings')}>设置</button><button type="button" role="tab" aria-selected={nodeInspectorTab === 'last-run'} className={nodeInspectorTab === 'last-run' ? 'workflow-node-inspector-tab-active' : ''} onClick={() => setNodeInspectorTab('last-run')}>上次运行</button></div>
                 </>}
-                {selectedNode !== undefined && (nodeInspectorTab === 'last-run' ? <WorkflowNodeLastRunState copy={copy} run={currentRun} nodeId={selectedNode.id} /> : <div className="workflow-node-inspector-settings">
-                  <label>{copy.workflowNodeLabel}<input value={selectedNode.label} onChange={(event) => updateNode((node) => ({ ...node, label: event.target.value }))} /></label>
-                  {selectedNode.type !== 'input' && selectedNode.type !== 'output' ? <WorkflowNodeVariablesEditor workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} /> : null}
+                {selectedNode !== undefined && (nodeInspectorTab === 'last-run' ? <WorkflowNodeLastRunState copy={copy} run={currentRun} nodeId={selectedNode.id} /> : <div className={`workflow-node-inspector-settings ${selectedNodeConfigHasError ? 'workflow-node-inspector-settings-invalid' : ''}`}>
+                  <label>{copy.workflowNodeLabel}<input className={selectedNodeFieldClass('label')} aria-invalid={selectedNodeFieldClass('label') !== undefined} value={selectedNode.label} onChange={(event) => updateNode((node) => ({ ...node, label: event.target.value }))} /></label>
+                  {selectedNode.type !== 'input' && selectedNode.type !== 'output' ? <WorkflowNodeVariablesEditor workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} validationIssues={workflowValidationIssues} nodeIndex={selectedNodeIndex} /> : null}
                   {selectedNode.type === 'input' ? <label>{copy.workflowName}<input value={selectedNode.config.name ?? ''} onChange={(event) => updateNode((node) => node.type === 'input' ? { ...node, config: { ...node.config, name: event.target.value } } : node)} /></label> : null}
-                  {selectedNode.type === 'output' ? <WorkflowOutputNodeSettings workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} /> : null}
+                  {selectedNode.type === 'output' ? <WorkflowOutputNodeSettings workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} validationIssues={workflowValidationIssues} nodeIndex={selectedNodeIndex} /> : null}
                   {selectedNode.type === 'ai-task' ? <>
-                    <WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} onChange={(value) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} />
-                    <WorkflowPromptField label={copy.workflowSystemPrompt} value={selectedNode.config.systemPrompt ?? ''} workflow={selected} node={selectedNode} field="systemPrompt" onChange={(value) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, systemPrompt: value } } : node)} onChangeNode={updateNode} />
+                    <WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} invalid={selectedNodeFieldClass('instruction') !== undefined} onChange={(value) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} />
+                    <WorkflowPromptField label={copy.workflowSystemPrompt} value={selectedNode.config.systemPrompt ?? ''} workflow={selected} node={selectedNode} field="systemPrompt" invalid={selectedNodeFieldClass('systemPrompt') !== undefined} onChange={(value) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, systemPrompt: value } } : node)} onChangeNode={updateNode} />
                     <label>{copy.workflowAiMode}<select value={selectedNode.config.mode} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, mode: event.target.value as AiExecutionMode } } : node)}><option value="single">{copy.workflowAiModeSingle}</option><option value="autonomous">{copy.workflowAiModeAutonomous}</option></select></label>
                     <label>{copy.workflowSkillIds}<textarea value={selectedNode.config.skillIds.join('\n')} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, skillIds: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) } } : node)} /></label>
                     <OutputModeField copy={copy} value={selectedNode.config.outputMode} onChange={(outputMode) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, outputMode } } : node)} />
                   </> : null}
                   {selectedNode.type === 'employee' ? <>
-                    <label>{copy.workflowSelectEmployee}<select value={selectedNode.config.employeeId} onChange={(event) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, employeeId: event.target.value } } : node)}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} · {employee.role}</option>)}</select></label>
+                    <label>{copy.workflowSelectEmployee}<select className={selectedNodeFieldClass('employeeId')} aria-invalid={selectedNodeFieldClass('employeeId') !== undefined} value={selectedNode.config.employeeId} onChange={(event) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, employeeId: event.target.value } } : node)}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} · {employee.role}</option>)}</select></label>
                     <EmployeeProfileContext copy={copy} employee={employees.find((employee) => employee.id === selectedNode.config.employeeId)} />
-                    <WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} onChange={(value) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} />
+                    <WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} invalid={selectedNodeFieldClass('instruction') !== undefined} onChange={(value) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} />
                     <OutputModeField copy={copy} value={selectedNode.config.outputMode} onChange={(outputMode) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, outputMode } } : node)} />
                   </> : null}
-                  {selectedNode.type === 'skill' ? <><label>{copy.workflowSkillId}<input value={selectedNode.config.skillId} onChange={(event) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, skillId: event.target.value } } : node)} /></label><WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} onChange={(value) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} /></> : null}
+                  {selectedNode.type === 'skill' ? <><label>{copy.workflowSkillId}<input className={selectedNodeFieldClass('skillId')} aria-invalid={selectedNodeFieldClass('skillId') !== undefined} value={selectedNode.config.skillId} onChange={(event) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, skillId: event.target.value } } : node)} /></label><WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} invalid={selectedNodeFieldClass('instruction') !== undefined} onChange={(value) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} /></> : null}
                   {selectedNode.type === 'mcp' ? <><label>{copy.workflowMcpTool}<input value={selectedNode.config.tool} placeholder="server::tool" onChange={(event) => updateNode((node) => node.type === 'mcp' ? { ...node, config: { ...node.config, tool: event.target.value } } : node)} /></label><McpArgumentsField key={selectedNode.id} copy={copy} value={selectedNode.config.arguments} onCommit={(argumentsValue) => updateNode((node) => node.type === 'mcp' ? { ...node, config: { ...node.config, arguments: argumentsValue } } : node)} /></> : null}
                   {selectedNode.type === 'parallel' ? <label>{copy.workflowInstruction}<textarea value={selectedNode.config.instructions.join('\n')} onChange={(event) => updateNode((node) => node.type === 'parallel' ? { ...node, config: { ...node.config, instructions: event.target.value.split('\n').filter(Boolean) } } : node)} /></label> : null}
-                  {selectedNode.type === 'loop' ? <><WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} onChange={(value) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} /><label>{copy.workflowMaxIterations}<input type="number" min="1" max="100" value={selectedNode.config.maxIterations ?? 20} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, maxIterations: Number(event.target.value) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'loop' ? <><WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} invalid={selectedNodeFieldClass('instruction') !== undefined} onChange={(value) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} /><label>{copy.workflowMaxIterations}<input className={selectedNodeFieldClass('maxIterations')} aria-invalid={selectedNodeFieldClass('maxIterations') !== undefined} type="number" min="1" max="100" value={selectedNode.config.maxIterations ?? 20} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, maxIterations: Number(event.target.value) } } : node)} /></label></> : null}
                   {selectedNode.type === 'condition' ? <><label>{copy.workflowConditionOperator}<select value={selectedNode.config.operator} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, operator: event.target.value as ConditionOperator } } : node)}>{(['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'] as ConditionOperator[]).map((operator) => <option key={operator} value={operator}>{workflowConditionOperatorLabel(operator)}</option>)}</select></label><label>{copy.workflowConditionValue}<input value={formatValue(selectedNode.config.value)} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, value: parseWorkflowConditionValue(event.target.value) } } : node)} /></label></> : null}
                   {selectedNode.type === 'approval' ? <label>审批提示<textarea value={selectedNode.config.message} onChange={(event) => updateNode((node) => node.type === 'approval' ? { ...node, config: { ...node.config, message: event.target.value } } : node)} /></label> : null}
                   {selectedNode.type === 'transform' ? <><label>{copy.workflowTransformTemplate}<select value={selectedNode.config.template} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, template: event.target.value as TransformTemplate } } : node)}>{(['identity', 'json', 'extract-text', 'prepend', 'append'] as TransformTemplate[]).map((template) => <option key={template} value={template}>{workflowTransformTemplateLabel(template)}</option>)}</select></label><label>{copy.workflowTransformText}<input value={selectedNode.config.text ?? ''} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, text: event.target.value } } : node)} /></label></> : null}
@@ -2886,12 +2936,13 @@ interface WorkflowPromptFieldProps {
   workflow: WorkflowDefinition
   node: WorkflowNode
   field?: 'instruction' | 'systemPrompt' | 'outputText'
+  invalid?: boolean
   onChange: (value: string) => void
   onChangeNode: (update: (node: WorkflowNode) => WorkflowNode) => void
 }
 
 /** A compact prompt editor with Dify-style variable insertion and local aliases. */
-export function WorkflowPromptField({ label, value, workflow, node, field = 'instruction', onChange, onChangeNode }: WorkflowPromptFieldProps): JSX.Element {
+export function WorkflowPromptField({ label, value, workflow, node, field = 'instruction', invalid = false, onChange, onChangeNode }: WorkflowPromptFieldProps): JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [variableMenuOpen, setVariableMenuOpen] = useState(false)
   const options = getWorkflowVariableOptions(workflow, node.id)
@@ -2918,7 +2969,7 @@ export function WorkflowPromptField({ label, value, workflow, node, field = 'ins
         : current
       return field === 'systemPrompt' && next.type === 'ai-task'
         ? { ...next, config: { ...next.config, systemPrompt: inserted.value } }
-        : workflowNodeWithInstruction(next, inserted.value)
+        : workflowNodeWithInstruction(next, inserted.value, field)
     })
     setVariableMenuOpen(false)
     requestAnimationFrame(() => {
@@ -2931,8 +2982,8 @@ export function WorkflowPromptField({ label, value, workflow, node, field = 'ins
 
   return <div className="workflow-prompt-field">
     <div className="workflow-prompt-field-heading"><span>{label}</span><span>{value.length}</span></div>
-    <div className="workflow-prompt-editor">
-      <textarea ref={textareaRef} value={value} onChange={(event) => onChange(event.target.value)} placeholder="输入提示词，使用变量让节点读取工作流上下文…" />
+    <div className={`workflow-prompt-editor ${invalid ? 'workflow-invalid-field-container' : ''}`}>
+      <textarea ref={textareaRef} value={value} aria-invalid={invalid} onChange={(event) => onChange(event.target.value)} placeholder="输入提示词，使用变量让节点读取工作流上下文…" />
       <div className="workflow-prompt-editor-toolbar">
         <span>支持 Markdown · 使用 {'{{变量名}}'}</span>
         <div className="workflow-variable-picker">
@@ -2966,7 +3017,7 @@ export function workflowOutputVariableRowKey(index: number): string {
 }
 
 /** Dify-style per-node bindings keep variable selection separate from graph connections. */
-function WorkflowNodeVariablesEditor({ workflow, node, onChange, showOutputVariables = true }: { workflow: WorkflowDefinition; node: WorkflowNode; onChange: (update: (node: WorkflowNode) => WorkflowNode) => void; showOutputVariables?: boolean }): JSX.Element {
+function WorkflowNodeVariablesEditor({ workflow, node, onChange, showOutputVariables = true, validationIssues = [], nodeIndex = -1 }: { workflow: WorkflowDefinition; node: WorkflowNode; onChange: (update: (node: WorkflowNode) => WorkflowNode) => void; showOutputVariables?: boolean; validationIssues?: readonly WorkflowValidationIssue[]; nodeIndex?: number }): JSX.Element {
   const options = getWorkflowVariableOptions(workflow, node.id)
   const optionsByKey = new Map(options.map((option) => [workflowVariableOptionKey(option), option]))
   const bindings = node.inputBindings ?? []
@@ -2984,8 +3035,8 @@ function WorkflowNodeVariablesEditor({ workflow, node, onChange, showOutputVaria
       <summary>输入变量 <span className="workflow-variable-count">{bindings.length}</span></summary>
       <p>只声明本节点实际使用的变量；必填变量会等待来源完成，未命中分支的变量请取消必填。</p>
       {bindings.map((binding, index) => <div key={binding.id} className="workflow-variable-editor-row">
-        <input aria-label="变量名" value={binding.name} onChange={(event) => updateBinding(index, (current) => ({ ...current, name: event.target.value }))} />
-        <select aria-label="变量来源" value={workflowVariableOptionKey({ sourceNodeId: binding.sourceNodeId, sourcePath: binding.sourcePath, label: '' })} onChange={(event) => {
+        <input aria-label="变量名" className={workflowValidationFieldClass(validationIssues, nodeIndex, `inputBindings.${index}.name`)} aria-invalid={workflowValidationFieldClass(validationIssues, nodeIndex, `inputBindings.${index}.name`) !== undefined} value={binding.name} onChange={(event) => updateBinding(index, (current) => ({ ...current, name: event.target.value }))} />
+        <select aria-label="变量来源" className={workflowValidationFieldClass(validationIssues, nodeIndex, `inputBindings.${index}.sourceNodeId`)} aria-invalid={workflowValidationFieldClass(validationIssues, nodeIndex, `inputBindings.${index}.sourceNodeId`) !== undefined} value={workflowVariableOptionKey({ sourceNodeId: binding.sourceNodeId, sourcePath: binding.sourcePath, label: '' })} onChange={(event) => {
           const option = optionsByKey.get(event.target.value)
           if (option !== undefined) updateBinding(index, (current) => ({ ...current, sourceNodeId: option.sourceNodeId, ...(option.sourcePath === undefined ? { sourcePath: undefined } : { sourcePath: option.sourcePath }) }))
         }}>{options.map((option) => <option key={workflowVariableOptionKey(option)} value={workflowVariableOptionKey(option)}>{option.label}</option>)}</select>
@@ -2997,7 +3048,7 @@ function WorkflowNodeVariablesEditor({ workflow, node, onChange, showOutputVaria
     {showOutputVariables ? <details className="workflow-variable-editor">
       <summary>输出变量</summary>
       <p><code>result</code> 始终代表整个节点结果；为 JSON 输出补充字段名，供下游选择。</p>
-      {outputVariables.map((variable, index) => <div key={workflowOutputVariableRowKey(index)} className="workflow-variable-editor-row"><input aria-label="输出变量名" value={variable.name} onChange={(event) => updateOutput(index, (current) => ({ ...current, name: event.target.value }))} /><input aria-label="输出变量说明" value={variable.description ?? ''} placeholder="说明（可选）" onChange={(event) => updateOutput(index, (current) => ({ ...current, description: event.target.value }))} /><button type="button" className="workflow-variable-remove" aria-label="删除输出变量" onClick={() => onChange((current) => ({ ...current, outputVariables: (current.outputVariables ?? []).filter((_variable, currentIndex) => currentIndex !== index) }))}>×</button></div>)}
+      {outputVariables.map((variable, index) => <div key={workflowOutputVariableRowKey(index)} className="workflow-variable-editor-row"><input aria-label="输出变量名" className={workflowValidationFieldClass(validationIssues, nodeIndex, `outputVariables.${index}.name`)} aria-invalid={workflowValidationFieldClass(validationIssues, nodeIndex, `outputVariables.${index}.name`) !== undefined} value={variable.name} onChange={(event) => updateOutput(index, (current) => ({ ...current, name: event.target.value }))} /><input aria-label="输出变量说明" value={variable.description ?? ''} placeholder="说明（可选）" onChange={(event) => updateOutput(index, (current) => ({ ...current, description: event.target.value }))} /><button type="button" className="workflow-variable-remove" aria-label="删除输出变量" onClick={() => onChange((current) => ({ ...current, outputVariables: (current.outputVariables ?? []).filter((_variable, currentIndex) => currentIndex !== index) }))}>×</button></div>)}
       <button type="button" className="workflow-variable-add" onClick={() => onChange((current) => ({ ...current, outputVariables: [...(current.outputVariables ?? []), { name: `output_${(current.outputVariables?.length ?? 0) + 1}` }] }))}>添加输出变量</button>
     </details> : null}
   </>
