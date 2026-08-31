@@ -10,6 +10,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  SelectionMode,
   useReactFlow,
   useEdgesState,
   useNodesState,
@@ -52,6 +53,7 @@ import {
   type WorkflowValue,
 } from '../../shared/workflow.js'
 import './workflow.css'
+import { WorkflowSelectionSurface } from './workflow-selection.js'
 
 export { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 
@@ -116,6 +118,7 @@ const WORKFLOW_FLOW_NODE_HEIGHT = 64
 
 export const WORKFLOW_CANVAS_INTERACTION_PROPS = {
   selectionOnDrag: true,
+  selectionMode: SelectionMode.Partial,
   panOnDrag: false,
   panActivationKeyCode: 'Space',
 } as const
@@ -1887,6 +1890,14 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     applyDefinition(mergeFlowStateIntoWorkflow(selected, nextNodes, edges))
   }
 
+  const onWorkflowCanvasSelectionChange = useCallback((selectedNodeIds: string[]): void => {
+    const selectedIds = new Set(selectedNodeIds)
+    setNodes((current) => current.map((node) => ({ ...node, selected: selectedIds.has(node.id) })))
+    setEdges((current) => current.map((edge) => ({ ...edge, selected: selectedIds.has(edge.source) || selectedIds.has(edge.target) })))
+    setSelectedNodeId(selectedNodeIds.at(-1))
+    setSelectedEdgeId(undefined)
+  }, [setEdges, setNodes])
+
   const onEdgesChange = (changes: EdgeChange[]): void => {
     const nextEdges = applyEdgeChanges(changes, edges)
     setEdges(nextEdges)
@@ -2174,7 +2185,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                 <button type="button" className="workflow-button-quiet workflow-auto-layout-button" onClick={autoLayout} disabled={busy}>自动排版</button>
                 <p className="workflow-editor-flow-hint">一个节点可连接多个下游；多路输入会等待所有可用上游完成，并按节点 ID 汇聚传入。</p>
               </div>
-              <div ref={workflowCanvasRef} className="workflow-canvas" tabIndex={0} onPointerDownCapture={focusWorkflowCanvas} onKeyDown={onCanvasKeyDown}>
+              <WorkflowSelectionSurface ref={workflowCanvasRef} nodes={nodes} onSelectionChange={onWorkflowCanvasSelectionChange} className="workflow-canvas" tabIndex={0} onPointerDownCapture={focusWorkflowCanvas} onKeyDown={onCanvasKeyDown}>
                 <ReactFlow
                   {...WORKFLOW_CANVAS_INTERACTION_PROPS}
                   nodes={nodes}
@@ -2197,7 +2208,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                   <WorkflowFitViewBridge onReady={rememberFitView} />
                   <WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} />
                 </ReactFlow>
-              </div>
+              </WorkflowSelectionSurface>
             </section>
             <aside className="workflow-inspector">
               <section className="workflow-panel-card workflow-inspector-card">
