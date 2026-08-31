@@ -1612,6 +1612,15 @@ function WorkflowFitViewBridge({ onReady }: { onReady: (fitView: (() => Promise<
   return <></>
 }
 
+function WorkflowScreenToFlowPositionBridge({ onReady }: { onReady: (screenToFlowPosition: ((position: XYPosition) => XYPosition) | undefined) => void }): JSX.Element {
+  const { screenToFlowPosition } = useReactFlow()
+  useEffect(() => {
+    onReady(screenToFlowPosition)
+    return () => onReady(undefined)
+  }, [onReady, screenToFlowPosition])
+  return <></>
+}
+
 interface WorkflowRunLaunchDialogProps {
   copy: AppCopy
   fields: WorkflowLaunchField[]
@@ -1828,6 +1837,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const executionMainRef = useRef<HTMLDivElement>(null)
   const executionResizeRef = useRef<{ startY: number; startHeight: number }>()
   const fitViewRef = useRef<(() => Promise<boolean>)>()
+  const screenToFlowPositionRef = useRef<((position: XYPosition) => XYPosition)>()
   const copiedWorkflowNodesRef = useRef<WorkflowNode[]>([])
   const workflowPasteCountRef = useRef(0)
   const modifyDialogOpenRef = useRef(false)
@@ -1838,6 +1848,10 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const rememberFitView = useCallback((fitView: (() => Promise<boolean>) | undefined): void => {
     fitViewRef.current = fitView
+  }, [])
+
+  const rememberScreenToFlowPosition = useCallback((screenToFlowPosition: ((position: XYPosition) => XYPosition) | undefined): void => {
+    screenToFlowPositionRef.current = screenToFlowPosition
   }, [])
 
   useEffect(() => {
@@ -2299,9 +2313,18 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     const current = currentDefinition()
     if (current === undefined || isWorkflowFixedNodeType(type)) return
     const node = newNode(type, current.nodes.length)
-    const next = { ...current, nodes: [...current.nodes, node] }
+    const canvas = workflowCanvasRef.current?.getBoundingClientRect()
+    const screenToFlowPosition = screenToFlowPositionRef.current
+    const viewportCenter = canvas === undefined || screenToFlowPosition === undefined ? undefined : screenToFlowPosition({
+      x: canvas.left + canvas.width / 2,
+      y: canvas.top + canvas.height / 2,
+    })
+    const positionedNode = viewportCenter === undefined
+      ? node
+      : { ...node, position: { x: viewportCenter.x - WORKFLOW_FLOW_NODE_WIDTH / 2, y: viewportCenter.y - WORKFLOW_FLOW_NODE_HEIGHT / 2 } }
+    const next = { ...current, nodes: [...current.nodes, positionedNode] }
     applyDefinition(next)
-    setSelectedNodeId(node.id)
+    setSelectedNodeId(positionedNode.id)
   }
 
   const copySelectedNodes = (): void => {
@@ -2797,6 +2820,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                 >
                   <Background gap={20} size={1} />
                   <WorkflowFitViewBridge onReady={rememberFitView} />
+                  <WorkflowScreenToFlowPositionBridge onReady={rememberScreenToFlowPosition} />
                   <WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} />
                 </ReactFlow>
               </div>
