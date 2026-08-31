@@ -197,6 +197,7 @@
 .workflow-flow-node-duration { position: absolute; top: 7px; right: 8px; color: var(--ezdsh-text-faint); font-size: 9px; font-weight: 500; }
 .workflow-flow-node-selected { border-color: var(--ezdsh-brand); box-shadow: 0 0 0 2px var(--ezdsh-active-border); }
 .workflow-flow-node .react-flow__handle, .workflow-condition-node .react-flow__handle { width: 7px; height: 7px; border: 1px solid var(--ezdsh-panel-background); background: var(--ezdsh-brand); }
+.workflow-loop-ports span:first-child { position: absolute; left: 36%; padding-bottom: 2px; transform: translateX(-50%); }
 .workflow-condition-node { position: relative; display: grid; width: 100%; min-width: 0; height: 100%; min-height: 96px; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; border: 1px solid var(--ezdsh-panel-border-strong); border-radius: 10px; padding: 12px; background: var(--ezdsh-panel-background); color: var(--ezdsh-text-heading); box-shadow: 0 6px 18px rgba(15, 25, 40, .08); font-size: 12px; }
 .workflow-condition-main { display: grid; min-width: 0; gap: 9px; }
 .workflow-condition-node-selected { border-color: var(--ezdsh-brand); box-shadow: 0 0 0 2px var(--ezdsh-active-border); }
