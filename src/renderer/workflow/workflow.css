@@ -340,6 +340,7 @@
 .workflow-error-banner { bottom: 18px; display: flex; align-items: flex-start; gap: 10px; max-width: min(560px, calc(100vw - 40px)); color: var(--ezdsh-accent-red); }
 .workflow-error-banner span { min-width: 0; overflow-wrap: anywhere; }
 .workflow-error-banner button { flex: none; border: 0 !important; padding: 0 !important; background: transparent !important; color: inherit !important; font-size: 18px !important; line-height: 1; }
+.workflow-node-inspector-header .workflow-node-type-icon { color: var(--workflow-node-accent); }
 
 @media (max-width: 1180px) {
   .workflow-browser-header, .workflow-browser-content { padding-left: 24px; padding-right: 24px; }
