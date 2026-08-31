@@ -469,7 +469,18 @@ export function workflowFlowEdges(workflow: WorkflowDefinition): Edge[] {
 }
 
 /** Execution also visualizes non-linear variable dependencies as light dashed links. */
-export function workflowExecutionEdges(workflow: WorkflowDefinition): Edge[] {
+function appendWorkflowEdgeAnimation(edges: Edge[], run?: WorkflowRunRecord): Edge[] {
+  if (run === undefined) return edges
+  const runningNodeIds = new Set(run.nodeStates.filter((state) => state.status === 'running').map((state) => state.nodeId))
+  if (runningNodeIds.size === 0) return edges
+  return edges.map((edge) => {
+    if (!runningNodeIds.has(edge.target)) return edge
+    const className = [edge.className, 'workflow-flow-edge-running'].filter(Boolean).join(' ')
+    return { ...edge, animated: true, className }
+  })
+}
+
+export function workflowExecutionEdges(workflow: WorkflowDefinition, run?: WorkflowRunRecord): Edge[] {
   const edges = workflowFlowEdges(workflow)
   const nodeIds = new Set(workflow.nodes.map((node) => node.id))
   const existingPairs = new Set(edges.map((edge) => `${edge.source}\u0000${edge.target}`))
@@ -482,7 +493,7 @@ export function workflowExecutionEdges(workflow: WorkflowDefinition): Edge[] {
       variableNames.set(pair, [...(variableNames.get(pair) ?? []), binding.name])
     }
   }
-  return [...edges, ...Array.from(variableNames.entries(), ([pair, names]) => {
+  return appendWorkflowEdgeAnimation([...edges, ...Array.from(variableNames.entries(), ([pair, names]) => {
     const [source, target] = pair.split('\u0000')
     return {
       id: `workflow-variable-dependency-${source}-${target}`,
@@ -491,15 +502,15 @@ export function workflowExecutionEdges(workflow: WorkflowDefinition): Edge[] {
       label: names.map((name) => `{{${name}}}`).join(', '),
       className: 'workflow-variable-dependency-edge',
     }
-  })]
+  })], run)
 }
 
 const flowEdges = workflowFlowEdges
 
 /** Render from the persisted graph and only borrow transient selection state. */
-export function workflowCanvasEdges(workflow: WorkflowDefinition, transientEdges: ReadonlyArray<Pick<Edge, 'id' | 'selected'>>): Edge[] {
+export function workflowCanvasEdges(workflow: WorkflowDefinition, transientEdges: ReadonlyArray<Pick<Edge, 'id' | 'selected'>>, run?: WorkflowRunRecord): Edge[] {
   const selectedById = new Map(transientEdges.map((edge) => [edge.id, edge.selected]))
-  return workflowFlowEdges(workflow).map((edge) => ({ ...edge, selected: selectedById.get(edge.id) ?? false }))
+  return appendWorkflowEdgeAnimation(workflowFlowEdges(workflow).map((edge) => ({ ...edge, selected: selectedById.get(edge.id) ?? false })), run)
 }
 
 function toWorkflowNodes(nodes: FlowNode[], source: WorkflowNode[]): WorkflowNode[] {
@@ -2713,7 +2724,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                 <ReactFlow
                   {...WORKFLOW_CANVAS_INTERACTION_PROPS}
                   nodes={nodes}
-                  edges={workflowCanvasEdges(selected, edges)}
+                  edges={workflowCanvasEdges(selected, edges, currentRun)}
                   nodeTypes={nodeTypes}
                   onNodesChange={onNodesChange}
                   onEdgesChange={onEdgesChange}
@@ -2779,7 +2790,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <div key={runRecord.id} className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''} ${viewedRunIds.has(runRecord.id) ? '' : 'workflow-run-item-unread'}`}><button type="button" className="workflow-run-item-main" onClick={() => selectRun(runRecord)}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {formatWorkflowRunListTime(runRecord.startedAt)}</span></button><div className="workflow-run-item-actions"><button type="button" className="workflow-button-quiet workflow-danger-button workflow-icon-button" onClick={() => void deleteRun(runRecord)} disabled={!workflowRunCanDelete(runRecord.status) || busy} aria-label={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun} title={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun}><WorkflowRunActionIcon type="delete" /></button></div></div>)}</div>}
             </aside> : <button type="button" className="workflow-sidebar-toggle workflow-sidebar-toggle-floating" aria-label={copy.workflowShowRunSidebar} title={copy.workflowShowRunSidebar} onClick={() => setShowRunSidebar(true)}>›</button>}
             <div ref={executionMainRef} className="workflow-execution-main" style={{ '--workflow-execution-detail-height': `${executionDetailHeight}px` } as CSSProperties}>
-              <div className="workflow-execution-canvas"><ReactFlow key={`${selected.id}:${currentRun?.id ?? 'no-run'}`} {...WORKFLOW_CANVAS_INTERACTION_PROPS} nodes={workflowExecutionFlowNodes(selected, currentRun, selectedRunNodeId)} edges={workflowExecutionEdges(selected)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} onPaneClick={() => setSelectedRunNodeId(undefined)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
+              <div className="workflow-execution-canvas"><ReactFlow key={`${selected.id}:${currentRun?.id ?? 'no-run'}`} {...WORKFLOW_CANVAS_INTERACTION_PROPS} nodes={workflowExecutionFlowNodes(selected, currentRun, selectedRunNodeId)} edges={workflowExecutionEdges(selected, currentRun)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} onPaneClick={() => setSelectedRunNodeId(undefined)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
               <div className="workflow-execution-resize-handle" role="separator" aria-orientation="horizontal" aria-label={copy.workflowResizeExecutionPanel} onPointerDown={beginExecutionResize}><span /></div>
               <WorkflowExecutionReview copy={copy} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => void cancel()} onApprove={() => void approve(true)} onReject={() => void approve(false)} onResume={() => void resume()} onSelectNode={setSelectedRunNodeId} onMarkUnread={currentRun === undefined ? undefined : () => markRunUnread(currentRun)} onDelete={currentRun === undefined ? undefined : () => void deleteRun(currentRun)} canMarkUnread={currentRun !== undefined && viewedRunIds.has(currentRun.id) && !busy} canDelete={currentRun !== undefined && workflowRunCanDelete(currentRun.status) && !busy} onCopyOutput={copyOutput} onOpenOutputWindow={openOutputWindow} outputFontScale={outputFontScale} onIncreaseOutputFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseOutputFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} />
             </div>
