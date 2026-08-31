@@ -1250,9 +1250,29 @@ export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel
   const exportFile = onExportFile ?? onExport
   const exportClipboard = onExportClipboard ?? onExport
   const hasWorkflowActions = !draft && (onDuplicate !== undefined || onDelete !== undefined)
+  const actionsMenuRef = useRef<HTMLDetailsElement>(null)
+
+  useEffect(() => {
+    const menu = actionsMenuRef.current
+    if (menu === null) return undefined
+    const closeOnOutsidePointer = (event: MouseEvent): void => {
+      const target = event.target
+      if (target instanceof Node && !menu.contains(target)) menu.removeAttribute('open')
+    }
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') menu.removeAttribute('open')
+    }
+    document.addEventListener('mousedown', closeOnOutsidePointer)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsidePointer)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [])
+
   return <>
     <button type="button" className="workflow-button-quiet" onClick={onCancel} disabled={busy}>{draft ? copy.workflowCancelCreate : copy.workflowCancelEdit}</button>
-    <details className="workflow-actions-menu workflow-export-menu">
+    <details ref={actionsMenuRef} className="workflow-actions-menu workflow-export-menu">
       <summary className="workflow-button-quiet workflow-actions-menu-trigger workflow-export-menu-trigger">{copy.workflowActions}</summary>
       <div className="workflow-actions-menu-panel workflow-export-menu-panel" role="menu">
         {hasWorkflowActions && onDuplicate !== undefined ? <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); onDuplicate() }} disabled={busy}>{copy.workflowDuplicate}</button> : null}
