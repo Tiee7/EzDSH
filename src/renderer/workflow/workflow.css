@@ -80,8 +80,8 @@
 .workflow-actions-menu-label { padding: 6px 10px 3px; color: var(--ezdsh-text-faint); font-size: 10px; font-weight: 700; }
 .workflow-actions-menu-divider { height: 1px; margin: 3px 4px; background: var(--ezdsh-panel-border); }
 .workflow-ai-modify-button { display: inline-flex; align-items: center; gap: 7px; }
-.workflow-ai-modify-history-button { align-self: flex-start; margin-top: 9px; border: 1px solid var(--ezdsh-button-border) !important; padding: 6px 9px !important; background: var(--ezdsh-panel-background) !important; color: var(--ezdsh-brand) !important; font-size: 11px !important; }
-.workflow-ai-modify-history-button:hover:not(:disabled) { border-color: var(--ezdsh-brand) !important; background: var(--ezdsh-active-background) !important; }
+.workflow-ai-modify-header .workflow-ai-modify-history-button { display: inline-flex; align-items: center; gap: 6px; margin-top: 5px; border: 1px solid var(--ezdsh-button-border) !important; padding: 6px 9px !important; background: var(--ezdsh-panel-background) !important; color: var(--ezdsh-brand) !important; font-size: 11px !important; line-height: 1.2; }
+.workflow-ai-modify-header .workflow-ai-modify-history-button:hover:not(:disabled) { border-color: var(--ezdsh-brand) !important; background: var(--ezdsh-active-background) !important; }
 .workflow-import-split { display: inline-flex; align-items: stretch; }
 .workflow-import-split > button { border-radius: 0; }
 .workflow-import-split > button:first-child { border-radius: 8px 0 0 8px; }
@@ -460,6 +460,7 @@
 .workflow-ai-modify-backdrop { position: fixed; z-index: 72; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(12, 20, 32, .42); }
 .workflow-ai-modify-dialog { display: flex; width: min(700px, 100%); max-height: min(780px, calc(100vh - 48px)); flex-direction: column; overflow: hidden; border: 1px solid var(--ezdsh-panel-border-strong); border-radius: 14px; background: var(--ezdsh-panel-background); box-shadow: 0 20px 64px rgba(0, 0, 0, .28); }
 .workflow-ai-modify-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 20px 14px; border-bottom: 1px solid var(--ezdsh-panel-border); }
+.workflow-ai-modify-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .workflow-ai-modify-header h2 { margin: 5px 0 0; color: var(--ezdsh-text-heading); font-size: 17px; }
 .workflow-ai-modify-header p { max-width: 570px; margin: 7px 0 0; color: var(--ezdsh-text-muted); font-size: 11px; line-height: 1.55; }
 .workflow-ai-modify-background-hint { display: block; margin-top: 8px; color: var(--ezdsh-brand); font-size: 10px; }
