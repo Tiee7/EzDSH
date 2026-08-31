@@ -500,11 +500,14 @@
 .workflow-launch-field textarea { min-height: 82px; }
 .workflow-launch-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px 20px; border-top: 1px solid var(--ezdsh-panel-border); }
 
-.workflow-toast, .workflow-error-banner { position: fixed; right: 20px; z-index: 30; border: 1px solid var(--ezdsh-panel-border); border-radius: 9px; padding: 10px 13px; background: var(--ezdsh-panel-background); box-shadow: 0 12px 36px rgba(0, 0, 0, .18); font-size: 12px; }
-.workflow-toast { top: 66px; display: flex; align-items: center; gap: 10px; color: var(--ezdsh-accent-green); }
+.workflow-notification-stack { position: fixed; right: 20px; bottom: 18px; z-index: 30; display: flex; width: min(560px, calc(100vw - 40px)); flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+.workflow-notification-stack > * { pointer-events: auto; }
+.workflow-toast, .workflow-error-banner { position: static; width: fit-content; max-width: 100%; border: 1px solid var(--ezdsh-panel-border); border-radius: 9px; padding: 10px 13px; background: var(--ezdsh-panel-background); box-shadow: 0 12px 36px rgba(0, 0, 0, .18); box-sizing: border-box; font-size: 12px; }
+.workflow-toast { display: flex; align-items: center; gap: 10px; color: var(--ezdsh-accent-green); }
+.workflow-toast span { min-width: 0; overflow-wrap: anywhere; }
 .workflow-toast button { border: 0 !important; padding: 0 !important; background: transparent !important; color: inherit; font-size: 16px; line-height: 1; }
 .workflow-toast button.workflow-toast-action { color: var(--ezdsh-brand); font-size: 11px; font-weight: 750; }
-.workflow-error-banner { bottom: 18px; display: flex; align-items: flex-start; gap: 10px; max-width: min(560px, calc(100vw - 40px)); color: var(--ezdsh-accent-red); }
+.workflow-error-banner { display: flex; align-items: flex-start; gap: 10px; color: var(--ezdsh-accent-red); }
 .workflow-error-banner span { min-width: 0; overflow-wrap: anywhere; }
 .workflow-error-banner button { flex: none; border: 0 !important; padding: 0 !important; background: transparent !important; color: inherit !important; font-size: 18px !important; line-height: 1; }
 .workflow-node-inspector-header .workflow-node-type-icon { color: var(--workflow-node-accent); }
