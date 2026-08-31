@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { zstdCompressSync } from 'node:zlib'
@@ -20,9 +21,10 @@ async function createFixture(): Promise<ReturnType<typeof getUserDataLayout>> {
   temporaryRoots.push(root)
   const layout = getUserDataLayout(root)
   await ensureUserDataLayout(layout)
-  await writeFile(join(layout.harness, 'settings.yaml'), 'locale:\n  preference: zh\n', { mode: 0o600 })
-  await writeFile(join(layout.harness, '.credentials.yaml'), 'providers:\n  secret: do-not-archive\n', { mode: 0o600 })
-  await writeFile(join(layout.state, 'installed.json'), '[{"kind":"preset","id":"writing","version":"1.0.0"}]\n', { mode: 0o600 })
+    await writeFile(join(layout.harness, 'settings.yaml'), 'locale:\n  preference: zh\n', { mode: 0o600 })
+    await writeFile(join(layout.harness, '.credentials.yaml'), 'providers:\n  secret: do-not-archive\n', { mode: 0o600 })
+    await writeFile(join(layout.workflowRoot, 'README.md'), '# Workflow files\n', { mode: 0o600 })
+    await writeFile(join(layout.state, 'installed.json'), '[{"kind":"preset","id":"writing","version":"1.0.0"}]\n', { mode: 0o600 })
   return layout
 }
 
@@ -63,10 +65,14 @@ describe('RecoveryManager', () => {
       dataSchemaVersion: 1,
       pluginInventory: ['preset:writing@1.0.0'],
       redactedFiles: ['harness/.credentials.yaml'],
+      components: ['harness', 'state', 'workflow'],
     })
 
     const archiveText = await readFile(snapshot.archivePath)
     expect(archiveText.includes(Buffer.from('do-not-archive'))).toBe(false)
+    await expect(manager.restore(snapshot.archiveName, true)).resolves.toMatchObject({
+      entries: expect.arrayContaining(['workflow/README.md']),
+    })
     expect(await readFile(join(layout.backups, 'vault', snapshot.archiveName, 'harness/.credentials.yaml'), 'utf8'))
       .toContain('do-not-archive')
   })
@@ -94,6 +100,37 @@ describe('RecoveryManager', () => {
         assessment: { status: 'compatible', runtimeVersion: '0.1.1-rc.2', reason: 'Declared DSH runtime range matches.' },
       }),
     ])
+  })
+
+  it('restores a legacy snapshot without a workflow component', async () => {
+    const layout = await createFixture()
+    const manager = createManager(layout)
+    const archiveName = 'ezdsh-manual-20260831010203004-legacy.tar.gz'
+    const archivePath = join(layout.backups, archiveName)
+    await execFileAsync('tar', ['-czf', archivePath, '-C', layout.root, 'harness', 'state'])
+    const sha256 = createHash('sha256').update(await readFile(archivePath)).digest('hex')
+    await writeFile(`${archivePath}.sha256`, `${sha256}  ${archiveName}\n`, { mode: 0o600 })
+    await writeFile(`${archivePath}.manifest.json`, `${JSON.stringify({
+      formatVersion: 1,
+      kind: 'manual',
+      reason: 'legacy snapshot',
+      createdAt: '2026-08-31T01:02:03.004Z',
+      appVersion: '1.8.1535',
+      dshRuntimeVersion: '0.1.1-rc.1',
+      dataSchemaVersion: 1,
+      archiveName,
+      sha256,
+      components: ['harness', 'state'],
+      redactedFiles: [],
+      pluginInventory: [],
+    }, null, 2)}\n`, { mode: 0o600 })
+
+    await writeFile(join(layout.state, 'installed.json'), 'broken\n', { mode: 0o600 })
+    const restored = await manager.restore(archiveName, false)
+
+    expect(restored.missingCredentials).toEqual([])
+    expect(await readFile(join(layout.state, 'installed.json'), 'utf8')).toContain('writing')
+    await expect(readFile(join(layout.workflowRoot, 'README.md'), 'utf8')).resolves.toContain('Workflow files')
   })
 
   it('detects archive tampering before restore', async () => {

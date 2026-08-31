@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises'
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 import type { UserDataLayout } from '../../shared/state.js'
 
-const DIRECTORY_NAMES = ['launch-root', 'harness', 'logs', 'state', 'backups'] as const
+const DIRECTORY_NAMES = ['launch-root', 'harness', 'workflow', 'logs', 'state', 'backups'] as const
 
 /** Resolve all persistent EzDSH paths from one trusted Main-process root. */
 export function getUserDataLayout(userDataPath: string): UserDataLayout {
@@ -16,6 +16,7 @@ export function getUserDataLayout(userDataPath: string): UserDataLayout {
     root,
     launchRoot: path('launch-root'),
     harness: path('harness'),
+    workflowRoot: path('workflow'),
     logs: path('logs'),
     state: path('state'),
     backups: path('backups')
@@ -25,7 +26,7 @@ export function getUserDataLayout(userDataPath: string): UserDataLayout {
 /** Ensure the durable directory layout exists and remains safe to call repeatedly. */
 export async function ensureUserDataLayout(layout: UserDataLayout): Promise<void> {
   const root = normalize(resolve(layout.root))
-  const paths = [layout.launchRoot, layout.harness, layout.logs, layout.state, layout.backups]
+  const paths = [layout.launchRoot, layout.harness, layout.workflowRoot, layout.logs, layout.state, layout.backups]
 
   for (const candidate of paths) {
     const resolved = normalize(resolve(candidate))

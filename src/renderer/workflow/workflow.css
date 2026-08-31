@@ -176,6 +176,7 @@
 .workflow-node-type-mcp { --workflow-node-accent: #2563eb; }
 .workflow-node-type-parallel { --workflow-node-accent: #c026d3; }
 .workflow-node-type-loop { --workflow-node-accent: #ea580c; }
+.workflow-node-type-sleep { --workflow-node-accent: #64748b; }
 .workflow-node-type-condition { --workflow-node-accent: #db2777; }
 .workflow-node-type-approval { --workflow-node-accent: #16a34a; }
 .workflow-node-type-transform { --workflow-node-accent: #64748b; }
@@ -210,15 +211,15 @@
 .workflow-condition-ports { display: grid; gap: 4px; color: var(--ezdsh-text-faint); font-size: 9px; text-align: right; }
 .workflow-condition-ports span { position: relative; padding-right: 8px; }
 .workflow-condition-ports .react-flow__handle { top: 50%; right: -16px; }
-.workflow-canvas .workflow-flow-node-running .workflow-flow-node, .workflow-execution-canvas .workflow-flow-node-running .workflow-flow-node, .workflow-canvas .workflow-flow-node-running .workflow-condition-node, .workflow-execution-canvas .workflow-flow-node-running .workflow-condition-node { border-color: var(--ezdsh-accent-orange); animation: workflow-node-running-pulse 1.35s ease-in-out infinite; }
+.workflow-canvas .workflow-flow-node-running .workflow-flow-node, .workflow-execution-canvas .workflow-flow-node-running .workflow-flow-node, .workflow-canvas .workflow-flow-node-running .workflow-condition-node, .workflow-execution-canvas .workflow-flow-node-running .workflow-condition-node { border-color: var(--ezdsh-brand); animation: workflow-node-running-pulse 1.35s ease-in-out infinite; }
 .workflow-canvas .workflow-flow-node-running .workflow-flow-node, .workflow-execution-canvas .workflow-flow-node-running .workflow-flow-node, .workflow-canvas .workflow-flow-node-running .workflow-condition-node, .workflow-execution-canvas .workflow-flow-node-running .workflow-condition-node { border-style: dashed; }
 .workflow-canvas .workflow-flow-node-completed .workflow-flow-node, .workflow-execution-canvas .workflow-flow-node-completed .workflow-flow-node, .workflow-canvas .workflow-flow-node-completed .workflow-condition-node, .workflow-execution-canvas .workflow-flow-node-completed .workflow-condition-node { border-color: var(--ezdsh-accent-green); }
 .workflow-canvas .workflow-flow-node-failed .workflow-flow-node, .workflow-execution-canvas .workflow-flow-node-failed .workflow-flow-node, .workflow-canvas .workflow-flow-node-failed .workflow-condition-node, .workflow-execution-canvas .workflow-flow-node-failed .workflow-condition-node { border-color: var(--ezdsh-accent-red); }
 .workflow-canvas .workflow-flow-node-validation-error .workflow-flow-node, .workflow-canvas .workflow-flow-node-validation-error .workflow-condition-node { border-color: var(--ezdsh-accent-red); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ezdsh-accent-red) 22%, transparent), 0 6px 18px rgba(15, 25, 40, .08); }
 .workflow-canvas .workflow-flow-node-skipped, .workflow-execution-canvas .workflow-flow-node-skipped { opacity: .55; }
-.workflow-node-running-indicator { position: absolute; bottom: 7px; left: 8px; display: inline-flex; align-items: center; gap: 4px; color: var(--ezdsh-accent-orange); font-size: 9px; font-weight: 700; line-height: 1; }
+.workflow-node-running-indicator { position: absolute; bottom: 7px; left: 8px; display: inline-flex; align-items: center; gap: 4px; color: var(--ezdsh-brand); font-size: 9px; font-weight: 700; line-height: 1; }
 .workflow-node-running-indicator i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: workflow-node-running-dot .9s ease-in-out infinite; }
-@keyframes workflow-node-running-pulse { 0%, 100% { box-shadow: 0 6px 18px rgba(15, 25, 40, .08), 0 0 0 0 color-mix(in srgb, var(--ezdsh-accent-orange) 26%, transparent); } 50% { box-shadow: 0 6px 18px rgba(15, 25, 40, .08), 0 0 0 7px color-mix(in srgb, var(--ezdsh-accent-orange) 0%, transparent); } }
+@keyframes workflow-node-running-pulse { 0%, 100% { box-shadow: 0 6px 18px rgba(15, 25, 40, .08), 0 0 0 0 color-mix(in srgb, var(--ezdsh-brand) 26%, transparent); } 50% { box-shadow: 0 6px 18px rgba(15, 25, 40, .08), 0 0 0 7px color-mix(in srgb, var(--ezdsh-brand) 0%, transparent); } }
 @keyframes workflow-node-running-dot { 0%, 100% { opacity: .45; transform: scale(.78); } 50% { opacity: 1; transform: scale(1); } }
 .workflow-canvas .workflow-flow-edge-running path, .workflow-execution-canvas .workflow-flow-edge-running path { stroke-dasharray: 7 5; animation: workflow-edge-flow .65s linear infinite; }
 @keyframes workflow-edge-flow { from { stroke-dashoffset: 12; } to { stroke-dashoffset: 0; } }
@@ -290,6 +291,11 @@
 .workflow-node-inspector-settings.workflow-node-inspector-settings-invalid { border-left: 3px solid var(--ezdsh-accent-red); padding-left: 15px; }
 .workflow-invalid-field { border-color: var(--ezdsh-accent-red) !important; box-shadow: 0 0 0 2px color-mix(in srgb, var(--ezdsh-accent-red) 18%, transparent) !important; }
 .workflow-node-inspector-settings > label { margin: 14px 0; }
+.workflow-switch-config { display: grid; gap: 8px; margin: 14px 0; }
+.workflow-switch-config > strong { color: var(--ezdsh-text-muted); font-size: 11px; }
+.workflow-switch-case { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1fr) minmax(0, 1fr) 28px; gap: 5px; align-items: center; }
+.workflow-switch-case input { min-width: 0; }
+.workflow-switch-case button { color: var(--ezdsh-accent-red); }
 .workflow-node-inspector-settings > .workflow-variable-editor { margin-right: 0; margin-left: 0; }
 .workflow-node-last-run-empty { margin: 20px 18px; color: var(--ezdsh-text-faint); font-size: 11px; line-height: 1.5; }
 .workflow-node-last-run { display: grid; gap: 0; margin: 14px 18px; border: 1px solid var(--ezdsh-panel-border); border-radius: 9px; padding: 6px 11px; background: var(--ezdsh-code-background); }

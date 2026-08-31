@@ -548,7 +548,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     return new DshSessionClient({ baseUrl: runtimeUrl, timeoutMs: 10 * 60 * 1000 })
   }
   const runtimeWorkflowClient = new WorkflowRuntimeClient({
-    cwd: layout.root,
+    cwd: layout.workflowRoot,
     createClient: createWorkflowSessionClient,
   })
   const lightweightClient = new WorkflowLightweightClient({
@@ -578,7 +578,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   workflowRunService = new WorkflowRunService({
     workflowStore,
     runStore: workflowRunStore,
-    workspaceRoot: layout.root,
+    workflowRoot: layout.workflowRoot,
     nodeCommandPath: runtimeCommandPath,
     createClient: createWorkflowSessionClient,
     resolveEmployee: (id) => employeeService?.get(id),
@@ -591,6 +591,23 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     ...(workflowAiDocumentation === undefined ? {} : { workflowAiDocumentation }),
     lightweightClient,
     mcpClient: new WorkflowMcpClient({ patchPath: join(layout.harness, 'profiles', 'web', 'cordis.patch.yml') }),
+    executeSubWorkflow: async (childWorkflowId, input, waitForCompletion, version, childOptions) => {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      if (workflowStore === undefined) throw new Error('Workflow store is not ready')
+      const childDefinition = workflowStore.get(childWorkflowId)
+      if (childDefinition === undefined) throw new Error(`子工作流不存在：${childWorkflowId}`)
+      if (typeof version === 'number' && childDefinition.revision !== version) throw new Error(`子工作流版本不匹配：需要 v${version}，当前为 v${childDefinition.revision}。`)
+      const child = await workflowRunService.start(childWorkflowId, input, { ...(childOptions ?? {}), ...(typeof version === 'number' ? { workflowRevision: version } : {}) })
+      if (!waitForCompletion) return { runId: child.id }
+      const deadline = Date.now() + 10 * 60 * 1_000
+      while (Date.now() < deadline) {
+        const current = workflowRunService.get(child.id)
+        if (current?.status === 'completed') return current.output ?? null
+        if (current?.status === 'failed' || current?.status === 'cancelled') throw new Error(current.error ?? '子工作流执行失败。')
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new Error('子工作流执行超时。')
+    },
     internalSessionStore: new WorkflowInternalSessionStore(layout.state),
   })
   await workflowRunService.initialize().catch((error: unknown) => {
@@ -1590,7 +1607,11 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('workflows:remove', async (_event, id: string): Promise<IpcResult<void>> => {
     try {
-      if (workflowStore === undefined) throw new Error('Workflow service is not ready')
+      if (workflowStore === undefined || workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid workflow ID')
+      await workflowRunService.initialize()
+      if (workflowStore.get(id) === undefined) throw new Error(`Workflow not found: ${id}`)
+      await workflowRunService.removeForWorkflow(id)
       await workflowStore.remove(id)
       return success(undefined)
     } catch (error) {

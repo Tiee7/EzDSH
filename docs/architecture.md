@@ -141,7 +141,7 @@ interface RuntimeSnapshot {
 ### 3.2 启动顺序
 
 1. 计算 `userData`；
-2. 创建 `launch-root`、`harness` 和 `logs`；
+2. 创建 `launch-root`、`harness`、`workflow` 和 `logs`；
 3. 获取可用随机回环端口；
 4. 使用内置 DSH Runtime 入口启动子进程；
 5. 为子进程设置独立的 Harness 数据目录；
@@ -354,7 +354,7 @@ Main: WorkflowStore + WorkflowRunService
 DSH Runtime Session API (AI task / Employee / Skill / MCP)
 ```
 
-Schema V2 的节点类型包括 `input`、`ai-task`、`employee`、`skill`、`mcp`、`parallel`、`loop`、`condition`、`approval`、`transform`、`output`、`shell` 和 `file`。加载 Schema V1 时，旧 `agent` 节点会在 normalize 边界迁移成 `ai-task`，默认标签从 Agent 改成“智能处理”，自定义标签保留。
+Schema V2 的节点类型包括 `input`、`ai-task`、`structured-extract`、`employee`、`skill`、`mcp`、`parallel`、`loop`、`sleep`、`condition`、`switch`、`approval`、`wait-input`、`sub-workflow`、`object-builder`、`list-operator`、`merge`、`transform`、`text-merge`、`output`、`shell`、`file`、`http` 和 `code`。加载 Schema V1 时，旧 `agent` 节点会在 normalize 边界迁移成 `ai-task`，默认标签从 Agent 改成“智能处理”，自定义标签保留；旧 `approval` 节点继续读取，新建流程使用 `wait-input` 的 approval 预设。
 
 `ai-task`、`employee`、Skill 和 MCP 节点通过现有 `DshSessionClient` 创建独立 Session。员工节点先通过 `EmployeeService.get(employeeId)` 解析启用的档案，再把业务边界、工作原则、执行规范、质量标准和技能 ID 注入节点执行；不存在或停用的员工会让节点明确失败。Parallel 以受控并发 fan-out 执行多条指令，Loop 对上游数组逐项执行，Approval 在 Main 进程等待用户决定。
 
@@ -362,7 +362,7 @@ Schema V2 的节点类型包括 `input`、`ai-task`、`employee`、`skill`、`mc
 
 每个运行记录保存工作流 revision、输入、节点状态、节点输出、错误和事件。节点完成或失败后立即原子写入 `state/workflow-runs.json`；应用重启会把 `queued/running` 记录标记为 `paused`，用户可从最后一个未完成节点恢复。取消在节点之间和 DSH Session 层协作执行；正在运行的外部进程不能被 Renderer 直接杀死。
 
-Shell/File 是高风险节点：运行按钮必须明确勾选授权，Shell 使用 `shell:false` 且拒绝控制字符，File 只接受当前工作区内的相对路径，所有路径由 Main 重新解析和 containment-check。AI 生成只返回待审阅草稿，先做 JSON 提取、Schema normalize 和安全校验，用户保存后才进入定义存储。
+Shell/File 是高风险节点：运行按钮必须明确勾选授权，Shell 使用 `shell:false` 且拒绝控制字符，File 只接受 Workflow 工作目录内的相对路径，所有路径由 Main 重新解析和 containment-check。AI 生成只返回待审阅草稿，先做 JSON 提取、Schema normalize 和安全校验，用户保存后才进入定义存储。
 
 员工档案使用 Schema V2，包含档案版本、业务边界、执行规范、质量标准和技能 ID。旧 Employee 的线性步骤在加载时迁移成非执行性的执行规范。Main 侧快速转换只生成 `input → employee → output`，不会复制出隐藏的员工内部流程。
 

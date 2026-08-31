@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WorkflowRunService } from '../../src/main/workflow/workflow-run-service.js'
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 import type { EmployeeCreateInput, EmployeeSnapshot } from '../../src/shared/employees.js'
-import { validateWorkflow, type WorkflowDefinition, type WorkflowNode, type WorkflowOutputMode } from '../../src/shared/workflow.js'
+import { validateWorkflow, type WorkflowDefinition, type WorkflowNode, type WorkflowOutputMode, type WorkflowRunRecord } from '../../src/shared/workflow.js'
 
 function graph(): WorkflowDefinition {
   return {
@@ -54,6 +54,7 @@ async function createNodeService(options: {
   node: WorkflowNode
   responses?: string[]
   resolveEmployee?: (id: string) => EmployeeSnapshot | undefined
+  executeSubWorkflow?: (workflowId: string, input: any, waitForCompletion: boolean) => Promise<any>
 }): Promise<{
   service: WorkflowRunService
   workflowId: string
@@ -88,7 +89,7 @@ async function createNodeService(options: {
   const service = new WorkflowRunService({
     workflowStore,
     runStore: new WorkflowRunStore(dir),
-    workspaceRoot: dir,
+    workflowRoot: dir,
     createClient: () => ({
       createSession,
       sendPrompt,
@@ -98,6 +99,7 @@ async function createNodeService(options: {
     resolveEmployee: options.resolveEmployee ?? (() => undefined),
     lightweightClient: { complete },
     mcpClient: { call: mcpCall },
+    executeSubWorkflow: options.executeSubWorkflow,
   })
   return { service, workflowId: workflow.id, sendPrompt, createSession, complete, mcpCall, archiveSession, selectSessionModel }
 }
@@ -149,6 +151,192 @@ describe('workflow run service', () => {
     expect(complete.mock.calls[1]?.[0]?.prompt).toContain('分析第二项')
   })
 
+  it('enforces an AI task output schema before completing', async () => {
+    const { service, workflowId, complete } = await createNodeService({
+      node: {
+        id: 'ai-schema', type: 'ai-task', label: 'Structured AI',
+        config: {
+          instruction: '提取标题', mode: 'single', skillIds: [], outputMode: 'json',
+          outputSchema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] },
+        }, position: { x: 200, y: 0 },
+      },
+      responses: ['{"wrong":true}', '{"title":"正确"}'],
+    })
+
+    const result = await eventually(service, (await service.start(workflowId, '输入')).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual({ title: '正确' })
+    expect(complete).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects additional properties when an AI output schema is strict', async () => {
+    const { service, workflowId, complete } = await createNodeService({
+      node: { id: 'ai-strict-schema', type: 'ai-task', label: 'Strict AI', config: { instruction: '输出标题', mode: 'single', skillIds: [], outputMode: 'json', outputSchema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'], additionalProperties: false } }, position: { x: 200, y: 0 } },
+      responses: ['{"title":"对","extra":true}', '{"title":"修复"}'],
+    })
+    const result = await eventually(service, (await service.start(workflowId, '输入')).id)
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual({ title: '修复' })
+    expect(complete).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs a standalone structured extract node with schema retries', async () => {
+    const { service, workflowId, complete } = await createNodeService({
+      node: { id: 'extract', type: 'structured-extract', label: 'Extract', config: { schema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] }, maxRetries: 2 }, position: { x: 200, y: 0 } },
+      responses: ['{"title":3}', '{"title":"标题"}'],
+    })
+    const result = await eventually(service, (await service.start(workflowId, '原文')).id)
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual({ title: '标题' })
+    expect(complete).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs a selected sub-workflow and returns its output', async () => {
+    const executeSubWorkflow = vi.fn(async (workflowId: string, input: unknown, waitForCompletion: boolean) => ({ workflowId, input, waitForCompletion, result: 'child-output' }))
+    const { service, workflowId } = await createNodeService({
+      node: { id: 'sub', type: 'sub-workflow', label: 'Sub workflow', config: { workflowId: 'child-workflow', waitForCompletion: true }, position: { x: 200, y: 0 } },
+      executeSubWorkflow,
+    })
+    const result = await eventually(service, (await service.start(workflowId, 'hello')).id)
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual({ workflowId: 'child-workflow', input: 'hello', waitForCompletion: true, result: 'child-output' })
+    expect(executeSubWorkflow).toHaveBeenCalledWith('child-workflow', 'hello', true, undefined, { allowShellFile: false, allowCode: false })
+  })
+
+  it('builds objects, filters lists, and merges inputs deterministically', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-data-nodes-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-data-nodes', name: 'Data nodes', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'object', type: 'object-builder', label: 'Object', config: { fields: { title: '{{value}}', items: '{{value}}', nested: { ok: true } } }, position: { x: 200, y: 0 } },
+        { id: 'list', type: 'list-operator', label: 'List', config: { operation: 'filter', path: 'ok', value: true }, position: { x: 400, y: 0 }, inputBindings: [{ id: 'items', name: 'items', sourceNodeId: 'object', sourcePath: 'items', required: true }] },
+        { id: 'merge', type: 'merge', label: 'Merge', config: { operation: 'append' }, position: { x: 600, y: 0 }, inputBindings: [
+          { id: 'left', name: 'left', sourceNodeId: 'object', required: true },
+          { id: 'right', name: 'right', sourceNodeId: 'list', required: true },
+        ] },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 800, y: 0 } },
+      ],
+      edges: [
+        { id: 'a', source: 'input', target: 'object' },
+        { id: 'b', source: 'object', target: 'list' },
+        { id: 'c', source: 'list', target: 'merge' },
+        { id: 'd', source: 'object', target: 'merge' },
+        { id: 'e', source: 'merge', target: 'output' },
+      ],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, [{ ok: true }, { ok: false }])).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual([
+      { title: [{ ok: true }, { ok: false }], items: [{ ok: true }, { ok: false }], nested: { ok: true } },
+      { ok: true },
+    ])
+  })
+
+  it('supports list projection, grouping, and numeric aggregation', async () => {
+    const { service, workflowId } = await createNodeService({
+      node: { id: 'list-full', type: 'list-operator', label: 'List full', config: { operation: 'aggregate', aggregateMode: 'sum', aggregatePath: 'amount' }, position: { x: 200, y: 0 } },
+    })
+    const result = await eventually(service, (await service.start(workflowId, [{ amount: 2 }, { amount: 3 }])).id)
+    expect(result.status).toBe('completed')
+    expect(result.output).toBe(5)
+  })
+
+  it('supports directory listing and file metadata operations', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-file-'))
+    await mkdir(join(dir, 'docs'))
+    await writeFile(join(dir, 'docs', 'note.txt'), 'hello', 'utf8')
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-file-ops', name: 'File operations', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'file', type: 'file', label: 'File', config: { operation: 'list', path: 'docs', recursive: true }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'file' }, { id: 'b', source: 'file', target: 'output' }],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, null, { allowShellFile: true })).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual([
+      { path: 'docs', type: 'directory', size: 0 },
+      { path: 'docs/note.txt', type: 'file', size: 5 },
+    ])
+  })
+
+  it('uses the dedicated workflow root for file nodes instead of state storage', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-state-'))
+    const workflowDir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-root-'))
+    const workflowStore = new WorkflowStore(stateDir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-file-root', name: 'File root', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'file', type: 'file', label: 'File', config: { operation: 'write', path: 'result.txt', content: 'from workflow root' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'file' }, { id: 'b', source: 'file', target: 'output' }],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(stateDir), workflowRoot: workflowDir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, null, { allowShellFile: true })).id)
+
+    expect(result.status).toBe('completed')
+    await expect(readFile(join(workflowDir, 'result.txt'), 'utf8')).resolves.toBe('from workflow root')
+    await expect(readFile(join(stateDir, 'result.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('waits for a sleep node duration and forwards its input unchanged', async () => {
+    const { service, workflowId, complete } = await createNodeService({
+      node: { id: 'sleep', type: 'sleep', label: 'Sleep', config: { durationMs: 20 }, position: { x: 200, y: 0 } },
+    })
+    const startedAt = Date.now()
+
+    const result = await eventually(service, (await service.start(workflowId, 'wake')).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toBe('wake')
+    expect(result.nodeStates.find((state) => state.nodeId === 'sleep')?.elapsedMs).toBeGreaterThanOrEqual(15)
+    expect(complete).not.toHaveBeenCalled()
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(15)
+  })
+
+  it('samples a new random sleep duration on every execution', async () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValueOnce(0).mockReturnValueOnce(0.999999)
+    try {
+      const { service, workflowId } = await createNodeService({
+        node: { id: 'sleep-random', type: 'sleep', label: 'Random sleep', config: { durationMs: 0, mode: 'random', minDurationMs: 0, maxDurationMs: 1 } as never, position: { x: 200, y: 0 } },
+      })
+
+      await eventually(service, (await service.start(workflowId, 'first')).id)
+      await eventually(service, (await service.start(workflowId, 'second')).id)
+
+      expect(random).toHaveBeenCalledTimes(2)
+    } finally {
+      random.mockRestore()
+    }
+  })
+
   it('loops over array items sequentially and respects the iteration cap', async () => {
     const { service, workflowId, complete } = await createNodeService({
       node: { id: 'loop', type: 'loop', label: 'Loop', config: { instruction: '处理当前项', maxIterations: 2 }, position: { x: 200, y: 0 } },
@@ -162,6 +350,108 @@ describe('workflow run service', () => {
     expect(complete).toHaveBeenCalledTimes(2)
     expect(complete.mock.calls[0]?.[0]?.prompt).toContain('当前循环项："A"')
     expect(complete.mock.calls[1]?.[0]?.prompt).toContain('当前循环项："B"')
+  })
+
+  it('passes each loop item through the body node and forwards collected results to the next edge', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-loop-body-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-loop-body', name: 'Loop body', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'loop', type: 'loop', label: 'Loop', config: { maxIterations: 10 }, position: { x: 240, y: 0 } },
+        { id: 'body', type: 'transform', label: 'Body', config: { template: 'append', text: '!' }, position: { x: 240, y: 180 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 520, y: 0 } },
+      ],
+      edges: [
+        { id: 'input-loop', source: 'input', target: 'loop' },
+        { id: 'loop-body', source: 'loop', target: 'body', sourcePort: 'loop-body' },
+        { id: 'loop-output', source: 'loop', target: 'output', sourcePort: 'loop-next' },
+      ],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, ['A', 'B'])).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual(['A!', 'B!'])
+  })
+
+  it('binds each loop item to the body node so deterministic templates can use item fields', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-loop-body-binding-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-loop-body-binding', name: 'Loop body binding', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'loop', type: 'loop', label: 'Loop', config: { maxIterations: 10 }, position: { x: 240, y: 0 } },
+        {
+          id: 'body', type: 'transform', label: 'Body', config: { template: 'text', text: '姓名：{{name}}' }, position: { x: 240, y: 180 },
+          inputBindings: [{ id: 'item-name', name: 'name', sourceNodeId: 'loop', sourcePath: 'name', required: true }],
+        },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 520, y: 0 } },
+      ],
+      edges: [
+        { id: 'input-loop', source: 'input', target: 'loop' },
+        { id: 'loop-body', source: 'loop', target: 'body', sourcePort: 'loop-body' },
+        { id: 'loop-output', source: 'loop', target: 'output', sourcePort: 'loop-next' },
+      ],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, [{ name: '甲' }, { name: '乙' }])).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual(['姓名：甲', '姓名：乙'])
+  })
+
+  it('runs a linear loop body chain before collecting the terminal body result', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-loop-chain-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-loop-chain', name: 'Loop chain', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'loop', type: 'loop', label: 'Loop', config: { maxIterations: 10 }, position: { x: 240, y: 0 } },
+        { id: 'sleep', type: 'sleep', label: 'Sleep', config: { durationMs: 20 }, position: { x: 240, y: 180 } },
+        { id: 'format', type: 'transform', label: 'String', config: { template: 'text', text: '当前是第{{value}}个' }, position: { x: 520, y: 180 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 760, y: 0 } },
+      ],
+      edges: [
+        { id: 'input-loop', source: 'input', target: 'loop' },
+        { id: 'loop-body', source: 'loop', target: 'sleep', sourcePort: 'loop-body' },
+        { id: 'sleep-format', source: 'sleep', target: 'format' },
+        { id: 'loop-output', source: 'loop', target: 'output', sourcePort: 'loop-next' },
+      ],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    let formatCompletedOnce = false
+    let observedSecondIteration: WorkflowRunRecord | undefined
+    const stopWatching = service.watch((record) => {
+      const sleep = record.nodeStates.find((state) => state.nodeId === 'sleep')
+      const format = record.nodeStates.find((state) => state.nodeId === 'format')
+      if (format?.status === 'completed') formatCompletedOnce = true
+      if (formatCompletedOnce && sleep?.status === 'running' && format?.status === 'pending') observedSecondIteration = record
+    })
+    const result = await eventually(service, (await service.start(workflow.id, [1, 2])).id)
+    stopWatching()
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toEqual(['当前是第1个', '当前是第2个'])
+    expect(observedSecondIteration).toBeDefined()
   })
 
   it('uses custom text from the fixed end node as the final output', async () => {
@@ -180,7 +470,7 @@ describe('workflow run service', () => {
     const service = new WorkflowRunService({
       workflowStore,
       runStore: new WorkflowRunStore(dir),
-      workspaceRoot: dir,
+      workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })
@@ -215,7 +505,7 @@ describe('workflow run service', () => {
       edges: [{ id: 'input-output', source: 'input', target: 'output' }],
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })
@@ -241,7 +531,7 @@ describe('workflow run service', () => {
       edges: [{ id: 'input-process', source: 'input', target: 'process' }, { id: 'process-output', source: 'process', target: 'output' }],
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       lightweightClient: { complete: async () => 'AI 环节结果' },
@@ -277,7 +567,7 @@ describe('workflow run service', () => {
       edges: [{ id: 'input-output', source: 'input', target: 'output' }],
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })
@@ -352,7 +642,7 @@ describe('workflow run service', () => {
     const sendPrompt = vi.fn(async () => ({ text: '完成' }))
     const archiveSession = vi.fn(async () => undefined)
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession, sendPrompt, archiveSession }),
       resolveEmployee: () => reviewer(),
       lightweightClient: { complete: async () => 'unused' },
@@ -432,7 +722,7 @@ describe('workflow run service', () => {
       ],
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       lightweightClient: { complete: async () => 'unused' },
@@ -478,7 +768,7 @@ describe('workflow run service', () => {
       ], edges: [],
     }))
     const service = new WorkflowRunService({
-      workflowStore, runStore, workspaceRoot: dir,
+      workflowStore, runStore, workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => reviewer(),
       listEmployees: () => [reviewer()],
@@ -499,7 +789,7 @@ describe('workflow run service', () => {
 
   it('modifies an existing workflow with a dedicated prompt and reports deleted nodes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-modify-'))
-    const current = graph()
+    const current = { ...graph(), generationPrompt: '生成一个条件分支工作流' }
     const modified = {
       ...current,
       nodes: current.nodes.filter((node) => node.id !== 'no'),
@@ -509,7 +799,7 @@ describe('workflow run service', () => {
     const service = new WorkflowRunService({
       workflowStore: new WorkflowStore(dir),
       runStore: new WorkflowRunStore(dir),
-      workspaceRoot: dir,
+      workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       listEmployees: () => [],
@@ -520,6 +810,7 @@ describe('workflow run service', () => {
     const result = await service.modify({ workflow: current, prompt: '删除拒绝分支，保留通过分支。', model: { providerId: 'provider-a', modelId: 'model-a' } })
 
     expect(result.workflow.nodes.some((node) => node.id === 'no')).toBe(false)
+    expect(result.workflow.generationPrompt).toBe('生成一个条件分支工作流')
     expect(result.removedNodes).toEqual([{ id: 'no', label: 'No' }])
     expect(result.changes.some((change) => change.type === 'removed' && change.targetId === 'no')).toBe(true)
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({ model: { providerId: 'provider-a', modelId: 'model-a' }, systemPrompt: expect.stringContaining('Workflow rules') }))
@@ -554,7 +845,7 @@ describe('workflow run service', () => {
     const service = new WorkflowRunService({
       workflowStore,
       runStore: new WorkflowRunStore(dir),
-      workspaceRoot: dir,
+      workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       listEmployees: () => [],
@@ -600,7 +891,7 @@ describe('workflow run service', () => {
         ], edges: [],
       }))
     const service = new WorkflowRunService({
-      workflowStore, runStore, workspaceRoot: dir,
+      workflowStore, runStore, workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       listEmployees: () => [],
@@ -630,7 +921,7 @@ describe('workflow run service', () => {
       ], edges: [],
     }))
     const service = new WorkflowRunService({
-      workflowStore, runStore, workspaceRoot: dir,
+      workflowStore, runStore, workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       lightweightClient: { complete },
@@ -655,7 +946,7 @@ describe('workflow run service', () => {
       ], edges: [],
     }))
     const service = new WorkflowRunService({
-      workflowStore, runStore, workspaceRoot: dir,
+      workflowStore, runStore, workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       listEmployees: () => [],
@@ -693,7 +984,7 @@ describe('workflow run service', () => {
       ],
     }))
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       lightweightClient: { complete },
@@ -710,7 +1001,7 @@ describe('workflow run service', () => {
     const workflow = await workflowStore.create(graph())
     const runStore = new WorkflowRunStore(dir)
     const service = new WorkflowRunService({
-      workflowStore, runStore, workspaceRoot: dir,
+      workflowStore, runStore, workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })
@@ -724,6 +1015,49 @@ describe('workflow run service', () => {
     expect(result.events.some((event) => event.type === 'node-completed')).toBe(true)
   })
 
+  it('executes only the matching switch branch and falls back to default', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-switch-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      schemaVersion: 2, id: 'workflow-switch', name: 'Switch', description: '', revision: 1, enabled: true,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'route', type: 'switch', label: 'Route', config: { cases: [{ id: 'urgent', label: 'Urgent', value: 'urgent' }, { id: 'normal', label: 'Normal', value: 'normal' }] }, position: { x: 220, y: 0 } },
+        { id: 'urgent', type: 'transform', label: 'Urgent', config: { template: 'prepend', text: 'urgent: ' }, position: { x: 440, y: -100 } },
+        { id: 'normal', type: 'transform', label: 'Normal', config: { template: 'prepend', text: 'normal: ' }, position: { x: 440, y: 0 } },
+        { id: 'fallback', type: 'transform', label: 'Fallback', config: { template: 'prepend', text: 'fallback: ' }, position: { x: 440, y: 100 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 680, y: 0 } },
+      ],
+      edges: [
+        { id: 'input-route', source: 'input', target: 'route' },
+        { id: 'route-urgent', source: 'route', target: 'urgent', sourcePort: 'switch:urgent' },
+        { id: 'route-normal', source: 'route', target: 'normal', sourcePort: 'switch:normal' },
+        { id: 'route-default', source: 'route', target: 'fallback', sourcePort: 'default' },
+        { id: 'urgent-output', source: 'urgent', target: 'output' },
+        { id: 'normal-output', source: 'normal', target: 'output' },
+        { id: 'fallback-output', source: 'fallback', target: 'output' },
+      ],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const normal = await eventually(service, (await service.start(workflow.id, 'normal')).id)
+    expect(normal.status).toBe('completed')
+    expect(normal.output).toBe('normal: normal')
+    expect(normal.nodeStates.find((state) => state.nodeId === 'urgent')?.status).toBe('skipped')
+    expect(normal.nodeStates.find((state) => state.nodeId === 'fallback')?.status).toBe('skipped')
+
+    const fallback = await eventually(service, (await service.start(workflow.id, 'other')).id)
+    expect(fallback.status).toBe('completed')
+    expect(fallback.output).toBe('fallback: other')
+    expect(fallback.nodeStates.find((state) => state.nodeId === 'urgent')?.status).toBe('skipped')
+    expect(fallback.nodeStates.find((state) => state.nodeId === 'normal')?.status).toBe('skipped')
+  })
+
   it('deletes completed run history and rejects active run deletion', async () => {
     const { service, workflowId } = await createNodeService({ node: { id: 'transform', type: 'transform', label: 'Transform', config: { template: 'identity' }, position: { x: 200, y: 0 } } })
     const completed = await eventually(service, (await service.start(workflowId, 'delete me')).id)
@@ -735,11 +1069,120 @@ describe('workflow run service', () => {
     const workflowStore = new WorkflowStore(dir)
     await workflowStore.create(graph())
     const runStore = new WorkflowRunStore(dir)
-    const activeService = new WorkflowRunService({ workflowStore, runStore, workspaceRoot: dir, createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined })
+    const activeService = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir, createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined })
     await activeService.initialize()
     await runStore.save({ id: 'run-active', workflowId: 'workflow-branch', workflowRevision: 1, status: 'running', input: null, nodeStates: [], events: [], allowShellFile: false })
 
     await expect(activeService.remove('run-active')).rejects.toThrow('不能删除')
+  })
+
+  it('deletes a workflow only after confirming it has no active run records', async () => {
+    const { service, workflowId } = await createNodeService({ node: { id: 'transform', type: 'transform', label: 'Transform', config: { template: 'identity' }, position: { x: 200, y: 0 } } })
+    const completed = await eventually(service, (await service.start(workflowId, 'delete with workflow')).id)
+
+    expect(await service.removeForWorkflow(workflowId)).toBe(1)
+    expect(service.get(completed.id)).toBeUndefined()
+
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-active-delete-workflow-'))
+    const workflowStore = new WorkflowStore(dir)
+    await workflowStore.create(graph())
+    const runStore = new WorkflowRunStore(dir)
+    const activeService = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir, createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined })
+    await activeService.initialize()
+    await runStore.save({ id: 'run-active-workflow', workflowId: 'workflow-branch', workflowRevision: 1, status: 'running', input: null, nodeStates: [], events: [], allowShellFile: false })
+
+    await expect(activeService.removeForWorkflow('workflow-branch')).rejects.toThrow('运行中的记录')
+    expect(runStore.get('run-active-workflow')).toBeDefined()
+  })
+
+  it('replaces text and interpolates bound variables in the transform node', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-transform-replace-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-transform-replace', name: 'Transform replace', description: '',
+      nodes: [
+        { id: 'start', type: 'input', label: '开始', config: { fields: [{ name: 'text' }, { name: 'replacement' }] }, position: { x: 0, y: 0 } },
+        {
+          id: 'replace', type: 'transform', label: '替换', config: { template: 'replace', find: 'world', replacement: '{{replacement}}' } as never,
+          position: { x: 240, y: 0 }, inputBindings: [
+            { id: 'text-input', name: 'text', sourceNodeId: 'start', sourcePath: 'text', required: true },
+            { id: 'replacement-input', name: 'replacement', sourceNodeId: 'start', sourcePath: 'replacement', required: true },
+          ],
+        },
+        { id: 'output', type: 'output', label: '结束', config: {}, position: { x: 480, y: 0 }, inputBindings: [{ id: 'result', name: 'result', sourceNodeId: 'replace', required: true }] },
+      ],
+      edges: [{ id: 'start-replace', source: 'start', target: 'replace' }, { id: 'replace-output', source: 'replace', target: 'output' }],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, { text: 'hello world', replacement: 'there' })).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toBe('hello there')
+  })
+
+  it('renders a new text from bound variables with the transform text template', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-transform-text-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-transform-text', name: 'Transform text', description: '',
+      nodes: [
+        { id: 'start', type: 'input', label: '开始', config: { fields: [{ name: 'diagnosis' }, { name: 'patient' }] }, position: { x: 0, y: 0 } },
+        {
+          id: 'rewrite', type: 'transform', label: '重写诊断', config: { template: 'text', text: '患者：{{patient}}。新的诊断：{{diagnosis}}' } as never,
+          position: { x: 240, y: 0 }, inputBindings: [
+            { id: 'diagnosis-input', name: 'diagnosis', sourceNodeId: 'start', sourcePath: 'diagnosis', required: true },
+            { id: 'patient-input', name: 'patient', sourceNodeId: 'start', sourcePath: 'patient', required: true },
+          ],
+        },
+        { id: 'output', type: 'output', label: '结束', config: {}, position: { x: 480, y: 0 }, inputBindings: [{ id: 'result', name: 'result', sourceNodeId: 'rewrite', required: true }] },
+      ],
+      edges: [{ id: 'start-rewrite', source: 'start', target: 'rewrite' }, { id: 'rewrite-output', source: 'rewrite', target: 'output' }],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, { diagnosis: '原诊断', patient: '张三' })).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toBe('患者：张三。新的诊断：原诊断')
+  })
+
+  it('merges multiple bound text values with a text-merge node template', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-text-merge-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-text-merge', name: 'Text merge', description: '',
+      nodes: [
+        { id: 'start', type: 'input', label: '开始', config: { fields: [{ name: 'title' }, { name: 'body' }] }, position: { x: 0, y: 0 } },
+        {
+          id: 'merge', type: 'text-merge' as never, label: '文本合并', config: { template: '标题：{{title}}\\n正文：{{body}}' } as never,
+          position: { x: 240, y: 0 }, inputBindings: [
+            { id: 'title-input', name: 'title', sourceNodeId: 'start', sourcePath: 'title', required: true },
+            { id: 'body-input', name: 'body', sourceNodeId: 'start', sourcePath: 'body', required: true },
+          ],
+        } as never,
+        { id: 'output', type: 'output', label: '结束', config: {}, position: { x: 480, y: 0 }, inputBindings: [{ id: 'result', name: 'result', sourceNodeId: 'merge', required: true }] },
+      ],
+      edges: [{ id: 'start-merge', source: 'start', target: 'merge' }, { id: 'merge-output', source: 'merge', target: 'output' }],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const result = await eventually(service, (await service.start(workflow.id, { title: '标题', body: '正文' })).id)
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toBe('标题：标题\\n正文：正文')
   })
 
   it('treats legacy condition exits without a port as one exclusive true/false pair', async () => {
@@ -751,7 +1194,7 @@ describe('workflow run service', () => {
       edges: graph().edges.map((edge) => edge.source === 'check' ? { ...edge, sourcePort: undefined } : edge),
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })
@@ -785,7 +1228,7 @@ describe('workflow run service', () => {
     let activeCalls = 0
     let maxActiveCalls = 0
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       lightweightClient: {
@@ -826,7 +1269,7 @@ describe('workflow run service', () => {
       ],
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })
@@ -870,7 +1313,7 @@ describe('workflow run service', () => {
       return ''
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       lightweightClient: { complete },
@@ -903,7 +1346,7 @@ describe('workflow run service', () => {
     })
     const complete = vi.fn(async ({ prompt }: { prompt: string }) => prompt.includes('节点名称：写作') ? '成文结果' : '')
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       lightweightClient: { complete },
@@ -929,7 +1372,7 @@ describe('workflow run service', () => {
       edges: [{ id: 'a', source: 'input', target: 'shell' }, { id: 'b', source: 'shell', target: 'output' }],
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })
@@ -954,7 +1397,7 @@ describe('workflow run service', () => {
       edges: [{ id: 'a', source: 'input', target: 'approval' }, { id: 'b', source: 'approval', target: 'output' }],
     })
     const service = new WorkflowRunService({
-      workflowStore, runStore: new WorkflowRunStore(dir), workspaceRoot: dir,
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })

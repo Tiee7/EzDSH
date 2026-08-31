@@ -61,12 +61,31 @@ AI 不是在生成一段描述性的流程图。生成结果必须能够在运�
 | Input binding / 输入绑定 | 节点输入变量到上游输出的映射 | 表达数据依赖、字段选择和本地变量名 | 不改变上游节点的输出 |
 | Output variable / 输出变量 | 节点声明的结构化输出字段 | 让下游可以稳定引用字段 | 不是额外的执行节点 |
 | `result` | 每个节点的隐式完整输出 | 允许下游引用完整结果 | 不需要在 `outputVariables` 里重复声明 |
+| `outputSchema` | `ai-task` JSON 结果的机器可校验契约 | 约束字段类型、必填项和嵌套结构，失败自动修复重试 | 不需要再额外增加结构化提取节点 |
 | Run / 运行 | 某份工作流的一次执行实例 | 保存每个节点的输入、输出、状态、错误和耗时 | 不改变工作流定义 |
 | Employee / 专业员工 | 可复用的岗位配置和业务边界 | 负责稳定、专业、可复用的业务职责 | 不等同于一个工作流，也不自动拥有所有工具权限 |
 | AI task / 智能处理 | 工作流内一次轻量、局部的模型处理 | 完成不值得沉淀为员工的单次推理 | 不应被伪装成长期岗位 |
 | Skill / 技能 | 可被节点或员工引用的原子能力 | 提供具体工具或方法能力 | 不代替节点的业务目标 |
 | MCP | 对一个明确 MCP 工具的结构化调用 | 调用外部工具并传递结构化参数 | 不负责自动发现或猜测工具名 |
 | Context / 上下文 | 当前节点显式绑定进来的变量集合 | 为节点提示词提供可控输入 | 当前版本不是所有历史结果的自动全局变量 |
+
+### 文本合并节点
+
+当需求只是把多个节点结果组合成一段文本时，优先使用 `text-merge`，不要为简单拼接调用一次智能处理。它是确定性的：通过 `inputBindings` 声明来源和本地变量名，在 `config.template` 中使用 `{{变量}}` 或 `{{变量.字段}}`。
+
+```json
+{
+  "type": "text-merge",
+  "label": "整理输出",
+  "config": { "template": "标题：{{title}}\n正文：{{body}}" },
+  "inputBindings": [
+    { "id": "title", "name": "title", "sourceNodeId": "title-node", "required": true },
+    { "id": "body", "name": "body", "sourceNodeId": "writer-node", "required": true }
+  ]
+}
+```
+
+模板为空时，可设置 `config.separator`（默认换行），按绑定声明顺序直接合并值。
 
 ### 2.1 三个必须分开的层次
 
@@ -366,7 +385,7 @@ C 的指令可以是：
 { "id": "condition-no", "source": "check", "target": "revise", "sourcePort": "false" }
 ```
 
-一个 condition 最多表达 true / false 两条路径。用户说“switch 有三种或更多情况”时，使用多个 condition 串联成决策树，不要发明 `switch` 节点：
+一个 condition 最多表达 true / false 两条路径。需要三种或更多个精确值分支时，使用 `switch`：
 
 ```text
 条件一：是否紧急？
@@ -376,7 +395,35 @@ C 的指令可以是：
               false -> 普通处理
 ```
 
-### 6.2 条件后的共同下游
+### 6.2 switch 是多路精确匹配
+
+`switch` 读取本节点的主输入值，并按 `config.cases` 顺序进行严格值匹配。每个 case 必须有唯一的 `id` 和 `value`，命中后从 `switch:<caseId>` 端口继续；未命中从唯一的 `default` 端口继续。
+
+```json
+{
+  "id": "route",
+  "type": "switch",
+  "label": "按优先级路由",
+  "config": {
+    "cases": [
+      { "id": "urgent", "label": "紧急", "value": "urgent" },
+      { "id": "normal", "label": "普通", "value": "normal" }
+    ]
+  }
+}
+```
+
+对应连线示例：
+
+```json
+{ "id": "route-urgent", "source": "route", "target": "urgent-handler", "sourcePort": "switch:urgent" }
+{ "id": "route-normal", "source": "route", "target": "normal-handler", "sourcePort": "switch:normal" }
+{ "id": "route-default", "source": "route", "target": "fallback", "sourcePort": "default" }
+```
+
+`switch` 节点会原样传递它读取的输入值；case ID 只用于选择连线，不会替换传给分支节点的数据。
+
+### 6.3 条件后的共同下游
 
 如果 true 和 false 两条路径最终汇入同一个下游节点，可以让两条分支都连到该节点。该节点会等待一个分支 `completed`、另一个分支 `skipped`，然后沿有效路径继续。
 
@@ -386,7 +433,7 @@ C 的指令可以是：
 - 使用 `required: false` 和合理 `defaultValue`；或
 - 在分支内部把输出规范化为共同的结构，再汇入共同下游。
 
-### 6.3 graph fan-out 与 parallel 节点不同
+### 6.4 graph fan-out 与 parallel 节点不同
 
 这两个概念不要混淆：
 
@@ -397,29 +444,143 @@ C 的指令可以是：
 
 如果每条分支需要独立员工、独立变量、独立审核或单独查看运行记录，使用多个节点。只有当任务是“对同一输入并行执行若干相似指令，并把结果作为一个数组返回”时才使用 `parallel`。
 
-### 6.4 loop 是节点内的有限迭代
+### 6.5 loop 是连接子节点的有限遍历
 
-`loop` 对一个数组逐项处理；标量会按单项处理。必须设置合理的 `maxIterations`，默认上限是 20，允许范围是 1 到 100。不要用边连接形成图循环，也不要生成没有上限的循环。
+`loop` 不调用大模型，也不在图中形成回环。它需要两条带端口的出边：`sourcePort: "loop-body"` 向下连接循环体子流程的第一个节点，`sourcePort: "loop-next"` 向右连接循环外的后续节点。循环体可以串联多个普通节点（例如 `sleep → transform(text)`），但必须是一条线性链，不能分支，也不能从链中间连接到循环外。运行时会把输入数组逐项传给链首节点（未声明输入绑定时，当前项就是该节点的输入），等待整条子流程完成后再处理下一项，并将每次链末端输出按顺序收集为 JSON 数组，从右侧端口传给后续节点。标量会按单项处理；`maxIterations` 默认 20，允许范围为 1 到 100。
+
+### 6.6 严格结构化输出：`outputSchema` 与 `structured-extract`
+
+两种方式都能得到可靠 JSON，但用途不同：
+
+- `ai-task.config.outputSchema`：AI 任务本身就需要返回结构化结果时使用。它不增加额外步骤，运行时解析 JSON 后校验 `type`、`properties`、`required`、`items`、`enum` 和 `additionalProperties: false`；失败会自动发起修复请求。
+- `structured-extract`：需要在画布上明确展示“文本 → 结构化数据”契约，或同一提取契约需要被多个工作流复用时使用。它只读取本节点绑定的输入，按 `config.maxRetries`（0 到 5，默认 2）重试，最终仍不符合 Schema 时节点失败。
+
+Schema 使用 JSON Schema 的受限子集。示例：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "title": { "type": "string", "description": "文档标题" },
+    "tags": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["title", "tags"],
+  "additionalProperties": false
+}
+```
+
+不要在 `instruction` 中只写“请返回 JSON”却不提供 Schema；需要字段级下游引用时，应同时声明 `outputVariables` 或使用 Schema 中的字段。
+
+### 6.7 子工作流：复用、映射和版本
+
+`sub-workflow` 是工作流之间的调用边界，不是普通的 AI 节点。`config.workflowId` 必须是已保存的工作流 ID，不能填写名称。默认等待子工作流完成并把其最终输出作为本节点 `result`；设置 `waitForCompletion: false` 时只返回 `{ "runId": "..." }`，适合异步触发场景。
+
+如果子工作流需要不同于当前输入的参数，使用 `inputMapping` 构造 JSON，值可以是常量、`{{value}}`、`{{input}}` 或当前节点绑定变量：
+
+```json
+{
+  "type": "sub-workflow",
+  "config": {
+    "workflowId": "fetch-and-clean",
+    "waitForCompletion": true,
+    "version": "latest",
+    "inputMapping": {
+      "url": "{{url}}",
+      "requestId": "{{input.requestId}}"
+    }
+  },
+  "inputBindings": [
+    { "id": "url", "name": "url", "sourceNodeId": "start", "sourcePath": "url", "required": true },
+    { "id": "request", "name": "input", "sourceNodeId": "start", "required": true }
+  ]
+}
+```
+
+`version: "latest"`跟随当前修订；`version: 3`固定执行已保存的第 3 个修订。固定版本不存在时应让节点失败，不能静默改跑最新版。子工作流仍然遵循显式输入绑定和 AND 依赖，不会自动看到父工作流的全部历史变量。
+
+### 6.8 确定性数据节点
+
+#### `object-builder`
+
+`config.fields` 是要生成的 JSON 对象。对象和数组可以嵌套；完整模板值为 `{{变量}}` 时保留原始 JSON 类型，普通字符串中的变量会按文本插入。例如：
+
+```json
+{
+  "type": "object-builder",
+  "config": {
+    "fields": {
+      "title": "{{title}}",
+      "payload": { "items": "{{items}}", "source": "ezdsh" }
+    }
+  },
+  "inputBindings": [
+    { "id": "title", "name": "title", "sourceNodeId": "extract", "sourcePath": "title", "required": true },
+    { "id": "items", "name": "items", "sourceNodeId": "extract", "sourcePath": "items", "required": true }
+  ]
+}
+```
+
+#### `list-operator`
+
+输入不是数组时按一个元素的数组处理。`operation` 的完整语义如下：
+
+| operation | 关键字段 | 输出 |
+| --- | --- | --- |
+| `filter` | `path`、`value` | 保留路径值等于 `value` 的元素 |
+| `map` | `outputPath` | 返回元素或提取后的字段 |
+| `pluck` | `path` | 返回每个元素的字段值 |
+| `sort` | `path`、`descending?` | 按字段排序后的数组 |
+| `dedupe` | `path?` | 按整个元素或字段去重 |
+| `slice` | `start?`、`end?` | 截取数组 |
+| `group` | `groupPath`（可回退到 `path`） | `{ "分组值": [元素...] }` |
+| `aggregate` | `aggregateMode?`、`aggregatePath?` | 默认 `{count, values}`；也可返回 count/sum/average/min/max |
+
+#### `merge`
+
+先为每个上游声明一个 `inputBinding`，再选择合并方式。多输入节点会等待所有必需绑定完成；`merge` 不提供隐式 OR/race。
+
+| operation | 语义 |
+| --- | --- |
+| `append` | 将数组展开后按绑定顺序追加；标量作为单个元素 |
+| `object-merge` | 按绑定顺序浅合并对象，后者覆盖前者 |
+| `join` | 左右数组按 `leftKey` / `rightKey` 等值匹配，并合并匹配对象 |
+| `zip` | 按位置组合多个数组，缺失位置填 `null` |
+| `first-non-null` | 返回绑定顺序中第一个非 `null` 值 |
+
+不要用 `text-merge` 代替对象/数组 `merge`；`text-merge` 只负责生成字符串。
+
+### 6.9 人工输入预设
+
+新工作流使用 `wait-input`。当前运行时支持 `config.mode: "approval"`，显示 `message` 并暂停为 `waiting-approval`，用户选择同意后继续、拒绝后结束。旧 `approval` 节点只用于兼容历史 JSON，生成器不应再新建它。`mode: "form"` 的字段结构可以保存，但在表单恢复通道启用前不要生成可依赖它的工作流。
 
 ## 7. 节点类型选择矩阵
 
 | 类型 | 什么时候用 | 关键配置 | 典型输出 |
 | --- | --- | --- | --- |
 | `input` | 接收工作流启动输入 | `name?`、`fields?`、`defaultValue?` | 外部输入值或对象 |
-| `ai-task` | 一次轻量、局部的模型处理 | `instruction`、`mode`、`skillIds`、`outputMode` | 文本或 JSON |
+| `ai-task` | 一次轻量、局部的模型处理 | `instruction`、`mode`、`skillIds`、`outputMode`、`outputSchema?` | 文本或符合 Schema 的 JSON |
+| `structured-extract` | 需要显式可审阅的结构化提取契约 | `schema`、`maxRetries?`（0–5） | 符合 Schema 的 JSON |
 | `employee` | 需要稳定岗位、专业边界和可复用标准 | `employeeId`、`instruction`、`outputMode` | 该员工的文本或 JSON 结果 |
 | `skill` | 对一个明确技能发起处理 | `skillId`、`instruction` | 文本结果 |
 | `mcp` | 用户明确指定了 MCP 工具 | `tool`、`arguments?` | 工具返回值 |
 | `parallel` | 同一输入上并行执行多条轻量指令 | `instructions[]` | 文本结果数组 |
-| `loop` | 对数组中的每一项执行相同处理 | `instruction`、`maxIterations?` | 处理结果数组 |
+| `loop` | 将数组逐项传给下方线性循环体子流程并收集末端结果 | `maxIterations?` | 循环体末端输出数组 |
+| `sleep` | 固定等待或在范围内随机等待后原样传递输入 | `mode`、`durationMs`、`minDurationMs?`、`maxDurationMs?` | 原输入值 |
 | `condition` | 根据一个值选择 true/false 路径 | `operator`、`value?` | 布尔值 |
+| `switch` | 根据一个值精确选择多个 case 或 default 路径 | `cases[]` | 原样传递的输入值 |
 | `approval` | 需要人在继续前确认 | `message` | 审批结果/继续信号 |
-| `transform` | 做确定性的格式转换 | `template`、`text?` | 转换后的值 |
+| `wait-input` | 等待人工输入；当前使用 approval 预设完成同意/拒绝 | `mode: "approval"`、`message` | 继续或拒绝信号 |
+| `sub-workflow` | 调用可复用的子工作流并读取结果 | `workflowId`、`inputMapping?`、`waitForCompletion?`、`version?` | 子工作流输出或运行 ID |
+| `object-builder` | 用常量、变量和模板构造嵌套 JSON | `fields` | JSON 对象 |
+| `list-operator` | 对数组做筛选、取字段、映射、排序、去重、截取、分组或聚合 | `operation`、`path?`、`value?` 等 | 处理后的数组、分组对象或聚合值 |
+| `merge` | 汇聚图分叉后的多个上游值 | `operation`、多个输入绑定、`leftKey?`、`rightKey?` | 数组、对象或匹配结果 |
+| `transform` | 做确定性的格式转换、文本替换或重新生成文本 | `template`、`text?`、`find?`、`replacement?` | 转换后的值 |
+| `text-merge` | 将多个上游文本按模板确定性合并 | `template`、`separator?` | 合并后的字符串 |
 | `output` | 明确标记最终结果 | `label?` | 绑定的结果或上游值 |
 | `http` | 调用明确的 HTTP/HTTPS API | `method`、`url`、`headers`、`body?` 等 | `{status,ok,headers,body}` |
 | `code` | 用户明确需要小范围代码转换或计算 | `language`、`code`、`timeoutMs?` | 代码返回值 |
-| `shell` | 用户明确授权执行工作区命令 | `command`、`args`、`cwd?`、`timeoutMs?` | 命令输出 |
-| `file` | 用户明确授权读写工作区相对路径 | `operation`、`path`、`content?` | 文件内容或写入结果 |
+| `shell` | 用户明确授权执行 Workflow 工作目录内的命令 | `command`、`args`、`cwd?`、`timeoutMs?` | 命令输出 |
+| `file` | 用户明确授权读写、遍历或读取 Workflow 工作目录相对路径 | `operation`（`read`/`write`/`list`/`stat`/`extract-text`）、`path`、`content?`、`recursive?` | 文件内容、元数据、目录条目或文本 |
 
 ### 7.1 ai-task 与 employee 的选择
 
@@ -444,7 +605,7 @@ C 的指令可以是：
 - 能用 `transform` 完成的确定性处理，不要使用 `code`。
 - 只有用户明确要求外部 API 时才用 `http`，URL 必须是 `http` 或 `https`。
 - 只有用户明确要求脚本计算、数据处理或自动化时才用 `code`。
-- 只有用户明确授权工作区命令时才用 `shell`。
+- 只有用户明确授权 Workflow 工作目录内的命令时才用 `shell`。
 - 只有用户明确要求读写文件时才用 `file`。
 - 这些能力可能在运行对话框中要求用户显式授权；AI 不能把授权默认为已经存在。
 
@@ -571,11 +732,11 @@ C 的指令可以是：
 ### 10.1 受限制的执行能力
 
 - `shell` 的命令禁止控制字符、管道、重定向、反向 Shell 和破坏性命令；路径和参数必须是最小范围。
-- `file` 只能使用工作区相对路径，不要使用绝对路径、父目录逃逸或系统敏感路径。
+- `file` 只能使用 Workflow 工作目录相对路径，不要使用绝对路径、父目录逃逸或系统敏感路径。
 - `code` 运行在独立子进程中且有超时；不要使用 `eval`、动态下载脚本、反向连接或删除数据的逻辑。
 - `http` 只允许 HTTP/HTTPS；不要在定义中写真实凭据。非 2xx 响应会被视为失败。
 - MCP 必须有用户明确提供的工具名和结构化参数；不能凭空猜工具。
-- 需要人工确认的发布、覆盖、删除、外发等动作应使用 `approval` 或保留为人工步骤。
+- 需要人工确认的发布、覆盖、删除、外发等动作应使用 `wait-input` 的 `approval` 预设；旧 `approval` 仅用于兼容历史工作流。
 
 ### 10.2 当前不支持的隐含能力
 
@@ -583,9 +744,9 @@ C 的指令可以是：
 
 - 任意节点自动看到全部历史上下文；
 - 多输入“谁先到谁先执行”的 OR 汇聚；
-- 无条件的重试、回滚、补偿和幂等控制；
+- 无条件的重试、回滚、补偿和幂等控制；`ai-task.outputSchema` 与 `structured-extract.maxRetries` 仅是有上限的 Schema 修复重试，不代表通用重试机制；
 - 图结构循环或无限循环；
-- 未声明的 `switch`、`merge`、`race`、`retry`、`global-context` 节点类型；
+- 未声明的 `race`、`retry`、`global-context` 节点类型；`merge` 是已支持的确定性数据汇聚节点，但不提供隐式 OR/race 语义；
 - 自动发现 MCP 工具；
 - 自动授予 Shell、文件或代码执行权限；
 - 把员工名称直接当作 employee ID；
@@ -748,6 +909,10 @@ C 的指令可以是：
 - [ ] 每个绑定的 `name` 唯一且符合变量名规则。
 - [ ] 需要字段级引用时设置正确的 `sourcePath`。
 - [ ] JSON 节点的 `outputVariables` 与指令中要求的字段一致。
+- [ ] `ai-task` 的 JSON 输出需要稳定契约时声明 `outputSchema`；需要独立提取步骤时使用 `structured-extract` 并声明 `schema`、`maxRetries`。
+- [ ] `sub-workflow.workflowId` 是真实 ID；`inputMapping` 中的每个变量都已在本节点绑定；固定 `version` 不存在时不能回退到最新版。
+- [ ] `object-builder` 的 `fields` 是 JSON 对象；数组处理使用 `list-operator`，分叉汇聚使用 `merge`，不要用代码节点替代确定性操作。
+- [ ] `list-operator` 的 `operation`、路径和边界字段组合有效；`join`/`zip`/`object-merge` 等汇聚语义明确。
 - [ ] 不依赖隐式“上一个节点全部输出”或全局历史上下文。
 - [ ] 多输入节点只等待它真正需要的上游，不要把无关节点连进来。
 
@@ -755,7 +920,7 @@ C 的指令可以是：
 
 - [ ] 一个来源可以多路输出；多来源汇聚默认是 AND。
 - [ ] 没有把普通多输入误写成 OR / race / first。
-- [ ] `condition` 的 true/false 连线端口正确；多于两种情况使用嵌套 condition。
+- [ ] `condition` 的 true/false 连线端口正确；多于两种精确值使用 `switch` 的 `switch:<caseId>` 和 `default` 端口。
 - [ ] `parallel` 只用于节点内并发，不代替需要单独审阅的图节点。
 - [ ] `loop` 有 1 到 100 的有限上限。
 
@@ -766,7 +931,7 @@ C 的指令可以是：
 - [ ] 没有猜测不存在的 skill ID 或 MCP 工具名。
 - [ ] 没有密钥、密码、Token、敏感内部提示词。
 - [ ] code、shell、file、http 都是用户明确需要的，并满足对应安全边界。
-- [ ] 需要人工确认的动作经过 `approval` 或明确保留为人工步骤。
+- [ ] 需要人工确认的动作使用 `wait-input` 的 `approval` 预设；不要新建旧的 `approval` 节点。
 
 ## 13. 给生成器的最终指令
 

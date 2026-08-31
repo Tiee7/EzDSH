@@ -34,6 +34,7 @@ import {
   createDefaultWorkflow,
   formatWorkflowValidationIssues,
   isWorkflowValue,
+  isWorkflowJsonSchema,
   parseWorkflowExportDocument,
   validateWorkflow,
   type AiExecutionMode,
@@ -60,6 +61,7 @@ import {
   type WorkflowRunRecord,
   type WorkflowValidationIssue,
   type WorkflowValue,
+  type WorkflowJsonSchema,
 } from '../../shared/workflow.js'
 import { WorkflowGenerationPage } from './WorkflowGenerationPage.js'
 import './workflow.css'
@@ -73,7 +75,7 @@ interface WorkflowPageProps {
   onWorkspaceModeChange?: (active: boolean) => void
 }
 
-type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; inputVariables?: string[]; outputVariables?: string[]; status?: WorkflowNodeRunStatus; duration?: string; isRunning?: boolean }>
+type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; inputVariables?: string[]; outputVariables?: string[]; switchCases?: Array<{ id: string; label?: string }>; status?: WorkflowNodeRunStatus; duration?: string; isRunning?: boolean }>
 
 function workflowValidationNodeIndex(path: string): number | undefined {
   const match = path.match(/^nodes\.(\d+)(?:\.|$)/u)
@@ -97,14 +99,23 @@ function workflowValidationConfigIssue(issues: readonly WorkflowValidationIssue[
 const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   input: 'Input',
   'ai-task': '智能处理',
+  'structured-extract': '结构化提取',
   employee: '专业员工',
   skill: 'Skill',
   mcp: 'MCP',
   parallel: '并行处理',
-  loop: '循环处理',
+  loop: '循环遍历',
+  sleep: '等待',
   condition: '条件判断',
+  switch: '多路判断',
   approval: '人工审批',
+  'wait-input': '等待输入',
+  'sub-workflow': '子工作流',
+  'object-builder': '变量组装',
+  'list-operator': '列表处理',
+  merge: '数据合并',
   transform: '数据转换',
+  'text-merge': '文本合并',
   output: 'Output',
   shell: 'Shell',
   file: 'File',
@@ -130,36 +141,47 @@ export function workflowConditionOperatorLabel(operator: ConditionOperator): str
 }
 
 const transformTemplateLabel: Record<TransformTemplate, string> = {
-  identity: '保持原值',
+  identity: '传递原值',
   json: '转为 JSON',
   'extract-text': '提取文本',
   prepend: '前置文本',
   append: '追加文本',
+  replace: '替换文本',
+  text: '自定义文本',
 }
 
 export function workflowTransformTemplateLabel(template: TransformTemplate): string {
   return transformTemplateLabel[template]
 }
 
-export const WORKFLOW_ADDABLE_NODE_TYPES: WorkflowNodeType[] = ['parallel', 'loop', 'condition', 'approval', 'transform', 'ai-task', 'employee', 'skill', 'mcp', 'http', 'code', 'shell', 'file']
+export const WORKFLOW_ADDABLE_NODE_TYPES: WorkflowNodeType[] = ['parallel', 'loop', 'sleep', 'condition', 'switch', 'wait-input', 'sub-workflow', 'object-builder', 'list-operator', 'merge', 'transform', 'text-merge', 'ai-task', 'structured-extract', 'employee', 'skill', 'mcp', 'http', 'code', 'shell', 'file']
 
 const NODE_LIBRARY_GROUPS: Array<{ label: string; types: WorkflowNodeType[] }> = [
-  { label: '流程控制', types: ['parallel', 'loop', 'condition', 'approval', 'transform'] },
-  { label: '智能能力', types: ['ai-task', 'employee', 'skill', 'mcp'] },
+  { label: '流程控制', types: ['parallel', 'loop', 'sleep', 'condition', 'switch', 'wait-input', 'sub-workflow', 'object-builder', 'list-operator', 'merge', 'transform', 'text-merge'] },
+  { label: '智能能力', types: ['ai-task', 'structured-extract', 'employee', 'skill', 'mcp'] },
   { label: '外部与本地工具', types: ['http', 'code', 'shell', 'file'] },
 ]
 
 const workflowNodeIconPath: Record<WorkflowNodeType, string> = {
   input: 'M4 12h12m-5-5 5 5-5 5M19 5v14',
   'ai-task': 'm12 3 1.4 4.6L18 9l-4.6 1.4L12 15l-1.4-4.6L6 9l4.6-1.4L12 3Zm6 11 .7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14Z',
+  'structured-extract': 'M4 5h16v14H4V5Zm4 4h8M8 13h5M8 16h3',
   employee: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0',
   skill: 'M8 4h8v4h4v8h-4v4H8v-4H4V8h4V4Z',
   mcp: 'M8.5 15.5 5 19l-2-2 3.5-3.5m9-4L19 6l-2-2-3.5 3.5M8 16l8-8',
   parallel: 'M5 5h4l5 7h5M5 19h4l5-7h5M5 12h4',
   loop: 'M20 11a8 8 0 0 0-14.7-4L3 10m0 0V4m0 6h6m-5 3a8 8 0 0 0 14.7 4L21 14m0 0v6m0-6h-6',
+  sleep: 'M12 7v5l3 2m-3-11a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z',
   condition: 'm12 3 8 9-8 9-8-9 8-9Z',
+  switch: 'M4 5h16M4 12h10M4 19h16m-5-10 3 3-3 3',
   approval: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm-4-9 3 3 5-6',
+  'wait-input': 'M6 4h12v16H6V4Zm3 4h6m-6 4h6m-6 4h4',
+  'sub-workflow': 'M5 5h14v14H5V5Zm4 4 6 3-6 3V9Z',
+  'object-builder': 'M4 6h16M4 12h16M4 18h16M8 4v16',
+  'list-operator': 'M5 6h14M5 12h10M5 18h6m7-8 3 3-3 3',
+  merge: 'M5 5v14m0-7h6m0 0 4-4m-4 4 4 4m0-8h4',
   transform: 'm14 4 6 6m-9-3-7 7a2 2 0 0 0 0 3l1 1a2 2 0 0 0 3 0l7-7M5 20h14',
+  'text-merge': 'M4 7h7m-7 5h16M4 17h11m2-13 3 3-3 3m0 4 3 3-3 3',
   output: 'M5 12h12m-5-5 5 5-5 5M5 5v14',
   shell: 'm7 8 4 4-4 4m6 0h4M4 4h16v16H4V4Z',
   file: 'M6 3h8l4 4v14H6V3Zm8 0v5h4',
@@ -247,12 +269,14 @@ export function workflowFlowNodes(workflow: WorkflowDefinition, run?: WorkflowRu
     ].filter((value): value is string => value !== undefined)
     return {
       id: node.id,
-      type: node.type === 'condition' ? 'condition' : 'workflow',
+      type: node.type === 'condition' ? 'condition' : node.type === 'loop' ? 'loop' : node.type === 'switch' ? 'switch' : 'workflow',
       position: node.position,
       width: WORKFLOW_FLOW_NODE_WIDTH,
-      height: (node.outputVariables?.length ?? 0) > 0 ? WORKFLOW_FLOW_NODE_WITH_OUTPUT_HEIGHT : WORKFLOW_FLOW_NODE_HEIGHT,
+      height: node.type === 'switch'
+        ? Math.max(WORKFLOW_FLOW_NODE_HEIGHT, 72 + node.config.cases.length * 22)
+        : (node.outputVariables?.length ?? 0) > 0 ? WORKFLOW_FLOW_NODE_WITH_OUTPUT_HEIGHT : WORKFLOW_FLOW_NODE_HEIGHT,
       selected: node.id === selectedNodeId,
-      data: { label: `${node.label}${statusMark}`, nodeType: node.type, inputVariables: node.type === 'input' ? workflowInputFieldNames(node.config.fields) : (node.inputBindings ?? []).map((binding) => binding.name.trim()).filter(Boolean), outputVariables: (node.outputVariables ?? []).map((variable) => variable.name.trim()).filter(Boolean), status, isRunning: status === 'running', ...(run === undefined ? {} : { duration: formatWorkflowNodeDuration(states.get(node.id)?.elapsedMs) }) },
+      data: { label: `${node.label}${statusMark}`, nodeType: node.type, inputVariables: node.type === 'input' ? workflowInputFieldNames(node.config.fields) : (node.inputBindings ?? []).map((binding) => binding.name.trim()).filter(Boolean), outputVariables: (node.outputVariables ?? []).map((variable) => variable.name.trim()).filter(Boolean), switchCases: node.type === 'switch' ? node.config.cases.map((entry) => ({ id: entry.id, label: entry.label })) : undefined, status, isRunning: status === 'running', ...(run === undefined ? {} : { duration: formatWorkflowNodeDuration(states.get(node.id)?.elapsedMs) }) },
       className: classNames.length === 0 ? undefined : classNames.join(' '),
     }
   })
@@ -430,8 +454,24 @@ function WorkflowFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element 
   </div>
 }
 
+function LoopFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element {
+  return <div className={`workflow-flow-node workflow-loop-node ${selected ? 'workflow-flow-node-selected' : ''}`}>
+    <Handle type="target" position={Position.Left} id="input" />
+    <div className="workflow-flow-node-content"><WorkflowNodeTypeIcon type="loop" /><span>{data.label}</span></div>
+    <WorkflowFlowNodeVariableSummary inputVariables={data.inputVariables} outputVariables={data.outputVariables} />
+    {data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}
+    {data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}
+    <div className="workflow-loop-ports"><span>循环体<Handle type="source" position={Position.Bottom} id="loop-body" /></span><span>继续<Handle type="source" position={Position.Right} id="loop-next" /></span></div>
+  </div>
+}
+
 function ConditionFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element {
   return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><div className="workflow-condition-main"><div className="workflow-condition-node-content"><WorkflowNodeTypeIcon type={data.nodeType} /><span>{data.label}</span></div><WorkflowFlowNodeVariableSummary inputVariables={data.inputVariables} outputVariables={data.outputVariables} /></div>{data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />是</span><span><Handle type="source" position={Position.Right} id="false" />否</span></div></div>
+}
+
+function SwitchFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element {
+  const cases = data.switchCases ?? []
+  return <div className={`workflow-condition-node workflow-switch-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><div className="workflow-condition-main"><div className="workflow-condition-node-content"><WorkflowNodeTypeIcon type="switch" /><span>{data.label}</span></div><WorkflowFlowNodeVariableSummary inputVariables={data.inputVariables} outputVariables={data.outputVariables} /></div>{data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports">{cases.map((entry) => <span key={entry.id}><Handle type="source" position={Position.Right} id={`switch:${entry.id}`} />{entry.label || entry.id}</span>)}<span><Handle type="source" position={Position.Right} id="default" />默认</span></div></div>
 }
 
 function WorkflowFlowNodeVariableSummary({ inputVariables, outputVariables }: { inputVariables?: string[]; outputVariables?: string[] }): JSX.Element {
@@ -458,7 +498,7 @@ function WorkflowRunActionIcon({ type }: { type: 'mark-unread' | 'delete' | 'loc
   return <svg className={`workflow-run-action-icon workflow-run-action-icon-${type}`} viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d={path} /></svg>
 }
 
-const nodeTypes = { workflow: WorkflowFlowNode, condition: ConditionFlowNode }
+const nodeTypes = { workflow: WorkflowFlowNode, loop: LoopFlowNode, condition: ConditionFlowNode, switch: SwitchFlowNode }
 
 interface WorkflowCanvasToolsProps {
   copy: AppCopy
@@ -490,17 +530,27 @@ export function WorkflowCanvasTools({ copy, showMiniMap, onToggleMiniMap }: Work
 }
 
 export function workflowFlowEdges(workflow: WorkflowDefinition): Edge[] {
-  return workflow.edges.map((edge) => ({
+  const nodes = new Map(workflow.nodes.map((node) => [node.id, node]))
+  return workflow.edges.map((edge) => {
+    const sourceNode = nodes.get(edge.source)
+    const isSwitchDefault = sourceNode?.type === 'switch' && edge.sourcePort === 'default'
+    const label = sourceNode?.type === 'switch'
+      ? edge.sourcePort === undefined || edge.sourcePort === 'default'
+        ? '默认'
+        : sourceNode.config.cases.find((entry) => `switch:${entry.id}` === edge.sourcePort)?.label ?? edge.sourcePort
+      : edge.sourcePort === 'loop-body' ? '循环体' : edge.sourcePort === 'loop-next' ? '继续' : edge.sourcePort === 'true' ? '是' : edge.sourcePort === 'false' ? '否' : undefined
+    return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
     // React Flow's ordinary node output uses an unnamed handle. Persisted
     // `default` is the workflow-level name for that handle, not a React Flow
     // handle id.
-    ...(edge.sourcePort === undefined || edge.sourcePort === 'default' ? {} : { sourceHandle: edge.sourcePort }),
+    ...(edge.sourcePort === undefined || (edge.sourcePort === 'default' && !isSwitchDefault) ? {} : { sourceHandle: edge.sourcePort }),
     ...(edge.targetPort === undefined || edge.targetPort === 'default' ? {} : { targetHandle: edge.targetPort }),
-    label: edge.sourcePort === undefined || edge.sourcePort === 'default' ? undefined : edge.sourcePort,
-  }))
+    label,
+    }
+  })
 }
 
 /** Execution also visualizes non-linear variable dependencies as light dashed links. */
@@ -561,7 +611,7 @@ function toWorkflowEdges(edges: Edge[]): WorkflowDefinition['edges'] {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    sourcePort: edge.sourceHandle === 'true' || edge.sourceHandle === 'false' || edge.sourceHandle === 'default' ? edge.sourceHandle : undefined,
+    sourcePort: edge.sourceHandle === 'true' || edge.sourceHandle === 'false' || edge.sourceHandle === 'default' || edge.sourceHandle === 'loop-body' || edge.sourceHandle === 'loop-next' ? edge.sourceHandle : undefined,
     targetPort: edge.targetHandle ?? undefined,
   }))
 }
@@ -656,14 +706,23 @@ function newNode(type: WorkflowNodeType, index: number): WorkflowNode {
   switch (type) {
     case 'input': return { ...base, type, config: { name: 'task' } }
     case 'ai-task': return { ...base, type, config: { instruction: '请完成上游输入交代的任务，并输出清晰结果。', mode: 'single', skillIds: [], outputMode: 'text' } }
+    case 'structured-extract': return { ...base, type, config: { schema: { type: 'object', properties: {} }, maxRetries: 2 } }
     case 'employee': return { ...base, type, config: { employeeId: '', instruction: '请在岗位业务边界内完成上游任务。', outputMode: 'text' } }
     case 'skill': return { ...base, type, config: { skillId: '', instruction: '请使用这个 Skill 完成任务。' } }
     case 'mcp': return { ...base, type, config: { tool: '', arguments: {} } }
     case 'parallel': return { ...base, type, config: { instructions: ['处理输入的第一方面。', '处理输入的第二方面。'] } }
-    case 'loop': return { ...base, type, config: { instruction: '逐项处理输入，并为每项给出结果。', maxIterations: 20 } }
+    case 'loop': return { ...base, type, config: { maxIterations: 20 } }
+    case 'sleep': return { ...base, type, config: { durationMs: 1000, mode: 'fixed' } }
     case 'condition': return { ...base, type, config: { operator: 'truthy' } }
+    case 'switch': return { ...base, type, config: { cases: [{ id: 'case_1', label: '条件 1', value: '' }] } }
     case 'approval': return { ...base, type, config: { message: '请确认是否继续执行后续步骤。' } }
+    case 'wait-input': return { ...base, type, config: { mode: 'approval', message: '请确认是否继续执行后续步骤。' } }
+    case 'sub-workflow': return { ...base, type, config: { workflowId: '', waitForCompletion: true } }
+    case 'object-builder': return { ...base, type, config: { fields: { value: '{{value}}' } } }
+    case 'list-operator': return { ...base, type, config: { operation: 'filter', path: '', value: '' } }
+    case 'merge': return { ...base, type, config: { operation: 'append' } }
     case 'transform': return { ...base, type, config: { template: 'identity' } }
+    case 'text-merge': return { ...base, type, config: { template: '', separator: '\n' } }
     case 'output': return { ...base, type, config: {} }
     case 'shell': return { ...base, type, config: { command: 'echo', args: ['{{value}}'] } }
     case 'file': return { ...base, type, config: { operation: 'read', path: 'README.md' } }
@@ -814,6 +873,9 @@ export function WorkflowJsonTree({ value, label = '结果集', depth = 0, expand
 }
 
 function renderWorkflowMarkdownInline(value: string): ReactNode[] {
+  if (value.includes('\n')) {
+    return value.split('\n').flatMap((line, index, lines) => index === lines.length - 1 ? renderWorkflowMarkdownInline(line) : [...renderWorkflowMarkdownInline(line), <br key={`line-break-${index}`} />])
+  }
   const nodes: ReactNode[] = []
   const pattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_/gu
   let cursor = 0
@@ -845,7 +907,7 @@ function isMarkdownTableSeparator(line: string, columnCount: number): boolean {
 }
 
 function renderWorkflowMarkdownBlocks(markdown: string): JSX.Element[] {
-  const lines = markdown.replace(/\r\n?/gu, '\n').split('\n')
+  const lines = markdown.replace(/\\r\\n/gu, '\n').replace(/\\n/gu, '\n').replace(/\r\n?/gu, '\n').split('\n')
   const blocks: JSX.Element[] = []
   let index = 0
   while (index < lines.length) {
@@ -922,7 +984,7 @@ function renderWorkflowMarkdownBlocks(markdown: string): JSX.Element[] {
       paragraphLines.push(paragraphLine)
       index += 1
     }
-    blocks.push(<p key={`paragraph-${index}`}>{renderWorkflowMarkdownInline(paragraphLines.join(' '))}</p>)
+    blocks.push(<p key={`paragraph-${index}`}>{renderWorkflowMarkdownInline(paragraphLines.join('\n'))}</p>)
   }
   return blocks
 }
@@ -1196,6 +1258,20 @@ function parseWorkflowLaunchValue(field: WorkflowLaunchField, value: string): Wo
       }
       throw new Error(`“${field.label}”必须是有效 JSON。`)
     }
+    case 'file':
+      if (trimmed === '') throw new Error(`“${field.label}”必须填写 Workflow 工作目录相对路径。`)
+      return trimmed
+    case 'file-list': {
+      let paths: string[]
+      try {
+        const parsed: unknown = JSON.parse(trimmed)
+        paths = Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') ? parsed.map((item) => item.trim()).filter(Boolean) : value.split(/\r?\n/gu).map((item) => item.trim()).filter(Boolean)
+      } catch {
+        paths = value.split(/\r?\n/gu).map((item) => item.trim()).filter(Boolean)
+      }
+      if (paths.length === 0) throw new Error(`“${field.label}”至少需要一个文件路径。`)
+      return paths
+    }
   }
 }
 
@@ -1257,6 +1333,21 @@ function WorkflowJsonValueField({
     }
   }
   return <label>{label}<textarea value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} spellCheck={false} /><small>{error}</small></label>
+}
+
+function WorkflowJsonSchemaField({ value, onCommit }: { value: WorkflowJsonSchema | undefined; onCommit: (value: WorkflowJsonSchema | undefined) => void }): JSX.Element {
+  const [draft, setDraft] = useState(() => value === undefined ? '' : JSON.stringify(value, null, 2))
+  const [error, setError] = useState('')
+  useEffect(() => { setDraft(value === undefined ? '' : JSON.stringify(value, null, 2)); setError('') }, [value])
+  const commit = (): void => {
+    if (draft.trim() === '') { onCommit(undefined); setError(''); return }
+    try {
+      const parsed = JSON.parse(draft) as unknown
+      if (!isWorkflowJsonSchema(parsed)) throw new Error('Schema 必须是有效的 JSON Schema。')
+      onCommit(parsed); setError('')
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Schema 无效。') }
+  }
+  return <label>输出 Schema（JSON）<textarea value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} spellCheck={false} placeholder={'{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}'} /><small>{error || 'AI 输出必须严格符合该 Schema；校验失败会自动重试。'}</small></label>
 }
 
 export function userFacingWorkflowText(value: string, locale: AppLocale): string {
@@ -1338,18 +1429,20 @@ interface WorkflowMetadataDialogProps {
   copy: AppCopy
   name: string
   description: string
+  generationPrompt?: string
   onChangeName: (name: string) => void
   onChangeDescription: (description: string) => void
+  onChangeGenerationPrompt: (prompt: string) => void
   onClose: () => void
   onSave: () => void
 }
 
 /** Metadata lives behind a focused dialog so the canvas toolbar stays dedicated to graph work. */
-export function WorkflowMetadataDialog({ copy, name, description, onChangeName, onChangeDescription, onClose, onSave }: WorkflowMetadataDialogProps): JSX.Element {
+export function WorkflowMetadataDialog({ copy, name, description, generationPrompt, onChangeName, onChangeDescription, onChangeGenerationPrompt, onClose, onSave }: WorkflowMetadataDialogProps): JSX.Element {
   return <div className="workflow-metadata-dialog-backdrop" role="presentation" onMouseDown={onClose}>
     <section className="workflow-metadata-dialog" role="dialog" aria-modal="true" aria-label="编辑工作流信息" onMouseDown={(event) => event.stopPropagation()}>
       <div className="workflow-metadata-dialog-header"><div><span className="workflow-kicker">{copy.workflowEditor}</span><h2>编辑工作流信息</h2></div><button type="button" aria-label={copy.workflowDismiss} onClick={onClose}>×</button></div>
-      <div className="workflow-metadata-dialog-fields"><label>{copy.workflowName}<input autoFocus value={name} onChange={(event) => onChangeName(event.target.value)} /></label><label>{copy.workflowDescription}<textarea value={description} onChange={(event) => onChangeDescription(event.target.value)} /></label></div>
+      <div className="workflow-metadata-dialog-fields"><label>{copy.workflowName}<input autoFocus value={name} onChange={(event) => onChangeName(event.target.value)} /></label><label>{copy.workflowDescription}<textarea value={description} onChange={(event) => onChangeDescription(event.target.value)} /></label>{generationPrompt !== undefined ? <label>{copy.workflowGenerationPrompt}<textarea value={generationPrompt} onChange={(event) => onChangeGenerationPrompt(event.target.value)} /></label> : null}</div>
       <div className="workflow-metadata-dialog-actions"><button type="button" className="workflow-button-quiet" onClick={onClose}>{copy.workflowCancelEdit}</button><button type="button" className="workflow-button-primary workflow-save-button" onClick={onSave}>{copy.workflowSave}</button></div>
     </section>
   </div>
@@ -1669,7 +1762,7 @@ export function WorkflowRunLaunchDialog({
         <button type="button" className="workflow-button-quiet" onClick={onClose} disabled={busy}>{copy.workflowCancelSetup}</button>
       </div>
       <div className="workflow-launch-fields">
-        {fields.length === 0 ? <p className="workflow-muted">{copy.workflowNoLaunchInputs}</p> : fields.map((field) => <label key={field.id} className="workflow-launch-field"><span>{field.label}</span><textarea aria-label={field.label} value={values[field.key] ?? ''} onChange={(event) => onChangeValue(field.key, event.target.value)} placeholder={field.defaultValue === undefined ? copy.workflowInputHint : undefined} /></label>)}
+        {fields.length === 0 ? <p className="workflow-muted">{copy.workflowNoLaunchInputs}</p> : fields.map((field) => <label key={field.id} className="workflow-launch-field"><span>{field.label}{field.type === 'file' ? '（文件路径）' : field.type === 'file-list' ? '（每行一个路径）' : ''}</span><textarea aria-label={field.label} value={values[field.key] ?? ''} onChange={(event) => onChangeValue(field.key, event.target.value)} placeholder={field.defaultValue === undefined ? copy.workflowInputHint : undefined} /></label>)}
         <label className="workflow-launch-field"><span>{copy.workflowModel}</span><div className="workflow-model-control"><select value={modelSelection === undefined ? '' : workflowModelOptionKey(modelSelection)} onChange={(event) => onChangeModel(modelOptions.find((option) => workflowModelOptionKey(option) === event.target.value))}><option value="">{copy.workflowUseDefaultModel}</option>{modelOptions.map((option) => <option key={workflowModelOptionKey(option)} value={workflowModelOptionKey(option)}>{option.providerName} · {option.modelName ?? option.modelId}</option>)}</select><button type="button" className="workflow-button-quiet workflow-model-refresh" onClick={onRefreshModels} disabled={busy || modelLoading}>{modelLoading ? copy.workflowRefreshingModels : copy.workflowRefreshModels}</button></div><small className="workflow-launch-note">{modelOptions.length === 0 ? copy.workflowNoModels : copy.workflowModelHint}</small></label>
         <label className="workflow-checkbox"><input type="checkbox" checked={allowShellFile} onChange={(event) => onChangeAllowShellFile(event.target.checked)} /> <span>{copy.workflowAllowShellFile}<small className="workflow-launch-note">{copy.workflowAllowShellFileHint}</small></span></label>
         <label className="workflow-checkbox"><input type="checkbox" checked={allowCode} onChange={(event) => onChangeAllowCode(event.target.checked)} /> <span>{copy.workflowAllowCode}<small className="workflow-launch-note">{copy.workflowAllowCodeHint}</small></span></label>
@@ -1795,6 +1888,7 @@ interface WorkflowContextMenuState {
 interface WorkflowMetadataDraft {
   name: string
   description: string
+  generationPrompt?: string
 }
 
 export function WorkflowPage({ copy, locale, developerMode: _developerMode = false, onWorkspaceModeChange }: WorkflowPageProps): JSX.Element {
@@ -2630,7 +2724,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     const current = currentDefinition()
     const nextMetadata = metadataDraft
     if (current === undefined || nextMetadata === undefined) return
-    applyDefinition({ ...current, name: nextMetadata.name, description: nextMetadata.description })
+    applyDefinition({ ...current, name: nextMetadata.name, description: nextMetadata.description, ...(nextMetadata.generationPrompt === undefined ? {} : { generationPrompt: nextMetadata.generationPrompt }) })
     setMetadataDraft(undefined)
   }
 
@@ -2760,7 +2854,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
         <header className="workflow-workspace-header">
           <div className="workflow-workspace-identity">
             <button type="button" className="workflow-back-button" onClick={exitWorkspace}>{copy.workflowBack}</button>
-            <div><div className="workflow-workspace-title-row"><strong>{selected.name}</strong><button type="button" className="workflow-metadata-edit-button" aria-label="编辑工作流信息" title="编辑工作流信息" onClick={() => setMetadataDraft({ name: selected.name, description: selected.description })}>✎</button></div><span>v{selected.revision} · {copy.workflowWorkspace}</span></div>
+            <div><div className="workflow-workspace-title-row"><strong>{selected.name}</strong><button type="button" className="workflow-metadata-edit-button" aria-label="编辑工作流信息" title="编辑工作流信息" onClick={() => setMetadataDraft({ name: selected.name, description: selected.description, ...(selected.generationPrompt === undefined ? {} : { generationPrompt: selected.generationPrompt }) })}>✎</button></div><span>v{selected.revision} · {copy.workflowWorkspace}</span></div>
           </div>
           <div className="workflow-view-switch" role="tablist" aria-label={copy.workflowWorkspace}>
             <button type="button" role="tab" aria-selected={workspaceView === 'editor'} className={workspaceView === 'editor' ? 'workflow-view-active' : ''} onClick={() => setWorkspaceView('editor')}>{copy.workflowEditor}</button>
@@ -2843,7 +2937,9 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                     <label>{copy.workflowAiMode}<select value={selectedNode.config.mode} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, mode: event.target.value as AiExecutionMode } } : node)}><option value="single">{copy.workflowAiModeSingle}</option><option value="autonomous">{copy.workflowAiModeAutonomous}</option></select></label>
                     <label>{copy.workflowSkillIds}<textarea value={selectedNode.config.skillIds.join('\n')} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, skillIds: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) } } : node)} /></label>
                     <OutputModeField copy={copy} value={selectedNode.config.outputMode} onChange={(outputMode) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, outputMode } } : node)} />
+                    {selectedNode.config.outputMode === 'json' ? <WorkflowJsonSchemaField value={selectedNode.config.outputSchema} onCommit={(outputSchema) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, outputSchema } } : node)} /> : null}
                   </> : null}
+                  {selectedNode.type === 'structured-extract' ? <><p className="workflow-muted">将本节点输入文本提取为严格结构化数据；校验失败会按重试次数重新请求模型。</p><WorkflowJsonSchemaField value={selectedNode.config.schema} onCommit={(schema) => updateNode((node) => node.type === 'structured-extract' && schema !== undefined ? { ...node, config: { ...node.config, schema } } : node)} /><label>最大重试次数<input type="number" min="0" max="5" value={selectedNode.config.maxRetries ?? 2} onChange={(event) => updateNode((node) => node.type === 'structured-extract' ? { ...node, config: { ...node.config, maxRetries: Number(event.target.value) } } : node)} /></label></> : null}
                   {selectedNode.type === 'employee' ? <>
                     <label>{copy.workflowSelectEmployee}<select className={selectedNodeFieldClass('employeeId')} aria-invalid={selectedNodeFieldClass('employeeId') !== undefined} value={selectedNode.config.employeeId} onChange={(event) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, employeeId: event.target.value } } : node)}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} · {employee.role}</option>)}</select></label>
                     <EmployeeProfileContext copy={copy} employee={employees.find((employee) => employee.id === selectedNode.config.employeeId)} />
@@ -2853,14 +2949,22 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                   {selectedNode.type === 'skill' ? <><label>{copy.workflowSkillId}<input className={selectedNodeFieldClass('skillId')} aria-invalid={selectedNodeFieldClass('skillId') !== undefined} value={selectedNode.config.skillId} onChange={(event) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, skillId: event.target.value } } : node)} /></label><WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} invalid={selectedNodeFieldClass('instruction') !== undefined} onChange={(value) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} /></> : null}
                   {selectedNode.type === 'mcp' ? <><label>{copy.workflowMcpTool}<input value={selectedNode.config.tool} placeholder="server::tool" onChange={(event) => updateNode((node) => node.type === 'mcp' ? { ...node, config: { ...node.config, tool: event.target.value } } : node)} /></label><McpArgumentsField key={selectedNode.id} copy={copy} value={selectedNode.config.arguments} onCommit={(argumentsValue) => updateNode((node) => node.type === 'mcp' ? { ...node, config: { ...node.config, arguments: argumentsValue } } : node)} /></> : null}
                   {selectedNode.type === 'parallel' ? <label>{copy.workflowInstruction}<textarea value={selectedNode.config.instructions.join('\n')} onChange={(event) => updateNode((node) => node.type === 'parallel' ? { ...node, config: { ...node.config, instructions: event.target.value.split('\n').filter(Boolean) } } : node)} /></label> : null}
-                  {selectedNode.type === 'loop' ? <><WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} invalid={selectedNodeFieldClass('instruction') !== undefined} onChange={(value) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} /><label>{copy.workflowMaxIterations}<input className={selectedNodeFieldClass('maxIterations')} aria-invalid={selectedNodeFieldClass('maxIterations') !== undefined} type="number" min="1" max="100" value={selectedNode.config.maxIterations ?? 20} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, maxIterations: Number(event.target.value) } } : node)} /></label></> : null}
-                  {selectedNode.type === 'condition' ? <><label>{copy.workflowConditionOperator}<select value={selectedNode.config.operator} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, operator: event.target.value as ConditionOperator } } : node)}>{(['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'] as ConditionOperator[]).map((operator) => <option key={operator} value={operator}>{workflowConditionOperatorLabel(operator)}</option>)}</select></label><label>{copy.workflowConditionValue}<input value={formatValue(selectedNode.config.value)} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, value: parseWorkflowConditionValue(event.target.value) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'loop' ? <><p className="workflow-muted">循环体：从下方端口连接一条线性的子流程（例如“等待 → 字符串”）；每个输入项会依次经过这条链，链末端结果按顺序汇总为数组，并从右侧“继续”端口传出。循环体不能分支，也不能连接到循环外节点。</p><label>{copy.workflowMaxIterations}<input className={selectedNodeFieldClass('maxIterations')} aria-invalid={selectedNodeFieldClass('maxIterations') !== undefined} type="number" min="1" max="100" value={selectedNode.config.maxIterations ?? 20} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, maxIterations: Number(event.target.value) } } : node)} /></label><label>失败策略<select value={selectedNode.config.failureStrategy ?? 'stop'} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, failureStrategy: event.target.value as 'stop' | 'continue' } } : node)}><option value="stop">失败即停止</option><option value="continue">跳过失败项并继续</option></select></label><label>并发数（预留）<input type="number" min="1" max="32" value={selectedNode.config.concurrency ?? 1} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, concurrency: Number(event.target.value) } } : node)} /></label><label>批大小（预留）<input type="number" min="1" max="1000" value={selectedNode.config.batchSize ?? 1} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, batchSize: Number(event.target.value) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'sleep' ? <><label>等待模式<select value={selectedNode.config.mode ?? 'fixed'} onChange={(event) => updateNode((node) => node.type === 'sleep' ? { ...node, config: { ...node.config, mode: event.target.value as 'fixed' | 'random' } } : node)}><option value="fixed">固定时长</option><option value="random">随机范围</option></select></label>{(selectedNode.config.mode ?? 'fixed') === 'random' ? <><label>最小时长（毫秒）<input type="number" min="0" max="600000" step="1" value={selectedNode.config.minDurationMs ?? 0} onChange={(event) => updateNode((node) => node.type === 'sleep' ? { ...node, config: { ...node.config, minDurationMs: Number(event.target.value) } } : node)} /></label><label>最大时长（毫秒）<input type="number" min="0" max="600000" step="1" value={selectedNode.config.maxDurationMs ?? selectedNode.config.minDurationMs ?? 0} onChange={(event) => updateNode((node) => node.type === 'sleep' ? { ...node, config: { ...node.config, maxDurationMs: Number(event.target.value) } } : node)} /></label><p className="workflow-muted">每次执行都会在该范围内重新随机一个整数毫秒。</p></> : <label>等待时长（毫秒）<input type="number" min="0" max="600000" step="1" value={selectedNode.config.durationMs} onChange={(event) => updateNode((node) => node.type === 'sleep' ? { ...node, config: { ...node.config, durationMs: Number(event.target.value) } } : node)} /></label>}</> : null}
+                  {selectedNode.type === 'condition' ? <><label>{copy.workflowConditionOperator}<select className={selectedNodeFieldClass('operator')} aria-invalid={selectedNodeFieldClass('operator') !== undefined} value={selectedNode.config.operator} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, operator: event.target.value as ConditionOperator } } : node)}>{(['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'] as ConditionOperator[]).map((operator) => <option key={operator} value={operator}>{workflowConditionOperatorLabel(operator)}</option>)}</select></label><label>{copy.workflowConditionValue}<input className={selectedNodeFieldClass('value')} aria-invalid={selectedNodeFieldClass('value') !== undefined} value={formatValue(selectedNode.config.value)} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, value: parseWorkflowConditionValue(event.target.value) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'switch' ? <><p className="workflow-muted">多路判断会读取本节点输入值，与分支值精确匹配；命中后从对应的 `switch:分支ID` 端口继续，未命中从“默认”端口继续。</p><div className="workflow-switch-config"><strong>分支配置</strong>{selectedNode.config.cases.map((entry, caseIndex) => <div className="workflow-switch-case" key={entry.id || caseIndex}><input aria-label={`分支 ${caseIndex + 1} ID`} className={selectedNodeFieldClass(`config.cases.${caseIndex}.id`)} value={entry.id} placeholder="分支 ID" onChange={(event) => updateNode((node) => node.type === 'switch' ? { ...node, config: { ...node.config, cases: node.config.cases.map((candidate, index) => index === caseIndex ? { ...candidate, id: event.target.value } : candidate) } } : node)} /><input aria-label={`分支 ${caseIndex + 1} 名称`} value={entry.label ?? ''} placeholder="显示名称（可选）" onChange={(event) => updateNode((node) => node.type === 'switch' ? { ...node, config: { ...node.config, cases: node.config.cases.map((candidate, index) => index === caseIndex ? { ...candidate, label: event.target.value } : candidate) } } : node)} /><input aria-label={`分支 ${caseIndex + 1} 匹配值`} value={formatValue(entry.value)} placeholder="匹配值" onChange={(event) => updateNode((node) => node.type === 'switch' ? { ...node, config: { ...node.config, cases: node.config.cases.map((candidate, index) => index === caseIndex ? { ...candidate, value: parseWorkflowConditionValue(event.target.value) } : candidate) } } : node)} /><button type="button" className="workflow-button-quiet workflow-icon-button" aria-label={`删除分支 ${caseIndex + 1}`} onClick={() => updateNode((node) => node.type === 'switch' ? { ...node, config: { ...node.config, cases: node.config.cases.filter((_candidate, index) => index !== caseIndex) } } : node)}>×</button></div>)}<button type="button" className="workflow-button-quiet" onClick={() => updateNode((node) => node.type === 'switch' ? { ...node, config: { ...node.config, cases: [...node.config.cases, { id: `case_${node.config.cases.length + 1}`, label: `条件 ${node.config.cases.length + 1}`, value: '' }] } } : node)}>＋添加分支</button></div></> : null}
                   {selectedNode.type === 'approval' ? <label>审批提示<textarea value={selectedNode.config.message} onChange={(event) => updateNode((node) => node.type === 'approval' ? { ...node, config: { ...node.config, message: event.target.value } } : node)} /></label> : null}
-                  {selectedNode.type === 'transform' ? <><label>{copy.workflowTransformTemplate}<select value={selectedNode.config.template} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, template: event.target.value as TransformTemplate } } : node)}>{(['identity', 'json', 'extract-text', 'prepend', 'append'] as TransformTemplate[]).map((template) => <option key={template} value={template}>{workflowTransformTemplateLabel(template)}</option>)}</select></label><label>{copy.workflowTransformText}<input value={selectedNode.config.text ?? ''} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, text: event.target.value } } : node)} /></label></> : null}
-                  {selectedNode.type === 'shell' ? <><label>{copy.workflowShellCommand}<input value={selectedNode.config.command} onChange={(event) => updateNode((node) => node.type === 'shell' ? { ...node, config: { ...node.config, command: event.target.value } } : node)} /></label><label>{copy.workflowShellArgs}<textarea value={selectedNode.config.args.join('\n')} onChange={(event) => updateNode((node) => node.type === 'shell' ? { ...node, config: { ...node.config, args: event.target.value.split('\n').filter(Boolean) } } : node)} /></label></> : null}
-                  {selectedNode.type === 'file' ? <><label>{copy.workflowFileOperation}<select value={selectedNode.config.operation} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, operation: event.target.value as 'read' | 'write' } } : node)}><option value="read">read</option><option value="write">write</option></select></label><label>{copy.workflowFilePath}<input value={selectedNode.config.path} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, path: event.target.value } } : node)} /></label>{selectedNode.config.operation === 'write' ? <label>{copy.workflowFileContent}<textarea value={selectedNode.config.content ?? ''} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, content: event.target.value } } : node)} /></label> : null}</> : null}
+                  {selectedNode.type === 'wait-input' ? <><label>输入模式<select value={selectedNode.config.mode} onChange={(event) => updateNode((node) => node.type === 'wait-input' ? { ...node, config: { ...node.config, mode: event.target.value as 'approval' | 'form' } } : node)}><option value="approval">同意 / 拒绝</option><option value="form">表单（暂未支持恢复）</option></select></label><label>提示信息<textarea value={selectedNode.config.message} onChange={(event) => updateNode((node) => node.type === 'wait-input' ? { ...node, config: { ...node.config, message: event.target.value } } : node)} /></label></> : null}
+                  {selectedNode.type === 'sub-workflow' ? <><label>选择工作流<select value={selectedNode.config.workflowId} onChange={(event) => updateNode((node) => node.type === 'sub-workflow' ? { ...node, config: { ...node.config, workflowId: event.target.value } } : node)}><option value="">请选择工作流</option>{workflows.filter((workflow) => workflow.id !== selected.id).map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select></label><label>版本<select value={selectedNode.config.version === undefined ? 'latest' : String(selectedNode.config.version)} onChange={(event) => updateNode((node) => node.type === 'sub-workflow' ? { ...node, config: { ...node.config, version: event.target.value === 'latest' ? 'latest' : Number(event.target.value) } } : node)}><option value="latest">跟随最新版</option>{workflows.find((workflow) => workflow.id === selectedNode.config.workflowId)?.revision !== undefined ? <option value={workflows.find((workflow) => workflow.id === selectedNode.config.workflowId)?.revision}>固定当前版本</option> : null}</select></label><label className="workflow-checkbox-label"><input type="checkbox" checked={selectedNode.config.waitForCompletion !== false} onChange={(event) => updateNode((node) => node.type === 'sub-workflow' ? { ...node, config: { ...node.config, waitForCompletion: event.target.checked } } : node)} />等待子工作流完成并读取输出</label><WorkflowJsonValueField key={selectedNode.id + '-sub-input'} label="输入映射（可选 JSON 模板）" value={selectedNode.config.inputMapping} onCommit={(inputMapping) => updateNode((node) => node.type === 'sub-workflow' && inputMapping !== undefined && typeof inputMapping === 'object' && !Array.isArray(inputMapping) ? { ...node, config: { ...node.config, inputMapping: inputMapping as Record<string, WorkflowValue> } } : node)} /></> : null}
+                  {selectedNode.type === 'object-builder' ? <WorkflowJsonValueField key={selectedNode.id + '-object-builder'} label="字段模板（JSON 对象）" value={selectedNode.config.fields} onCommit={(fields) => updateNode((node) => node.type === 'object-builder' && fields !== undefined && typeof fields === 'object' && !Array.isArray(fields) ? { ...node, config: { ...node.config, fields: fields as Record<string, WorkflowValue> } } : node)} /> : null}
+                  {selectedNode.type === 'list-operator' ? <><label>操作<select value={selectedNode.config.operation} onChange={(event) => updateNode((node) => node.type === 'list-operator' ? { ...node, config: { ...node.config, operation: event.target.value as 'filter' | 'map' | 'pluck' | 'sort' | 'dedupe' | 'slice' | 'group' | 'aggregate' } } : node)}>{(['filter', 'map', 'pluck', 'sort', 'dedupe', 'slice', 'group', 'aggregate'] as const).map((operation) => <option key={operation} value={operation}>{operation}</option>)}</select></label><label>字段路径<input value={selectedNode.config.path ?? ''} placeholder="例如 status" onChange={(event) => updateNode((node) => node.type === 'list-operator' ? { ...node, config: { ...node.config, path: event.target.value } } : node)} /></label>{selectedNode.config.operation === 'group' ? <label>分组字段<input value={selectedNode.config.groupPath ?? selectedNode.config.path ?? ''} onChange={(event) => updateNode((node) => node.type === 'list-operator' ? { ...node, config: { ...node.config, groupPath: event.target.value } } : node)} /></label> : null}{selectedNode.config.operation === 'aggregate' ? <label>聚合方式<select value={selectedNode.config.aggregateMode ?? ''} onChange={(event) => updateNode((node) => node.type === 'list-operator' ? { ...node, config: { ...node.config, aggregateMode: event.target.value === '' ? undefined : event.target.value as 'count' | 'sum' | 'average' | 'min' | 'max' } } : node)}><option value="">返回 count + values</option>{(['count', 'sum', 'average', 'min', 'max'] as const).map((mode) => <option key={mode} value={mode}>{mode}</option>)}</select></label> : null}<WorkflowJsonValueField key={selectedNode.id + '-list-value'} label="匹配值（可选）" value={selectedNode.config.value} onCommit={(value) => updateNode((node) => node.type === 'list-operator' ? { ...node, config: { ...node.config, value } } : node)} /></> : null}
+                  {selectedNode.type === 'merge' ? <><label>合并方式<select value={selectedNode.config.operation} onChange={(event) => updateNode((node) => node.type === 'merge' ? { ...node, config: { ...node.config, operation: event.target.value as 'append' | 'object-merge' | 'join' | 'zip' | 'first-non-null' } } : node)}>{(['append', 'object-merge', 'join', 'zip', 'first-non-null'] as const).map((operation) => <option key={operation} value={operation}>{operation}</option>)}</select></label>{selectedNode.config.operation === 'join' ? <><label>左侧键<input value={selectedNode.config.leftKey ?? 'id'} onChange={(event) => updateNode((node) => node.type === 'merge' ? { ...node, config: { ...node.config, leftKey: event.target.value } } : node)} /></label><label>右侧键<input value={selectedNode.config.rightKey ?? 'id'} onChange={(event) => updateNode((node) => node.type === 'merge' ? { ...node, config: { ...node.config, rightKey: event.target.value } } : node)} /></label></> : null}</> : null}
+                  {selectedNode.type === 'transform' ? <><label>{copy.workflowTransformTemplate}<select className={selectedNodeFieldClass('template')} aria-invalid={selectedNodeFieldClass('template') !== undefined} value={selectedNode.config.template} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, template: event.target.value as TransformTemplate } } : node)}>{(['identity', 'json', 'extract-text', 'prepend', 'append', 'replace', 'text'] as TransformTemplate[]).map((template) => <option key={template} value={template}>{workflowTransformTemplateLabel(template)}</option>)}</select></label>{selectedNode.config.template === 'identity' ? <p className="workflow-muted">传递原值：不修改输入内容，直接把它交给下游节点。</p> : null}{selectedNode.config.template === 'replace' ? <><WorkflowPromptField label="查找文本" value={selectedNode.config.find ?? ''} workflow={selected} node={selectedNode} field="transformFind" invalid={selectedNodeFieldClass('find') !== undefined} onChange={(value) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, find: value } } : node)} onChangeNode={updateNode} /><WorkflowPromptField label="替换文本" value={selectedNode.config.replacement ?? ''} workflow={selected} node={selectedNode} field="transformReplacement" invalid={selectedNodeFieldClass('replacement') !== undefined} onChange={(value) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, replacement: value } } : node)} onChangeNode={updateNode} /></> : selectedNode.config.template === 'text' ? <><WorkflowPromptField label="输出文本" value={selectedNode.config.text ?? ''} workflow={selected} node={selectedNode} field="transformText" invalid={selectedNodeFieldClass('text') !== undefined} onChange={(value) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, text: value } } : node)} onChangeNode={updateNode} /><p className="workflow-muted">自定义文本会生成一段新的输出，不会自动保留原输入；需要原值时请插入对应变量。</p></> : selectedNode.config.template === 'prepend' || selectedNode.config.template === 'append' ? <WorkflowPromptField label={copy.workflowTransformText} value={selectedNode.config.text ?? ''} workflow={selected} node={selectedNode} field="transformText" invalid={selectedNodeFieldClass('text') !== undefined} onChange={(value) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, text: value } } : node)} onChangeNode={updateNode} /> : null}</> : null}
+                  {selectedNode.type === 'text-merge' ? <><WorkflowPromptField label="合并模板" value={selectedNode.config.template} workflow={selected} node={selectedNode} field="textMergeTemplate" onChange={(value) => updateNode((node) => node.type === 'text-merge' ? { ...node, config: { ...node.config, template: value } } : node)} onChangeNode={updateNode} /><label>默认分隔符<input value={selectedNode.config.separator ?? '\n'} onChange={(event) => updateNode((node) => node.type === 'text-merge' ? { ...node, config: { ...node.config, separator: event.target.value } } : node)} /></label><p className="workflow-muted">模板为空时，按输入变量声明顺序合并，并使用默认分隔符。</p></> : null}
+                  {selectedNode.type === 'shell' ? <><label>{copy.workflowShellCommand}<input className={selectedNodeFieldClass('command')} aria-invalid={selectedNodeFieldClass('command') !== undefined} value={selectedNode.config.command} onChange={(event) => updateNode((node) => node.type === 'shell' ? { ...node, config: { ...node.config, command: event.target.value } } : node)} /></label><label>{copy.workflowShellArgs}<textarea className={selectedNodeFieldClass('args')} aria-invalid={selectedNodeFieldClass('args') !== undefined} value={selectedNode.config.args.join('\n')} onChange={(event) => updateNode((node) => node.type === 'shell' ? { ...node, config: { ...node.config, args: event.target.value.split('\n').filter(Boolean) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'file' ? <><label>{copy.workflowFileOperation}<select value={selectedNode.config.operation} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, operation: event.target.value as 'read' | 'write' | 'list' | 'stat' | 'extract-text' } } : node)}>{(['read', 'write', 'list', 'stat', 'extract-text'] as const).map((operation) => <option key={operation} value={operation}>{operation}</option>)}</select></label><label>{copy.workflowFilePath}<input value={selectedNode.config.path} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, path: event.target.value } } : node)} /></label>{selectedNode.config.operation === 'list' ? <label className="workflow-checkbox-label"><input type="checkbox" checked={selectedNode.config.recursive === true} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, recursive: event.target.checked } } : node)} />递归遍历目录</label> : null}{selectedNode.config.operation === 'write' ? <label>{copy.workflowFileContent}<textarea value={selectedNode.config.content ?? ''} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, content: event.target.value } } : node)} /></label> : null}</> : null}
                   {selectedNode.type === 'http' ? <><label>{copy.workflowHttpMethod}<select value={selectedNode.config.method} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, method: event.target.value as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' } } : node)}>{(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).map((method) => <option key={method} value={method}>{method}</option>)}</select></label><label>{copy.workflowHttpUrl}<input value={selectedNode.config.url} placeholder="https://api.example.com/data" onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, url: event.target.value } } : node)} /></label><McpArgumentsField key={selectedNode.id + '-headers'} copy={copy} value={selectedNode.config.headers} label={copy.workflowHttpHeaders} hint={copy.workflowHttpHeadersHint} onCommit={(headers) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, headers: Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, WorkflowValue] => typeof entry[1] === 'string').map(([key, value]) => [key, value as string])) } } : node)} /><McpArgumentsField key={selectedNode.id + '-query'} copy={copy} value={selectedNode.config.query} label={copy.workflowHttpQuery} hint={copy.workflowMcpArgumentsHint} onCommit={(query) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, query } } : node)} /><WorkflowJsonValueField key={selectedNode.id + '-body'} label={copy.workflowHttpBody} value={selectedNode.config.body} onCommit={(body) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, body } } : node)} /><label>{copy.workflowHttpResponseMode}<select value={selectedNode.config.responseMode} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, responseMode: event.target.value as 'auto' | 'json' | 'text' } } : node)}><option value="auto">auto</option><option value="json">json</option><option value="text">text</option></select></label><label>{copy.workflowHttpTimeout}<input type="number" min="1000" max="600000" step="1000" value={selectedNode.config.timeoutMs ?? 120000} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, timeoutMs: Number(event.target.value) } } : node)} /></label></> : null}
-                  {selectedNode.type === 'code' ? <><label>{copy.workflowCodeLanguage}<select value={selectedNode.config.language} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, language: event.target.value as 'nodejs' | 'python3' } } : node)}><option value="nodejs">Node.js</option><option value="python3">Python3</option></select></label><label>{copy.workflowCode}<textarea className="workflow-code-editor" value={selectedNode.config.code} spellCheck={false} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, code: event.target.value } } : node)} /></label><p className="workflow-muted">Node.js 可使用 input（工作流原始输入）和 previous（本节点输入变量对象，例如 previous.input_1），并 return 结果；Python3 可使用 input、previous 并给 result 赋值。</p><label>{copy.workflowCodeTimeout}<input type="number" min="1000" max="600000" step="1000" value={selectedNode.config.timeoutMs ?? 120000} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, timeoutMs: Number(event.target.value) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'code' ? <><label>{copy.workflowCodeLanguage}<select className={selectedNodeFieldClass('language')} aria-invalid={selectedNodeFieldClass('language') !== undefined} value={selectedNode.config.language} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, language: event.target.value as 'nodejs' | 'python3' } } : node)}><option value="nodejs">Node.js</option><option value="python3">Python3</option></select></label><label>{copy.workflowCode}<textarea className={`workflow-code-editor ${selectedNodeFieldClass('code') ?? ''}`} aria-invalid={selectedNodeFieldClass('code') !== undefined} value={selectedNode.config.code} spellCheck={false} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, code: event.target.value } } : node)} /></label><p className="workflow-muted">Node.js 可使用 input（工作流原始输入）和 previous（本节点输入变量对象，例如 previous.input_1），并 return 结果；Python3 可使用 input、previous 并给 result 赋值。</p><label>{copy.workflowCodeTimeout}<input className={selectedNodeFieldClass('timeoutMs')} aria-invalid={selectedNodeFieldClass('timeoutMs') !== undefined} type="number" min="1000" max="600000" step="1000" value={selectedNode.config.timeoutMs ?? 120000} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, timeoutMs: Number(event.target.value) } } : node)} /></label></> : null}
                 </div>)}
               </section>
             </aside>
@@ -2878,7 +2982,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
         </div>
       </>}
       {outputWindows.length > 0 ? <WorkflowOutputFloatingWindows copy={copy} windows={outputWindows} fontScale={outputFontScale} onClose={(id) => setOutputWindows((current) => current.filter((item) => item.id !== id))} onCopy={copyOutput} onMove={(id, position) => setOutputWindows((current) => current.map((item) => item.id === id ? { ...item, position } : item))} onFocus={(id) => setOutputWindows((current) => focusWorkflowOutputWindow(current, id))} onIncreaseFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} /> : null}
-      {metadataDraft ? <WorkflowMetadataDialog copy={copy} name={metadataDraft.name} description={metadataDraft.description} onChangeName={(name) => setMetadataDraft((current) => current === undefined ? current : { ...current, name })} onChangeDescription={(description) => setMetadataDraft((current) => current === undefined ? current : { ...current, description })} onClose={() => setMetadataDraft(undefined)} onSave={saveWorkflowMetadata} /> : null}
+      {metadataDraft ? <WorkflowMetadataDialog copy={copy} name={metadataDraft.name} description={metadataDraft.description} generationPrompt={metadataDraft.generationPrompt} onChangeName={(name) => setMetadataDraft((current) => current === undefined ? current : { ...current, name })} onChangeDescription={(description) => setMetadataDraft((current) => current === undefined ? current : { ...current, description })} onChangeGenerationPrompt={(generationPrompt) => setMetadataDraft((current) => current === undefined ? current : { ...current, generationPrompt })} onClose={() => setMetadataDraft(undefined)} onSave={saveWorkflowMetadata} /> : null}
       {showModifyDialog && selected ? <WorkflowModifyDialog copy={copy} workflow={currentDefinition() ?? selected} onClose={() => setShowModifyDialog(false)} onOpenHistory={() => openModificationHistory()} onApply={(workflow) => { applyDefinition(workflow); setMessage(copy.workflowAiModifyApplied) }} /> : null}
       {showModificationHistory && selected ? <WorkflowModificationHistoryDialog copy={copy} records={modificationHistory} initialRecordId={modificationHistoryFocusId} onClose={() => setShowModificationHistory(false)} onApply={applyModification} /> : null}
       {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} allowShellFile={runSetup.allowShellFile} allowCode={runSetup.allowCode} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeAllowCode={(allowCode) => setRunSetup((current) => current === undefined ? current : { ...current, allowCode })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
@@ -2903,24 +3007,34 @@ function workflowBindingFromOption(option: WorkflowVariableOption, name: string)
   return { id: id('variable'), name, sourceNodeId: option.sourceNodeId, ...(option.sourcePath === undefined ? {} : { sourcePath: option.sourcePath }), required: true }
 }
 
-function workflowInstructionValue(node: WorkflowNode): string | undefined {
+function workflowInstructionValue(node: WorkflowNode, field: WorkflowPromptFieldProps['field'] = 'instruction'): string | undefined {
   switch (node.type) {
     case 'ai-task':
     case 'employee':
-    case 'skill':
-    case 'loop': return node.config.instruction
-    case 'output': return node.config.text
+    case 'skill': return node.config.instruction
+    case 'loop': return undefined
+    case 'output': return field === 'outputText' ? node.config.text : undefined
+    case 'text-merge': return field === 'textMergeTemplate' ? node.config.template : undefined
+    case 'transform':
+      if (field === 'transformFind') return node.config.find
+      if (field === 'transformReplacement') return node.config.replacement
+      return node.config.text
     default: return undefined
   }
 }
 
-function workflowNodeWithInstruction(node: WorkflowNode, instruction: string): WorkflowNode {
+function workflowNodeWithInstruction(node: WorkflowNode, instruction: string, field: WorkflowPromptFieldProps['field'] = 'instruction'): WorkflowNode {
   switch (node.type) {
     case 'ai-task': return { ...node, config: { ...node.config, instruction } }
     case 'employee': return { ...node, config: { ...node.config, instruction } }
     case 'skill': return { ...node, config: { ...node.config, instruction } }
-    case 'loop': return { ...node, config: { ...node.config, instruction } }
-    case 'output': return { ...node, config: { ...node.config, text: instruction } }
+    case 'loop': return node
+    case 'output': return field === 'outputText' ? { ...node, config: { ...node.config, text: instruction } } : node
+    case 'text-merge': return field === 'textMergeTemplate' ? { ...node, config: { ...node.config, template: instruction } } : node
+    case 'transform':
+      if (field === 'transformFind') return { ...node, config: { ...node.config, find: instruction } }
+      if (field === 'transformReplacement') return { ...node, config: { ...node.config, replacement: instruction } }
+      return { ...node, config: { ...node.config, text: instruction } }
     default: return node
   }
 }
@@ -2959,7 +3073,7 @@ interface WorkflowPromptFieldProps {
   value: string
   workflow: WorkflowDefinition
   node: WorkflowNode
-  field?: 'instruction' | 'systemPrompt' | 'outputText'
+  field?: 'instruction' | 'systemPrompt' | 'outputText' | 'textMergeTemplate' | 'transformText' | 'transformFind' | 'transformReplacement'
   invalid?: boolean
   onChange: (value: string) => void
   onChangeNode: (update: (node: WorkflowNode) => WorkflowNode) => void
@@ -2983,7 +3097,7 @@ export function WorkflowPromptField({ label, value, workflow, node, field = 'ins
     const selectionEnd = textarea?.selectionEnd ?? selectionStart
     let cursor = selectionStart
     onChangeNode((current) => {
-      const currentValue = field === 'systemPrompt' && current.type === 'ai-task' ? current.config.systemPrompt ?? '' : workflowInstructionValue(current) ?? value
+      const currentValue = field === 'systemPrompt' && current.type === 'ai-task' ? current.config.systemPrompt ?? '' : workflowInstructionValue(current, field) ?? value
       const binding = workflowExistingBinding(current, option)
       const name = binding?.name.trim() || workflowSuggestedBindingName(workflow, current, option)
       const inserted = insertWorkflowVariableToken(currentValue, name, selectionStart, selectionEnd)

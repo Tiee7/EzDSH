@@ -7,6 +7,19 @@ import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 
 describe('workflow stores', () => {
+  it('keeps immutable workflow revisions for pinned sub-workflows', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-revisions-'))
+    const store = new WorkflowStore(dir)
+    const template = createDefaultWorkflow('Versioned')
+    const created = await store.create({ id: 'versioned', name: 'Versioned', description: '', nodes: template.nodes, edges: template.edges })
+    const updated = await store.update(created.id, { name: 'Versioned v2', revision: created.revision })
+    expect(updated.revision).toBe(2)
+    expect(store.getRevision(created.id, 1)?.name).toBe('Versioned')
+    expect(store.getRevision(created.id, 2)?.name).toBe('Versioned v2')
+    const reloaded = new WorkflowStore(dir)
+    await reloaded.initialize()
+    expect(reloaded.getRevision(created.id, 1)?.name).toBe('Versioned')
+  })
   it('loads legacy Agent workflows as schema V2 AI tasks', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-migration-'))
     await writeFile(join(dir, 'workflows.json'), JSON.stringify([{
@@ -50,15 +63,31 @@ describe('workflow stores', () => {
   it('persists definitions and remaps IDs when duplicating', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-'))
     const store = new WorkflowStore(dir)
-    const created = await store.create(createDefaultWorkflow('Persisted'))
+    const created = await store.create({ ...createDefaultWorkflow('Persisted'), generationPrompt: '生成一个可复制的工作流' })
     const copy = await store.duplicate(created.id)
     expect(copy.id).not.toBe(created.id)
+    expect(copy.generationPrompt).toBe(created.generationPrompt)
     expect(copy.edges.every((edge) => copy.nodes.some((node) => node.id === edge.source) && copy.nodes.some((node) => node.id === edge.target))).toBe(true)
     expect(copy.nodes.flatMap((node) => node.inputBindings ?? []).every((binding) => copy.nodes.some((node) => node.id === binding.sourceNodeId))).toBe(true)
     const reloaded = new WorkflowStore(dir)
     await reloaded.initialize()
     expect(reloaded.list().map((workflow) => workflow.name)).toEqual(['Persisted copy', 'Persisted'])
     expect(JSON.parse(await readFile(join(dir, 'workflows.json'), 'utf8'))).toHaveLength(2)
+  })
+
+  it('persists the AI generation prompt as workflow metadata', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-generation-prompt-'))
+    const store = new WorkflowStore(dir)
+    const template = createDefaultWorkflow('Generated')
+    const created = await store.create({
+      ...template,
+      generationPrompt: '生成一个处理客户反馈的工作流',
+    })
+
+    expect(created.generationPrompt).toBe('生成一个处理客户反馈的工作流')
+    const reloaded = new WorkflowStore(dir)
+    await reloaded.initialize()
+    expect(reloaded.get(created.id)?.generationPrompt).toBe('生成一个处理客户反馈的工作流')
   })
 
   it('turns interrupted runs into paused records on startup', async () => {
@@ -108,5 +137,22 @@ describe('workflow stores', () => {
     await reloaded.initialize()
     expect(reloaded.get('run-delete')).toBeUndefined()
     expect(await store.remove('run-delete')).toBe(false)
+  })
+
+  it('removes all run records for a deleted workflow and preserves other workflows', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-run-delete-workflow-'))
+    const store = new WorkflowRunStore(dir)
+    await store.save({ id: 'run-delete-1', workflowId: 'workflow-delete', workflowRevision: 1, status: 'completed', input: null, nodeStates: [], events: [], allowShellFile: false })
+    await store.save({ id: 'run-delete-2', workflowId: 'workflow-delete', workflowRevision: 2, status: 'failed', input: null, nodeStates: [], events: [], allowShellFile: false })
+    await store.save({ id: 'run-keep', workflowId: 'workflow-keep', workflowRevision: 1, status: 'completed', input: null, nodeStates: [], events: [], allowShellFile: false })
+
+    expect(await store.removeForWorkflow('workflow-delete')).toBe(2)
+    expect(store.list('workflow-delete')).toEqual([])
+    expect(store.list('workflow-keep').map((record) => record.id)).toEqual(['run-keep'])
+
+    const reloaded = new WorkflowRunStore(dir)
+    await reloaded.initialize()
+    expect(reloaded.list('workflow-delete')).toEqual([])
+    expect(reloaded.list('workflow-keep').map((record) => record.id)).toEqual(['run-keep'])
   })
 })

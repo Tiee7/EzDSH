@@ -19,7 +19,7 @@ describe('workflow generation service', () => {
     const runService = new WorkflowRunService({
       workflowStore,
       runStore: new WorkflowRunStore(dir),
-      workspaceRoot: dir,
+      workflowRoot: dir,
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
       listEmployees: () => [],
@@ -36,6 +36,7 @@ describe('workflow generation service', () => {
     const record = await service.get('generation-test')
 
     expect(result.workflow.name).toBe('短视频选题')
+    expect(result.workflow.generationPrompt).toBe('生成短视频选题工作流')
     expect(record).toMatchObject({ id: 'generation-test', status: 'completed', phase: 'completed', model: { providerId: 'provider-a', modelId: 'model-a' }, workflow: { name: '短视频选题' } })
     expect(record?.events.map((event) => event.phase)).toEqual(expect.arrayContaining(['preparing', 'planning-employees', 'creating-employees', 'generating-workflow', 'validating', 'completed']))
     expect(updates.some((update) => update === 'generating-workflow:running')).toBe(true)

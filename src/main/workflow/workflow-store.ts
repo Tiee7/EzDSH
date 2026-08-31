@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { WORKFLOW_SCHEMA_VERSION, cloneWorkflow, createDefaultWorkflow, formatWorkflowValidationIssues, normalizeWorkflow, validateWorkflow, type WorkflowCreateInput, type WorkflowDefinition, type WorkflowUpdateInput } from '../../shared/workflow.js'
 
 const FILE_NAME = 'workflows.json'
+const VERSIONS_FILE_NAME = 'workflow-versions.json'
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
@@ -77,11 +78,14 @@ function ensureFixedTerminalNodes(workflow: WorkflowDefinition): WorkflowDefinit
 
 export class WorkflowStore {
   private readonly filePath: string
+  private readonly versionsFilePath: string
   private readonly workflows = new Map<string, WorkflowDefinition>()
+  private readonly versions = new Map<string, Map<number, WorkflowDefinition>>()
   private initialized = false
 
   constructor(stateDir: string) {
     this.filePath = join(stateDir, FILE_NAME)
+    this.versionsFilePath = join(stateDir, VERSIONS_FILE_NAME)
   }
 
   async initialize(): Promise<void> {
@@ -96,8 +100,26 @@ export class WorkflowStore {
           if (workflow !== undefined && validateWorkflow(workflow).valid) this.workflows.set(workflow.id, workflow)
         }
       }
+      const versionsRaw = JSON.parse(await readFile(this.versionsFilePath, 'utf8')) as unknown
+      if (versionsRaw !== null && typeof versionsRaw === 'object' && !Array.isArray(versionsRaw)) {
+        for (const [workflowId, entries] of Object.entries(versionsRaw)) {
+          if (entries === null || typeof entries !== 'object' || Array.isArray(entries)) continue
+          const snapshots = new Map<number, WorkflowDefinition>()
+          for (const [revision, value] of Object.entries(entries)) {
+            const parsedRevision = Number(revision)
+            const snapshot = normalizeWorkflow(value)
+            if (Number.isInteger(parsedRevision) && snapshot !== undefined && validateWorkflow(snapshot).valid) snapshots.set(parsedRevision, snapshot)
+          }
+          if (snapshots.size > 0) this.versions.set(workflowId, snapshots)
+        }
+      }
     } catch (error) {
       if (!isNotFound(error)) throw error
+    }
+    for (const workflow of this.workflows.values()) {
+      const snapshots = this.versions.get(workflow.id) ?? new Map<number, WorkflowDefinition>()
+      if (!snapshots.has(workflow.revision)) snapshots.set(workflow.revision, cloneWorkflow(workflow))
+      this.versions.set(workflow.id, snapshots)
     }
     this.initialized = true
   }
@@ -109,6 +131,11 @@ export class WorkflowStore {
   get(id: string): WorkflowDefinition | undefined {
     const workflow = this.workflows.get(id)
     return workflow === undefined ? undefined : cloneWorkflow(workflow)
+  }
+
+  getRevision(id: string, revision: number): WorkflowDefinition | undefined {
+    const snapshot = this.versions.get(id)?.get(revision)
+    return snapshot === undefined ? undefined : cloneWorkflow(snapshot)
   }
 
   async create(input: WorkflowCreateInput): Promise<WorkflowDefinition> {
@@ -129,6 +156,7 @@ export class WorkflowStore {
     if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, '创建工作流'))
     if (this.workflows.has(workflow.id)) throw new Error(`Workflow already exists: ${workflow.id}`)
     this.workflows.set(workflow.id, workflow)
+    this.recordRevision(workflow)
     await this.persist()
     return cloneWorkflow(workflow)
   }
@@ -151,6 +179,7 @@ export class WorkflowStore {
     const result = validateWorkflow(workflow)
     if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, '保存工作流'))
     this.workflows.set(id, workflow)
+    this.recordRevision(workflow)
     await this.persist()
     return cloneWorkflow(workflow)
   }
@@ -158,6 +187,7 @@ export class WorkflowStore {
   async remove(id: string): Promise<void> {
     await this.initialize()
     if (!this.workflows.delete(id)) throw new Error(`Workflow not found: ${id}`)
+    this.versions.delete(id)
     await this.persist()
   }
 
@@ -168,6 +198,7 @@ export class WorkflowStore {
     return this.create({
       name: `${source.name} copy`,
       description: source.description,
+      ...(source.generationPrompt === undefined ? {} : { generationPrompt: source.generationPrompt }),
       nodes: source.nodes.map((node) => ({
         ...cloneWorkflow(node),
         id: idMap.get(node.id) as string,
@@ -189,5 +220,13 @@ export class WorkflowStore {
 
   private async persist(): Promise<void> {
     await atomicWriteJson(this.filePath, this.list())
+    const serialized = Object.fromEntries(Array.from(this.versions.entries(), ([workflowId, snapshots]) => [workflowId, Object.fromEntries(Array.from(snapshots.entries(), ([revision, workflow]) => [String(revision), workflow]))]))
+    await atomicWriteJson(this.versionsFilePath, serialized)
+  }
+
+  private recordRevision(workflow: WorkflowDefinition): void {
+    const snapshots = this.versions.get(workflow.id) ?? new Map<number, WorkflowDefinition>()
+    snapshots.set(workflow.revision, cloneWorkflow(workflow))
+    this.versions.set(workflow.id, snapshots)
   }
 }

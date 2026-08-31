@@ -12,6 +12,7 @@
     "id": "workflow-example",
     "name": "示例工作流",
     "description": "工作流用途说明",
+    "generationPrompt": "生成一个示例工作流",
     "revision": 1,
     "nodes": [],
     "edges": [],
@@ -46,7 +47,9 @@
 - `employees` 可选，仅包含 `workflow.nodes` 实际引用的员工档案；员工 ID、名称、岗位、提示词、规范、能力和技能是创建/复用员工所需字段。
 - 工作流节点支持 HTTP 请求（`http`）和 Node.js/Python3 代码执行（`code`）；代码节点导入后仍需在运行对话框中显式授权。
 - `workflow.nodes[].id` 在工作流内唯一；`type` 必须是受支持的节点类型；`config` 必须符合节点类型配置。
-- `workflow.edges[]` 只能引用已有节点。条件节点的分支连线使用 `sourcePort: "true"` 或 `"false"`。
+- `input.config.fields[].type` 支持 `string`、`number`、`boolean`、`json`、`file`、`file-list`；`ai-task.config.outputSchema` 和 `structured-extract.config.schema` 可用于严格校验 JSON 输出。`sub-workflow`、`object-builder`、`list-operator`、`merge` 和 `wait-input` 均可直接导入。
+- `sub-workflow.config.version` 可以是 `"latest"` 或正整数修订号；`inputMapping` 是发送给子工作流的 JSON 模板。`object-builder.fields`、`list-operator.operation` 和 `merge.operation` 都是确定性数据处理配置，不会调用模型。
+- `workflow.edges[]` 只能引用已有节点。条件节点的分支连线使用 `sourcePort: "true"` 或 `"false"`；`switch` 节点使用 `sourcePort: "switch:<caseId>"` 和唯一的 `sourcePort: "default"`；循环节点使用 `sourcePort: "loop-body"` 连接下方线性循环体子流程的首节点、`sourcePort: "loop-next"` 连接右侧后续节点。
 - 节点 `position` 只保存编辑器布局，不参与运行语义。
 
 工作流列表中的“导入”主按钮选择 JSON 文件，旁边的剪贴板图标从剪贴板读取 JSON。导入时会校验包络版本、工作流 Schema、节点配置、节点引用、连线和循环依赖；剪贴板内容不是 JSON 时提示“剪贴板内的数据格式不正确”。

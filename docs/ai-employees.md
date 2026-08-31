@@ -64,7 +64,7 @@ EZDSH 的核心是工作流自动化。工作流定义一件事如何完成，�
 
 当 JSON 首次解析失败时，运行时会在同一个 Session 中请求一次格式修复；第二次仍无效则节点失败，并留下明确错误。文件、图片和其他大对象后续应以 Artifact 引用传递，不应把二进制内容塞入节点 JSON。
 
-工作流还支持 Input、Skill、MCP、Parallel、Loop、Condition、Approval、Transform、Output、Shell 和 File 节点。Shell/File 每次运行都需要显式授权，文件路径只能位于当前工作区。
+工作流还支持 Input、Skill、MCP、Parallel、Loop、Condition、Approval、Transform、Output、Shell 和 File 节点。Shell/File 每次运行都需要显式授权，文件路径只能位于 Workflow 工作目录。
 
 ## 五、项目、Session 与一次性测试
 

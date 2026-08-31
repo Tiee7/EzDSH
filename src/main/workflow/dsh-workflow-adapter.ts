@@ -1,5 +1,5 @@
 import type { EmployeeSnapshot } from '../../shared/employees.js'
-import { interpolateWorkflowVariables, isWorkflowValue, type WorkflowModelSelection, type WorkflowNode, type WorkflowNodeOutputVariable, type WorkflowOutputMode, type WorkflowValue } from '../../shared/workflow.js'
+import { interpolateWorkflowVariables, isWorkflowValue, type WorkflowJsonSchema, type WorkflowModelSelection, type WorkflowNode, type WorkflowNodeOutputVariable, type WorkflowOutputMode, type WorkflowValue } from '../../shared/workflow.js'
 
 /** Minimal DSH contract used only for employee and legacy Skill internal sessions. */
 export interface WorkflowSessionClient {
@@ -117,6 +117,7 @@ export function buildNodePrompt(
   previous: WorkflowValue,
   systemPrompt: string | undefined,
   outputMode: WorkflowOutputMode,
+  outputSchema?: WorkflowJsonSchema,
 ): string {
   const variables = previous !== null && typeof previous === 'object' && !Array.isArray(previous) ? previous : {}
   const renderedInstruction = interpolateWorkflowVariables(instruction, variables)
@@ -130,6 +131,7 @@ export function buildNodePrompt(
     `节点输入变量：${JSON.stringify(previous)}`,
     renderedSystemPrompt === undefined || renderedSystemPrompt.trim() === '' ? '' : `工作原则：\n${renderedSystemPrompt}`,
     outputVariables.length === 0 ? '' : `结构化输出字段：${outputVariables.map((variable) => `${variable.name}${variable.description === undefined ? '' : `（${variable.description}）`}`).join('、')}。`,
+    outputSchema === undefined ? '' : `必须严格符合 JSON Schema：${JSON.stringify(outputSchema)}`,
     `节点指令：${renderedInstruction}`,
     outputMode === 'json' ? '输出要求：只输出一个 JSON 文档，不要解释，不要使用 Markdown 代码围栏。' : '',
   ].filter(Boolean).join('\n\n')

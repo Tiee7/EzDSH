@@ -6,6 +6,8 @@ export interface UserDataLayout {
   launchRoot: string
   /** DSH_HOME; never put this under the installed application directory. */
   harness: string
+  /** Default root for workflow file, shell, code, and Runtime-backed work. */
+  workflowRoot: string
   /** Main-process and Runtime logs. */
   logs: string
   /** EzDSH metadata and migration state. */

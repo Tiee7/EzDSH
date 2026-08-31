@@ -77,6 +77,19 @@ export class WorkflowRunStore {
     return removed
   }
 
+  /** Remove all persisted run records belonging to a workflow in one write. */
+  async removeForWorkflow(workflowId: string): Promise<number> {
+    await this.initialize()
+    let removed = 0
+    for (const [id, record] of this.runs.entries()) {
+      if (record.workflowId !== workflowId) continue
+      this.runs.delete(id)
+      removed += 1
+    }
+    if (removed > 0) await this.persist()
+    return removed
+  }
+
   /** Remove terminal run history whose configured retention period has elapsed. */
   async pruneExpired(now = new Date()): Promise<string[]> {
     await this.initialize()

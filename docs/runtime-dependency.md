@@ -131,6 +131,7 @@ userData
 ├── harness/profiles
 ├── harness/sessions
 ├── harness/plugins
+├── workflow
 ├── state
 ├── logs
 └── backups

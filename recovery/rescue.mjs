@@ -28,7 +28,7 @@ import {
 import { fileURLToPath } from 'node:url'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
-const COMPONENTS = ['harness', 'state']
+const COMPONENTS = ['harness', 'state', 'workflow']
 const SNAPSHOT_PATTERN = /^ezdsh-(manual|pre-update|pre-restore)-[^/]+\.tar\.gz$/u
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = parseArgs(process.argv.slice(2))
@@ -137,6 +137,17 @@ async function readSnapshot(name) {
   return { archiveName: name, archivePath, manifest }
 }
 
+function snapshotComponents(snapshot) {
+  const components = snapshot.manifest.components ?? ['harness', 'state']
+  if (!Array.isArray(components)
+    || components[0] !== 'harness'
+    || components[1] !== 'state'
+    || (components.length !== 2 && (components.length !== 3 || components[2] !== 'workflow'))) {
+    throw new Error(`Invalid recovery components for ${snapshot.archiveName}`)
+  }
+  return components
+}
+
 async function resolveSnapshot(selector) {
   if (!selector || selector.trim() === '') throw new Error('Snapshot selector cannot be empty')
   const snapshots = await listSnapshots()
@@ -182,6 +193,7 @@ async function previewRestore(snapshot) {
 }
 
 async function restore(snapshot, preview) {
+  const components = snapshotComponents(snapshot)
   const staging = join(backupsRoot, `.ezdsh-rescue-staging-${Date.now()}-${process.pid}`)
   const aside = join(root, `.ezdsh-rescue-pre-restore-${Date.now()}`)
   const touched = []
@@ -189,7 +201,7 @@ async function restore(snapshot, preview) {
   try {
     await run('tar', ['-xzf', snapshot.archivePath, '-C', staging], backupsRoot)
     await validateTree(staging, staging)
-    for (const component of COMPONENTS) {
+    for (const component of components) {
       if (!(await isDirectory(join(staging, component)))) {
         throw new Error(`archive is missing component ${component}`)
       }
@@ -197,7 +209,7 @@ async function restore(snapshot, preview) {
 
     await mkdir(aside, { recursive: true, mode: 0o700 })
     try {
-      for (const component of COMPONENTS) {
+      for (const component of components) {
         const target = join(root, component)
         const saved = join(aside, component)
         if (await pathExists(target)) await rename(target, saved)
@@ -467,7 +479,7 @@ async function load(){
     '<button onclick="verify(\\''+encodeURIComponent(item.archiveName)+'\\')">Verify</button><button onclick="restore(\\''+encodeURIComponent(item.archiveName)+'\\')">Restore</button></li>').join('')+'</ul>' : '<p>No complete snapshots found.</p>';
 }
 async function verify(name){const result=await fetch('/api/verify?name='+name).then(r=>r.json());alert(result.ok?'Checksum OK':'Checksum FAILED: '+(result.note||''));}
-async function restore(name){const preview=await fetch('/api/restore?name='+name).then(r=>r.json());if(preview.error){alert(preview.error);return;}const message='Restore '+preview.snapshotName+'?\\n\\n'+preview.entries.length+' archive entries will replace harness and state.'+(preview.missingCredentials.length?'\\n\\nCredentials to re-enter: '+preview.missingCredentials.join(', '):'');if(confirm(message))alert(JSON.stringify(await fetch('/api/restore?name='+name+'&apply=1',{method:'POST'}).then(r=>r.json()),null,2));}
+async function restore(name){const preview=await fetch('/api/restore?name='+name).then(r=>r.json());if(preview.error){alert(preview.error);return;}const message='Restore '+preview.snapshotName+'?\\n\\n'+preview.entries.length+' archive entries will replace harness, state, and workflow.'+(preview.missingCredentials.length?'\\n\\nCredentials to re-enter: '+preview.missingCredentials.join(', '):'');if(confirm(message))alert(JSON.stringify(await fetch('/api/restore?name='+name+'&apply=1',{method:'POST'}).then(r=>r.json()),null,2));}
 load().catch(error=>document.querySelector('#status').innerHTML='<p class="error">'+esc(error)+'</p>');
 </script>`
 }

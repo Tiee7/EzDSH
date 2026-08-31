@@ -9,14 +9,23 @@ export const WORKFLOW_EXPORT_FORMAT_VERSION = 1 as const
 export const WORKFLOW_NODE_TYPES = [
   'input',
   'ai-task',
+  'structured-extract',
   'employee',
   'skill',
   'mcp',
+  'sub-workflow',
   'parallel',
   'loop',
+  'sleep',
   'condition',
+  'switch',
   'approval',
+  'wait-input',
   'transform',
+  'object-builder',
+  'list-operator',
+  'merge',
+  'text-merge',
   'output',
   'shell',
   'file',
@@ -66,7 +75,7 @@ export interface WorkflowNodeBase<T extends WorkflowNodeType, C> {
   outputVariables?: WorkflowNodeOutputVariable[]
 }
 
-export type WorkflowInputFieldType = 'string' | 'number' | 'boolean' | 'json'
+export type WorkflowInputFieldType = 'string' | 'number' | 'boolean' | 'json' | 'file' | 'file-list'
 
 /** A named launch parameter exposed by a structured input node. */
 export interface WorkflowInputField {
@@ -93,6 +102,23 @@ export interface AiTaskNodeConfig {
   mode: AiExecutionMode
   skillIds: string[]
   outputMode: WorkflowOutputMode
+  /** Optional JSON Schema used to validate structured model output. */
+  outputSchema?: WorkflowJsonSchema
+}
+
+export interface StructuredExtractNodeConfig {
+  schema: WorkflowJsonSchema
+  maxRetries?: number
+}
+
+export interface WorkflowJsonSchema {
+  type: 'object' | 'array' | 'string' | 'number' | 'integer' | 'boolean' | 'null'
+  description?: string
+  properties?: Record<string, WorkflowJsonSchema>
+  required?: string[]
+  items?: WorkflowJsonSchema
+  enum?: WorkflowValue[]
+  additionalProperties?: boolean
 }
 
 export interface EmployeeNodeConfig {
@@ -114,17 +140,47 @@ export interface McpNodeConfig {
   arguments?: Record<string, WorkflowValue>
 }
 
+export interface SubWorkflowNodeConfig {
+  workflowId: string
+  /** When false, returns a queued child run reference instead of waiting. */
+  waitForCompletion?: boolean
+  /** Optional child-input object assembled from the current node context. */
+  inputMapping?: Record<string, WorkflowValue>
+  /** Reserved selector for a pinned revision or the latest saved revision. */
+  version?: number | 'latest'
+}
+
 export interface ParallelNodeConfig {
   instructions: string[]
 }
 
 export interface LoopNodeConfig {
-  instruction: string
+  /** Legacy per-item AI instruction. New loops execute the node connected to the loop-body port. */
+  instruction?: string
   maxIterations?: number
+  concurrency?: number
+  batchSize?: number
+  failureStrategy?: 'stop' | 'continue'
+}
+
+export interface SleepNodeConfig {
+  /** Milliseconds to wait before passing the input through unchanged. */
+  durationMs: number
+  /** fixed keeps durationMs; random samples a fresh integer in [minDurationMs, maxDurationMs] per execution. */
+  mode?: 'fixed' | 'random'
+  minDurationMs?: number
+  maxDurationMs?: number
 }
 
 export interface ApprovalNodeConfig {
   message: string
+}
+
+export interface WaitInputNodeConfig {
+  /** approval is the compatibility preset for the old approval node. */
+  mode: 'approval' | 'form'
+  message: string
+  fields?: WorkflowInputField[]
 }
 
 export type ConditionOperator = 'truthy' | 'equals' | 'not-equals' | 'contains' | 'greater-than' | 'less-than'
@@ -134,11 +190,61 @@ export interface ConditionNodeConfig {
   value?: WorkflowValue
 }
 
-export type TransformTemplate = 'identity' | 'json' | 'extract-text' | 'prepend' | 'append'
+export interface SwitchCase {
+  id: string
+  label?: string
+  value: WorkflowValue
+}
+
+export interface SwitchNodeConfig {
+  cases: SwitchCase[]
+}
+
+export interface ObjectBuilderNodeConfig {
+  fields: Record<string, WorkflowValue>
+}
+
+export type ListOperatorOperation = 'filter' | 'map' | 'pluck' | 'sort' | 'dedupe' | 'slice' | 'group' | 'aggregate'
+
+export interface ListOperatorNodeConfig {
+  operation: ListOperatorOperation
+  path?: string
+  value?: WorkflowValue
+  descending?: boolean
+  start?: number
+  end?: number
+  /** For map, the output field/path to extract. */
+  outputPath?: string
+  groupPath?: string
+  aggregateMode?: 'count' | 'sum' | 'average' | 'min' | 'max'
+  aggregatePath?: string
+}
+
+export type MergeOperation = 'append' | 'object-merge' | 'join' | 'zip' | 'first-non-null'
+
+export interface MergeNodeConfig {
+  operation: MergeOperation
+  leftKey?: string
+  rightKey?: string
+}
+
+export type TransformTemplate = 'identity' | 'json' | 'extract-text' | 'prepend' | 'append' | 'replace' | 'text'
 
 export interface TransformNodeConfig {
   template: TransformTemplate
   text?: string
+  /** Text to search for when template is replace. Supports workflow variables. */
+  find?: string
+  /** Replacement text when template is replace. Supports workflow variables. */
+  replacement?: string
+}
+
+/** Deterministic node for composing several upstream text values into one string. */
+export interface TextMergeNodeConfig {
+  /** Supports {{variable}} and {{variable.path}} references to this node's input bindings. */
+  template: string
+  /** Used when template is empty; bound values are joined in declaration order. */
+  separator?: string
 }
 
 export type WorkflowOutputContentMode = 'variable' | 'text'
@@ -159,9 +265,10 @@ export interface ShellNodeConfig {
 }
 
 export interface FileNodeConfig {
-  operation: 'read' | 'write'
+  operation: 'read' | 'write' | 'list' | 'stat' | 'extract-text'
   path: string
   content?: string
+  recursive?: boolean
 }
 
 export type WorkflowHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -190,14 +297,23 @@ export interface CodeNodeConfig {
 export type WorkflowNode =
   | WorkflowNodeBase<'input', InputNodeConfig>
   | WorkflowNodeBase<'ai-task', AiTaskNodeConfig>
+  | WorkflowNodeBase<'structured-extract', StructuredExtractNodeConfig>
   | WorkflowNodeBase<'employee', EmployeeNodeConfig>
   | WorkflowNodeBase<'skill', SkillNodeConfig>
   | WorkflowNodeBase<'mcp', McpNodeConfig>
+  | WorkflowNodeBase<'sub-workflow', SubWorkflowNodeConfig>
   | WorkflowNodeBase<'parallel', ParallelNodeConfig>
   | WorkflowNodeBase<'loop', LoopNodeConfig>
+  | WorkflowNodeBase<'sleep', SleepNodeConfig>
   | WorkflowNodeBase<'condition', ConditionNodeConfig>
+  | WorkflowNodeBase<'switch', SwitchNodeConfig>
   | WorkflowNodeBase<'approval', ApprovalNodeConfig>
+  | WorkflowNodeBase<'wait-input', WaitInputNodeConfig>
   | WorkflowNodeBase<'transform', TransformNodeConfig>
+  | WorkflowNodeBase<'object-builder', ObjectBuilderNodeConfig>
+  | WorkflowNodeBase<'list-operator', ListOperatorNodeConfig>
+  | WorkflowNodeBase<'merge', MergeNodeConfig>
+  | WorkflowNodeBase<'text-merge', TextMergeNodeConfig>
   | WorkflowNodeBase<'output', OutputNodeConfig>
   | WorkflowNodeBase<'shell', ShellNodeConfig>
   | WorkflowNodeBase<'file', FileNodeConfig>
@@ -208,7 +324,7 @@ export interface WorkflowEdge {
   id: string
   source: string
   target: string
-  sourcePort?: 'true' | 'false' | 'default'
+  sourcePort?: 'true' | 'false' | 'default' | 'loop-body' | 'loop-next' | `switch:${string}`
   targetPort?: string
 }
 
@@ -224,6 +340,8 @@ export interface WorkflowDefinition {
   createdAt: string
   updatedAt: string
   lastRunId?: string
+  /** Original user prompt when this workflow was generated by AI. */
+  generationPrompt?: string
 }
 
 /** Employee profile bundled with an exchange document when a workflow references it. */
@@ -241,6 +359,7 @@ export interface WorkflowExportDocument {
 export type WorkflowCreateInput = Pick<WorkflowDefinition, 'name' | 'description' | 'nodes' | 'edges'> & {
   id?: string
   enabled?: boolean
+  generationPrompt?: string
 }
 
 export type WorkflowUpdateInput = WorkflowCreateInput & { revision?: number }
@@ -301,6 +420,8 @@ export interface WorkflowRunOptions {
   debug?: boolean
   /** Optional model override; omitted to use the configured default model. */
   model?: WorkflowModelSelection
+  /** Run an immutable saved workflow revision when supplied. */
+  workflowRevision?: number
 }
 
 export interface WorkflowModelSelection {
@@ -450,6 +571,15 @@ export function isWorkflowNodeType(value: unknown): value is WorkflowNodeType {
   return (WORKFLOW_NODE_TYPES as readonly unknown[]).includes(value)
 }
 
+function normalizeWorkflowSourcePort(value: unknown): WorkflowEdge['sourcePort'] {
+  if (value === 'true' || value === 'false' || value === 'default' || value === 'loop-body' || value === 'loop-next') return value
+  return typeof value === 'string' && /^switch:[A-Za-z_][A-Za-z0-9_-]*$/u.test(value) ? value as `switch:${string}` : undefined
+}
+
+function isValidWorkflowSourcePort(value: unknown): boolean {
+  return normalizeWorkflowSourcePort(value) !== undefined
+}
+
 export function isWorkflowValue(value: unknown): value is WorkflowValue {
   if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return true
   if (Array.isArray(value)) return value.every(isWorkflowValue)
@@ -530,7 +660,7 @@ function readInputFields(value: unknown): WorkflowInputField[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.flatMap((item) => {
     if (!isRecord(item) || typeof item.name !== 'string' || item.name.trim() === '') return []
-    const type: WorkflowInputFieldType = item.type === 'number' || item.type === 'boolean' || item.type === 'json' ? item.type : 'string'
+    const type: WorkflowInputFieldType = item.type === 'number' || item.type === 'boolean' || item.type === 'json' || item.type === 'file' || item.type === 'file-list' ? item.type : 'string'
     return [{
       name: item.name.trim(),
       ...(typeof item.label === 'string' && item.label.trim() !== '' ? { label: item.label.trim() } : {}),
@@ -564,6 +694,16 @@ function readOutputVariables(value: unknown): WorkflowNodeOutputVariable[] | und
   })
 }
 
+export function isWorkflowJsonSchema(value: unknown): value is WorkflowJsonSchema {
+  if (!isRecord(value) || !['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'].includes(value.type as string)) return false
+  if (value.properties !== undefined && (!isRecord(value.properties) || Object.values(value.properties).some((item) => !isWorkflowJsonSchema(item)))) return false
+  if (value.items !== undefined && !isWorkflowJsonSchema(value.items)) return false
+  if (value.required !== undefined && (!Array.isArray(value.required) || value.required.some((item) => typeof item !== 'string'))) return false
+  if (value.enum !== undefined && (!Array.isArray(value.enum) || value.enum.some((item) => !isWorkflowValue(item)))) return false
+  if (value.additionalProperties !== undefined && typeof value.additionalProperties !== 'boolean') return false
+  return true
+}
+
 function normalizeNodeType(value: unknown): WorkflowNodeType | undefined {
   if (value === 'agent') return 'ai-task'
   return isWorkflowNodeType(value) ? value : undefined
@@ -586,6 +726,11 @@ function readNodeConfig(type: WorkflowNodeType, value: unknown): Record<string, 
       mode: config.mode === 'autonomous' ? 'autonomous' : 'single',
       skillIds: readStringArray(config.skillIds),
       outputMode: config.outputMode === 'json' ? 'json' : 'text',
+      ...(isWorkflowJsonSchema(config.outputSchema) ? { outputSchema: config.outputSchema } : {}),
+    }
+    case 'structured-extract': return {
+      schema: isWorkflowJsonSchema(config.schema) ? config.schema : { type: 'object', properties: {} },
+      ...(typeof config.maxRetries === 'number' ? { maxRetries: config.maxRetries } : {}),
     }
     case 'employee': return {
       employeeId: typeof config.employeeId === 'string' ? config.employeeId : '',
@@ -598,18 +743,73 @@ function readNodeConfig(type: WorkflowNodeType, value: unknown): Record<string, 
       instruction: typeof config.instruction === 'string' ? config.instruction : undefined,
       arguments: isRecord(config.arguments) && isWorkflowValue(config.arguments) ? config.arguments as Record<string, WorkflowValue> : undefined,
     }
+    case 'sub-workflow': return {
+      workflowId: typeof config.workflowId === 'string' ? config.workflowId : '',
+      waitForCompletion: config.waitForCompletion !== false,
+      ...(isRecord(config.inputMapping) && isWorkflowValue(config.inputMapping) ? { inputMapping: config.inputMapping as Record<string, WorkflowValue> } : {}),
+      ...(config.version === 'latest' || (typeof config.version === 'number' && Number.isInteger(config.version) && config.version > 0) ? { version: config.version } : {}),
+    }
     case 'parallel': return { instructions: Array.isArray(config.instructions) ? config.instructions.filter((item): item is string => typeof item === 'string') : [] }
-    case 'loop': return { instruction: typeof config.instruction === 'string' ? config.instruction : '', maxIterations: typeof config.maxIterations === 'number' ? config.maxIterations : undefined }
+    case 'loop': return {
+      instruction: typeof config.instruction === 'string' ? config.instruction : undefined,
+      maxIterations: typeof config.maxIterations === 'number' ? config.maxIterations : undefined,
+      ...(typeof config.concurrency === 'number' ? { concurrency: config.concurrency } : {}),
+      ...(typeof config.batchSize === 'number' ? { batchSize: config.batchSize } : {}),
+      ...(config.failureStrategy === 'continue' || config.failureStrategy === 'stop' ? { failureStrategy: config.failureStrategy } : {}),
+    }
+    case 'sleep': return {
+      durationMs: typeof config.durationMs === 'number' ? config.durationMs : 0,
+      ...(config.mode === 'random' || config.mode === 'fixed' ? { mode: config.mode } : {}),
+      ...(typeof config.minDurationMs === 'number' ? { minDurationMs: config.minDurationMs } : {}),
+      ...(typeof config.maxDurationMs === 'number' ? { maxDurationMs: config.maxDurationMs } : {}),
+    }
     case 'condition': return { operator: config.operator, value: isWorkflowValue(config.value) ? config.value : undefined }
+    case 'switch': return {
+      cases: Array.isArray(config.cases)
+        ? config.cases.flatMap((candidate) => {
+          if (!isRecord(candidate) || typeof candidate.id !== 'string' || !isWorkflowValue(candidate.value)) return []
+          return [{ id: candidate.id, label: typeof candidate.label === 'string' ? candidate.label : undefined, value: candidate.value }]
+        })
+        : [],
+    }
     case 'approval': return { message: typeof config.message === 'string' ? config.message : '' }
-    case 'transform': return { template: config.template, text: typeof config.text === 'string' ? config.text : undefined }
+    case 'wait-input': return {
+      mode: config.mode === 'form' ? 'form' : 'approval',
+      message: typeof config.message === 'string' ? config.message : '',
+      ...(readInputFields(config.fields) === undefined ? {} : { fields: readInputFields(config.fields) }),
+    }
+    case 'transform': return {
+      template: config.template,
+      text: typeof config.text === 'string' ? config.text : undefined,
+      find: typeof config.find === 'string' ? config.find : undefined,
+      replacement: typeof config.replacement === 'string' ? config.replacement : undefined,
+    }
+    case 'object-builder': return { fields: isRecord(config.fields) && isWorkflowValue(config.fields) ? config.fields as Record<string, WorkflowValue> : {} }
+    case 'list-operator': return {
+      operation: ['filter', 'map', 'pluck', 'sort', 'dedupe', 'slice', 'group', 'aggregate'].includes(config.operation as string) ? config.operation : 'filter',
+      path: typeof config.path === 'string' ? config.path : undefined,
+      value: isWorkflowValue(config.value) ? config.value : undefined,
+      descending: config.descending === true,
+      start: typeof config.start === 'number' ? config.start : undefined,
+      end: typeof config.end === 'number' ? config.end : undefined,
+      outputPath: typeof config.outputPath === 'string' ? config.outputPath : undefined,
+      groupPath: typeof config.groupPath === 'string' ? config.groupPath : undefined,
+      aggregateMode: ['count', 'sum', 'average', 'min', 'max'].includes(config.aggregateMode as string) ? config.aggregateMode : undefined,
+      aggregatePath: typeof config.aggregatePath === 'string' ? config.aggregatePath : undefined,
+    }
+    case 'merge': return {
+      operation: ['append', 'object-merge', 'join', 'zip', 'first-non-null'].includes(config.operation as string) ? config.operation : 'append',
+      leftKey: typeof config.leftKey === 'string' ? config.leftKey : undefined,
+      rightKey: typeof config.rightKey === 'string' ? config.rightKey : undefined,
+    }
+    case 'text-merge': return { template: typeof config.template === 'string' ? config.template : '', separator: typeof config.separator === 'string' ? config.separator : undefined }
     case 'output': return {
       label: typeof config.label === 'string' ? config.label : undefined,
       contentMode: config.contentMode === 'text' ? 'text' : 'variable',
       text: typeof config.text === 'string' ? config.text : undefined,
     }
     case 'shell': return { command: typeof config.command === 'string' ? config.command : '', args: Array.isArray(config.args) ? config.args.filter((arg): arg is string => typeof arg === 'string') : [], cwd: typeof config.cwd === 'string' ? config.cwd : undefined, timeoutMs: typeof config.timeoutMs === 'number' ? config.timeoutMs : undefined }
-    case 'file': return { operation: config.operation, path: typeof config.path === 'string' ? config.path : '', content: typeof config.content === 'string' ? config.content : undefined }
+    case 'file': return { operation: ['read', 'write', 'list', 'stat', 'extract-text'].includes(config.operation as string) ? config.operation : 'read', path: typeof config.path === 'string' ? config.path : '', content: typeof config.content === 'string' ? config.content : undefined, recursive: config.recursive === true }
     case 'http': return {
       method: config.method === 'POST' || config.method === 'PUT' || config.method === 'PATCH' || config.method === 'DELETE' ? config.method : 'GET',
       url: typeof config.url === 'string' ? config.url : '',
@@ -659,7 +859,7 @@ export function normalizeWorkflow(raw: unknown): WorkflowDefinition | undefined 
       id: rawEdge.id,
       source: rawEdge.source,
       target: rawEdge.target,
-      sourcePort: rawEdge.sourcePort === 'true' || rawEdge.sourcePort === 'false' || rawEdge.sourcePort === 'default' ? rawEdge.sourcePort : undefined,
+      sourcePort: normalizeWorkflowSourcePort(rawEdge.sourcePort),
       targetPort: typeof rawEdge.targetPort === 'string' ? rawEdge.targetPort : undefined,
     })
   }
@@ -676,6 +876,7 @@ export function normalizeWorkflow(raw: unknown): WorkflowDefinition | undefined 
     createdAt,
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : createdAt,
     lastRunId: typeof raw.lastRunId === 'string' ? raw.lastRunId : undefined,
+    ...(typeof raw.generationPrompt === 'string' && raw.generationPrompt.trim() !== '' ? { generationPrompt: raw.generationPrompt.trim() } : {}),
   }
 }
 
@@ -762,7 +963,7 @@ export function parseWorkflowExportDocument(raw: unknown): WorkflowExportDocumen
   })
   rawEdges.forEach((rawEdge, index) => {
     if (!isRecord(rawEdge) || typeof rawEdge.id !== 'string' || typeof rawEdge.source !== 'string' || typeof rawEdge.target !== 'string') throw new Error(`Workflow 文件的 edges.${index} 不是有效的连线。`)
-    if (rawEdge.sourcePort !== undefined && rawEdge.sourcePort !== 'true' && rawEdge.sourcePort !== 'false' && rawEdge.sourcePort !== 'default') throw new Error(`Workflow 文件的 edges.${index}.sourcePort 无效。`)
+    if (rawEdge.sourcePort !== undefined && !isValidWorkflowSourcePort(rawEdge.sourcePort)) throw new Error(`Workflow 文件的 edges.${index}.sourcePort 无效。`)
     if (rawEdge.targetPort !== undefined && typeof rawEdge.targetPort !== 'string') throw new Error(`Workflow 文件的 edges.${index}.targetPort 无效。`)
   })
   const workflow = normalizeWorkflow(raw.workflow)
@@ -805,6 +1006,24 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
   else if (endNodeCount > 1) issues.push({ path: 'nodes', message: '工作流只能包含一个结束节点。' })
 
   for (const [index, node] of workflow.nodes.entries()) {
+    if (node.type === 'switch') {
+      const caseIds = new Set<string>()
+      if (node.config.cases.length === 0) issues.push({ path: `nodes.${index}.config.cases`, message: 'Switch 至少需要一个 case。' })
+      for (const [caseIndex, entry] of node.config.cases.entries()) {
+        if (!/^[A-Za-z_][A-Za-z0-9_-]*$/u.test(entry.id)) issues.push({ path: `nodes.${index}.config.cases.${caseIndex}.id`, message: 'Switch case ID 只能使用字母、数字、下划线和短横线，且不能以数字开头。' })
+        if (entry.id === 'default' || entry.id === 'switch-default' || entry.id === '__default__') issues.push({ path: `nodes.${index}.config.cases.${caseIndex}.id`, message: 'Switch case ID 不能使用保留名称 default。' })
+        if (caseIds.has(entry.id)) issues.push({ path: `nodes.${index}.config.cases.${caseIndex}.id`, message: 'Switch case ID 不能重复。' })
+        caseIds.add(entry.id)
+      }
+      const outgoing = workflow.edges.filter((edge) => edge.source === node.id)
+      const defaultEdges = outgoing.filter((edge) => edge.sourcePort === 'default')
+      if (defaultEdges.length !== 1) issues.push({ path: `nodes.${index}.config`, message: 'Switch 必须连接一条 default 默认分支。' })
+      for (const caseId of caseIds) {
+        const edges = outgoing.filter((edge) => edge.sourcePort === `switch:${caseId}`)
+        if (edges.length !== 1) issues.push({ path: `nodes.${index}.config`, message: `Switch case「${caseId}」必须连接且只能连接一条分支。` })
+      }
+      if (outgoing.some((edge) => edge.sourcePort === undefined || (edge.sourcePort !== 'default' && (!/^switch:[A-Za-z_][A-Za-z0-9_-]*$/u.test(edge.sourcePort) || !caseIds.has(edge.sourcePort.replace(/^switch:/u, '')))))) issues.push({ path: `nodes.${index}.config`, message: 'Switch 存在未声明的 case 分支或未标记端口。' })
+    }
     for (const [bindingIndex, binding] of (node.inputBindings ?? []).entries()) {
       if (!nodeIds.has(binding.sourceNodeId)) issues.push({ path: `nodes.${index}.inputBindings.${bindingIndex}.sourceNodeId`, message: '输入变量必须引用现有节点。' })
       if (binding.sourceNodeId === node.id) issues.push({ path: `nodes.${index}.inputBindings.${bindingIndex}.sourceNodeId`, message: '节点不能引用自己的输出。' })
@@ -827,6 +1046,30 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
       targets.push(node.id)
       adjacency.set(binding.sourceNodeId, targets)
     }
+  }
+
+  for (const [index, node] of workflow.nodes.entries()) {
+    if (node.type !== 'loop') continue
+    const outgoing = workflow.edges.filter((edge) => edge.source === node.id)
+    const bodyEdges = outgoing.filter((edge) => edge.sourcePort === 'loop-body')
+    const nextEdges = outgoing.filter((edge) => edge.sourcePort === 'loop-next' || edge.sourcePort === undefined || edge.sourcePort === 'default')
+    if (bodyEdges.length === 0) {
+      if ((node.config.instruction ?? '').trim() === '') issues.push({ path: `nodes.${index}.config`, message: '循环节点必须连接一个下方的循环体节点。' })
+      continue
+    }
+    if (bodyEdges.length !== 1) issues.push({ path: `nodes.${index}.config`, message: '循环节点只能连接一个下方的循环体节点。' })
+    if (nextEdges.length !== 1) issues.push({ path: `nodes.${index}.config`, message: '循环节点必须连接一个右侧的后续节点。' })
+    const bodyTarget = bodyEdges[0]?.target
+    if (bodyTarget === undefined) continue
+    const bodyNode = workflow.nodes.find((candidate) => candidate.id === bodyTarget)
+    if (bodyNode?.type === 'input' || bodyNode?.type === 'output' || bodyNode?.type === 'loop') issues.push({ path: `nodes.${index}.config`, message: '循环体必须是可执行的普通节点，不能是开始、结束或另一个循环节点。' })
+    const bodyChain = workflowLoopBodyNodeIds(workflow, node.id)
+    if (bodyChain.length === 0) continue
+    const bodyChainSet = new Set(bodyChain)
+    if (bodyChain.some((bodyNodeId) => ['input', 'output', 'loop'].includes(workflow.nodes.find((candidate) => candidate.id === bodyNodeId)?.type ?? ''))) issues.push({ path: `nodes.${index}.config`, message: '循环体必须是可执行的普通节点，不能包含开始、结束或另一个循环节点。' })
+    if (workflow.edges.some((edge) => bodyChainSet.has(edge.source) && workflow.edges.filter((candidate) => candidate.source === edge.source).length > 1)) issues.push({ path: `nodes.${index}.config`, message: '循环体子流程必须是一条线性节点链，不能分支。' })
+    if (workflow.edges.some((edge) => bodyChainSet.has(edge.target) && edge.source !== node.id && !bodyChainSet.has(edge.source))) issues.push({ path: `nodes.${index}.config`, message: '循环体节点只能从循环体链路接收控制流，不能接入外部节点。' })
+    if (workflow.nodes.some((candidate) => candidate.inputBindings?.some((binding) => bodyChainSet.has(binding.sourceNodeId) && !bodyChainSet.has(candidate.id)))) issues.push({ path: `nodes.${index}.config`, message: '循环体结果不能被其他节点直接绑定；请使用循环节点右侧的结果数组。' })
   }
 
   const visiting = new Set<string>()
@@ -873,6 +1116,23 @@ export function workflowNodeDependencyIds(workflow: WorkflowDefinition, node: Wo
   ])]
 }
 
+/** Return the linear node chain connected to a loop's downward body port. */
+export function workflowLoopBodyNodeIds(workflow: WorkflowDefinition, loopNodeId: string): string[] {
+  const first = workflow.edges.find((edge) => edge.source === loopNodeId && edge.sourcePort === 'loop-body')
+  if (first === undefined) return []
+  const nodeIds: string[] = []
+  const visited = new Set<string>()
+  let current = first.target
+  while (!visited.has(current)) {
+    visited.add(current)
+    nodeIds.push(current)
+    const outgoing = workflow.edges.filter((edge) => edge.source === current)
+    if (outgoing.length !== 1) break
+    current = outgoing[0]!.target
+  }
+  return nodeIds
+}
+
 /** Resolve a dotted field path from a JSON-compatible workflow value. */
 export function resolveWorkflowValuePath(value: WorkflowValue, path?: string): WorkflowValue | undefined {
   if (path === undefined || path === '') return value
@@ -912,7 +1172,12 @@ function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowVa
       if (node.config.instruction.trim() === '') add('智能处理指令不能为空。', 'instruction')
       if (node.config.mode !== 'single' && node.config.mode !== 'autonomous') add('智能处理执行模式无效。', 'mode')
       if (node.config.outputMode !== 'text' && node.config.outputMode !== 'json') add('智能处理输出格式无效。', 'outputMode')
+      if (node.config.outputSchema !== undefined && (!isWorkflowJsonSchema(node.config.outputSchema) || node.config.outputMode !== 'json')) add('智能处理输出 Schema 必须是有效 JSON Schema，且只能用于 JSON 输出。', 'outputSchema')
       if (node.config.skillIds.some((id) => id.trim() === '' || /\s/u.test(id))) add('技能 ID 不能为空或包含空格。', 'skillIds')
+      break
+    case 'structured-extract':
+      if (!isWorkflowJsonSchema(node.config.schema)) add('结构化提取节点需要有效 JSON Schema。', 'schema')
+      if (node.config.maxRetries !== undefined && (!Number.isInteger(node.config.maxRetries) || node.config.maxRetries < 0 || node.config.maxRetries > 5)) add('结构化提取重试次数必须是 0 到 5 的整数。', 'maxRetries')
       break
     case 'employee':
       if (node.config.employeeId.trim() === '' || /\s/u.test(node.config.employeeId)) add('专业员工节点需要有效的员工 ID。', 'employeeId')
@@ -927,19 +1192,56 @@ function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowVa
       if (node.config.tool.trim() === '') add('MCP 节点需要工具名。', 'tool')
       if (node.config.arguments !== undefined && !isWorkflowValue(node.config.arguments)) add('MCP 参数必须是 JSON 兼容对象。', 'arguments')
       break
+    case 'sub-workflow':
+      if (node.config.workflowId.trim() === '') add('子工作流节点需要工作流 ID。', 'workflowId')
+      if (node.config.inputMapping !== undefined && !isWorkflowValue(node.config.inputMapping)) add('子工作流输入映射必须是 JSON 兼容对象。', 'inputMapping')
+      if (node.config.version !== undefined && node.config.version !== 'latest' && (!Number.isInteger(node.config.version) || node.config.version < 1)) add('子工作流版本必须是正整数或 latest。', 'version')
+      break
     case 'parallel': if (node.config.instructions.length === 0 || node.config.instructions.some((instruction) => instruction.trim() === '')) add('并行处理节点至少需要一条非空指令。', 'instructions'); break
-    case 'loop': if (node.config.instruction.trim() === '') add('循环处理节点指令不能为空。', 'instruction'); if (node.config.maxIterations !== undefined && (!Number.isInteger(node.config.maxIterations) || node.config.maxIterations < 1 || node.config.maxIterations > 100)) add('循环处理最大迭代次数必须是 1 到 100。', 'maxIterations'); break
+    case 'loop': {
+      if (node.config.maxIterations !== undefined && (!Number.isInteger(node.config.maxIterations) || node.config.maxIterations < 1 || node.config.maxIterations > 100)) add('循环遍历最大迭代次数必须是 1 到 100。', 'maxIterations')
+      if (node.config.concurrency !== undefined && (!Number.isInteger(node.config.concurrency) || node.config.concurrency < 1 || node.config.concurrency > 32)) add('循环并发数必须是 1 到 32 的整数。', 'concurrency')
+      if (node.config.batchSize !== undefined && (!Number.isInteger(node.config.batchSize) || node.config.batchSize < 1 || node.config.batchSize > 1000)) add('循环批大小必须是 1 到 1000 的整数。', 'batchSize')
+      if (node.config.failureStrategy !== undefined && node.config.failureStrategy !== 'stop' && node.config.failureStrategy !== 'continue') add('循环失败策略无效。', 'failureStrategy')
+      break
+    }
+    case 'sleep': {
+      if (node.config.mode !== undefined && node.config.mode !== 'fixed' && node.config.mode !== 'random') add('Sleep 模式必须是 fixed 或 random。', 'mode')
+      if (!Number.isInteger(node.config.durationMs) || node.config.durationMs < 0 || node.config.durationMs > 600_000) add('Sleep 固定时长必须是 0 到 600000 之间的整数毫秒。', 'durationMs')
+      if (node.config.mode === 'random') {
+        const minDurationMs = node.config.minDurationMs ?? -1
+        const maxDurationMs = node.config.maxDurationMs ?? -1
+        if (!Number.isInteger(minDurationMs) || minDurationMs < 0 || minDurationMs > 600_000) add('Sleep 随机最小时长必须是 0 到 600000 之间的整数毫秒。', 'minDurationMs')
+        if (!Number.isInteger(maxDurationMs) || maxDurationMs < 0 || maxDurationMs > 600_000) add('Sleep 随机最大时长必须是 0 到 600000 之间的整数毫秒。', 'maxDurationMs')
+        if (Number.isInteger(minDurationMs) && Number.isInteger(maxDurationMs) && minDurationMs > maxDurationMs) add('Sleep 随机最小时长不能大于最大时长。', 'minDurationMs')
+      }
+      break
+    }
     case 'condition': if (!['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'].includes(node.config.operator)) add('条件判断操作符无效。', 'operator'); break
+    case 'switch': break
     case 'approval': if (node.config.message.trim() === '') add('人工审批节点需要审批提示。', 'message'); break
+    case 'wait-input':
+      if (node.config.message.trim() === '') add('等待输入节点需要提示。', 'message')
+      if (node.config.mode !== 'approval' && node.config.mode !== 'form') add('等待输入模式无效。', 'mode')
+      break
     case 'transform': if (!['identity', 'json', 'extract-text', 'prepend', 'append', 'replace', 'text'].includes(node.config.template)) add('数据转换模板无效。', 'template'); break
+    case 'text-merge': if (node.config.template.trim() === '' && node.config.separator === undefined) add('文本合并节点需要模板或分隔符。', 'template'); break
+    case 'object-builder':
+      if (Object.keys(node.config.fields).length === 0) add('变量组装节点至少需要一个字段。', 'fields')
+      break
+    case 'list-operator':
+      if (!['filter', 'map', 'pluck', 'sort', 'dedupe', 'slice', 'group', 'aggregate'].includes(node.config.operation)) add('列表处理操作无效。', 'operation')
+      if (node.config.operation === 'slice' && (node.config.start !== undefined && !Number.isInteger(node.config.start) || node.config.end !== undefined && !Number.isInteger(node.config.end))) add('列表截取边界必须是整数。', 'start')
+      break
+    case 'merge': if (!['append', 'object-merge', 'join', 'zip', 'first-non-null'].includes(node.config.operation)) add('数据合并操作无效。', 'operation'); break
     case 'shell':
       if (node.config.command.trim() === '') add('Shell 命令不能为空。', 'command')
       if (/[[\]{}();|&<>`$\\]/u.test(node.config.command)) add('Shell 命令包含不允许的控制字符；执行使用 shell:false。', 'command')
       if (node.config.args.some((arg) => /[\r\n]/u.test(arg))) add('Shell 参数不能包含换行。', 'args')
       break
     case 'file':
-      if (node.config.path.trim() === '' || node.config.path.startsWith('/') || /^[a-zA-Z]:[\\/]/u.test(node.config.path)) add('File 路径必须是工作区内的相对路径。', 'path')
-      if (node.config.operation !== 'read' && node.config.operation !== 'write') add('File 操作必须是 read 或 write。', 'operation')
+      if (node.config.path.trim() === '' || node.config.path.startsWith('/') || /^[a-zA-Z]:[\\/]/u.test(node.config.path)) add('File 路径必须是 Workflow 工作目录内的相对路径。', 'path')
+      if (!['read', 'write', 'list', 'stat', 'extract-text'].includes(node.config.operation)) add('File 操作无效。', 'operation')
       break
     case 'http': {
       if (node.config.url.trim() === '') add('HTTP 请求 URL 不能为空。', 'url')

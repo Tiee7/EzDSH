@@ -20,6 +20,7 @@ import type { PluginCompatibilityAssessment, PluginCompatibilityRequirements } f
 
 export const RECOVERY_FORMAT_VERSION = 1
 export const CURRENT_DATA_SCHEMA_VERSION = 1
+type RecoveryComponent = 'harness' | 'state' | 'workflow'
 
 export type RecoverySnapshotKind = 'manual' | 'pre-update' | 'pre-plugin-change' | 'pre-restore'
 
@@ -33,7 +34,7 @@ export interface RecoveryManifest {
   dataSchemaVersion: number
   archiveName: string
   sha256: string
-  components: readonly ['harness', 'state']
+  components: readonly RecoveryComponent[]
   redactedFiles: readonly string[]
   pluginInventory: readonly string[]
   /** Managed DSH plugin evidence captured for compatibility-aware recovery. */
@@ -190,7 +191,8 @@ export interface PrepareUpdateInput {
 type RecoveryListener = (state: RecoveryState) => void
 
 const SNAPSHOT_PATTERN = /^ezdsh-(manual|pre-update|pre-plugin-change|pre-restore)-[^/]+\.tar\.gz$/u
-const COMPONENTS = ['harness', 'state'] as const
+const LEGACY_COMPONENTS = ['harness', 'state'] as const
+const COMPONENTS = ['harness', 'state', 'workflow'] as const
 const DEFAULT_SENSITIVE_PATHS = [
   'harness/.credentials.yaml',
   'harness/.env',
@@ -384,7 +386,7 @@ export class RecoveryManager {
       try {
         await this.runCommand(this.options.tarCommand, ['-xzf', snapshot.archivePath, '-C', staging], { cwd: this.config.layout.backups })
         await validateExtractedTree(staging)
-        for (const component of COMPONENTS) {
+        for (const component of snapshot.manifest.components) {
           if (!(await isDirectory(join(staging, component)))) {
             throw new Error(`archive is missing component ${component}`)
           }
@@ -393,7 +395,7 @@ export class RecoveryManager {
         await mkdir(aside, { recursive: true, mode: 0o700 })
         const touched: string[] = []
         try {
-          for (const component of COMPONENTS) {
+          for (const component of snapshot.manifest.components) {
             const target = join(this.config.layout.root, component)
             const saved = join(aside, component)
             if (await pathExists(target)) await rename(target, saved)
@@ -664,13 +666,14 @@ export function validateArchiveEntry(entry: string): void {
     || normalized.startsWith('/')
     || /^[A-Za-z]:\//u.test(normalized)
     || segments.includes('..')
-    || (segments[0] !== 'harness' && segments[0] !== 'state')
+    || !COMPONENTS.includes(segments[0] as (typeof COMPONENTS)[number])
   ) {
     throw new Error(`Unsafe recovery archive entry: ${entry}`)
   }
 }
 
 function parseManifest(value: unknown): RecoveryManifest {
+  const components = isRecord(value) && value.components !== undefined ? value.components : LEGACY_COMPONENTS
   if (!isRecord(value)
     || value.formatVersion !== RECOVERY_FORMAT_VERSION
     || !isRecoveryKind(value.kind)
@@ -683,6 +686,7 @@ function parseManifest(value: unknown): RecoveryManifest {
     || typeof value.sha256 !== 'string'
     || !Array.isArray(value.redactedFiles)
     || !Array.isArray(value.pluginInventory)
+    || !isRecoveryComponents(components)
     || !value.redactedFiles.every((item) => typeof item === 'string')
     || !value.pluginInventory.every((item) => typeof item === 'string')
     || (value.compatibilityInventory !== undefined && (!Array.isArray(value.compatibilityInventory) || !value.compatibilityInventory.every(isCompatibilityInventoryItem)))) {
@@ -698,11 +702,18 @@ function parseManifest(value: unknown): RecoveryManifest {
     dataSchemaVersion: value.dataSchemaVersion,
     archiveName: value.archiveName,
     sha256: value.sha256,
-    components: COMPONENTS,
+    components: [...components],
     redactedFiles: [...value.redactedFiles],
     pluginInventory: [...value.pluginInventory],
     ...(value.compatibilityInventory === undefined ? {} : { compatibilityInventory: value.compatibilityInventory.map(cloneCompatibilityInventoryItem) }),
   }
+}
+
+function isRecoveryComponents(value: unknown): value is readonly RecoveryComponent[] {
+  return Array.isArray(value)
+    && value[0] === 'harness'
+    && value[1] === 'state'
+    && (value.length === 2 || value.length === 3 && value[2] === 'workflow')
 }
 
 function isCompatibilityInventoryItem(value: unknown): value is RecoveryCompatibilityInventoryItem {

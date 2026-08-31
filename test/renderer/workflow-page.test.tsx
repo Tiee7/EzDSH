@@ -13,6 +13,23 @@ function graphWithRemovedNode(): WorkflowDefinition {
 }
 
 describe('WorkflowPage regressions', () => {
+  it('shows the saved AI generation prompt in workflow metadata', () => {
+    const markup = renderToStaticMarkup(<workflowPage.WorkflowMetadataDialog
+      copy={getAppCopy('zh')}
+      name="生成工作流"
+      description=""
+      generationPrompt="生成一个处理客户反馈的工作流"
+      onChangeName={vi.fn()}
+      onChangeDescription={vi.fn()}
+      onChangeGenerationPrompt={vi.fn()}
+      onClose={vi.fn()}
+      onSave={vi.fn()}
+    />)
+
+    expect(markup).toContain('AI 生成提示词')
+    expect(markup).toContain('生成一个处理客户反馈的工作流')
+  })
+
   it('marks the currently running canvas node for an execution indicator', () => {
     const workflow = createDefaultWorkflow('Execution status')
     const runningNode = workflow.nodes.find((node) => node.type === 'ai-task')!
@@ -294,7 +311,7 @@ describe('WorkflowPage regressions', () => {
   })
 
   it('provides a distinct accessible type icon for every workflow node type', () => {
-    const types: WorkflowNodeType[] = ['input', 'ai-task', 'employee', 'skill', 'mcp', 'parallel', 'loop', 'condition', 'approval', 'transform', 'output', 'shell', 'file']
+    const types: WorkflowNodeType[] = ['input', 'ai-task', 'employee', 'skill', 'mcp', 'parallel', 'loop', 'sleep', 'condition', 'approval', 'transform', 'text-merge', 'output', 'shell', 'file']
 
     for (const type of types) {
       const markup = renderToStaticMarkup(<workflowPage.WorkflowNodeTypeIcon type={type} />)
@@ -306,13 +323,23 @@ describe('WorkflowPage regressions', () => {
   it('uses Chinese names for every flow-control node', () => {
     const labelFor = (workflowPage as unknown as { workflowNodeTypeLabel?: (type: WorkflowNodeType) => string }).workflowNodeTypeLabel
 
-    expect((['parallel', 'loop', 'condition', 'approval', 'transform'] as WorkflowNodeType[]).map((type) => labelFor?.(type))).toEqual([
+    expect((['parallel', 'loop', 'sleep', 'condition', 'approval', 'transform', 'text-merge'] as WorkflowNodeType[]).map((type) => labelFor?.(type))).toEqual([
       '并行处理',
-      '循环处理',
+      '循环遍历',
+      '等待',
       '条件判断',
       '人工审批',
       '数据转换',
+      '文本合并',
     ])
+  })
+
+  it('exposes text merge as an addable flow-control node', () => {
+    expect(workflowPage.WORKFLOW_ADDABLE_NODE_TYPES).toContain('text-merge' as never)
+  })
+
+  it('exposes sleep as an addable flow-control node', () => {
+    expect(workflowPage.WORKFLOW_ADDABLE_NODE_TYPES).toContain('sleep' as never)
   })
 
   it('uses Chinese labels for condition operators and transform modes', () => {
@@ -322,8 +349,8 @@ describe('WorkflowPage regressions', () => {
     expect(['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'].map((operator) => conditionLabel?.(operator))).toEqual([
       '为真', '等于', '不等于', '包含', '大于', '小于',
     ])
-    expect(['identity', 'json', 'extract-text', 'prepend', 'append'].map((template) => transformLabel?.(template))).toEqual([
-      '保持原值', '转为 JSON', '提取文本', '前置文本', '追加文本',
+    expect(['identity', 'json', 'extract-text', 'prepend', 'append', 'replace', 'text'].map((template) => transformLabel?.(template))).toEqual([
+      '传递原值', '转为 JSON', '提取文本', '前置文本', '追加文本', '替换文本', '自定义文本',
     ])
   })
 
@@ -382,6 +409,35 @@ describe('WorkflowPage regressions', () => {
     }
 
     expect(workflowPage.workflowFlowEdges(persistedDefaultPortWorkflow)[0]?.sourceHandle).toBeUndefined()
+  })
+
+  it('renders loop body and continuation ports on their distinct handles', () => {
+    const workflow = createDefaultWorkflow('Loop ports')
+    const loop = workflow.nodes.find((node) => node.type === 'ai-task')!
+    const output = workflow.nodes.find((node) => node.type === 'output')!
+    const body = workflow.nodes.find((node) => node.type === 'input')!
+    const withLoopPorts = {
+      ...workflow,
+      edges: [
+        { id: 'loop-body', source: loop.id, target: body.id, sourcePort: 'loop-body' as const },
+        { id: 'loop-next', source: loop.id, target: output.id, sourcePort: 'loop-next' as const },
+      ],
+    }
+
+    expect(workflowPage.workflowFlowEdges(withLoopPorts).map((edge) => edge.sourceHandle)).toEqual(['loop-body', 'loop-next'])
+  })
+
+  it('maps switch case and default ports to their visible handles', () => {
+    const workflow = createDefaultWorkflow('Switch ports')
+    const route = { id: 'route', type: 'switch' as const, label: '路由', config: { cases: [{ id: 'urgent', label: '紧急', value: 'urgent' }] }, position: { x: 220, y: 0 } }
+    const output = { ...workflow.nodes.find((node) => node.type === 'output')!, inputBindings: [] }
+    const withSwitchPorts = { ...workflow, nodes: [...workflow.nodes.filter((node) => node.type !== 'ai-task' && node.type !== 'output'), route, output], edges: [
+      { id: 'case', source: route.id, target: output.id, sourcePort: 'switch:urgent' as const },
+      { id: 'default', source: route.id, target: output.id, sourcePort: 'default' as const },
+    ] }
+
+    expect(workflowPage.workflowFlowEdges(withSwitchPorts).map((edge) => edge.sourceHandle)).toEqual(['switch:urgent', 'default'])
+    expect(workflowPage.workflowFlowEdges(withSwitchPorts).map((edge) => edge.label)).toEqual(['紧急', '默认'])
   })
 
   it('builds editor edges from the persisted workflow graph even when transient edge state is empty', () => {
@@ -452,6 +508,14 @@ describe('WorkflowPage regressions', () => {
       enabled: 'false',
       items: '["A", "B"]',
     })).toEqual({ count: 3, enabled: false, items: ['A', 'B'] })
+  })
+
+  it('parses workspace file and file-list launch fields', () => {
+    const fields = [
+      { id: 'document', key: 'document', label: '文档', type: 'file' as const },
+      { id: 'attachments', key: 'attachments', label: '附件', type: 'file-list' as const },
+    ]
+    expect(workflowPage.buildWorkflowLaunchInput(fields, { document: 'docs/a.txt', attachments: 'docs/a.txt\ndocs/b.txt' })).toEqual({ document: 'docs/a.txt', attachments: ['docs/a.txt', 'docs/b.txt'] })
   })
 
   it('preserves JSON value types entered in a condition setting', () => {
@@ -720,6 +784,13 @@ describe('WorkflowPage regressions', () => {
     expect((expandedTree.match(/<details[^>]*open(?:="")?/gu) ?? []).length).toBe(2)
   })
 
+  it('preserves real and escaped line breaks in Markdown output', () => {
+    const escaped = renderToStaticMarkup(<workflowPage.WorkflowOutputViewer copy={getAppCopy('zh')} value={'第一行\\n第二行'} />)
+    const actual = renderToStaticMarkup(<workflowPage.WorkflowOutputViewer copy={getAppCopy('zh')} value={'第一行\n第二行'} />)
+    expect(escaped).toContain('<br')
+    expect(actual).toContain('<br')
+  })
+
   it('renders Markdown tables in normal and floating result viewers', () => {
     const table = '| 节点 | 耗时 |\n| --- | ---: |\n| 调研 | 1.2 秒 |\n| 审核 | 2.4 秒 |'
     const markup = renderToStaticMarkup(
@@ -862,6 +933,7 @@ describe('WorkflowPage regressions', () => {
     expect(markup).toContain('输入变量')
     expect(textMarkup).toContain('插入变量')
     expect(markup).not.toContain('添加输出变量')
+    expect(markup.indexOf('输入变量')).toBeLessThan(markup.indexOf('输出内容来源'))
   })
 
   it('uses a stable row key while an output variable name is edited', () => {

@@ -61,7 +61,7 @@ EzDSH 自己的供应商配置页面暂缓到后续版本。当前版本保留 P
   ↓
 获取 userData 路径
   ↓
-创建 launch-root、harness 和 logs 目录
+创建 launch-root、harness、workflow 和 logs 目录
   ↓
 读取本地配置状态
   ↓
@@ -218,6 +218,7 @@ EzDSH 更新采用整包更新：新的 EzDSH 安装包内携带对应版本的 
 <userData>/
 ├── launch-root/       # Harness 默认启动工作目录
 ├── harness/           # Harness 配置、profiles、sessions、plugins
+├── workflow/          # Workflow 默认工作目录；File/Shell/Code 节点只在此目录内工作
 ├── logs/
 │   └── harness.log    # Runtime 日志
 ├── state/
@@ -306,13 +307,13 @@ EZDSH 提供独立的 Workflow 页面，用 React Flow 编辑可持久化的 DAG
 完成/输出                 失败/暂停 → 恢复
 ```
 
-运行记录保存在 `<userData>/state/workflow-runs.json`，工作流定义保存在 `<userData>/state/workflows.json`，因此被现有 Recovery 快照的 `state/` 覆盖。应用重启不会静默丢失运行：未完成记录会显示为“已暂停”，用户可以从最后一个未完成节点重试。
+运行记录保存在 `<userData>/state/workflow-runs.json`，工作流定义保存在 `<userData>/state/workflows.json`；Workflow 业务文件保存在 `<userData>/workflow/`，并由 Recovery 快照的 `workflow/` 一并覆盖。应用重启不会静默丢失运行：未完成记录会显示为“已暂停”，用户可以从最后一个未完成节点重试。
 
 ### 9.2 安全与 AI 生成
 
 - Renderer 不能读取工作区路径、Credential 或执行权限；所有操作经过 typed Preload IPC。
 - Workflow 文档不允许任意 JavaScript、`eval`、凭据字段或无效节点/连线；循环图会在保存和运行前被拒绝。
-- Shell/File 需要每次运行显式授权；File 只能访问当前工作区内的相对路径，Shell 不使用 shell 解释器。
+- Shell/File 需要每次运行显式授权；File 只能访问 Workflow 工作目录内的相对路径，Shell 不使用 shell 解释器。
 - AI 只生成草稿 JSON，经过 normalize、Schema 校验和人工审阅后才能保存或运行。
 - 智能处理、专业员工、Skill、MCP 节点复用 DSH Runtime 的 Session API，不在 EZDSH 中重复实现模型调用和工具权限系统。
 - 智能处理和专业员工节点可以输出文本或 JSON；无效 JSON 会在同一 Session 中修复一次。

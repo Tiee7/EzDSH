@@ -15,7 +15,8 @@ describe('getUserDataLayout', () => {
     const layout = getUserDataLayout(root)
 
     expect(layout.root).toBe(root)
-    for (const directory of [layout.launchRoot, layout.harness, layout.logs, layout.state, layout.backups]) {
+    expect(layout.workflowRoot).toBe(join(root, 'workflow'))
+    for (const directory of [layout.launchRoot, layout.harness, layout.logs, layout.state, layout.backups, layout.workflowRoot]) {
       expect(relative(layout.root, directory).startsWith('..')).toBe(false)
     }
   })
@@ -34,7 +35,7 @@ describe('ensureUserDataLayout', () => {
     await ensureUserDataLayout(layout)
     await ensureUserDataLayout(layout)
 
-    await Promise.all([layout.launchRoot, layout.harness, layout.logs, layout.state, layout.backups].map((directory) => access(directory)))
+    await Promise.all([layout.launchRoot, layout.harness, layout.logs, layout.state, layout.backups, layout.workflowRoot].map((directory) => access(directory)))
   })
 
   it('rejects a layout path escaping its root', async () => {

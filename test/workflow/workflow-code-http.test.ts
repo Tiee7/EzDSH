@@ -29,7 +29,7 @@ async function runNode(node: WorkflowNode, input: unknown, options: { allowCode?
   const service = new WorkflowRunService({
     workflowStore,
     runStore: new WorkflowRunStore(directory),
-    workspaceRoot: directory,
+    workflowRoot: directory,
     createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
     resolveEmployee: () => undefined,
     lightweightClient: { complete: async () => 'unused' },

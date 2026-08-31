@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { dirname, extname, isAbsolute, normalize, relative, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import type {
@@ -24,11 +24,14 @@ import type {
   ConditionOperator,
   HttpNodeConfig,
   WorkflowCodeLanguage,
+  WorkflowJsonSchema,
+  ListOperatorNodeConfig,
+  MergeNodeConfig,
 } from '../../shared/workflow.js'
 import { EMPLOYEE_CAPABILITIES } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
-import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, workflowNodeDependencyIds } from '../../shared/workflow.js'
+import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
@@ -41,7 +44,7 @@ import { WorkflowInternalSessionStore, type WorkflowInternalSessionKind } from '
 export interface WorkflowRunServiceOptions {
   workflowStore: WorkflowStore
   runStore: WorkflowRunStore
-  workspaceRoot: string
+  workflowRoot: string
   /** Standalone Node executable bundled with the app, used by code nodes. */
   nodeCommandPath?: string
   createClient: () => WorkflowSessionClient
@@ -55,6 +58,8 @@ export interface WorkflowRunServiceOptions {
   workflowAiDocumentation?: string
   lightweightClient?: Pick<WorkflowLightweightClient, 'complete'>
   mcpClient?: Pick<WorkflowMcpClient, 'call'>
+  /** Executes a referenced workflow and returns its final output. */
+  executeSubWorkflow?: (workflowId: string, input: WorkflowValue, waitForCompletion: boolean, version?: number | 'latest', options?: WorkflowRunOptions) => Promise<WorkflowValue>
   internalSessionStore?: WorkflowInternalSessionStore
 }
 
@@ -79,10 +84,10 @@ export class WorkflowRunService {
   private initialized = false
 
   constructor(private readonly options: WorkflowRunServiceOptions) {
-    this.adapter = new DshWorkflowAdapter({ cwd: options.workspaceRoot, createClient: options.createClient })
+    this.adapter = new DshWorkflowAdapter({ cwd: options.workflowRoot, createClient: options.createClient })
     this.lightweightClient = options.lightweightClient ?? { complete: async () => { throw new Error('轻量智能处理不可用：请先配置模型供应商。') } }
     this.mcpClient = options.mcpClient ?? { call: async () => { throw new Error('MCP 直连不可用：请检查 MCP 配置。') } }
-    this.internalSessionStore = options.internalSessionStore ?? new WorkflowInternalSessionStore(options.workspaceRoot)
+    this.internalSessionStore = options.internalSessionStore ?? new WorkflowInternalSessionStore(options.workflowRoot)
   }
 
   async initialize(): Promise<void> {
@@ -119,6 +124,15 @@ export class WorkflowRunService {
     if (!removed) throw new Error(`Workflow run not found: ${runId}`)
   }
 
+  /** Remove every non-active run record for a workflow before deleting its definition. */
+  async removeForWorkflow(workflowId: string): Promise<number> {
+    await this.initialize()
+    const records = this.options.runStore.list(workflowId)
+    const active = records.find((record) => record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval')
+    if (active !== undefined) throw new Error('工作流仍有运行中的记录，请先取消运行后再删除工作流')
+    return this.options.runStore.removeForWorkflow(workflowId)
+  }
+
   async stop(): Promise<void> {
     for (const [runId, active] of this.active) {
       active.pauseRequested = true
@@ -138,7 +152,7 @@ export class WorkflowRunService {
   async start(workflowId: string, input: WorkflowValue, options: WorkflowRunOptions = {}): Promise<WorkflowRunRecord> {
     await this.initialize()
     if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
-    const workflow = this.options.workflowStore.get(workflowId)
+    const workflow = options.workflowRevision === undefined ? this.options.workflowStore.get(workflowId) : this.options.workflowStore.getRevision(workflowId, options.workflowRevision)
     if (workflow === undefined) throw new Error(`Workflow not found: ${workflowId}`)
     assertValidWorkflow(workflow, '启动运行')
     const record = this.createRecord(workflow, input, options)
@@ -176,11 +190,11 @@ export class WorkflowRunService {
     const record = this.options.runStore.get(runId)
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     if (record.status !== 'waiting-approval' || record.waitingApprovalNodeId === undefined) throw new Error('当前运行没有等待中的审批')
-    const workflow = this.options.workflowStore.get(record.workflowId)
+    const workflow = this.workflowForRecord(record)
     if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
     const node = workflow.nodes.find((candidate) => candidate.id === record.waitingApprovalNodeId)
     const state = record.nodeStates.find((candidate) => candidate.nodeId === record.waitingApprovalNodeId)
-    if (node?.type !== 'approval' || state === undefined) throw new Error('审批节点不存在')
+    if ((node?.type !== 'approval' && node?.type !== 'wait-input') || state === undefined || (node.type === 'wait-input' && node.config.mode !== 'approval')) throw new Error('审批节点不存在')
     if (!approved) {
       state.status = 'failed'
       state.error = '审批被拒绝'
@@ -287,7 +301,10 @@ export class WorkflowRunService {
     if (normalizedWorkflow === undefined) throw new Error('AI 返回的 Workflow 文档格式无效')
     const repaired = repairGeneratedWorkflow(normalizedWorkflow, finalCatalog)
     await report('validating', '正在规范化节点、补齐布局并校验依赖关系。')
-    const workflow = layoutWorkflowNodes(repaired.workflow)
+    const workflow = {
+      ...layoutWorkflowNodes(repaired.workflow),
+      generationPrompt: request.prompt.trim(),
+    }
     const validation = validateWorkflow(workflow)
     if (!validation.valid) throw new Error(`AI 返回的 Workflow 不符合结构规范：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join('；')}`)
     return {
@@ -332,6 +349,7 @@ export class WorkflowRunService {
       enabled: typeof rawWorkflow.enabled === 'boolean' ? rawWorkflow.enabled : current.enabled,
       createdAt: current.createdAt,
       updatedAt: new Date().toISOString(),
+      ...(current.generationPrompt === undefined ? {} : { generationPrompt: current.generationPrompt }),
     }
     const normalized = normalizeWorkflow(candidate)
     if (normalized === undefined) throw new Error('AI 返回的 Workflow 修改结果无法解析')
@@ -367,13 +385,17 @@ export class WorkflowRunService {
     }
   }
 
+  private workflowForRecord(record: WorkflowRunRecord): WorkflowDefinition | undefined {
+    return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision) ?? this.options.workflowStore.get(record.workflowId)
+  }
+
   private async execute(runId: string): Promise<void> {
     const active: ActiveRun = { cancelled: false, abortController: new AbortController(), sessionIds: new Set(), archivedSessionIds: new Set(), sessionKeys: new Map() }
     this.active.set(runId, active)
     try {
       const record = this.options.runStore.get(runId)
       if (record === undefined) return
-      const workflow = this.options.workflowStore.get(record.workflowId)
+      const workflow = this.workflowForRecord(record)
       if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
       assertValidWorkflow(workflow, '运行工作流')
       record.status = 'running'
@@ -387,11 +409,27 @@ export class WorkflowRunService {
       for (const state of record.nodeStates) if (state.output !== undefined) outputs.set(state.nodeId, state.output)
 
       const incomingByNode = new Map(workflow.nodes.map((node) => [node.id, workflow.edges.filter((edge) => edge.target === node.id)]))
-      const dependencyIdsByNode = new Map(workflow.nodes.map((node) => [node.id, workflowNodeDependencyIds(workflow, node)]))
-      const pending = new Set(order.filter((nodeId) => stateMap.get(nodeId)?.status === 'pending'))
+      const dependencyIdsByNode = new Map(workflow.nodes.map((node) => {
+        const dependencies = workflowNodeDependencyIds(workflow, node)
+        if (node.type !== 'loop') return [node.id, dependencies] as const
+        const bodyNodeIds = new Set(workflowLoopBodyNodeIds(workflow, node.id))
+        const bodyDependencies = workflow.nodes
+          .filter((candidate) => bodyNodeIds.has(candidate.id))
+          .flatMap((candidate) => (candidate.inputBindings ?? []).map((binding) => binding.sourceNodeId))
+          .filter((sourceId) => sourceId !== node.id && !bodyNodeIds.has(sourceId))
+        return [node.id, [...new Set([...dependencies, ...bodyDependencies])] ] as const
+      }))
+      // A loop-body node is executed inside its owning loop for every item;
+      // it must not also be scheduled as an ordinary topological node.
+      const loopBodyNodeIds = new Set(workflow.nodes.filter((node) => node.type === 'loop').flatMap((node) => workflowLoopBodyNodeIds(workflow, node.id)))
+      const pending = new Set(order.filter((nodeId) => stateMap.get(nodeId)?.status === 'pending' && !loopBodyNodeIds.has(nodeId)))
       while (pending.size > 0 && !active.cancelled) {
         const ready = order.flatMap((nodeId) => {
           if (!pending.has(nodeId)) return []
+          if (stateMap.get(nodeId)?.status !== 'pending') {
+            pending.delete(nodeId)
+            return []
+          }
           const dependencyIds = dependencyIdsByNode.get(nodeId) ?? []
           return dependencyIds.every((sourceId) => isTerminalNodeState(stateMap.get(sourceId)?.status)) ? [nodeId] : []
         })
@@ -417,7 +455,7 @@ export class WorkflowRunService {
         if (runnable.length === 0) continue
 
         const outcomes = await Promise.all(runnable.map(({ node, state, incoming }) => this.executeReadyNode(
-          node, state, incoming, record, outputs, active,
+          node, state, incoming, record, outputs, active, workflow, nodeMap, stateMap,
         )))
         if (outcomes.some((outcome) => outcome === 'waiting-approval' || outcome === 'stopped')) return
       }
@@ -463,15 +501,21 @@ export class WorkflowRunService {
     record: WorkflowRunRecord,
     outputs: Map<string, WorkflowValue>,
     active: ActiveRun,
+    workflow: WorkflowDefinition,
+    nodeMap: Map<string, WorkflowNode>,
+    stateMap: Map<string, WorkflowNodeRunState>,
   ): Promise<'completed' | 'waiting-approval' | 'stopped'> {
     state.status = 'running'
     state.startedAt = new Date().toISOString()
+    this.resetDownstreamNodeStates(workflow, node.id, stateMap, outputs)
     const executionStartedAt = Date.now()
     await this.save(record, 'node-started', `开始执行节点：${node.label}`, node.id)
     try {
       const previous = this.resolveNodeInput(node, incoming, outputs, record.input)
       state.input = cloneWorkflow(previous)
-      const output = await this.executeNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record)
+      const output = node.type === 'loop'
+        ? await this.executeLoopNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record, workflow, nodeMap, stateMap, outputs)
+        : await this.executeNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record)
       state.status = 'completed'
       state.output = cloneWorkflow(output)
       state.completedAt = new Date().toISOString()
@@ -503,6 +547,148 @@ export class WorkflowRunService {
     }
   }
 
+  /** Execute the node connected to a loop's body port once per input item. */
+  private async executeLoopNode(
+    node: Extract<WorkflowNode, { type: 'loop' }>,
+    input: WorkflowValue,
+    previous: WorkflowValue,
+    allowShellFile: boolean,
+    allowCode: boolean,
+    active: ActiveRun,
+    record: WorkflowRunRecord,
+    workflow: WorkflowDefinition,
+    nodeMap: Map<string, WorkflowNode>,
+    stateMap: Map<string, WorkflowNodeRunState>,
+    outputs: Map<string, WorkflowValue>,
+  ): Promise<WorkflowValue> {
+    const bodyNodeIds = workflowLoopBodyNodeIds(workflow, node.id)
+    const bodyNodes = bodyNodeIds.flatMap((bodyNodeId) => {
+      const bodyNode = nodeMap.get(bodyNodeId)
+      return bodyNode === undefined ? [] : [bodyNode]
+    })
+    if (bodyNodes.length === 0) {
+      // Legacy loop documents had no body edge and are still executable while
+      // users migrate them to the structural form.
+      return this.executeNode(node, input, previous, allowShellFile, allowCode, active, record)
+    }
+
+    const loopInput = this.primaryNodeValue(node, previous)
+    const items = Array.isArray(loopInput) ? loopInput : [loopInput]
+    const results: WorkflowValue[] = []
+    const limit = node.config.maxIterations ?? 20
+    if (items.length === 0) {
+      for (const bodyNode of bodyNodes) {
+        const bodyState = stateMap.get(bodyNode.id)
+        if (bodyState === undefined) continue
+        bodyState.status = 'skipped'
+        bodyState.completedAt = new Date().toISOString()
+        bodyState.elapsedMs = 0
+        await this.save(record, 'node-skipped', `循环输入为空，跳过循环体：${bodyNode.label}`, bodyNode.id)
+      }
+    }
+    for (const [index, item] of items.slice(0, limit).entries()) {
+      if (active.cancelled) break
+      let current: WorkflowValue = cloneWorkflow(item)
+      const iterationOutputs = new Map(outputs)
+      for (const bodyNodeId of bodyNodeIds) iterationOutputs.delete(bodyNodeId)
+      for (const bodyNode of bodyNodes) {
+        const bodyState = stateMap.get(bodyNode.id)
+        const iterationStarted = Date.now()
+        if (bodyState !== undefined) {
+          bodyState.status = 'running'
+          bodyState.startedAt = new Date().toISOString()
+          bodyState.completedAt = undefined
+          bodyState.error = undefined
+          this.resetDownstreamNodeStates(workflow, bodyNode.id, stateMap, outputs)
+          await this.save(record, 'node-started', `开始执行循环体：${bodyNode.label}（第 ${index + 1} 项）`, bodyNode.id)
+        }
+        try {
+          const bodyInput = this.resolveLoopBodyInput(bodyNode, current, node.id, iterationOutputs)
+          const output = await this.executeNode(bodyNode, input, bodyInput, allowShellFile, allowCode, active, record)
+          current = cloneWorkflow(output)
+          iterationOutputs.set(bodyNode.id, output)
+          if (bodyState !== undefined) {
+            bodyState.status = 'completed'
+            bodyState.input = cloneWorkflow(bodyInput)
+            bodyState.output = cloneWorkflow(output)
+            bodyState.completedAt = new Date().toISOString()
+            bodyState.elapsedMs = Math.max(0, Date.now() - iterationStarted)
+            await this.save(record, 'node-completed', `循环体完成：${bodyNode.label}（第 ${index + 1} 项）`, bodyNode.id)
+          }
+        } catch (error) {
+          if (bodyState !== undefined) {
+            bodyState.status = active.cancelled ? 'cancelled' : 'failed'
+            bodyState.error = error instanceof Error ? error.message : String(error)
+            bodyState.completedAt = new Date().toISOString()
+            bodyState.elapsedMs = Math.max(0, Date.now() - iterationStarted)
+            await this.save(record, active.cancelled ? 'run-cancelled' : 'node-failed', bodyState.error, bodyNode.id)
+          }
+          if (node.config.failureStrategy === 'continue') {
+            results.push({ error: error instanceof Error ? error.message : String(error), index: index + 1 })
+            continue
+          }
+          throw error
+        }
+      }
+      for (const bodyNodeId of bodyNodeIds) {
+        const bodyOutput = iterationOutputs.get(bodyNodeId)
+        if (bodyOutput !== undefined) outputs.set(bodyNodeId, bodyOutput)
+      }
+      results.push(current)
+    }
+    return results
+  }
+
+  private resolveLoopBodyInput(node: WorkflowNode, item: WorkflowValue, loopNodeId: string, outputs: Map<string, WorkflowValue>): WorkflowValue {
+    const bindings = node.inputBindings
+    if (bindings === undefined || bindings.length === 0) return item
+    return Object.fromEntries(bindings.map((binding) => {
+      const value = binding.sourceNodeId === loopNodeId
+        ? resolveWorkflowValuePath(item, binding.sourcePath)
+        : this.resolveBinding(binding, outputs)
+      if (value !== undefined) return [binding.name, cloneWorkflow(value)]
+      if (binding.defaultValue !== undefined) return [binding.name, cloneWorkflow(binding.defaultValue)]
+      if (binding.required) {
+        const field = binding.sourcePath === undefined ? '' : `.${binding.sourcePath}`
+        throw new Error(`循环体输入变量“${binding.name}”需要来源“${binding.sourceNodeId}${field}”，但该值不可用。`)
+      }
+      return [binding.name, null]
+    }))
+  }
+
+  /** A running predecessor invalidates every previously materialized downstream state. */
+  private resetDownstreamNodeStates(
+    workflow: WorkflowDefinition,
+    sourceNodeId: string,
+    stateMap: Map<string, WorkflowNodeRunState>,
+    outputs: Map<string, WorkflowValue>,
+  ): void {
+    const downstream = new Map<string, string[]>()
+    for (const edge of workflow.edges) downstream.set(edge.source, [...(downstream.get(edge.source) ?? []), edge.target])
+    for (const node of workflow.nodes) {
+      for (const binding of node.inputBindings ?? []) downstream.set(binding.sourceNodeId, [...(downstream.get(binding.sourceNodeId) ?? []), node.id])
+    }
+    const visited = new Set<string>([sourceNodeId])
+    const queue = [...(downstream.get(sourceNodeId) ?? [])]
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!
+      if (visited.has(nodeId)) continue
+      visited.add(nodeId)
+      const state = stateMap.get(nodeId)
+      if (state !== undefined && state.status !== 'running') {
+        state.status = 'pending'
+        state.startedAt = undefined
+        state.completedAt = undefined
+        state.elapsedMs = 0
+        state.error = undefined
+        state.input = undefined
+        state.output = undefined
+        outputs.delete(nodeId)
+      }
+      queue.push(...(downstream.get(nodeId) ?? []))
+    }
+  }
+
   private async executeNode(
     node: WorkflowNode,
     input: WorkflowValue,
@@ -530,7 +716,15 @@ export class WorkflowRunService {
           node.config.outputMode,
           active.abortController.signal,
           record.model,
+          node.config.outputSchema,
         )
+      }
+      case 'structured-extract':
+        return this.executeStructuredExtract(node, input, previous, active.abortController.signal, record.model)
+      case 'sub-workflow': {
+        if (this.options.executeSubWorkflow === undefined) throw new Error('子工作流执行器不可用。')
+        const childInput = node.config.inputMapping === undefined ? this.primaryNodeValue(node, previous) : resolveWorkflowTemplateValue(node.config.inputMapping, input, previous)
+        return this.options.executeSubWorkflow(node.config.workflowId, childInput, node.config.waitForCompletion !== false, node.config.version, { allowShellFile, allowCode, ...(record.model === undefined ? {} : { model: record.model }) })
       }
       case 'employee': {
         const employee = this.options.resolveEmployee(node.config.employeeId)
@@ -548,6 +742,9 @@ export class WorkflowRunService {
         { id: node.id, label: node.label, type: node.type }, instruction, input, previous, undefined, 'text', active.abortController.signal, record.model,
       )))
       case 'loop': {
+        // Kept only for direct callers of executeNode in older integrations;
+        // normal workflow runs dispatch structural loops through executeLoopNode.
+        if ((node.config.instruction ?? '').trim() === '') return this.primaryNodeValue(node, previous)
         const loopInput = this.primaryNodeValue(node, previous)
         const items = Array.isArray(loopInput) ? loopInput : [loopInput]
         const results: WorkflowValue[] = []
@@ -565,9 +762,41 @@ export class WorkflowRunService {
         }
         return results
       }
+      case 'sleep': {
+        await waitForWorkflowDuration(resolveSleepDuration(node.config), active.abortController.signal)
+        return previous
+      }
       case 'condition': return evaluateCondition(node.config.operator, this.primaryNodeValue(node, previous), node.config.value)
+      case 'switch': {
+        const value = this.primaryNodeValue(node, previous)
+        return value
+      }
       case 'approval': throw new WorkflowApprovalRequired(node.config.message)
-      case 'transform': return transform(node.config.template, node.config.text, this.primaryNodeValue(node, previous))
+      case 'wait-input': {
+        if (node.config.mode !== 'approval') throw new Error('表单等待暂未接入运行时恢复通道。')
+        throw new WorkflowApprovalRequired(node.config.message)
+      }
+      case 'transform': {
+        const primary = this.primaryNodeValue(node, previous)
+        const textTemplate = node.config.template === 'prepend' || node.config.template === 'append' || node.config.template === 'replace' || node.config.template === 'text'
+        const value = textTemplate && node.inputBindings !== undefined && node.inputBindings.length > 1 && isRecord(previous)
+          ? previous[node.inputBindings[0]?.name ?? ''] ?? null
+          : primary
+        return transform(node.config, previous, value)
+      }
+      case 'text-merge': {
+        const variables = isRecord(previous)
+          ? previous
+          : node.inputBindings?.length === 1
+            ? { [node.inputBindings[0]?.name ?? 'value']: previous }
+            : { value: previous }
+        const template = node.config.template
+        if (template.trim() !== '') return interpolateWorkflowVariables(template, variables)
+        return Object.values(variables).map((value) => renderTemplateValue(value)).join(node.config.separator ?? '\n')
+      }
+      case 'object-builder': return resolveWorkflowTemplateValue(node.config.fields, input, previous)
+      case 'list-operator': return applyListOperator(node.config, this.primaryNodeValue(node, previous))
+      case 'merge': return applyMerge(node.config, previous)
       case 'output': {
         if (node.config.contentMode === 'text') {
           const variables = isRecord(previous)
@@ -583,14 +812,14 @@ export class WorkflowRunService {
       }
       case 'shell':
         if (!allowShellFile) throw new Error('Shell/File 节点需要运行时显式授权')
-        return runShell(node.config.command, node.config.args.map((argument) => interpolateNodeTemplate(argument, previous)), resolveWorkspacePath(this.options.workspaceRoot, node.config.cwd ?? '.'), node.config.timeoutMs ?? 120_000)
+        return runShell(node.config.command, node.config.args.map((argument) => interpolateNodeTemplate(argument, previous)), resolveWorkspacePath(this.options.workflowRoot, node.config.cwd ?? '.'), node.config.timeoutMs ?? 120_000)
       case 'file':
         if (!allowShellFile) throw new Error('Shell/File 节点需要运行时显式授权')
-        return runFile(this.options.workspaceRoot, node.config.operation, node.config.path, node.config.content, previous)
+        return runFile(this.options.workflowRoot, node.config.operation, node.config.path, node.config.content, previous, node.config.recursive === true)
       case 'http': return runHttp(node.config, input, previous, active.abortController.signal)
       case 'code':
         if (!allowCode) throw new Error('代码节点需要运行时显式授权')
-        return runCode(node.config.language, node.config.code, input, previous, this.options.workspaceRoot, node.config.timeoutMs ?? 120_000, active.abortController.signal, this.options.nodeCommandPath)
+        return runCode(node.config.language, node.config.code, input, previous, this.options.workflowRoot, node.config.timeoutMs ?? 120_000, active.abortController.signal, this.options.nodeCommandPath)
     }
   }
 
@@ -603,9 +832,10 @@ export class WorkflowRunService {
     outputMode: 'text' | 'json',
     signal: AbortSignal,
     model?: WorkflowModelSelection,
+    outputSchema?: WorkflowJsonSchema,
   ): Promise<WorkflowValue> {
     const request: WorkflowLightweightRequest = {
-      prompt: buildNodePrompt(node, instruction, input, previous, systemPrompt, outputMode),
+      prompt: buildNodePrompt(node, instruction, input, previous, systemPrompt, outputMode, outputSchema),
       outputMode,
       ...(model === undefined ? {} : { model }),
       signal,
@@ -613,11 +843,14 @@ export class WorkflowRunService {
     const text = await this.lightweightClient.complete(request)
     if (outputMode === 'text') return text.trim()
     try {
-      return parseWorkflowJson(text)
+      const parsed = parseWorkflowJson(text)
+      if (outputSchema !== undefined && !matchesWorkflowJsonSchema(parsed, outputSchema)) throw new Error('JSON 不符合 outputSchema')
+      return parsed
     } catch {
       const repair = await this.lightweightClient.complete({
         prompt: [
           '上一次输出不是有效的 JSON。请修复格式并只输出一个有效 JSON 文档，不要解释，不要使用 Markdown 代码围栏。',
+          ...(outputSchema === undefined ? [] : [`必须符合以下 JSON Schema：${JSON.stringify(outputSchema)}`]),
           '需要修复的输出：',
           text,
         ].join('\n\n'),
@@ -626,11 +859,39 @@ export class WorkflowRunService {
         signal,
       })
       try {
-        return parseWorkflowJson(repair)
+        const parsed = parseWorkflowJson(repair)
+        if (outputSchema !== undefined && !matchesWorkflowJsonSchema(parsed, outputSchema)) throw new Error('JSON 不符合 outputSchema')
+        return parsed
       } catch {
         throw new Error(`节点“${node.label}”未返回有效 JSON`)
       }
     }
+  }
+
+  private async executeStructuredExtract(
+    node: Extract<WorkflowNode, { type: 'structured-extract' }>,
+    input: WorkflowValue,
+    previous: WorkflowValue,
+    signal: AbortSignal,
+    model?: WorkflowModelSelection,
+  ): Promise<WorkflowValue> {
+    const attempts = Math.max(1, Math.min(6, (node.config.maxRetries ?? 2) + 1))
+    let lastText = ''
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const prompt = [
+        '这是一个确定性的结构化提取步骤。请从输入文本中提取信息，只输出 JSON，不要 Markdown 或解释。',
+        `JSON Schema：${JSON.stringify(node.config.schema)}`,
+        attempt === 0 ? '' : `上一次输出无效，请修正后重试：${lastText}`,
+      ].filter(Boolean).join('\n\n')
+      lastText = await this.lightweightClient.complete({ prompt: buildNodePrompt({ id: node.id, label: node.label, type: node.type }, prompt, input, previous, undefined, 'json', node.config.schema), outputMode: 'json', ...(model === undefined ? {} : { model }), signal })
+      try {
+        const parsed = parseWorkflowJson(lastText)
+        if (matchesWorkflowJsonSchema(parsed, node.config.schema)) return parsed
+      } catch {
+        // Try again with the invalid output included in the next prompt.
+      }
+    }
+    throw new Error(`节点“${node.label}”在 ${attempts} 次尝试后仍未生成符合 Schema 的 JSON`)
   }
 
   private async getInternalSession(
@@ -704,6 +965,14 @@ export class WorkflowRunService {
     const sourceState = stateMap.get(edge.source)
     if (sourceState?.status !== 'completed') return false
     const source = nodeMap.get(edge.source)
+    if (source?.type === 'switch') {
+      const sourceStateInput = stateMap.get(edge.source)?.input
+      const selected = this.primaryNodeValue(source, sourceStateInput ?? outputs.get(edge.source) ?? null)
+      const matchedCase = source.config.cases.find((entry) => conditionValuesEqual(selected, entry.value))?.id
+      return edge.sourcePort === undefined || edge.sourcePort === 'default'
+        ? matchedCase === undefined
+        : edge.sourcePort === `switch:${matchedCase}`
+    }
     if (source?.type !== 'condition') return true
     const sourcePort = conditionSourcePort(edge, edges)
     if (sourcePort === undefined) return false
@@ -890,6 +1159,7 @@ function repairGeneratedNode(node: WorkflowNode, catalog: EmployeeCatalogEntry[]
       return { ...node, type: 'ai-task', config: { instruction, mode: 'single', skillIds: [], outputMode: node.config.outputMode } }
     }
     case 'ai-task': return { ...node, config: { ...node.config, instruction: node.config.instruction.trim() || generatedInstruction(node.label) } }
+    case 'structured-extract': return node
     case 'skill': {
       if (node.config.skillId.trim() !== '') return { ...node, config: { ...node.config, instruction: node.config.instruction.trim() || generatedInstruction(node.label) } }
       warnings.push(`节点「${node.label}」未提供 Skill ID，已安全改为智能处理节点。`)
@@ -900,21 +1170,29 @@ function repairGeneratedNode(node: WorkflowNode, catalog: EmployeeCatalogEntry[]
       warnings.push(`节点「${node.label}」未提供 MCP 工具名，已安全改为智能处理节点。`)
       return { ...node, type: 'ai-task', config: { instruction: node.config.instruction?.trim() || generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
     }
+    case 'sub-workflow': return { ...node, config: { ...node.config, workflowId: node.config.workflowId.trim(), waitForCompletion: node.config.waitForCompletion !== false } }
     case 'parallel': {
       const instructions = node.config.instructions.filter((instruction) => instruction.trim() !== '')
       return { ...node, config: { instructions: instructions.length > 0 ? instructions : [generatedInstruction(node.label)] } }
     }
-    case 'loop': return { ...node, config: { ...node.config, instruction: node.config.instruction.trim() || generatedInstruction(node.label), maxIterations: node.config.maxIterations ?? 20 } }
+    case 'sleep': return node
+    case 'loop': return { ...node, config: { ...node.config, ...(node.config.instruction === undefined ? {} : { instruction: node.config.instruction.trim() || generatedInstruction(node.label) }), maxIterations: node.config.maxIterations ?? 20 } }
     case 'condition': return { ...node, config: { ...node.config, operator: GENERATION_CONDITION_OPERATORS.has(node.config.operator) ? node.config.operator : 'truthy' } }
+    case 'switch': return { ...node, config: { cases: node.config.cases.filter((entry) => entry.id.trim() !== '').map((entry) => ({ ...entry, id: entry.id.trim(), ...(entry.label === undefined ? {} : { label: entry.label.trim() }) })) } }
     case 'approval': return { ...node, config: { message: node.config.message.trim() || `请确认是否继续执行「${node.label}」后的步骤。` } }
-    case 'transform': return ['identity', 'json', 'extract-text', 'prepend', 'append'].includes(node.config.template) ? node : { ...node, config: { ...node.config, template: 'identity' } }
+    case 'wait-input': return { ...node, config: { ...node.config, message: node.config.message.trim() || `请确认是否继续执行「${node.label}」后的步骤。` } }
+    case 'transform': return ['identity', 'json', 'extract-text', 'prepend', 'append', 'replace', 'text'].includes(node.config.template) ? node : { ...node, config: { ...node.config, template: 'identity' } }
+    case 'text-merge': return { ...node, config: { template: node.config.template, separator: node.config.separator ?? '\n' } }
+    case 'object-builder': return node
+    case 'list-operator': return node
+    case 'merge': return node
     case 'shell': {
       if (node.config.command.trim() !== '' && !/[[\]{}();|&<>`$\\]/u.test(node.config.command)) return node
       warnings.push(`节点「${node.label}」包含不完整或不安全的 Shell 配置，已安全改为智能处理节点。`)
       return { ...node, type: 'ai-task', config: { instruction: generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
     }
     case 'file': {
-      if (node.config.operation === 'read' || node.config.operation === 'write') {
+      if (['read', 'write', 'list', 'stat', 'extract-text'].includes(node.config.operation)) {
         if (node.config.path.trim() !== '' && !node.config.path.startsWith('/') && !/^[a-zA-Z]:[\\/]/u.test(node.config.path)) return node
       }
       warnings.push(`节点「${node.label}」包含无效文件配置，已安全改为智能处理节点。`)
@@ -1018,16 +1296,16 @@ function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[], workflow
     '你是 EzDSH Workflow 架构助手。根据用户描述生成一个可审阅、可运行的 Workflow Schema v2 JSON。本文提示词是 docs/ai-workflow-generation.md 的运行时摘要；遵守它，不要凭经验发明节点或运行语义。',
     '只输出一个 JSON 对象，不要 Markdown 代码围栏、解释或额外文本。顶层至少包含 schemaVersion: 2、id、name、description、revision、enabled、nodes、edges。必须有一个 input 节点和一个 output 节点。每个节点都输出唯一 id、type、label、config、position（数字 x/y）、inputBindings（数组）和 outputVariables（数组）；每条边都输出唯一 id、source、target，并且引用已有节点。多节点工作流的 edges 不能为空，图不能有环。',
     '把工作流理解为有向无环图：节点负责一个清晰职责；连线负责执行顺序、分支和汇聚；inputBindings 负责数据来源、字段选择和本地变量名；instruction 只负责使用本节点已经声明的变量。坐标只影响画布，不影响执行。',
-    '工作流有多个启动参数时，优先让 input 节点使用 config.fields，例如 [{"name":"topic","label":"主题","type":"string","required":true},{"name":"audience","label":"受众","type":"string","required":false,"defaultValue":""}]。fields 中的每一项都会出现在运行前输入表单；input 节点的完整 result 仍然是启动输入对象，下游通过 sourcePath 选择字段。只有单值输入才使用 config.name。字段 type 只能是 string、number、boolean 或 json。',
+    '工作流有多个启动参数时，优先让 input 节点使用 config.fields，例如 [{"name":"topic","label":"主题","type":"string","required":true},{"name":"document","label":"文档","type":"file","required":true},{"name":"attachments","label":"附件","type":"file-list","required":false}]。fields 中的每一项都会出现在运行前输入表单；input 节点的完整 result 仍然是启动输入对象，下游通过 sourcePath 选择字段。只有单值输入才使用 config.name。字段 type 只能是 string、number、boolean、json、file 或 file-list。',
     '输入绑定格式为 {"id":"唯一绑定ID","name":"本节点变量名","sourceNodeId":"来源节点ID","sourcePath":"可选点号字段路径","required":true}，可选 defaultValue。name 必须符合 ^[A-Za-z_][A-Za-z0-9_]*$ 且在本节点内唯一。sourcePath 省略表示来源节点完整 result；设置后只取该字段，例如 summary 或 profile.name。绑定本身也形成执行依赖，即使没有直接边。每个 {{变量}} 或 {{变量.字段}} 都必须有对应绑定；禁止使用未声明的全局历史上下文。',
     '一个节点可以绑定多个上游，一个上游也可以被多个下游绑定。多输入默认是 AND：下游等待所有依赖节点进入终态；没有“任意一个完成即可继续”的 any/or/race/first 语义。失败不是成功值。需要择一路径时使用 condition，不要省略绑定或伪造 OR 汇聚。普通 fan-out 用多个画布节点；parallel 只用于同一节点内并行执行多条相似指令并返回数组。',
     '输出变量用于声明 JSON 输出字段，例如 [{"name":"summary","description":"摘要"}]；每个节点的完整输出都隐含为 result，不要重复声明 result。需要字段级下游引用时使用 outputMode: json、声明 outputVariables，并在 instruction 中要求严格只输出 JSON。',
-    '节点类型选择：ai-task 是当前工作流的一次轻量内联推理；employee 是可复用、有业务边界和质量标准的专业岗位；skill 是明确技能；mcp 是明确工具调用；transform 是确定性转换；condition 是二路 true/false 判断；approval 是人工确认；loop 是有上限的数组迭代；output 是固定的最终结果节点。output 也要声明 inputBindings：变量模式会转发一个或多个绑定值；文本模式使用 config.text 模板，并可在文本中使用已绑定的 {{变量}} 或 {{变量.字段}} 重组多个值。http/code/shell/file 只在用户明确要求时使用。禁止生成旧版 agent 或未实现的 switch、merge、race、retry、global-context 节点。',
+    '节点类型选择：ai-task 是当前工作流的一次轻量内联推理；当 outputMode=json 时可直接声明严格 outputSchema，校验失败会自动重试，简单场景无需额外节点；structured-extract 是显式的文本到 JSON Schema 提取步骤，支持 maxRetries；employee 是可复用、有业务边界和质量标准的专业岗位；skill 是明确技能；mcp 是明确工具调用；transform 是确定性转换；text-merge 是确定性的多文本合并节点，使用 config.template 和多个 inputBindings 中的 {{变量}} 重组字符串；object-builder 用常量、变量和嵌套模板构造 JSON；list-operator 用于筛选、取字段、映射、排序、去重、截取、分组和聚合数组；merge 用于 append、object-merge、join、zip 或 first-non-null 汇聚多个上游；condition 是二路 If true/false 判断；switch 是按输入值精确匹配多个 case 的多路判断，并从 switch:<caseId> 或 default 端口继续；wait-input 的 approval 预设是人工同意/拒绝（旧 approval 仅兼容历史定义）；sub-workflow 用于选择另一个工作流、映射 inputMapping、等待并读取输出，可用 version 固定修订号或 latest 跟随最新版；loop 是不调用模型、把数组逐项传入下方线性循环体子流程并从右侧收集链末端结果的有限遍历；sleep 是固定等待或每次执行重新随机等待指定范围后原样传递输入；output 是固定的最终结果节点。output 也要声明 inputBindings：变量模式会转发一个或多个绑定值；文本模式使用 config.text 模板，并可在文本中使用已绑定的 {{变量}} 或 {{变量.字段}} 重组多个值。http/code/shell/file 只在用户明确要求时使用。',
     'employee 节点必须引用目录中真实存在且启用的 employeeId，并填写非空 instruction。员工是可复用的专业岗位定义，不是一次性任务或运行会话。不要把员工名称当 ID，也不要猜不存在的员工或技能。没有合适员工时用 ai-task；只有请求允许创建员工并且已经得到真实 employeeId 时才引用新员工。员工长期职责放在员工档案，当前一次性任务放在节点 instruction。',
     'condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than。每个 condition 最多两条下游路径，必须分别使用 sourcePort: "true" 和 sourcePort: "false"；三种以上情况用嵌套 condition。true/false 汇入共同下游是允许的：未选分支会 skipped，但不要把两个互斥分支结果都设为 required；必要时统一输出结构，或使用 required: false 与 defaultValue。',
-    'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds 数组和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 至少一条非空字符串；loop.instruction 非空且 maxIterations 在 1 到 100；transform.template 只能是 identity、json、extract-text、prepend、append。',
+    'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds 数组和 outputMode（text 或 json）；json 模式可选 outputSchema（type、properties、required、items、enum、additionalProperties），模型输出必须严格符合 schema。structured-extract.config 必须包含 schema，可选 maxRetries（0 到 5），它是显式的文本到 JSON 提取步骤。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 至少一条非空字符串；loop 需要一条 sourcePort 为 loop-body 的下方循环体首节点出边、一条 sourcePort 为 loop-next 的右侧后续出边，循环体后续节点只能串成一条线性链，不能分支或连到循环外，maxIterations 在 1 到 100；sleep.config.mode 可为 fixed 或 random，fixed 使用 durationMs，random 使用 minDurationMs 到 maxDurationMs 且每次执行重新取整数；所有时长必须是 0 到 600000 的整数且最小值不能大于最大值；transform.template 只能是 identity、json、extract-text、prepend、append、replace、text，text 模式直接用 config.text 生成新文本，prepend/append/replace 的文本配置可使用已绑定的 {{变量}}；replace 使用 find 和 replacement；text-merge.template 可以是包含 {{变量}} 的文本，template 为空时使用 separator（默认换行）按 inputBindings 顺序合并；file.operation 可为 read、write、list、stat、extract-text，路径必须是 Workflow 工作目录内的相对路径。',
     '需要 HTTP API 时使用 http：method 只能 GET、POST、PUT、PATCH、DELETE，url 只能 http/https，headers 必须是对象，responseMode 只能 auto/json/text，可选 query、body、timeoutMs。代码使用 code：language 只能 nodejs/python3，code 非空；Node.js 使用 input/previous 并 return，Python3 使用 input/previous 并给 result 赋值。code、shell、file 运行前可能需要用户显式授权。',
-    '只有用户明确提供 MCP 工具名时才生成 mcp，否则使用 ai-task 或 employee；不要生成空 tool。不要生成 API Key、密码、Token、任意危险命令、eval、反向 Shell、破坏性删除逻辑。file 路径必须是工作区相对路径。不能把会话 ID、运行 ID或运行结果写入工作流定义。',
+    '只有用户明确提供 MCP 工具名时才生成 mcp，否则使用 ai-task 或 employee；不要生成空 tool。不要生成 API Key、密码、Token、任意危险命令、eval、反向 Shell、破坏性删除逻辑。不能把会话 ID、运行 ID或运行结果写入工作流定义。',
     '生成流程必须先识别最终结果和启动输入，再拆分职责，设计每个节点的输入绑定与输出字段，之后画控制流和分支，最后校验所有 ID、字段、依赖和无环关系。',
     `可用专业员工目录（只能引用其中的 employeeId）：${JSON.stringify(catalog)}`,
     workflowDocumentationContext(workflowAiDocumentation),
@@ -1040,7 +1318,7 @@ function buildWorkflowModificationPrompt(workflowAiDocumentation?: string): stri
     '只输出一个 JSON 对象，必须是修改后的完整 WorkflowDefinition；不要输出 Markdown 代码围栏、解释、changes 字段或额外文本。',
     '除非用户明确要求，否则保留现有工作流的 id、开始节点、结束节点、已有节点职责和已有连线。用户要求拆分时，可以把一个职责拆成多个更细节点，但必须同步更新 edges、inputBindings 和 outputVariables，确保每个节点仍然可执行。',
     '删除节点是高风险修改：只有用户明确要求删除、替换或移除某项职责时才删除；否则保留节点并通过新增、拆分或修改配置实现目标。应用层会比较修改前后的节点并在删除发生时要求用户确认。',
-    '把控制流和数据流分开：edges 表达执行顺序、分支和汇聚，inputBindings 表达变量来源。一个节点可以绑定多个来源，一个来源也可以提供给多个下游；多输入默认等待全部依赖完成。不要发明 switch、merge、any、race、global-context 等未实现节点或语义。',
+    '把控制流和数据流分开：edges 表达执行顺序、分支和汇聚，inputBindings 表达变量来源。一个节点可以绑定多个来源，一个来源也可以提供给多个下游；多输入默认等待全部依赖完成。switch 必须在 config.cases 中声明唯一的 case id/value，并为每个 case 提供 sourcePort 为 switch:<caseId> 的边，另提供一条 sourcePort 为 default 的兜底边。merge 是通用汇聚节点，优先用它处理图分叉后的数据合并。',
     '所有员工节点必须引用现有员工目录中的真实 employeeId；不要凭空创建员工、技能、MCP 工具或模型。不要把运行结果、会话 ID、API Key、密码或 Token 写入工作流定义。',
     '修改后必须保留且只能保留一个 input 开始节点和一个 output 结束节点；图必须是无环图；每个节点都必须包含合法 type、label、config、position，并正确维护输入绑定和连线引用。',
     '先理解用户要解决的问题，再最小范围修改；如果需求存在多种实现，优先选择用户能在画布和变量面板中直接审阅的实现。',
@@ -1141,13 +1419,108 @@ function conditionNumber(value: WorkflowValue | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-function transform(template: Extract<WorkflowNode, { type: 'transform' }>['config']['template'], text: string | undefined, value: WorkflowValue): WorkflowValue {
-  switch (template) {
+function matchesWorkflowJsonSchema(value: WorkflowValue, schema: WorkflowJsonSchema): boolean {
+  if (schema.enum !== undefined && !schema.enum.some((candidate) => conditionValuesEqual(value, candidate))) return false
+  switch (schema.type) {
+    case 'null': return value === null
+    case 'string': return typeof value === 'string'
+    case 'number': return typeof value === 'number' && Number.isFinite(value)
+    case 'integer': return typeof value === 'number' && Number.isInteger(value)
+    case 'boolean': return typeof value === 'boolean'
+    case 'array': return Array.isArray(value) && (schema.items === undefined || value.every((item) => matchesWorkflowJsonSchema(item, schema.items!)))
+    case 'object': {
+      if (!isRecord(value)) return false
+      if (schema.required?.some((key) => !(key in value))) return false
+      if (schema.properties !== undefined && Object.entries(schema.properties).some(([key, child]) => key in value && !matchesWorkflowJsonSchema(value[key]!, child))) return false
+      if (schema.additionalProperties === false && schema.properties !== undefined && Object.keys(value).some((key) => !(key in schema.properties!))) return false
+      return true
+    }
+  }
+}
+
+function applyListOperator(config: ListOperatorNodeConfig, input: WorkflowValue): WorkflowValue {
+  const items = Array.isArray(input) ? input : [input]
+  const atPath = (item: WorkflowValue): WorkflowValue | undefined => resolveWorkflowValuePath(item, config.path)
+  switch (config.operation) {
+    case 'filter': return items.filter((item) => config.value === undefined || conditionValuesEqual(atPath(item) ?? null, config.value))
+    case 'map': return items.map((item) => config.outputPath === undefined ? item : resolveWorkflowValuePath(item, config.outputPath) ?? null)
+    case 'pluck': return items.map((item) => resolveWorkflowValuePath(item, config.path) ?? null)
+    case 'sort': return [...items].sort((left, right) => compareWorkflowValues(atPath(left), atPath(right)) * (config.descending ? -1 : 1))
+    case 'dedupe': {
+      const seen = new Set<string>()
+      return items.filter((item) => { const key = JSON.stringify(config.path === undefined ? item : atPath(item)); if (seen.has(key)) return false; seen.add(key); return true })
+    }
+    case 'slice': return items.slice(config.start ?? 0, config.end)
+    case 'group': {
+      const groups: Record<string, WorkflowValue[]> = {}
+      for (const item of items) {
+        const key = String(resolveWorkflowValuePath(item, config.groupPath ?? config.path) ?? '')
+        groups[key] = [...(groups[key] ?? []), item]
+      }
+      return groups
+    }
+    case 'aggregate': {
+      const values = config.aggregatePath === undefined ? items : items.map((item) => resolveWorkflowValuePath(item, config.aggregatePath!) ?? null)
+      if (config.aggregateMode === 'count') return values.length
+      const numbers = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+      if (config.aggregateMode === 'sum') return numbers.reduce((sum, value) => sum + value, 0)
+      if (config.aggregateMode === 'average') return numbers.length === 0 ? 0 : numbers.reduce((sum, value) => sum + value, 0) / numbers.length
+      if (config.aggregateMode === 'min') return numbers.length === 0 ? null : Math.min(...numbers)
+      if (config.aggregateMode === 'max') return numbers.length === 0 ? null : Math.max(...numbers)
+      return { count: items.length, values: items }
+    }
+  }
+}
+
+function compareWorkflowValues(left: WorkflowValue | undefined, right: WorkflowValue | undefined): number {
+  if (left === right) return 0
+  if (left === undefined) return -1
+  if (right === undefined) return 1
+  if (typeof left === 'number' && typeof right === 'number') return left - right
+  return String(left).localeCompare(String(right))
+}
+
+function applyMerge(config: MergeNodeConfig, input: WorkflowValue): WorkflowValue {
+  const values = isRecord(input) ? Object.values(input) : [input]
+  const left = values[0] ?? null
+  const right = values[1] ?? null
+  switch (config.operation) {
+    case 'append': return values.flatMap((value) => Array.isArray(value) ? value : [value])
+    case 'object-merge': return Object.assign({}, ...values.filter(isRecord))
+    case 'first-non-null': return values.find((value) => value !== null && value !== undefined) ?? null
+    case 'zip': {
+      const arrays = values.filter(Array.isArray) as WorkflowValue[][]
+      const length = Math.max(0, ...arrays.map((array) => array.length))
+      return Array.from({ length }, (_item, index) => arrays.map((array) => array[index] ?? null))
+    }
+    case 'join': {
+      if (!Array.isArray(left) || !Array.isArray(right)) return []
+      const leftKey = config.leftKey ?? 'id'
+      const rightKey = config.rightKey ?? leftKey
+      return left.flatMap((item) => {
+        if (!isRecord(item)) return []
+        const matches = right.filter((candidate) => isRecord(candidate) && conditionValuesEqual(item[leftKey], candidate[rightKey]))
+        return matches.map((candidate) => ({ ...item, ...(isRecord(candidate) ? candidate : {}) }))
+      })
+    }
+  }
+}
+
+function transform(config: Extract<WorkflowNode, { type: 'transform' }>['config'], input: WorkflowValue, value: WorkflowValue): WorkflowValue {
+  const variables = isRecord(input) ? { ...input, ...(Object.prototype.hasOwnProperty.call(input, 'value') ? {} : { value }) } : { value: input }
+  const render = (text: string | undefined): string => text === undefined ? '' : interpolateWorkflowVariables(text, variables)
+  const renderedValue = renderTemplateValue(value)
+  switch (config.template) {
     case 'identity': return value
     case 'json': return JSON.stringify(value, null, 2)
     case 'extract-text': return typeof value === 'object' && value !== null && !Array.isArray(value) && typeof value.text === 'string' ? value.text : String(value)
-    case 'prepend': return `${text ?? ''}${String(value)}`
-    case 'append': return `${String(value)}${text ?? ''}`
+    case 'prepend': return `${render(config.text)}${renderedValue}`
+    case 'append': return `${renderedValue}${render(config.text)}`
+    case 'replace': {
+      const find = render(config.find)
+      return find === '' ? renderedValue : renderedValue.split(find).join(render(config.replacement))
+    }
+    case 'text': return render(config.text)
   }
 }
 
@@ -1205,17 +1578,87 @@ function resolveWorkspacePath(root: string, candidate: string): string {
   if (isAbsolute(candidate)) throw new Error('工作区路径必须是相对路径')
   const resolvedRoot = normalize(resolve(root))
   const resolved = normalize(resolve(resolvedRoot, candidate))
-  if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${sep}`)) throw new Error('路径不能离开当前工作区')
+  if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${sep}`)) throw new Error('路径不能离开 Workflow 工作目录')
   return resolved
 }
 
-async function runFile(root: string, operation: 'read' | 'write', path: string, content: string | undefined, previous: WorkflowValue): Promise<WorkflowValue> {
+async function runFile(root: string, operation: 'read' | 'write' | 'list' | 'stat' | 'extract-text', path: string, content: string | undefined, previous: WorkflowValue, recursive = false): Promise<WorkflowValue> {
   const filePath = resolveWorkspacePath(root, path)
   if (operation === 'read') return await readFile(filePath, 'utf8')
+  if (operation === 'stat') {
+    const info = await stat(filePath)
+    return { path: normalizeRelativePath(root, filePath), type: info.isDirectory() ? 'directory' : 'file', size: info.size, modifiedAt: info.mtime.toISOString() }
+  }
+  if (operation === 'list') return listWorkspaceEntries(root, filePath, recursive)
+  if (operation === 'extract-text') return extractDocumentText(filePath)
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
   const rendered = interpolateNodeTemplate(content ?? '{{value}}', previous)
   await writeFile(filePath, rendered, { encoding: 'utf8', mode: 0o600 })
   return rendered
+}
+
+function normalizeRelativePath(root: string, filePath: string): string {
+  return relative(normalize(resolve(root)), normalize(filePath)).split(sep).join('/') || '.'
+}
+
+async function listWorkspaceEntries(root: string, directory: string, recursive: boolean): Promise<WorkflowValue> {
+  const entries: Array<{ path: string; type: 'file' | 'directory'; size: number }> = []
+  const rootInfo = await stat(directory)
+  if (rootInfo.isDirectory() && normalizeRelativePath(root, directory) !== '.') entries.push({ path: normalizeRelativePath(root, directory), type: 'directory', size: 0 })
+  const visit = async (current: string): Promise<void> => {
+    const children = await readdir(current, { withFileTypes: true })
+    for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
+      const childPath = joinPath(current, child.name)
+      if (child.isDirectory()) {
+        entries.push({ path: normalizeRelativePath(root, childPath), type: 'directory', size: 0 })
+        if (recursive) await visit(childPath)
+      } else if (child.isFile()) {
+        const info = await stat(childPath)
+        entries.push({ path: normalizeRelativePath(root, childPath), type: 'file', size: info.size })
+      }
+    }
+  }
+  await visit(directory)
+  return entries
+}
+
+function joinPath(base: string, child: string): string {
+  return `${base}${base.endsWith(sep) ? '' : sep}${child}`
+}
+
+async function extractDocumentText(filePath: string): Promise<string> {
+  const extension = extname(filePath).toLowerCase()
+  const raw = await readFile(filePath)
+  if (extension === '.html' || extension === '.htm') return raw.toString('utf8').replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim()
+  if (extension === '.json') {
+    try { return JSON.stringify(JSON.parse(raw.toString('utf8')), null, 2) } catch { return raw.toString('utf8') }
+  }
+  if (['.txt', '.md', '.markdown', '.csv', '.tsv', '.log', '.xml', '.yaml', '.yml'].includes(extension) || extension === '') return raw.toString('utf8')
+  if (extension === '.pdf') {
+    // Keep a dependency-free fallback for simple text PDFs. Binary streams that
+    // need layout-aware extraction should be handled by a dedicated Skill/MCP.
+    return raw.toString('latin1').replace(/\(([^)]*)\)\s*Tj/gu, '$1').replace(/\\([\\()])/gu, '$1').replace(/[^\x20-\x7E\n\r\t]/gu, ' ').replace(/\s+/gu, ' ').trim()
+  }
+  if (extension === '.rtf') return raw.toString('utf8').replace(/\\[a-z]+\d* ?/giu, '').replace(/[{}]/gu, '').replace(/\s+/gu, ' ').trim()
+  if (extension === '.docx') return extractDocxText(filePath)
+  throw new Error(`暂不支持将 ${extension || '该文件'} 转换为文本，请使用文本文件或安装文档解析 Skill。`)
+}
+
+function extractDocxText(filePath: string): Promise<string> {
+  return new Promise((resolveText, reject) => {
+    const child = spawn('unzip', ['-p', filePath, 'word/document.xml'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const chunks: Buffer[] = []
+    const errors: Buffer[] = []
+    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
+    child.stderr.on('data', (chunk: Buffer) => errors.push(chunk))
+    child.once('error', reject)
+    child.once('close', (code) => {
+      if (code !== 0) { reject(new Error(`DOCX 文档解析失败：${Buffer.concat(errors).toString('utf8').trim() || '系统未提供 unzip。'}`)); return }
+      const xml = Buffer.concat(chunks).toString('utf8')
+      const text = xml.replace(/<w:tab\s*\/?\s*>/gu, '\t').replace(/<w:br\s*\/?\s*>/gu, '\n').replace(/<\/w:p>/gu, '\n').replace(/<[^>]+>/gu, '').replace(/&amp;/gu, '&').replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/\n{3,}/gu, '\n\n').trim()
+      resolveText(text)
+    })
+  })
 }
 
 const WORKFLOW_HTTP_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
@@ -1379,6 +1822,32 @@ function runCodeProcess(command: string, args: string[], cwd: string, payload: s
     })
     child.stdin?.end(payload)
   })
+}
+
+function waitForWorkflowDuration(durationMs: number, signal: AbortSignal): Promise<void> {
+  if (durationMs <= 0) return Promise.resolve()
+  return new Promise((resolvePromise, reject) => {
+    let settled = false
+    const finish = (error?: Error): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      if (error === undefined) resolvePromise()
+      else reject(error)
+    }
+    const onAbort = (): void => finish(new Error('Sleep 节点已取消。'))
+    const timer = setTimeout(() => finish(), durationMs)
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function resolveSleepDuration(config: { durationMs: number; mode?: 'fixed' | 'random'; minDurationMs?: number; maxDurationMs?: number }): number {
+  if (config.mode !== 'random') return config.durationMs
+  const min = config.minDurationMs ?? config.durationMs
+  const max = config.maxDurationMs ?? min
+  return min + Math.floor(Math.random() * (max - min + 1))
 }
 
 function runShell(command: string, args: string[], cwd: string, timeoutMs: number): Promise<WorkflowValue> {
