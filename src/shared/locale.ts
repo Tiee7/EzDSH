@@ -308,6 +308,7 @@ export interface AppCopy {
   workflowExpandInput: string
   workflowCollapseInput: string
   workflowGoUpstream: string
+  workflowActions: string
   workflowExport: string
   workflowExportToFile: string
   workflowExportToClipboard: string
@@ -1000,9 +1001,10 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowExpandInput: '展开输入',
     workflowCollapseInput: '收起输入',
     workflowGoUpstream: '到上游',
+    workflowActions: '操作',
     workflowExport: '导出',
-    workflowExportToFile: '到文件',
-    workflowExportToClipboard: '到剪贴板',
+    workflowExportToFile: '导出到文件',
+    workflowExportToClipboard: '导出到剪贴板',
     workflowClipboardExportFailed: '无法写入剪贴板，请检查权限。',
     workflowImport: '导入',
     workflowImportClipboard: '从剪贴板导入',
@@ -1691,9 +1693,10 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowExpandInput: 'Expand input',
     workflowCollapseInput: 'Collapse input',
     workflowGoUpstream: 'Go upstream',
+    workflowActions: 'Actions',
     workflowExport: 'Export',
-    workflowExportToFile: 'To file',
-    workflowExportToClipboard: 'To clipboard',
+    workflowExportToFile: 'Export to file',
+    workflowExportToClipboard: 'Export to clipboard',
     workflowClipboardExportFailed: 'Unable to write to the clipboard. Check permissions.',
     workflowImport: 'Import',
     workflowImportClipboard: 'Import from clipboard',

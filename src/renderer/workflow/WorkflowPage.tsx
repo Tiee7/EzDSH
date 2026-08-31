@@ -1018,20 +1018,27 @@ export interface WorkflowEditorActionsProps {
   runLabel: string
   onCancel: () => void
   onSave: () => void
+  onDuplicate?: () => void
+  onDelete?: () => void
   onExport?: () => void
   onExportFile?: () => void
   onExportClipboard?: () => void
   onRun: () => void
 }
 
-export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel, onCancel, onSave, onExport, onExportFile, onExportClipboard, onRun }: WorkflowEditorActionsProps): JSX.Element {
+export function WorkflowEditorActions({ copy, draft, busy, runDisabled, runLabel, onCancel, onSave, onDuplicate, onDelete, onExport, onExportFile, onExportClipboard, onRun }: WorkflowEditorActionsProps): JSX.Element {
   const exportFile = onExportFile ?? onExport
   const exportClipboard = onExportClipboard ?? onExport
+  const hasWorkflowActions = !draft && (onDuplicate !== undefined || onDelete !== undefined)
   return <>
     <button type="button" className="workflow-button-quiet" onClick={onCancel} disabled={busy}>{draft ? copy.workflowCancelCreate : copy.workflowCancelEdit}</button>
-    <details className="workflow-export-menu">
-      <summary className="workflow-button-quiet workflow-export-menu-trigger">{copy.workflowExport}</summary>
-      <div className="workflow-export-menu-panel" role="menu">
+    <details className="workflow-actions-menu workflow-export-menu">
+      <summary className="workflow-button-quiet workflow-actions-menu-trigger workflow-export-menu-trigger">{copy.workflowActions}</summary>
+      <div className="workflow-actions-menu-panel workflow-export-menu-panel" role="menu">
+        {hasWorkflowActions && onDuplicate !== undefined ? <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); onDuplicate() }} disabled={busy}>{copy.workflowDuplicate}</button> : null}
+        {hasWorkflowActions && onDelete !== undefined ? <button type="button" role="menuitem" className="workflow-danger-button" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); onDelete() }} disabled={busy}>{copy.workflowDelete}</button> : null}
+        {hasWorkflowActions ? <div className="workflow-actions-menu-divider" role="separator" /> : null}
+        <span className="workflow-actions-menu-label">{copy.workflowExport}</span>
         <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); exportFile?.() }} disabled={busy || exportFile === undefined}>{copy.workflowExportToFile}</button>
         <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); exportClipboard?.() }} disabled={busy || exportClipboard === undefined}>{copy.workflowExportToClipboard}</button>
       </div>
@@ -2154,10 +2161,15 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           </div>
           <div className="workflow-workspace-actions">
             {workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)} · {copy.workflowViewUnviewedRun}</button> : null}
-            {workspaceView === 'editor' && !draft ? <>
-              <button type="button" className="workflow-button-quiet" onClick={() => void duplicate()} disabled={busy}>{copy.workflowDuplicate}</button>
-              <button type="button" className="workflow-button-quiet workflow-danger-button" onClick={() => void remove()} disabled={busy}>{copy.workflowDelete}</button>
-            </> : null}
+            {workspaceView === 'editor' ? <div className="workflow-ai-modify-split">
+              <button type="button" className="workflow-button-quiet" onClick={openModifyDialog} disabled={busy}>{copy.workflowAiModify}</button>
+              <details className="workflow-ai-modify-menu">
+                <summary className="workflow-button-quiet workflow-ai-modify-menu-trigger" aria-label={copy.workflowAiModifyHistory} title={copy.workflowAiModifyHistory}>⌄</summary>
+                <div className="workflow-ai-modify-menu-panel" role="menu">
+                  <button type="button" role="menuitem" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); openModificationHistory() }} disabled={busy}>{copy.workflowAiModifyHistory}</button>
+                </div>
+              </details>
+            </div> : null}
             {workspaceView === 'editor' ? <WorkflowEditorActions
               copy={copy}
               draft={draft}
@@ -2166,6 +2178,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               runLabel={currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}
               onCancel={exitWorkspace}
               onSave={() => void save()}
+              onDuplicate={() => void duplicate()}
+              onDelete={() => void remove()}
               onExportFile={exportWorkflowToFile}
               onExportClipboard={() => void exportWorkflowToClipboard()}
               onRun={() => void openRunSetup()}
