@@ -2101,6 +2101,13 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           </div>
           <div className="workflow-browser-actions">
             <button type="button" className="workflow-button-primary" onClick={() => void create()} disabled={busy}>{copy.workflowNew}</button>
+            <button type="button" className="workflow-button-quiet workflow-generate-button" onClick={openGenerationPage} disabled={busy}>
+              <svg className="workflow-generate-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="m4 20 12-12m-3-3 3 3m0 0 3-3M4 20l3-3" />
+                <path d="m17 2 .9 2.1L20 5l-2.1.9L17 8l-.9-2.1L14 5l2.1-.9L17 2ZM8 5l.6 1.4L10 7l-1.4.6L8 9l-.6-1.4L6 7l1.4-.6L8 5Z" />
+              </svg>
+              <span>{copy.workflowGenerateWorkflow}</span>
+            </button>
             <div className="workflow-import-split" role="group" aria-label={copy.workflowImport}>
               <button type="button" className="workflow-button-primary workflow-import-main" onClick={() => workflowImportInputRef.current?.click()} disabled={busy}>{copy.workflowImport}</button>
               <button type="button" className="workflow-button-quiet workflow-import-clipboard-button" onClick={() => void importWorkflowClipboard()} disabled={busy} aria-label={copy.workflowImportClipboard} title={copy.workflowImportClipboard}>
