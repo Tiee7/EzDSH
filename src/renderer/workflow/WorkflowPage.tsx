@@ -2623,7 +2623,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             const summary = workflowRunSummaries[workflow.id] ?? { count: 0, unviewedCount: 0 }
             return <article key={workflow.id} className="workflow-file-card">
               <button type="button" className="workflow-file-card-main" onClick={() => void open(workflow)}><span className="workflow-file-card-mark">WF</span><span className="workflow-file-card-content"><strong>{workflow.name}</strong><span>{workflow.description ? userFacingWorkflowText(workflow.description, locale) : copy.workflowHint}</span><small>v{workflow.revision} · {workflow.nodes.length} nodes · {copy.workflowHistoryCount(summary.count)}</small></span><span className="workflow-file-card-open">打开</span></button>
-              {summary.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button" onClick={() => void openWorkflowUnreadRun(workflow, summary.firstUnviewedRun!)}>{copy.workflowUnviewedRuns(summary.unviewedCount)} · {copy.workflowViewUnviewedRun}</button> : null}
+              {summary.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button" onClick={() => void openWorkflowUnreadRun(workflow, summary.firstUnviewedRun!)}>{copy.workflowUnviewedRuns(summary.unviewedCount)}</button> : null}
             </article>
           })}</div> : null}
           <div className="workflow-browser-tools">
@@ -2644,7 +2644,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             <button type="button" role="tab" aria-selected={workspaceView === 'executions'} className={workspaceView === 'executions' ? 'workflow-view-active' : ''} onClick={() => setWorkspaceView('executions')}>{copy.workflowExecutions}</button>
           </div>
           <div className="workflow-workspace-actions">
-            {workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)} · {copy.workflowViewUnviewedRun}</button> : null}
+            {workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)}</button> : null}
             {workspaceView === 'editor' ? <button type="button" className="workflow-button-quiet workflow-ai-modify-button" onClick={openModifyDialog} disabled={busy}>
               <WandMagicSparklesIcon className="workflow-ai-icon" />
               <span>{copy.workflowAiModify}</span>
