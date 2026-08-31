@@ -62,8 +62,9 @@ export function WorkflowGenerationProgressView({ copy, locale, record, onOpenWor
   const phaseDescriptors = WORKFLOW_GENERATION_PHASES.map((phase) => ({ phase, label: copy[phaseCopyKeys[phase]] as string }))
   const selectedPhaseIndex = record === undefined ? -1 : effectivePhaseIndex(record)
   return <div className="workflow-generation-card workflow-generation-progress-card">
-    <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowGenerationPipeline}</span><h2>{record ? record.name : copy.workflowGenerationPipeline}</h2></div>{record ? <span className={`workflow-generation-status workflow-generation-status-${record.status}`}>{statusLabel(record, copy)}</span> : null}</div>
+    {record ? <div className="workflow-panel-heading"><div><h2>{record.name}</h2></div><span className={`workflow-generation-status workflow-generation-status-${record.status}`}>{statusLabel(record, copy)}</span></div> : null}
     {record === undefined ? <p className="workflow-generation-placeholder">{copy.workflowGenerationChooseHistory}</p> : <>
+      <div className="workflow-generation-original-prompt"><strong>{copy.workflowGenerationOriginalPrompt}</strong><p>{record.prompt}</p></div>
       <p className="workflow-generation-current-message">{record.events.at(-1)?.message ?? copy.workflowGenerationChooseHistory}</p>
       <ol className="workflow-generation-steps">
         {phaseDescriptors.map(({ phase, label }, index) => {
@@ -73,7 +74,7 @@ export function WorkflowGenerationProgressView({ copy, locale, record, onOpenWor
           return <li key={phase} className={`workflow-generation-step ${complete ? 'workflow-generation-step-complete' : ''} ${current ? 'workflow-generation-step-current' : ''} ${failed ? 'workflow-generation-step-failed' : ''}`}><span className="workflow-generation-step-mark">{complete ? '✓' : current ? '·' : failed ? '!' : String(index + 1)}</span><div><strong>{label}</strong>{current || failed ? <small>{record.events.filter((event) => event.phase === phase).at(-1)?.message}</small> : null}</div></li>
         })}
       </ol>
-      <div className="workflow-generation-events"><strong>{copy.workflowGenerationPipeline}</strong>{record.events.map((event, index) => <p key={`${event.time}-${index}`}><time>{formatGenerationTime(event.time, locale)}</time><span>{event.message}</span></p>)}</div>
+      <div className="workflow-generation-events">{record.events.map((event, index) => <p key={`${event.time}-${index}`}><time>{formatGenerationTime(event.time, locale)}</time><span>{event.message}</span></p>)}</div>
       {record.warnings?.map((warning, index) => <p key={`${warning}-${index}`} className="workflow-generation-warning">{warning}</p>)}
       {record.workflow ? <button type="button" className="workflow-button-primary" onClick={() => onOpenWorkflow(record.workflow!)}>{copy.workflowGenerationOpenDraft}</button> : <p className="workflow-muted">{copy.workflowGenerationNoWorkflow}</p>}
     </>}

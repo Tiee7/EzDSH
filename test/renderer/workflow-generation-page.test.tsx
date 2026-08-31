@@ -24,10 +24,12 @@ describe('WorkflowGenerationPage', () => {
     }
     const markup = renderToStaticMarkup(<WorkflowGenerationPage copy={getAppCopy('zh')} locale="zh" onBack={vi.fn()} onOpenWorkflow={vi.fn()} />)
     expect(markup).toContain('AI 生成工作流')
-    expect(markup).toContain('固定生成流程')
     expect(markup).toContain('开始生成')
 
     const withHistory = renderToStaticMarkup(<WorkflowGenerationProgressView copy={getAppCopy('zh')} locale="zh" record={record} onOpenWorkflow={vi.fn()} />)
+    expect(withHistory).toContain('用户原始要求')
+    expect(withHistory).toContain(record.prompt)
+    expect(withHistory).not.toContain('固定生成流程')
     expect(withHistory).toContain('规划专业员工')
     expect(withHistory).toContain('生成工作流结构')
   })

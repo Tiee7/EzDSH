@@ -376,6 +376,7 @@ export interface AppCopy {
   workflowGenerationHistory: string
   workflowGenerationHistoryEmpty: string
   workflowGenerationChooseHistory: string
+  workflowGenerationOriginalPrompt: string
   workflowGenerationStart: string
   workflowGenerationStarting: string
   workflowGenerationPipeline: string
@@ -1128,6 +1129,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowGenerationHistory: '生成历史',
     workflowGenerationHistoryEmpty: '还没有生成记录。',
     workflowGenerationChooseHistory: '选择一条历史记录查看生成过程。',
+    workflowGenerationOriginalPrompt: '用户原始要求',
     workflowGenerationStart: '开始生成',
     workflowGenerationStarting: '正在生成…',
     workflowGenerationPipeline: '固定生成流程',
@@ -1879,6 +1881,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowGenerationHistory: 'Generation history',
     workflowGenerationHistoryEmpty: 'No generation records yet.',
     workflowGenerationChooseHistory: 'Choose a history record to inspect its generation process.',
+    workflowGenerationOriginalPrompt: 'Original user request',
     workflowGenerationStart: 'Start generation',
     workflowGenerationStarting: 'Generating…',
     workflowGenerationPipeline: 'Fixed generation pipeline',

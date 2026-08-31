@@ -580,6 +580,9 @@
 .workflow-generation-status-running { background: color-mix(in srgb, var(--ezdsh-accent-orange) 13%, var(--ezdsh-panel-background)); color: var(--ezdsh-accent-orange); }
 .workflow-generation-status-completed { background: color-mix(in srgb, var(--ezdsh-accent-green) 13%, var(--ezdsh-panel-background)); color: var(--ezdsh-accent-green); }
 .workflow-generation-status-failed { background: color-mix(in srgb, var(--ezdsh-accent-red) 12%, var(--ezdsh-panel-background)); color: var(--ezdsh-accent-red); }
+.workflow-generation-original-prompt { display: grid; gap: 5px; margin: 0; border-left: 3px solid var(--ezdsh-brand); padding: 9px 11px; background: var(--ezdsh-active-background); }
+.workflow-generation-original-prompt strong { color: var(--ezdsh-text-muted); font-size: 11px; }
+.workflow-generation-original-prompt p { margin: 0; overflow-wrap: anywhere; color: var(--ezdsh-text-body); font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
 .workflow-generation-current-message { margin: 0; border-left: 3px solid var(--ezdsh-brand); padding: 9px 11px; background: var(--ezdsh-active-background); color: var(--ezdsh-text-body); font-size: 12px; line-height: 1.5; }
 .workflow-generation-placeholder { margin: 0; color: var(--ezdsh-text-muted); font-size: 12px; line-height: 1.6; }
 .workflow-generation-steps { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
