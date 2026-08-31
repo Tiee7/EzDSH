@@ -329,6 +329,7 @@
 .workflow-run-item strong { color: var(--ezdsh-text-heading); font-size: 11px; }
 .workflow-run-item span { margin-top: 4px; overflow: hidden; color: var(--ezdsh-text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-run-item-active { border-color: var(--ezdsh-brand) !important; background: var(--ezdsh-active-background) !important; }
+.workflow-run-item-unread { border-color: var(--ezdsh-accent-orange) !important; }
 .workflow-execution-main { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .workflow-execution-canvas { min-height: 240px; flex: 1 1 auto; }
 .workflow-execution-resize-handle { position: relative; z-index: 3; display: grid; height: 9px; flex: 0 0 9px; place-items: center; border-top: 1px solid var(--ezdsh-panel-border); background: var(--ezdsh-panel-background); cursor: row-resize; }

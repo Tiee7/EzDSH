@@ -244,6 +244,19 @@ export function workflowExportFileName(name: string): string {
   return `${safeName || 'workflow'}.json`
 }
 
+/** Format execution-list timestamps relative to the current local date. */
+export function formatWorkflowRunListTime(value: string | undefined, now = new Date()): string {
+  if (value === undefined || value.trim() === '') return 'queued'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  if (date.getFullYear() !== now.getFullYear()) return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${time}`
+  if (date.getMonth() !== now.getMonth() || date.getDate() !== now.getDate()) return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${time}`
+  return time
+}
+
 export function serializeWorkflowExport(workflow: WorkflowDefinition, exportedAt?: string, employees?: readonly EmployeeSnapshot[]): string {
   return `${JSON.stringify(createWorkflowExportDocument(workflow, exportedAt, employees), null, 2)}\n`
 }
@@ -2743,7 +2756,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           </> : <section className={`workflow-executions ${showRunSidebar ? '' : 'workflow-executions-sidebar-hidden'}`}>
             {showRunSidebar ? <aside className="workflow-run-sidebar">
               <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowExecutions}</span><h2>{copy.workflowRunHistory}</h2></div><div className="workflow-run-sidebar-heading-actions"><span className="workflow-run-count">{runs.length}</span><button type="button" className="workflow-sidebar-toggle" aria-label={copy.workflowHideRunSidebar} title={copy.workflowHideRunSidebar} onClick={() => setShowRunSidebar(false)}>‹</button></div></div>
-              {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <div key={runRecord.id} className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''}`}><button type="button" className="workflow-run-item-main" onClick={() => selectRun(runRecord)}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {runRecord.startedAt ?? 'queued'}</span></button><div className="workflow-run-item-actions"><button type="button" className="workflow-button-quiet workflow-icon-button" onClick={() => markRunUnread(runRecord)} disabled={!viewedRunIds.has(runRecord.id) || busy} aria-label={copy.workflowMarkUnread} title={copy.workflowMarkUnread}><WorkflowRunActionIcon type="mark-unread" /></button><button type="button" className="workflow-button-quiet workflow-danger-button workflow-icon-button" onClick={() => void deleteRun(runRecord)} disabled={!workflowRunCanDelete(runRecord.status) || busy} aria-label={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun} title={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun}><WorkflowRunActionIcon type="delete" /></button></div></div>)}</div>}
+              {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <div key={runRecord.id} className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''} ${viewedRunIds.has(runRecord.id) ? '' : 'workflow-run-item-unread'}`}><button type="button" className="workflow-run-item-main" onClick={() => selectRun(runRecord)}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {formatWorkflowRunListTime(runRecord.startedAt)}</span></button><div className="workflow-run-item-actions"><button type="button" className="workflow-button-quiet workflow-danger-button workflow-icon-button" onClick={() => void deleteRun(runRecord)} disabled={!workflowRunCanDelete(runRecord.status) || busy} aria-label={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun} title={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun}><WorkflowRunActionIcon type="delete" /></button></div></div>)}</div>}
             </aside> : <button type="button" className="workflow-sidebar-toggle workflow-sidebar-toggle-floating" aria-label={copy.workflowShowRunSidebar} title={copy.workflowShowRunSidebar} onClick={() => setShowRunSidebar(true)}>›</button>}
             <div ref={executionMainRef} className="workflow-execution-main" style={{ '--workflow-execution-detail-height': `${executionDetailHeight}px` } as CSSProperties}>
               <div className="workflow-execution-canvas"><ReactFlow key={`${selected.id}:${currentRun?.id ?? 'no-run'}`} {...WORKFLOW_CANVAS_INTERACTION_PROPS} nodes={workflowExecutionFlowNodes(selected, currentRun, selectedRunNodeId)} edges={workflowExecutionEdges(selected)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} onPaneClick={() => setSelectedRunNodeId(undefined)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
