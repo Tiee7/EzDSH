@@ -9,6 +9,9 @@
   background: var(--ezdsh-runtime-background);
 }
 
+/* The workflow browser owns the full workspace surface; do not leave the app shell's generic page inset around it. */
+.workspace-pane-page:has(> .workflow-page-browser) { overflow: hidden; padding: 0; }
+
 .workflow-page button,
 .workflow-page input,
 .workflow-page select,

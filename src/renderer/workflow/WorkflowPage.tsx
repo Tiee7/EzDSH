@@ -2154,7 +2154,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           </div>
           <div className="workflow-workspace-actions">
             {workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)} · {copy.workflowViewUnviewedRun}</button> : null}
-            {!draft ? <>
+            {workspaceView === 'editor' && !draft ? <>
               <button type="button" className="workflow-button-quiet" onClick={() => void duplicate()} disabled={busy}>{copy.workflowDuplicate}</button>
               <button type="button" className="workflow-button-quiet workflow-danger-button" onClick={() => void remove()} disabled={busy}>{copy.workflowDelete}</button>
             </> : null}
