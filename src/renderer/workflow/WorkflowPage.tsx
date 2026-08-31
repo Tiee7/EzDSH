@@ -416,10 +416,14 @@ export function WorkflowNodeTypeIcon({ type }: { type: WorkflowNodeType }): JSX.
   return <span className={`workflow-node-type-icon workflow-node-type-${type}`} data-node-icon={type} aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d={workflowNodeIconPath[type]} /></svg></span>
 }
 
-function WorkflowRunActionIcon({ type }: { type: 'mark-unread' | 'delete' }): JSX.Element {
+function WorkflowRunActionIcon({ type }: { type: 'mark-unread' | 'delete' | 'lock' | 'unlock' }): JSX.Element {
   const path = type === 'mark-unread'
     ? 'M4 6h16v12H4V6Zm1 1 7 5 7-5'
-    : 'M5 7h14m-9 4v5m4-5v5M9 4h6l1 3H8l1-3Zm-4 3h14l-1 13H6L5 7Z'
+    : type === 'delete'
+      ? 'M5 7h14m-9 4v5m4-5v5M9 4h6l1 3H8l1-3Zm-4 3h14l-1 13H6L5 7Z'
+      : type === 'lock'
+        ? 'M7 10V8a5 5 0 0 1 10 0v2M5 10h14v10H5V10Zm7 4v2'
+        : 'M8 10V8a5 5 0 0 1 9.8-1.4M5 10h14v10H5V10Zm7 4v2'
   return <svg className={`workflow-run-action-icon workflow-run-action-icon-${type}`} viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d={path} /></svg>
 }
 
@@ -1770,6 +1774,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [currentRun, setCurrentRun] = useState<WorkflowRunRecord>()
   const [selectedRunNodeId, setSelectedRunNodeId] = useState<string>()
   const [showRunSidebar, setShowRunSidebar] = useState(true)
+  const [runDeleteUnlocked, setRunDeleteUnlocked] = useState(false)
   const [outputFontScale, setOutputFontScale] = useState(1)
   const [outputWindows, setOutputWindows] = useState<WorkflowOutputWindowState[]>([])
   const [metadataDraft, setMetadataDraft] = useState<WorkflowMetadataDraft>()
@@ -1928,6 +1933,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const selectedNode = useMemo(() => selected?.nodes.find((node) => node.id === selectedNodeId), [selected, selectedNodeId])
   useEffect(() => { setNodeInspectorTab('settings') }, [selectedNodeId])
+  useEffect(() => { setRunDeleteUnlocked(false) }, [selected?.id])
   const currentRunNodeDetail = useMemo(
     () => selected === undefined || currentRun === undefined ? undefined : getWorkflowNodeRunDetail(selected, currentRun, selectedRunNodeId),
     [currentRun, selected, selectedRunNodeId],
@@ -2496,7 +2502,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       setError(copy.workflowCannotDeleteActiveRun)
       return
     }
-    if (!window.confirm(copy.workflowDeleteRunConfirm)) return
+    if (!runDeleteUnlocked && !window.confirm(copy.workflowDeleteRunConfirm)) return
     setBusy(true)
     setError('')
     try {
@@ -2786,7 +2792,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             </aside>
           </> : <section className={`workflow-executions ${showRunSidebar ? '' : 'workflow-executions-sidebar-hidden'}`}>
             {showRunSidebar ? <aside className="workflow-run-sidebar">
-              <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowExecutions}</span><h2>{copy.workflowRunHistory}</h2></div><div className="workflow-run-sidebar-heading-actions"><span className="workflow-run-count">{runs.length}</span><button type="button" className="workflow-sidebar-toggle" aria-label={copy.workflowHideRunSidebar} title={copy.workflowHideRunSidebar} onClick={() => setShowRunSidebar(false)}>‹</button></div></div>
+              <div className="workflow-panel-heading"><h2>{copy.workflowRunHistory}</h2><div className="workflow-run-sidebar-heading-actions"><span className="workflow-run-count">{runs.length}</span><button type="button" className={`workflow-button-quiet workflow-icon-button workflow-run-delete-lock ${runDeleteUnlocked ? 'workflow-run-delete-unlocked' : ''}`} aria-pressed={runDeleteUnlocked} aria-label={runDeleteUnlocked ? copy.workflowRunDeleteLock : copy.workflowRunDeleteUnlock} title={runDeleteUnlocked ? copy.workflowRunDeleteLock : copy.workflowRunDeleteUnlock} onClick={() => setRunDeleteUnlocked((current) => !current)}><WorkflowRunActionIcon type={runDeleteUnlocked ? 'unlock' : 'lock'} /></button><button type="button" className="workflow-sidebar-toggle" aria-label={copy.workflowHideRunSidebar} title={copy.workflowHideRunSidebar} onClick={() => setShowRunSidebar(false)}>‹</button></div></div>
               {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <div key={runRecord.id} className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''} ${viewedRunIds.has(runRecord.id) ? '' : 'workflow-run-item-unread'}`}><button type="button" className="workflow-run-item-main" onClick={() => selectRun(runRecord)}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {formatWorkflowRunListTime(runRecord.startedAt)}</span></button><div className="workflow-run-item-actions"><button type="button" className="workflow-button-quiet workflow-danger-button workflow-icon-button" onClick={() => void deleteRun(runRecord)} disabled={!workflowRunCanDelete(runRecord.status) || busy} aria-label={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun} title={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun}><WorkflowRunActionIcon type="delete" /></button></div></div>)}</div>}
             </aside> : <button type="button" className="workflow-sidebar-toggle workflow-sidebar-toggle-floating" aria-label={copy.workflowShowRunSidebar} title={copy.workflowShowRunSidebar} onClick={() => setShowRunSidebar(true)}>›</button>}
             <div ref={executionMainRef} className="workflow-execution-main" style={{ '--workflow-execution-detail-height': `${executionDetailHeight}px` } as CSSProperties}>

@@ -316,6 +316,8 @@
 .workflow-executions { position: relative; display: flex; width: 100%; min-width: 0; min-height: 0; }
 .workflow-run-sidebar { width: 260px; min-width: 230px; overflow: auto; padding: 18px 14px; border-right: 1px solid var(--ezdsh-panel-border); background: color-mix(in srgb, var(--ezdsh-panel-background) 78%, transparent); }
 .workflow-run-sidebar-heading-actions { display: flex; align-items: center; gap: 7px; }
+.workflow-run-delete-lock { color: var(--ezdsh-text-muted) !important; }
+.workflow-run-delete-lock.workflow-run-delete-unlocked { border-color: var(--ezdsh-accent-orange) !important; color: var(--ezdsh-accent-orange) !important; }
 .workflow-sidebar-toggle { display: inline-grid; width: 25px; height: 25px; place-items: center; border: 1px solid var(--ezdsh-panel-border) !important; border-radius: 6px !important; padding: 0 !important; background: var(--ezdsh-panel-background) !important; color: var(--ezdsh-text-muted) !important; font-size: 18px !important; line-height: 1; }
 .workflow-sidebar-toggle-floating { position: absolute; z-index: 4; top: 14px; left: 10px; }
 .workflow-run-count { min-width: 24px; padding: 4px 7px; border-radius: 99px; background: var(--ezdsh-code-background); color: var(--ezdsh-text-muted); font-size: 10px; text-align: center; }

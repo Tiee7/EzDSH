@@ -308,6 +308,8 @@ export interface AppCopy {
   workflowMarkUnread: string
   workflowDeleteRun: string
   workflowDeleteRunConfirm: string
+  workflowRunDeleteUnlock: string
+  workflowRunDeleteLock: string
   workflowCannotDeleteActiveRun: string
   workflowRunDeleted: string
   workflowRunMarkedUnread: string
@@ -1056,6 +1058,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowMarkUnread: '标记未读',
     workflowDeleteRun: '删除记录',
     workflowDeleteRunConfirm: '确定删除这条运行记录吗？此操作不可恢复。',
+    workflowRunDeleteUnlock: '解锁删除确认',
+    workflowRunDeleteLock: '锁定删除确认',
     workflowCannotDeleteActiveRun: '运行中的记录不能删除，请先取消运行。',
     workflowRunDeleted: '运行记录已删除',
     workflowRunMarkedUnread: '已标记为未读',
@@ -1803,6 +1807,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowMarkUnread: 'Mark unread',
     workflowDeleteRun: 'Delete record',
     workflowDeleteRunConfirm: 'Delete this run record? This action cannot be undone.',
+    workflowRunDeleteUnlock: 'Unlock delete confirmation',
+    workflowRunDeleteLock: 'Lock delete confirmation',
     workflowCannotDeleteActiveRun: 'An active run cannot be deleted. Cancel it first.',
     workflowRunDeleted: 'Run record deleted',
     workflowRunMarkedUnread: 'Marked as unread',
