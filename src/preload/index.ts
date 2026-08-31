@@ -38,6 +38,10 @@ import type {
   WorkflowDefinition,
   WorkflowGenerateRequest,
   WorkflowGenerateResult,
+  WorkflowGenerationRecord,
+  WorkflowModificationRecord,
+  WorkflowModifyRequest,
+  WorkflowModifyResult,
   WorkflowRunOptions,
   WorkflowRunRecord,
   WorkflowUpdateInput,
@@ -140,9 +144,23 @@ const bridge: EzDSHBridge = {
     remove: (id: string) => invoke<void>('workflows:remove', id),
     duplicate: (id: string) => invoke<WorkflowDefinition>('workflows:duplicate', id),
     generate: (request: WorkflowGenerateRequest) => invoke<WorkflowGenerateResult>('workflows:generate', request),
+    modify: (request: WorkflowModifyRequest) => invoke<WorkflowModifyResult>('workflows:modify', request),
+    listModificationHistory: (workflowId?: string) => invoke<WorkflowModificationRecord[]>('workflow-modifications:list', workflowId),
+    onModificationStateChange: (listener: (record: WorkflowModificationRecord) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, record: WorkflowModificationRecord) => listener(record)
+      ipcRenderer.on('workflow-modification:state-change', handler)
+      return () => ipcRenderer.removeListener('workflow-modification:state-change', handler)
+    },
+    listGenerationHistory: () => invoke<WorkflowGenerationRecord[]>('workflow-generations:list'),
+    onGenerationStateChange: (listener: (record: WorkflowGenerationRecord) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, record: WorkflowGenerationRecord) => listener(record)
+      ipcRenderer.on('workflow-generation:state-change', handler)
+      return () => ipcRenderer.removeListener('workflow-generation:state-change', handler)
+    },
     importEmployee: (employeeId: string) => invoke<WorkflowDefinition>('workflows:import-employee', employeeId),
     listRuns: (workflowId?: string) => invoke<WorkflowRunRecord[]>('workflow-runs:list', workflowId),
     getRun: (runId: string) => invoke<WorkflowRunRecord | undefined>('workflow-runs:get', runId),
+    removeRun: (runId: string) => invoke<void>('workflow-runs:remove', runId),
     start: (workflowId: string, input: WorkflowValue, options?: WorkflowRunOptions) => invoke<WorkflowRunRecord>('workflow-runs:start', workflowId, input, options ?? {}),
     resume: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:resume', runId),
     cancel: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:cancel', runId),

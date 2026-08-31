@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { MobileRemoteService } from '../../src/main/mobile/mobile-remote-service.js'
-import { renderMobilePage } from '../../src/main/mobile/mobile-pages.js'
+import { mobileModelFailures, mobileModelGroups, renderMobileMarkdown, renderMobilePage } from '../../src/main/mobile/mobile-pages.js'
 import type { DshSessionHistoryResponse } from '../../src/main/channel-bridge/dsh-session.js'
 
 describe('MobileRemoteService', () => {
@@ -15,12 +15,45 @@ describe('MobileRemoteService', () => {
     await Promise.all(services.splice(0).map((service) => service.stop()))
   })
 
+  it('renders GitHub-style tables with alignment and escaped cell content', () => {
+    const rendered = renderMobileMarkdown([
+      '| 项目 | 状态 | 备注 |',
+      '| :--- | :---: | ---: |',
+      '| API | **通过** | `a|b` |',
+      '| UI | <script>alert(1)</script> | 可滚动 |',
+    ].join('\n'))
+
+    expect(rendered).toContain('<div class="markdown-table-wrap"><table class="markdown-table">')
+    expect(rendered).toContain('<th scope="col" style="text-align:left">项目</th>')
+    expect(rendered).toContain('<th scope="col" style="text-align:center">状态</th>')
+    expect(rendered).toContain('<th scope="col" style="text-align:right">备注</th>')
+    expect(rendered).toContain('<strong>通过</strong>')
+    expect(rendered).toContain('<code>a|b</code>')
+    expect(rendered).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(rendered).not.toContain('<p>| 项目')
+  })
+
   it('renders a mobile page with a valid interactive script', () => {
     const page = renderMobilePage({ locale: 'zh' })
     const script = page.match(/<script>([\s\S]*)<\/script>/u)?.[1]
 
     expect(script).toContain('new EventSource(')
     expect(() => new Function(script ?? '')).not.toThrow()
+  })
+
+  it('keeps the complete provider catalog visible and reports partial catalog failures', () => {
+    const directory = {
+      groups: [{ id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-v4-flash' }, { id: 'deepseek-v4-pro' }] }],
+      failures: [{ id: 'openai', name: 'OpenAI', message: 'credentials are missing' }],
+    }
+    expect(mobileModelGroups(directory)[0]?.models?.map(model => model.id)).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
+    expect(mobileModelFailures(directory)).toEqual(directory.failures)
+
+    const page = renderMobilePage({ locale: 'zh' })
+
+    expect(page).not.toContain('.filter(item=>!defaultModel||item.id!==defaultModel.model||group.id!==defaultModel.provider)')
+    expect(page).toContain('mobileModelFailuresInBrowser')
+    expect(page).toContain('modelPartialFailure')
   })
 
   it('pairs a phone, creates a session cookie, and exposes only the mobile session API', async () => {

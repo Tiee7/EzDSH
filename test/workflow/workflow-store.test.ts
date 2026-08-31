@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createDefaultWorkflow } from '../../src/shared/workflow.js'
+import { createDefaultWorkflow, validateWorkflow } from '../../src/shared/workflow.js'
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 
@@ -31,10 +31,20 @@ describe('workflow stores', () => {
     const store = new WorkflowStore(dir)
     await store.initialize()
 
-    expect(store.list()[0]).toMatchObject({
+    const migrated = store.list()[0]
+    expect(migrated).toMatchObject({
       schemaVersion: 2,
-      nodes: [{ type: 'ai-task', label: '智能处理' }],
     })
+    expect(migrated?.nodes.map((node) => ({ type: node.type, label: node.label }))).toEqual([
+      { type: 'input', label: '开始' },
+      { type: 'ai-task', label: '智能处理' },
+      { type: 'output', label: '结束' },
+    ])
+    expect(migrated?.edges.map((edge) => [edge.source, edge.target])).toEqual([
+      ['legacy-workflow-input', 'agent-1'],
+      ['agent-1', 'legacy-workflow-output'],
+    ])
+    expect(validateWorkflow(migrated!)).toMatchObject({ valid: true })
   })
 
   it('persists definitions and remaps IDs when duplicating', async () => {
@@ -85,5 +95,18 @@ describe('workflow stores', () => {
 
     expect(await store.pruneExpired(now)).toEqual(['expired-completed'])
     expect(store.list().map((record) => record.id).sort()).toEqual(['active-with-old-expiry', 'fresh-completed'])
+  })
+
+  it('removes a run and persists the deletion', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-run-delete-'))
+    const store = new WorkflowRunStore(dir)
+    await store.save({ id: 'run-delete', workflowId: 'workflow-1', workflowRevision: 1, status: 'completed', input: null, nodeStates: [], events: [], allowShellFile: false })
+
+    expect(await store.remove('run-delete')).toBe(true)
+    expect(store.get('run-delete')).toBeUndefined()
+    const reloaded = new WorkflowRunStore(dir)
+    await reloaded.initialize()
+    expect(reloaded.get('run-delete')).toBeUndefined()
+    expect(await store.remove('run-delete')).toBe(false)
   })
 })

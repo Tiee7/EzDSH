@@ -11,7 +11,10 @@ import type {
 } from '../../shared/employees.js'
 import { EMPLOYEE_CAPABILITIES } from '../../shared/employees.js'
 import type { AppCopy } from '../../shared/locale.js'
+import { WandMagicSparklesIcon } from '../icons/WandMagicSparklesIcon.js'
 import './employees.css'
+
+export const EMPLOYEES_REFRESH_EVENT = 'ezdsh:refresh-employees'
 
 interface EmployeesPageProps {
   copy: AppCopy
@@ -185,7 +188,7 @@ export function EmployeeExecutionTarget({
 }
 
 export function reloadPage(): void {
-  window.location.reload()
+  window.dispatchEvent(new Event(EMPLOYEES_REFRESH_EVENT))
 }
 
 /** Management surface for reusable professional employee profiles. */
@@ -201,6 +204,10 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
   const [selectedSessionId, setSelectedSessionId] = useState<string>()
   const [editingId, setEditingId] = useState<EditingId>()
   const [draft, setDraft] = useState<EmployeeDraft>(EMPTY_DRAFT)
+  const [generationPrompt, setGenerationPrompt] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [generatedProfile, setGeneratedProfile] = useState(false)
+  const [newEmployeeMode, setNewEmployeeMode] = useState<'ai' | 'manual'>('ai')
   const [task, setTask] = useState('')
   const [runResult, setRunResult] = useState<EmployeeRunResult>()
   const [busy, setBusy] = useState(false)
@@ -298,6 +305,9 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
   const beginAdd = (): void => {
     setEditingId('new')
     setDraft({ ...EMPTY_DRAFT })
+    setGenerationPrompt('')
+    setGeneratedProfile(false)
+    setNewEmployeeMode('ai')
     setRunResult(undefined)
     setError(undefined)
   }
@@ -306,6 +316,9 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
     setSelectedId(employee.id)
     setEditingId(employee.id)
     setDraft(draftFromEmployee(employee))
+    setGenerationPrompt('')
+    setGeneratedProfile(false)
+    setNewEmployeeMode('ai')
     setRunResult(undefined)
     setError(undefined)
   }
@@ -313,6 +326,9 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
   const cancelEdit = (): void => {
     setEditingId(undefined)
     setDraft({ ...EMPTY_DRAFT })
+    setGenerationPrompt('')
+    setGeneratedProfile(false)
+    setNewEmployeeMode('ai')
     setError(undefined)
   }
 
@@ -330,8 +346,54 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
     setError(undefined)
   }
 
+  const generateEmployee = async (): Promise<void> => {
+    const prompt = generationPrompt.trim()
+    if (prompt === '') {
+      setError(copy.employeesGenerationRequired)
+      return
+    }
+    setGenerating(true)
+    setError(undefined)
+    try {
+      const generated = await window.EzDSH.employees.generate({ prompt })
+      setDraft({
+        id: '',
+        name: generated.name,
+        role: generated.role,
+        description: generated.description,
+        businessBoundary: generated.businessBoundary,
+        systemPrompt: generated.systemPrompt,
+        operatingGuidelines: [...generated.operatingGuidelines],
+        qualityStandards: [...generated.qualityStandards],
+        capabilities: [...generated.capabilities],
+        skillIds: [...generated.skillIds],
+        enabled: generated.enabled,
+      })
+      setGeneratedProfile(true)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.employeesFailed)
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const useManualInput = (): void => {
+    setNewEmployeeMode('manual')
+    setError(undefined)
+  }
+
+  const useAiGeneration = (): void => {
+    setNewEmployeeMode('ai')
+    setGeneratedProfile(false)
+    setError(undefined)
+  }
+
   const save = async (): Promise<void> => {
     if (editingId === undefined) return
+    if (editingId === 'new' && newEmployeeMode === 'ai' && !generatedProfile) {
+      setError(copy.employeesGenerationRequired)
+      return
+    }
     const input = draftInput(draft, editingId)
     if (typeof input === 'string') {
       setError(input === 'name' ? copy.employeesNameRequired : input === 'role' ? copy.employeesRoleRequired : copy.employeesPromptRequired)
@@ -491,10 +553,44 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
           <h2>{editingId === 'new' ? copy.employeesAdd : draft.name || copy.employeesEdit}</h2>
         </div>
         <div className="employees-actions">
-          <button type="button" className="employees-button employees-button-quiet" disabled={busy} onClick={cancelEdit}>{copy.employeesCancel}</button>
-          <button type="button" className="employees-button employees-button-primary" disabled={busy} onClick={() => { void save() }}>{copy.employeesSave}</button>
+          <button type="button" className="employees-button employees-button-quiet" disabled={busy || generating} onClick={cancelEdit}>{copy.employeesCancel}</button>
+          {editingId === 'new' && newEmployeeMode === 'ai' ? (
+            <button type="button" className="employees-button employees-button-quiet" disabled={busy || generating} onClick={useManualInput}>{copy.employeesManualInput}</button>
+          ) : editingId === 'new' ? (
+            <button type="button" className="employees-icon-button employees-ai-button" disabled={busy || generating} onClick={useAiGeneration} aria-label={copy.employeesUseAiGeneration} title={copy.employeesUseAiGeneration}>
+              <WandMagicSparklesIcon className="employees-ai-icon" size={17} />
+            </button>
+          ) : null}
+          <button type="button" className="employees-button employees-button-primary" disabled={busy || generating || (editingId === 'new' && newEmployeeMode === 'ai' && !generatedProfile)} onClick={() => { void save() }}>{copy.employeesSave}</button>
         </div>
       </div>
+      {editingId === 'new' && newEmployeeMode === 'ai' ? (
+        <section className="employees-generation-card" aria-label={copy.employeesDescribeNeed}>
+          <div className="employees-generation-copy">
+            <p className="employees-section-kicker">{copy.employeesGenerate}</p>
+            <h3>{copy.employeesDescribeNeed}</h3>
+            <p>{copy.employeesDescribeNeedHint}</p>
+          </div>
+          <label className="employees-generation-input">
+            <span>{copy.employeesDescribeNeed}</span>
+            <textarea
+              rows={5}
+              value={generationPrompt}
+              onChange={(event) => { setGenerationPrompt(event.target.value) }}
+              placeholder={copy.employeesDescribeNeedPlaceholder}
+              disabled={generating || busy}
+              autoFocus
+            />
+          </label>
+          <div className="employees-generation-actions">
+            <button type="button" className="employees-button employees-button-primary employees-ai-action-button" disabled={generating || busy || generationPrompt.trim() === ''} onClick={() => { void generateEmployee() }}>
+              <WandMagicSparklesIcon className="employees-ai-icon" />{generating ? copy.employeesGenerating : copy.employeesGenerate}
+            </button>
+            {generatedProfile ? <span className="employees-generation-status">{copy.employeesGeneratedHint}</span> : null}
+          </div>
+        </section>
+      ) : null}
+      {editingId !== 'new' || newEmployeeMode === 'manual' || generatedProfile ? <>
       <div className="employees-form-grid">
         <label>
           <span>{copy.employeesName}</span>
@@ -543,6 +639,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
           ))}
         </div>
       </div>
+      </> : null}
 
       {error ? <p className="employees-error" role="alert">{error}</p> : null}
     </section>

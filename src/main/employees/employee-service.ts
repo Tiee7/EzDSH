@@ -5,6 +5,8 @@ import type {
   EmployeeCapability,
   EmployeeCreateInput,
   EmployeeDefinition,
+  EmployeeGenerateRequest,
+  EmployeeGeneratedProfile,
   EmployeeProjectSummary,
   EmployeeRunRequest,
   EmployeeRunResult,
@@ -16,6 +18,8 @@ import type {
   EmployeeWorkflowStep,
 } from '../../shared/employees.js'
 import { EMPLOYEE_CAPABILITIES, EMPLOYEE_SCHEMA_VERSION } from '../../shared/employees.js'
+import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
+import { extractJsonDocument } from '../workflow/dsh-workflow-adapter.js'
 
 export interface EmployeeRunClient {
   createSession(params: { cwd: string; workspaceId?: string }): Promise<{ sessionId: string }>
@@ -35,6 +39,12 @@ export interface EmployeeServiceOptions {
   configPath: string
   cwd: string
   createClient: () => EmployeeRunClient
+  lightweightClient?: EmployeeGenerationClient
+  getLocale?: () => AppLocale
+}
+
+export interface EmployeeGenerationClient {
+  complete(request: { prompt: string; systemPrompt: string; outputMode: 'json' }): Promise<string>
 }
 
 type EmployeeListener = (employees: EmployeeSnapshot[]) => void
@@ -325,6 +335,50 @@ export class EmployeeService {
     await this.persist()
     this.emit()
     return cloneEmployee(employee)
+  }
+
+  async generate(request: EmployeeGenerateRequest): Promise<EmployeeGeneratedProfile> {
+    const prompt = request.prompt.trim()
+    if (prompt === '') throw new Error('Employee generation request is required')
+    const client = this.options.lightweightClient
+    if (client === undefined) throw new Error('没有可用于员工生成的模型，请先在设置中配置模型供应商。')
+    const locale = this.options.getLocale?.() ?? DEFAULT_APP_LOCALE
+    const languageInstruction = locale === 'zh'
+      ? '所有自然语言字段必须使用简体中文，包括 name、role、description、businessBoundary、systemPrompt、operatingGuidelines 和 qualityStandards。'
+      : 'All natural-language fields must be written in English, including name, role, description, businessBoundary, systemPrompt, operatingGuidelines, and qualityStandards.'
+    const response = await client.complete({
+      systemPrompt: [
+        '你是 EZDSH 的 AI 员工设计助手。根据用户对员工的自然语言描述，生成一个可直接编辑和保存的专业员工档案。',
+        '只输出一个 JSON 对象，不要输出 Markdown 代码围栏、解释或额外文本。',
+        'JSON 必须包含 name、role、description、businessBoundary、systemPrompt、operatingGuidelines、qualityStandards、capabilities、skillIds 和 enabled 字段。',
+        '员工是可复用的岗位定义，不是一次性任务、工作流节点或运行会话。role 描述长期职责；businessBoundary 明确负责什么、不负责什么以及何时停止或升级；systemPrompt 描述稳定身份和原则；operatingGuidelines 是具体执行步骤；qualityStandards 是可检查的合格标准。一次性用户需求应留在工作流节点 instruction 或员工运行任务中，不要硬编码进长期档案。',
+        'operatingGuidelines 和 qualityStandards 必须是具体、可执行的字符串数组；capabilities 只能使用 research、copywriting、image-generation、file-read、file-write、workflow；skillIds 必须是技能 ID 字符串数组，没有明确技能时输出空数组。',
+        '不要输出 id、version、schemaVersion、createdAt、updatedAt 或 builtIn；不要生成 API Key、密码、Token、任意代码或危险命令。',
+        languageInstruction,
+      ].join('\n'),
+      prompt: `用户需求：${prompt.slice(0, 8_000)}`,
+      outputMode: 'json',
+    })
+    const raw = extractJsonDocument(response)
+    if (!isRecord(raw)) throw new Error('AI 返回的员工档案格式无效')
+    const normalized = normalizeDefinition({
+      ...raw,
+      id: `generated-${randomUUID()}`,
+      builtIn: false,
+    })
+    return {
+      name: normalized.name,
+      role: normalized.role,
+      description: normalized.description,
+      businessBoundary: normalized.businessBoundary,
+      systemPrompt: normalized.systemPrompt,
+      operatingGuidelines: [...normalized.operatingGuidelines],
+      qualityStandards: [...normalized.qualityStandards],
+      capabilities: [...normalized.capabilities],
+      skillIds: [...normalized.skillIds],
+      enabled: normalized.enabled,
+      builtIn: false,
+    }
   }
 
   async update(id: string, input: EmployeeUpdateInput): Promise<EmployeeSnapshot> {

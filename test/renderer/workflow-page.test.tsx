@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import * as workflowPage from '../../src/renderer/workflow/WorkflowPage.js'
 import { getAppCopy } from '../../src/shared/locale.js'
-import { createDefaultWorkflow, type WorkflowDefinition, type WorkflowRunRecord } from '../../src/shared/workflow.js'
+import { createDefaultWorkflow, type WorkflowDefinition, type WorkflowNodeType, type WorkflowRunRecord } from '../../src/shared/workflow.js'
 import { ReactFlow, type Edge, type Node } from '@xyflow/react'
 
 function graphWithRemovedNode(): WorkflowDefinition {
@@ -56,6 +56,21 @@ describe('WorkflowPage regressions', () => {
     expect(next.edges.some((edge) => edge.source === agent.id || edge.target === agent.id)).toBe(false)
   })
 
+  it('keeps fixed start and end nodes when deleting or duplicating a selection', () => {
+    const workflow = createDefaultWorkflow('Fixed terminals')
+    const start = workflow.nodes.find((node) => node.type === 'input')!
+    const end = workflow.nodes.find((node) => node.type === 'output')!
+
+    const deleted = workflowPage.removeWorkflowSelection(workflow, { nodeIds: [start.id, end.id] })
+    const duplicated = workflowPage.duplicateWorkflowNodes([start, end], (node) => `${node.id}-copy`)
+
+    expect(deleted.nodes).toEqual(workflow.nodes)
+    expect(deleted.edges).toEqual(workflow.edges)
+    expect(duplicated).toEqual([])
+    expect(workflowPage.WORKFLOW_ADDABLE_NODE_TYPES).not.toContain('input')
+    expect(workflowPage.WORKFLOW_ADDABLE_NODE_TYPES).not.toContain('output')
+  })
+
   it('restores the deleted node and its relationships with undo', () => {
     const workflow = graphWithRemovedNode()
     const node = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
@@ -82,7 +97,7 @@ describe('WorkflowPage regressions', () => {
 
   it('removes selected nodes and relationships together', () => {
     const workflow = graphWithRemovedNode()
-    const edge = workflow.edges[0]
+    const edge = workflow.edges.find((candidate) => workflow.nodes.find((node) => node.id === candidate.source)?.type === 'ai-task')
     if (edge === undefined) throw new Error('starter graph should contain an edge')
 
     const next = workflowPage.removeWorkflowSelection(workflow, { edgeId: edge.id, nodeIds: [edge.source] })
@@ -91,9 +106,9 @@ describe('WorkflowPage regressions', () => {
     expect(next.edges.some((candidate) => candidate.id === edge.id)).toBe(false)
   })
 
-  it('removes every selected node and records the batch as one undoable graph change', () => {
+  it('removes every deletable selected node and records the batch as one undoable graph change', () => {
     const workflow = graphWithRemovedNode()
-    const selectedNodes = workflow.nodes.filter((node) => node.type === 'ai-task' || node.type === 'output')
+    const selectedNodes = workflow.nodes.filter((node) => node.type === 'ai-task')
     const deleted = workflowPage.removeWorkflowSelection(workflow, { nodeIds: selectedNodes.map((node) => node.id) })
     const history = workflowPage.recordWorkflowHistory(workflowPage.createWorkflowHistory(workflow), deleted)
 
@@ -229,11 +244,22 @@ describe('WorkflowPage regressions', () => {
     research.outputVariables = [{ name: 'summary', description: '调研结论' }, { name: 'sources' }]
 
     expect(workflowPage.getWorkflowVariableOptions(workflow, target.id)).toEqual(expect.arrayContaining([
-      { sourceNodeId: input.id, sourcePath: undefined, label: '输入 · task' },
+      { sourceNodeId: input.id, sourcePath: undefined, label: '开始 · task' },
       { sourceNodeId: research.id, sourcePath: undefined, label: '智能处理 · result' },
       { sourceNodeId: research.id, sourcePath: 'summary', label: '智能处理 · summary' },
       { sourceNodeId: research.id, sourcePath: 'sources', label: '智能处理 · sources' },
     ]))
+  })
+
+  it('does not offer downstream nodes as variable sources', () => {
+    const workflow = createDefaultWorkflow('Variable direction')
+    const input = workflow.nodes.find((node) => node.type === 'input')!
+    const aiTask = workflow.nodes.find((node) => node.type === 'ai-task')!
+
+    const options = workflowPage.getWorkflowVariableOptions(workflow, aiTask.id)
+
+    expect(options.some((option) => option.sourceNodeId === input.id)).toBe(true)
+    expect(options.some((option) => option.sourceNodeId === workflow.nodes.find((node) => node.type === 'output')!.id)).toBe(false)
   })
 
   it('selects every workflow node without changing node data', () => {
@@ -277,6 +303,74 @@ describe('WorkflowPage regressions', () => {
     }
   })
 
+  it('uses Chinese names for every flow-control node', () => {
+    const labelFor = (workflowPage as unknown as { workflowNodeTypeLabel?: (type: WorkflowNodeType) => string }).workflowNodeTypeLabel
+
+    expect((['parallel', 'loop', 'condition', 'approval', 'transform'] as WorkflowNodeType[]).map((type) => labelFor?.(type))).toEqual([
+      '并行处理',
+      '循环处理',
+      '条件判断',
+      '人工审批',
+      '数据转换',
+    ])
+  })
+
+  it('uses Chinese labels for condition operators and transform modes', () => {
+    const conditionLabel = (workflowPage as unknown as { workflowConditionOperatorLabel?: (operator: string) => string }).workflowConditionOperatorLabel
+    const transformLabel = (workflowPage as unknown as { workflowTransformTemplateLabel?: (template: string) => string }).workflowTransformTemplateLabel
+
+    expect(['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'].map((operator) => conditionLabel?.(operator))).toEqual([
+      '为真', '等于', '不等于', '包含', '大于', '小于',
+    ])
+    expect(['identity', 'json', 'extract-text', 'prepend', 'append'].map((template) => transformLabel?.(template))).toEqual([
+      '保持原值', '转为 JSON', '提取文本', '前置文本', '追加文本',
+    ])
+  })
+
+  it('inserts a workflow variable token at the editor selection', () => {
+    expect(workflowPage.insertWorkflowVariableToken('请结合 继续写作', 'research', 4, 4)).toEqual({
+      value: '请结合 {{research}}继续写作',
+      cursor: 16,
+    })
+    expect(workflowPage.insertWorkflowVariableToken('旧变量', 'outline', 0, 3)).toEqual({
+      value: '{{outline}}',
+      cursor: 11,
+    })
+  })
+
+  it('summarizes node-local inputs on the canvas card', () => {
+    const workflow = createDefaultWorkflow('Variable card')
+    const aiTask = workflow.nodes.find((node) => node.type === 'ai-task')!
+    aiTask.inputBindings = [
+      { id: 'binding-topic', name: 'topic', sourceNodeId: workflow.nodes[0]!.id, required: true },
+      { id: 'binding-research', name: 'research', sourceNodeId: workflow.nodes[1]!.id, sourcePath: 'summary', required: true },
+    ]
+
+    aiTask.outputVariables = [{ name: 'summary' }, { name: 'sources' }]
+    const flowNode = workflowPage.workflowFlowNodes(workflow).find((node) => node.id === aiTask.id)
+    expect(flowNode?.data.inputVariables).toEqual(['topic', 'research'])
+    expect(flowNode?.data.outputVariables).toEqual(['summary', 'sources'])
+    expect(flowNode?.height).toBe(112)
+  })
+
+  it('shows non-linear variable dependencies in execution relationships without duplicating flow edges', () => {
+    const workflow = createDefaultWorkflow('Variable relationships')
+    const inputNode = workflow.nodes.find((node) => node.type === 'input')!
+    const aiTask = workflow.nodes.find((node) => node.type === 'ai-task')!
+    const outputNode = workflow.nodes.find((node) => node.type === 'output')!
+    const variableOnlyWorkflow = {
+      ...workflow,
+      edges: workflow.edges.filter((edge) => edge.target !== outputNode.id),
+      nodes: workflow.nodes.map((node) => node.id === outputNode.id ? { ...node, inputBindings: [{ id: 'output-result', name: 'result', sourceNodeId: aiTask.id, required: true }] } : node),
+    }
+
+    const executionEdges = workflowPage.workflowExecutionEdges(variableOnlyWorkflow)
+
+    expect(executionEdges).toHaveLength(variableOnlyWorkflow.edges.length + 1)
+    expect(executionEdges.at(-1)).toMatchObject({ source: aiTask.id, target: outputNode.id, className: 'workflow-variable-dependency-edge' })
+    expect(executionEdges.filter((edge) => edge.source === inputNode.id && edge.target === aiTask.id)).toHaveLength(1)
+  })
+
   it('maps the persisted default output port to the custom node default handle', () => {
     const workflow = createDefaultWorkflow('Default port')
     const edge = workflow.edges[0]!
@@ -297,6 +391,15 @@ describe('WorkflowPage regressions', () => {
 
     expect(canvasEdges).toHaveLength(workflow.edges.length)
     expect(canvasEdges.map((edge) => [edge.source, edge.target])).toEqual(workflow.edges.map((edge) => [edge.source, edge.target]))
+  })
+
+  it('keeps measured node geometry when execution history is opened directly', () => {
+    const workflow = createDefaultWorkflow('Direct execution history')
+
+    const executionNodes = workflowPage.workflowExecutionFlowNodes(workflow)
+
+    expect(executionNodes).toHaveLength(workflow.nodes.length)
+    expect(executionNodes.every((node) => node.measured?.width === node.width && node.measured?.height === node.height)).toBe(true)
   })
 
   it('automatically lays out a graph by dependency depth instead of trusting overlapping positions', () => {
@@ -333,8 +436,54 @@ describe('WorkflowPage regressions', () => {
     const workflow = createDefaultWorkflow('Run setup')
     const fields = workflowPage.getWorkflowLaunchFields(workflow)
 
-    expect(fields).toEqual([{ id: workflow.nodes[0]?.id, key: 'task', label: '输入' }])
+    expect(fields).toEqual([{ id: workflow.nodes[0]?.id, key: 'task', label: '开始' }])
     expect(workflowPage.buildWorkflowLaunchInput(fields, { task: '准备今天的选题' })).toEqual({ task: '准备今天的选题' })
+  })
+
+  it('parses typed launch fields before starting the workflow', () => {
+    const fields = [
+      { id: 'count', key: 'count', label: '数量', type: 'number' as const },
+      { id: 'enabled', key: 'enabled', label: '启用', type: 'boolean' as const },
+      { id: 'items', key: 'items', label: '项目', type: 'json' as const },
+    ]
+
+    expect(workflowPage.buildWorkflowLaunchInput(fields, {
+      count: '3',
+      enabled: 'false',
+      items: '["A", "B"]',
+    })).toEqual({ count: 3, enabled: false, items: ['A', 'B'] })
+  })
+
+  it('preserves JSON value types entered in a condition setting', () => {
+    const parseValue = (workflowPage as unknown as { parseWorkflowConditionValue?: (value: string) => unknown }).parseWorkflowConditionValue
+
+    expect(parseValue?.('3')).toBe(3)
+    expect(parseValue?.('false')).toBe(false)
+    expect(parseValue?.('["A", "B"]')).toEqual(['A', 'B'])
+    expect(parseValue?.('普通文本')).toBe('普通文本')
+  })
+
+  it('derives multiple launch fields and field-level variable sources from structured input nodes', () => {
+    const workflow = createDefaultWorkflow('Structured run setup')
+    const input = workflow.nodes[0]
+    if (input?.type !== 'input') throw new Error('starter graph should contain an input node')
+    input.config = {
+      fields: [
+        { name: 'topic', label: '主题', type: 'string', required: true },
+        { name: 'audience', label: '受众', type: 'string', required: false, defaultValue: '产品经理' },
+      ],
+    }
+    const target = workflow.nodes.find((node) => node.type === 'output')!
+
+    expect(workflowPage.getWorkflowLaunchFields(workflow)).toEqual([
+      { id: `${input.id}-1`, key: 'topic', label: '主题', required: true },
+      { id: `${input.id}-2`, key: 'audience', label: '受众', defaultValue: '产品经理', required: false },
+    ])
+    expect(workflowPage.getWorkflowVariableOptions(workflow, target.id)).toEqual(expect.arrayContaining([
+      { sourceNodeId: input.id, sourcePath: 'topic', label: '开始 · 主题' },
+      { sourceNodeId: input.id, sourcePath: 'audience', label: '开始 · 受众' },
+    ]))
+    expect(workflowPage.workflowFlowNodes(workflow)[0]?.data.inputVariables).toEqual(['主题', '受众'])
   })
 
   it('serializes portable workflow JSON and creates a safe download name', () => {
@@ -469,6 +618,31 @@ describe('WorkflowPage regressions', () => {
     expect(nodeMarkup).toContain('到上游')
   })
 
+  it('shows the selected node prompt and configuration in a collapsed section', () => {
+    const workflow = createDefaultWorkflow('Node configuration history')
+    const node = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
+    const run: WorkflowRunRecord = {
+      id: 'run-node-configuration',
+      workflowId: workflow.id,
+      workflowRevision: workflow.revision,
+      status: 'completed',
+      input: { task: '对比提示词和结果' },
+      output: '最终结果',
+      nodeStates: [{ nodeId: node.id, status: 'completed', input: { task: '输入' }, output: '节点结果' }],
+      events: [],
+      allowShellFile: false,
+    }
+
+    const markup = renderToStaticMarkup(
+      <workflowPage.WorkflowExecutionReview copy={getAppCopy('zh')} run={run} nodeDetail={workflowPage.getWorkflowNodeRunDetail(workflow, run, node.id)} statusLabel={() => '运行完成'} onCancel={vi.fn()} onApprove={vi.fn()} onReject={vi.fn()} onResume={vi.fn()} />,
+    )
+
+    expect(markup).toContain('节点提示词与配置')
+    expect(markup).toContain('请完成输入任务，并给出清晰、可执行的结果。')
+    expect(markup).toMatch(/<details class="workflow-node-configuration"[^>]*>/u)
+    expect(markup).not.toMatch(/<details class="workflow-node-configuration"[^>]*\bopen(?:=""|="open")?/u)
+  })
+
   it('provides output copy, floating-window, and font-size controls', () => {
     const markup = renderToStaticMarkup(
       <workflowPage.WorkflowOutputViewer copy={getAppCopy('zh')} value={{ result: '可复制结果' }} onCopy={vi.fn()} onOpenWindow={vi.fn()} fontScale={1} onIncreaseFont={vi.fn()} onDecreaseFont={vi.fn()} />,
@@ -494,6 +668,20 @@ describe('WorkflowPage regressions', () => {
 
     expect(workflowPage.summarizeWorkflowRuns(runs, new Set(['run-old']))).toEqual({ count: 2, unviewedCount: 1, firstUnviewedRun: runs[0] })
     expect(workflowPage.summarizeWorkflowRuns(runs, new Set(['run-new', 'run-old']))).toEqual({ count: 2, unviewedCount: 0 })
+  })
+
+  it('exposes run history actions and keeps active records protected from deletion', () => {
+    const workflow = createDefaultWorkflow('Run actions')
+    const run: WorkflowRunRecord = { id: 'run-actions', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'completed', input: {}, nodeStates: [], events: [], allowShellFile: false }
+    const markup = renderToStaticMarkup(<workflowPage.WorkflowExecutionReview copy={getAppCopy('zh')} run={run} statusLabel={() => '运行完成'} onCancel={vi.fn()} onApprove={vi.fn()} onReject={vi.fn()} onResume={vi.fn()} onMarkUnread={vi.fn()} onDelete={vi.fn()} canMarkUnread canDelete />)
+
+    expect(markup).toContain('aria-label="标记未读"')
+    expect(markup).toContain('title="标记未读"')
+    expect(markup).toContain('aria-label="删除记录"')
+    expect(markup).toContain('title="删除记录"')
+    expect(workflowPage.workflowRunCanDelete('completed')).toBe(true)
+    expect(workflowPage.workflowRunCanDelete('running')).toBe(false)
+    expect(workflowPage.workflowRunCanDelete('waiting-approval')).toBe(false)
   })
 
   it('auto-detects structured JSON strings while keeping ordinary text as Markdown', () => {
@@ -522,6 +710,14 @@ describe('WorkflowPage regressions', () => {
     expect(jsonMarkup).toContain('title')
     expect(jsonMarkup).toContain('items')
     expect(jsonMarkup).toContain('<details')
+    expect(jsonMarkup).toContain('全部展开')
+    expect(jsonMarkup).toContain('全部收起')
+
+    const collapsedTree = renderToStaticMarkup(<workflowPage.WorkflowJsonTree value={{ outer: { inner: 'value' } }} />)
+    const expandedTree = renderToStaticMarkup(<workflowPage.WorkflowJsonTree value={{ outer: { inner: 'value' } }} expandAll />)
+    expect((collapsedTree.match(/<details/g) ?? []).length).toBe(2)
+    expect((collapsedTree.match(/<details[^>]*open(?:="")?/gu) ?? []).length).toBe(1)
+    expect((expandedTree.match(/<details[^>]*open(?:="")?/gu) ?? []).length).toBe(2)
   })
 
   it('renders Markdown tables in normal and floating result viewers', () => {
@@ -647,6 +843,32 @@ describe('WorkflowPage regressions', () => {
     expect(historyMarkup).not.toContain('运行输入')
     expect(historyMarkup).not.toContain('允许 Shell / 文件节点')
     expect(historyMarkup).not.toContain('调试运行')
+  })
+
+  it('offers variable or custom text content for the fixed end node', () => {
+    const workflow = createDefaultWorkflow('End output settings')
+    const end = workflow.nodes.find((node) => node.type === 'output')!
+    const markup = renderToStaticMarkup(
+      <workflowPage.WorkflowOutputNodeSettings workflow={workflow} node={end} onChange={vi.fn()} />,
+    )
+    const textMarkup = renderToStaticMarkup(
+      <workflowPage.WorkflowOutputNodeSettings workflow={workflow} node={{ ...end, config: { contentMode: 'text', text: '结果：{{result}}' } }} onChange={vi.fn()} />,
+    )
+
+    expect(markup).toContain('输出内容来源')
+    expect(markup).toContain('变量')
+    expect(markup).toContain('自定义文本')
+    expect(markup).toContain('如需再次处理')
+    expect(markup).toContain('输入变量')
+    expect(textMarkup).toContain('插入变量')
+    expect(markup).not.toContain('添加输出变量')
+  })
+
+  it('uses a stable row key while an output variable name is edited', () => {
+    const rowKey = (workflowPage as unknown as { workflowOutputVariableRowKey?: (index: number) => string }).workflowOutputVariableRowKey
+
+    expect(rowKey?.(0)).toBe('output-variable-0')
+    expect(rowKey?.(1)).toBe('output-variable-1')
   })
 
   it('offers employees and lightweight AI processing without the retired content template entry point', () => {

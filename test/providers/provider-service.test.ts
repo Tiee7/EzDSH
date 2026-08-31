@@ -113,6 +113,70 @@ describe('ProviderService', () => {
     expect(JSON.stringify(models)).not.toContain('workflow-secret')
   })
 
+  it('refreshes an empty workflow model catalog from the configured provider', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    const service = new ProviderService(layout)
+    await service.save({
+      providerId: 'workflow-gateway', custom: true, api: 'openai-completions',
+      apiKey: 'workflow-secret', baseUrl: 'https://gateway.example/v1/', modelIds: [],
+    })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(modelListResponse(['remote-model']))
+
+    try {
+      await expect(service.listWorkflowModels(true)).resolves.toEqual([
+        { providerId: 'workflow-gateway', providerName: 'workflow-gateway', modelId: 'remote-model' },
+      ])
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://gateway.example/v1/models',
+        expect.objectContaining({ headers: { Authorization: 'Bearer workflow-secret' } }),
+      )
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
+  it('reads workflow provider credentials from the Harness refs vault shape', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    await ensureUserDataLayout(layout)
+    await writeFile(join(layout.harness, 'settings.yaml'), [
+      'llm-pi-ai:',
+      '  providers:',
+      '    nested-gateway:',
+      '      apiKeyEnv: NESTED_GATEWAY_KEY',
+      '      api: openai-completions',
+      '      baseURL: https://gateway.example/v1',
+      '      models:',
+      '        - id: configured-model',
+      ''
+    ].join('\n'))
+    await writeFile(join(layout.harness, '.credentials.yaml'), [
+      'version: 1',
+      'refs:',
+      '  NESTED_GATEWAY_KEY: nested-secret',
+      ''
+    ].join('\n'))
+
+    const service = new ProviderService(layout)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(modelListResponse(['remote-model']))
+
+    try {
+      await expect(service.listWorkflowModels(true)).resolves.toEqual([
+        { providerId: 'nested-gateway', providerName: 'nested-gateway', modelId: 'remote-model' },
+      ])
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://gateway.example/v1/models',
+        expect.objectContaining({ headers: { Authorization: 'Bearer nested-secret' } }),
+      )
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
   it('writes catalog providers as catalog references with selected models', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-provider-'))
     roots.push(root)

@@ -296,7 +296,7 @@
 
 .employees-profile-actions {
   flex: none;
-  max-width: 230px;
+  max-width: 340px;
 }
 
 .employees-button {
@@ -555,6 +555,25 @@
   line-height: 1;
 }
 
+.employees-ai-button {
+  color: var(--ezdsh-brand);
+}
+
+.employees-ai-action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.employees-ai-icon {
+  display: block;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  fill: currentColor;
+  stroke: none;
+}
+
 .employees-session-lock-notice {
   display: flex;
   align-items: center;
@@ -586,6 +605,7 @@
 }
 
 .employees-run-content textarea,
+.employees-generation-card textarea,
 .employees-form-grid input,
 .employees-form-grid textarea,
 .employees-step-fields input,
@@ -604,6 +624,7 @@
 }
 
 .employees-run-content textarea:focus,
+.employees-generation-card textarea:focus,
 .employees-run-target-grid select:focus,
 .employees-form-grid input:focus,
 .employees-form-grid textarea:focus,
@@ -679,6 +700,55 @@
 .employees-editor h2 {
   margin-top: 5px;
   font-size: 20px;
+}
+
+.employees-generation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 20px 20px;
+  border: 1px solid var(--ezdsh-active-border);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--ezdsh-active-background);
+}
+
+.employees-generation-copy h3 {
+  margin: 5px 0 0;
+  color: var(--ezdsh-text-heading);
+  font-size: 16px;
+  letter-spacing: -0.025em;
+}
+
+.employees-generation-copy p:last-child {
+  max-width: 680px;
+  margin: 7px 0 0;
+  color: var(--ezdsh-text-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+}
+
+.employees-generation-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ezdsh-text-body);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.employees-generation-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.employees-generation-status {
+  color: var(--ezdsh-accent-green);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .employees-form-grid {

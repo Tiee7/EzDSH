@@ -23,7 +23,7 @@ import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js
 import { WebPane } from './WebPane.js'
 import { StorePage } from '../store/StorePage.js'
 import { PresetPage } from '../store/PresetPage.js'
-import { EmployeesPage } from '../employees/EmployeesPage.js'
+import { EMPLOYEES_REFRESH_EVENT, EmployeesPage } from '../employees/EmployeesPage.js'
 import { WorkflowPage } from '../workflow/WorkflowPage.js'
 import { DocsPage } from '../docs/DocsPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
@@ -164,6 +164,7 @@ export function App() {
   const [navConfig, setNavConfig] = useState<NavConfig>(() => getDefaultNavConfig())
   const [developerMode, setDeveloperMode] = useState(false)
   const [activeTab, setActiveTab] = useState<string>('harness')
+  const [employeesRefreshKey, setEmployeesRefreshKey] = useState(0)
   const [workflowWorkspaceMode, setWorkflowWorkspaceMode] = useState(false)
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
   const [deepLinkTarget, setDeepLinkTarget] = useState<DeepLinkInstallTarget | undefined>()
@@ -364,6 +365,14 @@ export function App() {
     if (activeTab !== 'workflow') setWorkflowWorkspaceMode(false)
   }, [activeTab])
 
+  useEffect(() => {
+    const refreshEmployees = (): void => {
+      setEmployeesRefreshKey((current) => current + 1)
+    }
+    window.addEventListener(EMPLOYEES_REFRESH_EVENT, refreshEmployees)
+    return () => window.removeEventListener(EMPLOYEES_REFRESH_EVENT, refreshEmployees)
+  }, [])
+
   const workspaceLock = workspaceOperation === undefined ? null : (
     <div className="workspace-operation-lock" role="alert" aria-live="assertive">
       <div className="workspace-operation-card">
@@ -416,7 +425,7 @@ export function App() {
                   : null
               case 'employees':
                 return shouldKeepTabMounted(item.id) || activeTab === 'employees'
-                  ? <section key="employees" className={`workspace-pane ${activeTab === 'employees' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabEmployees}><EmployeesPage copy={copy} /></section>
+                  ? <section key="employees" className={`workspace-pane ${activeTab === 'employees' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabEmployees}><EmployeesPage key={employeesRefreshKey} copy={copy} /></section>
                   : null
               case 'docs':
                 return (

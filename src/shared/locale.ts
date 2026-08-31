@@ -284,6 +284,7 @@ export interface AppCopy {
   workflowInput: string
   workflowNodeInput: string
   workflowNodeOutput: string
+  workflowNodeConfiguration: string
   workflowManualInput: string
   workflowInputFromUpstream: string
   workflowNodeNoInput: string
@@ -291,6 +292,8 @@ export interface AppCopy {
   workflowOutput: string
   workflowOutputViewLabel: string
   workflowOutputMarkdown: string
+  workflowExpandAllJson: string
+  workflowCollapseAllJson: string
   workflowCopyOutput: string
   workflowOpenOutputWindow: string
   workflowOutputCopied: string
@@ -302,6 +305,12 @@ export interface AppCopy {
   workflowHistoryCount: (count: number) => string
   workflowUnviewedRuns: (count: number) => string
   workflowViewUnviewedRun: string
+  workflowMarkUnread: string
+  workflowDeleteRun: string
+  workflowDeleteRunConfirm: string
+  workflowCannotDeleteActiveRun: string
+  workflowRunDeleted: string
+  workflowRunMarkedUnread: string
   workflowCloseOutputWindow: string
   workflowOutputWindow: string
   workflowDragOutputWindow: string
@@ -325,12 +334,58 @@ export interface AppCopy {
   workflowExported: string
   workflowImported: string
   workflowGenerate: string
+  workflowGenerateWorkflow: string
+  workflowAiModify: string
+  workflowAiModifyTitle: string
+  workflowAiModifyHint: string
+  workflowAiModifyPlaceholder: string
+  workflowAiModifyStart: string
+  workflowAiModifyWorking: string
+  workflowAiModifyChanges: string
+  workflowAiModifyNoChanges: string
+  workflowAiModifyApply: string
+  workflowAiModifyApplyDeletion: string
+  workflowAiModifyDeletionWarning: string
+  workflowAiModifyDeletedNodes: string
+  workflowAiModifyAdded: string
+  workflowAiModifyUpdated: string
+  workflowAiModifyRewired: string
+  workflowAiModifyApplied: string
+  workflowAiModifyContinueBackground: string
+  workflowAiModifyReady: string
+  workflowAiModifyReview: string
+  workflowAiModifyHistory: string
+  workflowAiModifyHistoryEmpty: string
+  workflowAiModifyHistoryTitle: string
+  workflowAiModifyReapply: string
+  workflowAiModifyReapplyWarning: string
+  workflowAiModifyReapplyConfirm: string
   workflowGenerateHint: string
   workflowGeneratePlaceholder: string
   workflowGenerating: string
   workflowGenerated: string
   workflowGeneratedWithEmployees: (names: string) => string
   workflowGeneratedEmployeeWarnings: (warnings: string) => string
+  workflowGenerationTitle: string
+  workflowGenerationHint: string
+  workflowGenerationPromptLabel: string
+  workflowGenerationHistory: string
+  workflowGenerationHistoryEmpty: string
+  workflowGenerationChooseHistory: string
+  workflowGenerationStart: string
+  workflowGenerationStarting: string
+  workflowGenerationPipeline: string
+  workflowGenerationOpenDraft: string
+  workflowGenerationNoWorkflow: string
+  workflowGenerationRunning: string
+  workflowGenerationCompleted: string
+  workflowGenerationFailed: string
+  workflowGenerationPhasePreparing: string
+  workflowGenerationPhasePlanningEmployees: string
+  workflowGenerationPhaseCreatingEmployees: string
+  workflowGenerationPhaseGeneratingWorkflow: string
+  workflowGenerationPhaseValidating: string
+  workflowGenerationPhaseCompleted: string
   workflowAllowShellFile: string
   workflowAllowShellFileHint: string
   workflowAllowCode: string
@@ -977,6 +1032,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowInput: '运行输入',
     workflowNodeInput: '节点输入',
     workflowNodeOutput: '节点输出',
+    workflowNodeConfiguration: '节点提示词与配置',
     workflowManualInput: '手工输入',
     workflowInputFromUpstream: '来自上游节点',
     workflowNodeNoInput: '该节点还没有输入数据。',
@@ -984,6 +1040,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowOutput: '运行输出',
     workflowOutputViewLabel: '输出查看方式',
     workflowOutputMarkdown: 'Markdown',
+    workflowExpandAllJson: '全部展开',
+    workflowCollapseAllJson: '全部收起',
     workflowCopyOutput: '复制结果',
     workflowOpenOutputWindow: '在浮层中打开',
     workflowOutputCopied: '结果已复制',
@@ -995,6 +1053,12 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowHistoryCount: (count) => `${count} 条历史记录`,
     workflowUnviewedRuns: (count) => `${count} 条未查看的执行结果`,
     workflowViewUnviewedRun: '查看未读结果',
+    workflowMarkUnread: '标记未读',
+    workflowDeleteRun: '删除记录',
+    workflowDeleteRunConfirm: '确定删除这条运行记录吗？此操作不可恢复。',
+    workflowCannotDeleteActiveRun: '运行中的记录不能删除，请先取消运行。',
+    workflowRunDeleted: '运行记录已删除',
+    workflowRunMarkedUnread: '已标记为未读',
     workflowCloseOutputWindow: '关闭结果浮层',
     workflowOutputWindow: '结果浮层',
     workflowDragOutputWindow: '拖动查看窗口',
@@ -1018,12 +1082,58 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowExported: '工作流已导出',
     workflowImported: '工作流已导入，可继续编辑。',
     workflowGenerate: 'AI 生成',
+    workflowGenerateWorkflow: 'AI 生成工作流',
+    workflowAiModify: 'AI 修改',
+    workflowAiModifyTitle: '让 AI 修改当前工作流',
+    workflowAiModifyHint: '可以要求 AI 拆分节点、补充变量、调整连线或优化提示词。修改结果会先预览，不会自动保存。',
+    workflowAiModifyPlaceholder: '例如：把“内容审核”拆成格式检查、事实核验和风险判断三个节点，并保持原有输出变量不变。',
+    workflowAiModifyStart: '分析并生成修改方案',
+    workflowAiModifyWorking: 'AI 正在分析…',
+    workflowAiModifyChanges: '修改内容',
+    workflowAiModifyNoChanges: 'AI 没有发现需要修改的内容。',
+    workflowAiModifyApply: '应用修改方案',
+    workflowAiModifyApplyDeletion: '确认应用并删除节点',
+    workflowAiModifyDeletionWarning: '这个修改方案会删除以下节点。请确认后才会应用：',
+    workflowAiModifyDeletedNodes: '删除节点',
+    workflowAiModifyAdded: '新增',
+    workflowAiModifyUpdated: '更新',
+    workflowAiModifyRewired: '调整连线',
+    workflowAiModifyApplied: 'AI 修改方案已应用，请检查后保存工作流。',
+    workflowAiModifyContinueBackground: '关闭窗口不会中止任务，完成后会在这里通知你。',
+    workflowAiModifyReady: 'AI 修改方案已完成，可查看并选择是否应用。',
+    workflowAiModifyReview: '查看修改方案',
+    workflowAiModifyHistory: 'AI 修改记录',
+    workflowAiModifyHistoryEmpty: '这个工作流还没有 AI 修改记录。',
+    workflowAiModifyHistoryTitle: '查看 AI 修改记录',
+    workflowAiModifyReapply: '重新应用方案',
+    workflowAiModifyReapplyWarning: '重新应用会把这条历史方案覆盖到当前画布。它基于较早版本生成，可能覆盖你现在尚未保存的修改，请确认后继续。',
+    workflowAiModifyReapplyConfirm: '确认重新应用',
     workflowGenerateHint: '描述你想自动化的任务，AI 会生成草稿并直接进入编辑器；确认后保存或取消，不会直接执行。',
     workflowGeneratePlaceholder: '例如：读取项目说明，交给智能处理节点总结，再把结果写入 summary.md',
     workflowGenerating: '正在生成…',
     workflowGenerated: '已生成工作流草稿，请确认后保存或取消。',
     workflowGeneratedWithEmployees: (names) => `已生成工作流草稿，并自动创建专业员工：${names}。员工已保存，可直接在“员工”页查看。`,
     workflowGeneratedEmployeeWarnings: (warnings) => `员工创建提示：${warnings}`,
+    workflowGenerationTitle: 'AI 生成工作流',
+    workflowGenerationHint: '描述目标，AI 会按照固定流程分析需求、规划员工、生成并校验工作流草稿。',
+    workflowGenerationPromptLabel: '描述你想生成的工作流',
+    workflowGenerationHistory: '生成历史',
+    workflowGenerationHistoryEmpty: '还没有生成记录。',
+    workflowGenerationChooseHistory: '选择一条历史记录查看生成过程。',
+    workflowGenerationStart: '开始生成',
+    workflowGenerationStarting: '正在生成…',
+    workflowGenerationPipeline: '固定生成流程',
+    workflowGenerationOpenDraft: '打开工作流草稿',
+    workflowGenerationNoWorkflow: '这条记录没有可打开的工作流草稿。',
+    workflowGenerationRunning: '生成中',
+    workflowGenerationCompleted: '已完成',
+    workflowGenerationFailed: '生成失败',
+    workflowGenerationPhasePreparing: '整理需求',
+    workflowGenerationPhasePlanningEmployees: '规划专业员工',
+    workflowGenerationPhaseCreatingEmployees: '处理专业员工',
+    workflowGenerationPhaseGeneratingWorkflow: '生成工作流结构',
+    workflowGenerationPhaseValidating: '校验与自动排版',
+    workflowGenerationPhaseCompleted: '完成',
     workflowAllowShellFile: '允许 Shell / 文件节点',
     workflowAllowShellFileHint: '运行前需要显式允许；文件路径仍被限制在当前工作区内。',
     workflowAllowCode: '允许代码执行节点',
@@ -1669,6 +1779,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowInput: 'Run input',
     workflowNodeInput: 'Node input',
     workflowNodeOutput: 'Node output',
+    workflowNodeConfiguration: 'Node prompts and configuration',
     workflowManualInput: 'Manual input',
     workflowInputFromUpstream: 'From upstream node',
     workflowNodeNoInput: 'This node has no input data yet.',
@@ -1676,6 +1787,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowOutput: 'Run output',
     workflowOutputViewLabel: 'Output view',
     workflowOutputMarkdown: 'Markdown',
+    workflowExpandAllJson: 'Expand all',
+    workflowCollapseAllJson: 'Collapse all',
     workflowCopyOutput: 'Copy result',
     workflowOpenOutputWindow: 'Open in floating window',
     workflowOutputCopied: 'Result copied',
@@ -1687,6 +1800,12 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowHistoryCount: (count) => `${count} history record${count === 1 ? '' : 's'}`,
     workflowUnviewedRuns: (count) => `${count} unviewed run${count === 1 ? '' : 's'}`,
     workflowViewUnviewedRun: 'View unviewed result',
+    workflowMarkUnread: 'Mark unread',
+    workflowDeleteRun: 'Delete record',
+    workflowDeleteRunConfirm: 'Delete this run record? This action cannot be undone.',
+    workflowCannotDeleteActiveRun: 'An active run cannot be deleted. Cancel it first.',
+    workflowRunDeleted: 'Run record deleted',
+    workflowRunMarkedUnread: 'Marked as unread',
     workflowCloseOutputWindow: 'Close result window',
     workflowOutputWindow: 'Result window',
     workflowDragOutputWindow: 'Drag result window',
@@ -1710,12 +1829,58 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowExported: 'Workflow exported',
     workflowImported: 'Workflow imported and ready to edit.',
     workflowGenerate: 'Generate with AI',
+    workflowGenerateWorkflow: 'Generate workflow with AI',
+    workflowAiModify: 'AI modify',
+    workflowAiModifyTitle: 'Ask AI to modify this workflow',
+    workflowAiModifyHint: 'Ask AI to split nodes, add variables, adjust edges, or refine prompts. The result is previewed first and never saved automatically.',
+    workflowAiModifyPlaceholder: 'For example: split “Content review” into format checks, fact checks, and risk judgment while preserving the existing output variables.',
+    workflowAiModifyStart: 'Analyze and propose changes',
+    workflowAiModifyWorking: 'AI is analyzing…',
+    workflowAiModifyChanges: 'Changes',
+    workflowAiModifyNoChanges: 'AI found no changes to apply.',
+    workflowAiModifyApply: 'Apply changes',
+    workflowAiModifyApplyDeletion: 'Apply and delete nodes',
+    workflowAiModifyDeletionWarning: 'This proposal deletes the following nodes. Confirm before applying:',
+    workflowAiModifyDeletedNodes: 'Deleted nodes',
+    workflowAiModifyAdded: 'Added',
+    workflowAiModifyUpdated: 'Updated',
+    workflowAiModifyRewired: 'Rewired',
+    workflowAiModifyApplied: 'AI changes applied. Review them before saving the workflow.',
+    workflowAiModifyContinueBackground: 'Closing this window will not stop the task. You will be notified here when it finishes.',
+    workflowAiModifyReady: 'The AI modification is ready. Review it and choose whether to apply it.',
+    workflowAiModifyReview: 'Review changes',
+    workflowAiModifyHistory: 'AI modification history',
+    workflowAiModifyHistoryEmpty: 'This workflow has no AI modification history.',
+    workflowAiModifyHistoryTitle: 'Review AI modification history',
+    workflowAiModifyReapply: 'Reapply proposal',
+    workflowAiModifyReapplyWarning: 'Reapplying will apply this historical proposal to the current canvas. It was generated from an earlier revision and may overwrite unsaved changes. Confirm before continuing.',
+    workflowAiModifyReapplyConfirm: 'Confirm reapply',
     workflowGenerateHint: 'Describe the task to automate. AI creates a draft and opens it in the editor; save or cancel after review, and never executes it directly.',
     workflowGeneratePlaceholder: 'For example: read the project brief, summarize it with AI Processing, then write the result to summary.md',
     workflowGenerating: 'Generating…',
     workflowGenerated: 'Workflow draft generated. Review it, then save or cancel.',
     workflowGeneratedWithEmployees: (names) => `Workflow draft generated and professional employees created: ${names}. They are saved and visible on the Employees page.`,
     workflowGeneratedEmployeeWarnings: (warnings) => `Employee creation notice: ${warnings}`,
+    workflowGenerationTitle: 'Generate workflow with AI',
+    workflowGenerationHint: 'Describe the goal. AI will analyze the request, plan employees, generate, and validate a workflow draft through a fixed pipeline.',
+    workflowGenerationPromptLabel: 'Describe the workflow to generate',
+    workflowGenerationHistory: 'Generation history',
+    workflowGenerationHistoryEmpty: 'No generation records yet.',
+    workflowGenerationChooseHistory: 'Choose a history record to inspect its generation process.',
+    workflowGenerationStart: 'Start generation',
+    workflowGenerationStarting: 'Generating…',
+    workflowGenerationPipeline: 'Fixed generation pipeline',
+    workflowGenerationOpenDraft: 'Open workflow draft',
+    workflowGenerationNoWorkflow: 'This record has no workflow draft to open.',
+    workflowGenerationRunning: 'Generating',
+    workflowGenerationCompleted: 'Completed',
+    workflowGenerationFailed: 'Generation failed',
+    workflowGenerationPhasePreparing: 'Prepare request',
+    workflowGenerationPhasePlanningEmployees: 'Plan professional employees',
+    workflowGenerationPhaseCreatingEmployees: 'Process professional employees',
+    workflowGenerationPhaseGeneratingWorkflow: 'Generate workflow structure',
+    workflowGenerationPhaseValidating: 'Validate and arrange',
+    workflowGenerationPhaseCompleted: 'Complete',
     workflowAllowShellFile: 'Allow Shell / File nodes',
     workflowAllowShellFileHint: 'Explicit permission is required before a run; file paths remain confined to the workspace.',
     workflowAllowCode: 'Allow code execution nodes',

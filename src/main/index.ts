@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, shell } from 'electron'
 import { existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { readFile } from 'node:fs/promises'
@@ -87,12 +87,14 @@ import type { EmployeeCreateInput, EmployeeGenerateRequest, EmployeeProjectSumma
 import { WorkflowStore } from './workflow/workflow-store.js'
 import { WorkflowRunStore } from './workflow/workflow-run-store.js'
 import { WorkflowRunService } from './workflow/workflow-run-service.js'
+import { WorkflowGenerationService } from './workflow/workflow-generation-service.js'
+import { WorkflowModificationService } from './workflow/workflow-modification-service.js'
 import { WorkflowLightweightClient } from './workflow/workflow-lightweight-client.js'
 import { WorkflowRuntimeClient } from './workflow/workflow-runtime-client.js'
 import { WorkflowMcpClient } from './workflow/workflow-mcp-client.js'
 import { WorkflowInternalSessionStore } from './workflow/workflow-internal-session-store.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
-import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue } from '../shared/workflow.js'
+import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowModifyRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue } from '../shared/workflow.js'
 import { bindWindowClosedCleanup } from './window-lifecycle.js'
 import { shutdownExternalServicesFirst } from './shutdown.js'
 import { restartApplication, shouldRelaunchWorkspace } from './restart.js'
@@ -151,6 +153,8 @@ let employeeService: EmployeeService | undefined
 let workflowStore: WorkflowStore | undefined
 let workflowRunStore: WorkflowRunStore | undefined
 let workflowRunService: WorkflowRunService | undefined
+let workflowGenerationService: WorkflowGenerationService | undefined
+let workflowModificationService: WorkflowModificationService | undefined
 let isQuitting = false
 let updateDialogOpen = false
 let workspaceOperationActive = false
@@ -164,6 +168,8 @@ let stopExternalServiceWatcher: (() => void) | undefined
 let stopEmployeeWatcher: (() => void) | undefined
 let stopEmployeeLockWatcher: (() => void) | undefined
 let stopWorkflowWatcher: (() => void) | undefined
+let stopWorkflowGenerationWatcher: (() => void) | undefined
+let stopWorkflowModificationWatcher: (() => void) | undefined
 let stopRecoveryListener: (() => void) | undefined
 
 const LIGHT_WINDOW_BACKGROUND = '#f9fafb'
@@ -532,6 +538,10 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   stopEmployeeLockWatcher?.()
   stopWorkflowWatcher?.()
   stopWorkflowWatcher = undefined
+  stopWorkflowGenerationWatcher?.()
+  stopWorkflowGenerationWatcher = undefined
+  stopWorkflowModificationWatcher?.()
+  stopWorkflowModificationWatcher = undefined
   const createWorkflowSessionClient = (): DshSessionClient => {
     const runtimeUrl = runtimeManager?.snapshot().url
     if (runtimeUrl === undefined) throw new Error('DSH Runtime 尚未启动')
@@ -564,6 +574,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
 
   workflowStore = new WorkflowStore(layout.state)
   workflowRunStore = new WorkflowRunStore(layout.state)
+  const workflowAiDocumentation = await readWorkflowAiDocumentation()
   workflowRunService = new WorkflowRunService({
     workflowStore,
     runStore: workflowRunStore,
@@ -577,6 +588,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
       return employeeService.create(input)
     },
     getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
+    ...(workflowAiDocumentation === undefined ? {} : { workflowAiDocumentation }),
     lightweightClient,
     mcpClient: new WorkflowMcpClient({ patchPath: join(layout.harness, 'profiles', 'web', 'cordis.patch.yml') }),
     internalSessionStore: new WorkflowInternalSessionStore(layout.state),
@@ -593,6 +605,18 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     console.error('[workflows] failed to clean retained internal sessions:', message)
   })
   stopWorkflowWatcher = workflowRunService.watch(emitWorkflowState)
+  workflowGenerationService = new WorkflowGenerationService({ stateDir: layout.state, runService: workflowRunService })
+  await workflowGenerationService.initialize().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[workflows] failed to initialize generation history:', message)
+  })
+  stopWorkflowGenerationWatcher = workflowGenerationService.watch(emitWorkflowGenerationState)
+  workflowModificationService = new WorkflowModificationService({ stateDir: layout.state, runService: workflowRunService })
+  await workflowModificationService.initialize().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[workflows] failed to initialize modification history:', message)
+  })
+  stopWorkflowModificationWatcher = workflowModificationService.watch(emitWorkflowModificationState)
 
   externalApiService = new ExternalApiService({
     getRuntimeUrl: () => runtimeManager?.snapshot().url,
@@ -971,6 +995,36 @@ function emitWorkflowState(record: Awaited<ReturnType<WorkflowRunService['get']>
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('workflow-runs:state-change', record)
   }
+}
+
+function emitWorkflowGenerationState(record: Awaited<ReturnType<WorkflowGenerationService['get']>>): void {
+  if (record === undefined) return
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('workflow-generation:state-change', record)
+  }
+}
+
+function emitWorkflowModificationState(record: Awaited<ReturnType<WorkflowModificationService['get']>>): void {
+  if (record === undefined) return
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('workflow-modification:state-change', record)
+  }
+}
+
+async function readWorkflowAiDocumentation(): Promise<string | undefined> {
+  const files = [
+    join(app.getAppPath(), 'docs', 'ai-workflow-generation.md'),
+    join(app.getAppPath(), 'docs', 'workflow-schema.md'),
+  ]
+  const documents: string[] = []
+  for (const file of files) {
+    try {
+      documents.push(`# ${basename(file)}\n\n${await readFile(file, 'utf8')}`)
+    } catch {
+      // Development builds may be started from a checkout without packaged docs.
+    }
+  }
+  return documents.length === 0 ? undefined : documents.join('\n\n')
 }
 
 function requireDeveloperModeFeature(): void {
@@ -1551,10 +1605,34 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
-  ipcMain.handle('workflows:generate', async (_event, request: WorkflowGenerateRequest): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['generate']>>>> => {
+  ipcMain.handle('workflows:generate', async (_event, request: WorkflowGenerateRequest): Promise<IpcResult<Awaited<ReturnType<WorkflowGenerationService['generate']>>>> => {
     try {
-      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
-      return success(await workflowRunService.generate(request))
+      if (workflowGenerationService === undefined) throw new Error('Workflow generation service is not ready')
+      return success(await workflowGenerationService.generate(request))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflows:modify', async (_event, request: WorkflowModifyRequest): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['modify']>>>> => {
+    try {
+      if (workflowModificationService === undefined) throw new Error('Workflow modification service is not ready')
+      return success(await workflowModificationService.modify(request))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-modifications:list', async (_event, workflowId?: string): Promise<IpcResult<Awaited<ReturnType<WorkflowModificationService['list']>>>> => {
+    try {
+      if (workflowModificationService === undefined) throw new Error('Workflow modification service is not ready')
+      return success(await workflowModificationService.list(workflowId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-generations:list', async (): Promise<IpcResult<Awaited<ReturnType<WorkflowGenerationService['list']>>>> => {
+    try {
+      if (workflowGenerationService === undefined) throw new Error('Workflow generation service is not ready')
+      return success(await workflowGenerationService.list())
     } catch (error) {
       return failure(error)
     }
@@ -1584,6 +1662,16 @@ function registerIpcHandlers(): void {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
       if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
       return success(workflowRunService.get(runId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:remove', async (_event, runId: string): Promise<IpcResult<void>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
+      await workflowRunService.remove(runId)
+      return success(undefined)
     } catch (error) {
       return failure(error)
     }

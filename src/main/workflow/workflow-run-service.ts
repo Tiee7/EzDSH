@@ -8,6 +8,11 @@ import type {
   WorkflowEdge,
   WorkflowGenerateRequest,
   WorkflowGenerateResult,
+  WorkflowGenerationProgressUpdate,
+  WorkflowModificationChange,
+  WorkflowModificationProgressUpdate,
+  WorkflowModifyRequest,
+  WorkflowModifyResult,
   WorkflowNode,
   WorkflowNodeInputBinding,
   WorkflowNodeRunState,
@@ -46,6 +51,8 @@ export interface WorkflowRunServiceOptions {
   createEmployee?: (input: EmployeeCreateInput) => Promise<EmployeeSnapshot>
   /** Locale for natural-language fields in AI-generated employee profiles. */
   getLocale?: () => AppLocale
+  /** Canonical EzDSH workflow documentation supplied to generation and modification prompts. */
+  workflowAiDocumentation?: string
   lightweightClient?: Pick<WorkflowLightweightClient, 'complete'>
   mcpClient?: Pick<WorkflowMcpClient, 'call'>
   internalSessionStore?: WorkflowInternalSessionStore
@@ -99,6 +106,17 @@ export class WorkflowRunService {
 
   get(runId: string): WorkflowRunRecord | undefined {
     return this.options.runStore.get(runId)
+  }
+
+  async remove(runId: string): Promise<void> {
+    await this.initialize()
+    const record = this.options.runStore.get(runId)
+    if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+    if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') {
+      throw new Error('运行中的记录不能删除，请先取消运行')
+    }
+    const removed = await this.options.runStore.remove(runId)
+    if (!removed) throw new Error(`Workflow run not found: ${runId}`)
   }
 
   async stop(): Promise<void> {
@@ -209,22 +227,29 @@ export class WorkflowRunService {
     return this.options.runStore.get(runId) ?? record
   }
 
-  async generate(request: WorkflowGenerateRequest): Promise<WorkflowGenerateResult> {
+  async generate(request: WorkflowGenerateRequest, onProgress?: (update: WorkflowGenerationProgressUpdate) => Promise<void> | void): Promise<WorkflowGenerateResult> {
     if (request.prompt.trim() === '') throw new Error('AI 生成需求不能为空')
+    const report = async (phase: WorkflowGenerationProgressUpdate['phase'], message: string): Promise<void> => {
+      await onProgress?.({ phase, message })
+    }
+    await report('preparing', '正在整理需求与生成约束。')
     const existingEmployees = this.options.listEmployees?.() ?? []
     const catalogEntries = existingEmployees.map(employeeCatalogEntry)
     const createdEmployees: EmployeeSnapshot[] = []
     const employeeWarnings: string[] = []
     const canCreateEmployees = this.options.createEmployee !== undefined && request.createEmployees !== false
+    await report('planning-employees', canCreateEmployees ? '正在判断是否需要专业员工。' : '已跳过专业员工规划。')
     if (canCreateEmployees) {
       try {
         const planText = await this.lightweightClient.complete({
           systemPrompt: buildEmployeePlanPrompt(catalogEntries, this.options.getLocale?.() ?? DEFAULT_APP_LOCALE),
           prompt: `用户需求：${request.prompt.slice(0, 8_000)}`,
           outputMode: 'json',
+          ...(request.model === undefined ? {} : { model: request.model }),
         })
         const plan = extractJsonDocument(planText)
         const specs = isUnknownRecord(plan) && Array.isArray(plan.employees) ? plan.employees : []
+        await report('creating-employees', specs.length === 0 ? '没有需要新建的专业员工。' : `已规划 ${specs.length} 名专业员工，正在创建。`)
         for (const spec of specs) {
           const input = employeeSpecToCreateInput(spec)
           if (input === undefined) {
@@ -232,20 +257,27 @@ export class WorkflowRunService {
             continue
           }
           try {
+            await report('creating-employees', `正在创建专业员工「${input.name}」。`)
             createdEmployees.push(await this.options.createEmployee!(input))
           } catch (error) {
             employeeWarnings.push(`员工「${input.name}」创建失败：${error instanceof Error ? error.message : String(error)}`)
           }
         }
+        if (specs.length > 0) await report('creating-employees', createdEmployees.length === specs.length ? `专业员工创建完成，共 ${createdEmployees.length} 名。` : `专业员工处理完成，成功创建 ${createdEmployees.length} 名。`)
       } catch (error) {
         employeeWarnings.push(`员工规划失败，仅使用现有员工：${error instanceof Error ? error.message : String(error)}`)
+        await report('creating-employees', '专业员工规划失败，将继续使用现有员工生成工作流。')
       }
+    } else {
+      await report('creating-employees', '没有需要创建的专业员工。')
     }
     const finalCatalog = [...catalogEntries, ...createdEmployees.map(employeeCatalogEntry)]
+    await report('generating-workflow', '正在根据需求、员工目录和固定 Schema 生成工作流草稿。')
     const text = await this.lightweightClient.complete({
-      systemPrompt: buildWorkflowGenerationPrompt(finalCatalog),
+      systemPrompt: buildWorkflowGenerationPrompt(finalCatalog, this.options.workflowAiDocumentation),
       prompt: `用户需求：${request.prompt.slice(0, 8_000)}`,
       outputMode: 'json',
+      ...(request.model === undefined ? {} : { model: request.model }),
     })
     const raw = extractJsonDocument(text)
     const candidate = typeof raw === 'object' && raw !== null ? { ...(raw as Record<string, unknown>), id: `workflow-${randomUUID()}` } : raw
@@ -254,6 +286,7 @@ export class WorkflowRunService {
       : { ...(candidate as Record<string, unknown>), name: request.name.trim() })
     if (normalizedWorkflow === undefined) throw new Error('AI 返回的 Workflow 文档格式无效')
     const repaired = repairGeneratedWorkflow(normalizedWorkflow, finalCatalog)
+    await report('validating', '正在规范化节点、补齐布局并校验依赖关系。')
     const workflow = layoutWorkflowNodes(repaired.workflow)
     const validation = validateWorkflow(workflow)
     if (!validation.valid) throw new Error(`AI 返回的 Workflow 不符合结构规范：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join('；')}`)
@@ -261,6 +294,59 @@ export class WorkflowRunService {
       workflow,
       createdEmployees,
       ...(employeeWarnings.length + repaired.warnings.length > 0 ? { employeeWarnings: [...employeeWarnings, ...repaired.warnings] } : {}),
+    }
+  }
+
+  async modify(request: WorkflowModifyRequest, onProgress?: (update: WorkflowModificationProgressUpdate) => Promise<void> | void): Promise<WorkflowModifyResult> {
+    if (request.prompt.trim() === '') throw new Error('AI 修改需求不能为空')
+    const report = async (phase: WorkflowModificationProgressUpdate['phase'], message: string): Promise<void> => {
+      await onProgress?.({ phase, message })
+    }
+    const current = cloneWorkflow(request.workflow)
+    await report('preparing', '正在读取当前工作流和修改目标。')
+    const validation = validateWorkflow(current)
+    if (!validation.valid) throw new Error(`当前 Workflow 无法交给 AI 修改：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join('；')}`)
+    const catalog = (this.options.listEmployees?.() ?? []).map(employeeCatalogEntry)
+    await report('analyzing', `正在分析 ${current.nodes.length} 个节点、变量和流程依赖。`)
+    await report('generating', '正在根据修改要求生成最小变更方案。')
+    const text = await this.lightweightClient.complete({
+      systemPrompt: buildWorkflowModificationPrompt(this.options.workflowAiDocumentation),
+      prompt: [
+        `用户希望修改当前工作流：${request.prompt.slice(0, 8_000)}`,
+        '当前工作流 JSON：',
+        JSON.stringify(current),
+        `可用专业员工目录（只能保留其中真实存在的 employeeId）：${JSON.stringify(catalog)}`,
+      ].join('\n\n'),
+      outputMode: 'json',
+      ...(request.model === undefined ? {} : { model: request.model }),
+    })
+    const raw = extractJsonDocument(text)
+    const rawWorkflow = isUnknownRecord(raw) && isUnknownRecord(raw.workflow) ? raw.workflow : raw
+    if (!isUnknownRecord(rawWorkflow)) throw new Error('AI 返回的 Workflow 修改结果格式无效')
+    const candidate = {
+      ...rawWorkflow,
+      id: current.id,
+      name: typeof rawWorkflow.name === 'string' && rawWorkflow.name.trim() !== '' ? rawWorkflow.name : current.name,
+      description: typeof rawWorkflow.description === 'string' ? rawWorkflow.description : current.description,
+      revision: current.revision,
+      enabled: typeof rawWorkflow.enabled === 'boolean' ? rawWorkflow.enabled : current.enabled,
+      createdAt: current.createdAt,
+      updatedAt: new Date().toISOString(),
+    }
+    const normalized = normalizeWorkflow(candidate)
+    if (normalized === undefined) throw new Error('AI 返回的 Workflow 修改结果无法解析')
+    const repaired = repairGeneratedWorkflow(normalized, catalog)
+    await report('validating', '正在校验修改后的节点、变量、连线和无环依赖。')
+    const workflow = layoutWorkflowNodes(repaired.workflow)
+    const result = validateWorkflow(workflow)
+    if (!result.valid) throw new Error(`AI 修改后的 Workflow 不符合结构规范：${result.issues.map((issue) => `${issue.path} ${issue.message}`).join('；')}`)
+    const changes = describeWorkflowChanges(current, workflow)
+    return {
+      workflow,
+      changes,
+      removedNodes: changes
+        .filter((change): change is WorkflowModificationChange & { type: 'removed'; targetId: string; targetLabel: string } => change.type === 'removed' && change.targetId !== undefined && change.targetLabel !== undefined)
+        .map((change) => ({ id: change.targetId, label: change.targetLabel })),
     }
   }
 
@@ -483,6 +569,14 @@ export class WorkflowRunService {
       case 'approval': throw new WorkflowApprovalRequired(node.config.message)
       case 'transform': return transform(node.config.template, node.config.text, this.primaryNodeValue(node, previous))
       case 'output': {
+        if (node.config.contentMode === 'text') {
+          const variables = isRecord(previous)
+            ? previous
+            : node.inputBindings?.length === 1
+              ? { [node.inputBindings[0]?.name ?? 'value']: previous }
+              : { value: previous }
+          return interpolateWorkflowVariables(node.config.text ?? '', variables)
+        }
         const bindings = node.inputBindings
         if (bindings !== undefined && bindings.length === 1 && isRecord(previous)) return previous[bindings[0]?.name ?? 'result'] ?? null
         return previous
@@ -907,10 +1001,10 @@ function generatedTerminalNodeId(nodes: WorkflowNode[], base: string): string {
 function ensureGeneratedTerminalNodes(nodes: WorkflowNode[]): WorkflowNode[] {
   const withInput = nodes.some((node) => node.type === 'input')
     ? nodes
-    : [{ id: generatedTerminalNodeId(nodes, 'input'), type: 'input' as const, label: '输入', config: { name: 'task' }, position: { x: 0, y: 0 } }, ...nodes]
+    : [{ id: generatedTerminalNodeId(nodes, 'input'), type: 'input' as const, label: '开始', config: { name: 'task' }, position: { x: 0, y: 0 } }, ...nodes]
   return withInput.some((node) => node.type === 'output')
     ? withInput
-    : [...withInput, { id: generatedTerminalNodeId(withInput, 'output'), type: 'output' as const, label: '最终输出', config: {}, position: { x: 0, y: 0 } }]
+    : [...withInput, { id: generatedTerminalNodeId(withInput, 'output'), type: 'output' as const, label: '结束', config: { contentMode: 'variable' as const }, position: { x: 0, y: 0 } }]
 }
 
 function repairGeneratedWorkflow(workflow: WorkflowDefinition, catalog: EmployeeCatalogEntry[]): { workflow: WorkflowDefinition; warnings: string[] } {
@@ -919,19 +1013,79 @@ function repairGeneratedWorkflow(workflow: WorkflowDefinition, catalog: Employee
   return { workflow: { ...workflow, nodes, edges: repairGeneratedEdges(nodes, workflow.edges) }, warnings }
 }
 
-function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[]): string {
+function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[], workflowAiDocumentation?: string): string {
   return [
-    '你是 Workflow 架构助手。根据用户描述生成一个可审阅的 JSON 工作流文档。',
-    '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
-    '文档必须包含 name、description、nodes、edges；nodes 必须包含一个 input 输入节点和一个 output 最终输出节点。每个 nodes 项必须有唯一的 id、type、label、config、position（{ "x": 数字, "y": 数字 }）、inputBindings（数组）和 outputVariables（数组）；每个 edges 项必须有唯一的 id、source、target。source 和 target 必须是 nodes 中已有的 id。edges 只表达执行顺序、分支和循环，不能留空（只有一个节点时例外），不能有循环。节点与连线结构遵循 docs/workflow-schema.md 中的 Workflow Schema v2。',
-    '节点的输入数据只能由 inputBindings 显式选择；每项格式为 {"id":"...","name":"本节点变量名","sourceNodeId":"来源节点 ID","sourcePath":"可选 JSON 字段路径","required":true}。sourcePath 缺省时指向来源节点完整 result；input 节点可直接作为变量来源。变量引用也会形成执行依赖，即使没有直接连线。节点提示词只使用自己声明的 {{变量名}} 或 {{变量名.字段}}。outputVariables 用于声明 JSON 输出字段，例如 [{"name":"summary","description":"调研摘要"}]；result 始终代表完整输出。',
-    'ai-task 用于轻量内联智能处理；employee 必须引用目录中真实存在的 employeeId，并填写非空 instruction；目录中不存在的员工 ID 禁止出现在 employee 节点中。如果目录中没有任何员工适合该职责，使用 ai-task 而不是编造员工。禁止输出旧版 agent 节点。',
-    'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds（数组）和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 必须是至少一条非空字符串；condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than；每个 condition 必须有且只应有两个下游连线，分别明确写 sourcePort: "true" 与 sourcePort: "false"，不能省略；transform.template 只能是 identity、json、extract-text、prepend、append。',
-    '需要访问外部 HTTP API 时使用 http 节点，config 必须包含 method（GET、POST、PUT、PATCH、DELETE）、http/https url、headers 对象、responseMode（auto、json 或 text），可选 query、body、timeoutMs；代码自动化使用 code 节点，language 只能是 nodejs 或 python3，code 非空。Node.js 代码可使用 input、previous 变量并 return 结果；Python3 代码可使用 input、previous 变量并给 result 赋值。代码节点运行前需要用户在运行对话框显式授权。',
-    '只有用户明确提供了 MCP 工具名时才生成 MCP 节点，否则使用 ai-task 或 employee，不要生成空 tool。',
-    '不要生成 API Key、密码或 Token。只有用户明确要求代码自动化时才生成 code 节点；代码应保持最小范围，不要使用 eval、反向 Shell 或破坏性命令。文件路径必须是工作区相对路径。',
+    '你是 EzDSH Workflow 架构助手。根据用户描述生成一个可审阅、可运行的 Workflow Schema v2 JSON。本文提示词是 docs/ai-workflow-generation.md 的运行时摘要；遵守它，不要凭经验发明节点或运行语义。',
+    '只输出一个 JSON 对象，不要 Markdown 代码围栏、解释或额外文本。顶层至少包含 schemaVersion: 2、id、name、description、revision、enabled、nodes、edges。必须有一个 input 节点和一个 output 节点。每个节点都输出唯一 id、type、label、config、position（数字 x/y）、inputBindings（数组）和 outputVariables（数组）；每条边都输出唯一 id、source、target，并且引用已有节点。多节点工作流的 edges 不能为空，图不能有环。',
+    '把工作流理解为有向无环图：节点负责一个清晰职责；连线负责执行顺序、分支和汇聚；inputBindings 负责数据来源、字段选择和本地变量名；instruction 只负责使用本节点已经声明的变量。坐标只影响画布，不影响执行。',
+    '工作流有多个启动参数时，优先让 input 节点使用 config.fields，例如 [{"name":"topic","label":"主题","type":"string","required":true},{"name":"audience","label":"受众","type":"string","required":false,"defaultValue":""}]。fields 中的每一项都会出现在运行前输入表单；input 节点的完整 result 仍然是启动输入对象，下游通过 sourcePath 选择字段。只有单值输入才使用 config.name。字段 type 只能是 string、number、boolean 或 json。',
+    '输入绑定格式为 {"id":"唯一绑定ID","name":"本节点变量名","sourceNodeId":"来源节点ID","sourcePath":"可选点号字段路径","required":true}，可选 defaultValue。name 必须符合 ^[A-Za-z_][A-Za-z0-9_]*$ 且在本节点内唯一。sourcePath 省略表示来源节点完整 result；设置后只取该字段，例如 summary 或 profile.name。绑定本身也形成执行依赖，即使没有直接边。每个 {{变量}} 或 {{变量.字段}} 都必须有对应绑定；禁止使用未声明的全局历史上下文。',
+    '一个节点可以绑定多个上游，一个上游也可以被多个下游绑定。多输入默认是 AND：下游等待所有依赖节点进入终态；没有“任意一个完成即可继续”的 any/or/race/first 语义。失败不是成功值。需要择一路径时使用 condition，不要省略绑定或伪造 OR 汇聚。普通 fan-out 用多个画布节点；parallel 只用于同一节点内并行执行多条相似指令并返回数组。',
+    '输出变量用于声明 JSON 输出字段，例如 [{"name":"summary","description":"摘要"}]；每个节点的完整输出都隐含为 result，不要重复声明 result。需要字段级下游引用时使用 outputMode: json、声明 outputVariables，并在 instruction 中要求严格只输出 JSON。',
+    '节点类型选择：ai-task 是当前工作流的一次轻量内联推理；employee 是可复用、有业务边界和质量标准的专业岗位；skill 是明确技能；mcp 是明确工具调用；transform 是确定性转换；condition 是二路 true/false 判断；approval 是人工确认；loop 是有上限的数组迭代；output 是固定的最终结果节点。output 也要声明 inputBindings：变量模式会转发一个或多个绑定值；文本模式使用 config.text 模板，并可在文本中使用已绑定的 {{变量}} 或 {{变量.字段}} 重组多个值。http/code/shell/file 只在用户明确要求时使用。禁止生成旧版 agent 或未实现的 switch、merge、race、retry、global-context 节点。',
+    'employee 节点必须引用目录中真实存在且启用的 employeeId，并填写非空 instruction。员工是可复用的专业岗位定义，不是一次性任务或运行会话。不要把员工名称当 ID，也不要猜不存在的员工或技能。没有合适员工时用 ai-task；只有请求允许创建员工并且已经得到真实 employeeId 时才引用新员工。员工长期职责放在员工档案，当前一次性任务放在节点 instruction。',
+    'condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than。每个 condition 最多两条下游路径，必须分别使用 sourcePort: "true" 和 sourcePort: "false"；三种以上情况用嵌套 condition。true/false 汇入共同下游是允许的：未选分支会 skipped，但不要把两个互斥分支结果都设为 required；必要时统一输出结构，或使用 required: false 与 defaultValue。',
+    'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds 数组和 outputMode（text 或 json）。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 至少一条非空字符串；loop.instruction 非空且 maxIterations 在 1 到 100；transform.template 只能是 identity、json、extract-text、prepend、append。',
+    '需要 HTTP API 时使用 http：method 只能 GET、POST、PUT、PATCH、DELETE，url 只能 http/https，headers 必须是对象，responseMode 只能 auto/json/text，可选 query、body、timeoutMs。代码使用 code：language 只能 nodejs/python3，code 非空；Node.js 使用 input/previous 并 return，Python3 使用 input/previous 并给 result 赋值。code、shell、file 运行前可能需要用户显式授权。',
+    '只有用户明确提供 MCP 工具名时才生成 mcp，否则使用 ai-task 或 employee；不要生成空 tool。不要生成 API Key、密码、Token、任意危险命令、eval、反向 Shell、破坏性删除逻辑。file 路径必须是工作区相对路径。不能把会话 ID、运行 ID或运行结果写入工作流定义。',
+    '生成流程必须先识别最终结果和启动输入，再拆分职责，设计每个节点的输入绑定与输出字段，之后画控制流和分支，最后校验所有 ID、字段、依赖和无环关系。',
     `可用专业员工目录（只能引用其中的 employeeId）：${JSON.stringify(catalog)}`,
+    workflowDocumentationContext(workflowAiDocumentation),
   ].join('\n')
+}
+
+function buildWorkflowModificationPrompt(workflowAiDocumentation?: string): string {
+  return [
+    '你是 EzDSH Workflow 修改架构助手。你要在用户提供的现有 Workflow Schema v2 上做精确修改，而不是重新臆造一个无关流程。',
+    '只输出一个 JSON 对象，必须是修改后的完整 WorkflowDefinition；不要输出 Markdown 代码围栏、解释、changes 字段或额外文本。',
+    '除非用户明确要求，否则保留现有工作流的 id、开始节点、结束节点、已有节点职责和已有连线。用户要求拆分时，可以把一个职责拆成多个更细节点，但必须同步更新 edges、inputBindings 和 outputVariables，确保每个节点仍然可执行。',
+    '删除节点是高风险修改：只有用户明确要求删除、替换或移除某项职责时才删除；否则保留节点并通过新增、拆分或修改配置实现目标。应用层会比较修改前后的节点并在删除发生时要求用户确认。',
+    '把控制流和数据流分开：edges 表达执行顺序、分支和汇聚，inputBindings 表达变量来源。一个节点可以绑定多个来源，一个来源也可以提供给多个下游；多输入默认等待全部依赖完成。不要发明 switch、merge、any、race、global-context 等未实现节点或语义。',
+    '所有员工节点必须引用现有员工目录中的真实 employeeId；不要凭空创建员工、技能、MCP 工具或模型。不要把运行结果、会话 ID、API Key、密码或 Token 写入工作流定义。',
+    '修改后必须保留且只能保留一个 input 开始节点和一个 output 结束节点；图必须是无环图；每个节点都必须包含合法 type、label、config、position，并正确维护输入绑定和连线引用。',
+    '先理解用户要解决的问题，再最小范围修改；如果需求存在多种实现，优先选择用户能在画布和变量面板中直接审阅的实现。',
+    workflowDocumentationContext(workflowAiDocumentation),
+  ].join('\n')
+}
+
+function workflowDocumentationContext(documentation?: string): string {
+  const text = documentation?.trim()
+  if (text === undefined || text === '') return '当前未能读取本地 Workflow 文档；以上运行时规则是最低约束，不能放宽。'
+  return ['以下是随 EzDSH 提供的 Workflow 文档原文，必须把它作为 Schema、变量、执行语义和安全边界的权威约束：', '---', text.slice(0, 60_000), '---'].join('\n')
+}
+
+function describeWorkflowChanges(before: WorkflowDefinition, after: WorkflowDefinition): WorkflowModificationChange[] {
+  const changes: WorkflowModificationChange[] = []
+  const beforeNodes = new Map(before.nodes.map((node) => [node.id, node]))
+  const afterNodes = new Map(after.nodes.map((node) => [node.id, node]))
+  for (const node of before.nodes) {
+    if (!afterNodes.has(node.id)) changes.push({ type: 'removed', targetId: node.id, targetLabel: node.label, details: `删除节点「${node.label}」。` })
+  }
+  for (const node of after.nodes) {
+    const previous = beforeNodes.get(node.id)
+    if (previous === undefined) {
+      changes.push({ type: 'added', targetId: node.id, targetLabel: node.label, details: `新增节点「${node.label}」。` })
+      continue
+    }
+    const { position: _previousPosition, ...previousWithoutPosition } = previous
+    const { position: _nextPosition, ...nextWithoutPosition } = node
+    if (JSON.stringify(previousWithoutPosition) !== JSON.stringify(nextWithoutPosition)) changes.push({ type: 'updated', targetId: node.id, targetLabel: node.label, details: `更新节点「${node.label}」的配置、提示词或变量。` })
+  }
+
+  const beforeEdges = new Map(before.edges.map((edge) => [edge.id, edge]))
+  const afterEdges = new Map(after.edges.map((edge) => [edge.id, edge]))
+  for (const edge of before.edges) {
+    if (!afterEdges.has(edge.id)) changes.push({ type: 'rewired', targetId: edge.id, details: '移除了一条流程连线。' })
+  }
+  for (const edge of after.edges) {
+    const previous = beforeEdges.get(edge.id)
+    if (previous === undefined) {
+      changes.push({ type: 'rewired', targetId: edge.id, details: '新增了一条流程连线。' })
+    } else if (JSON.stringify(previous) !== JSON.stringify(edge)) {
+      changes.push({ type: 'rewired', targetId: edge.id, details: '调整了一条流程连线。' })
+    }
+  }
+  return changes
 }
 
 function normalizeModelSelection(value: unknown): WorkflowModelSelection | undefined {
@@ -947,12 +1101,44 @@ function normalizeModelSelection(value: unknown): WorkflowModelSelection | undef
 function evaluateCondition(operator: ConditionOperator, left: WorkflowValue, right: WorkflowValue | undefined): boolean {
   switch (operator) {
     case 'truthy': return Boolean(left)
-    case 'equals': return JSON.stringify(left) === JSON.stringify(right)
-    case 'not-equals': return JSON.stringify(left) !== JSON.stringify(right)
-    case 'contains': return typeof left === 'string' && typeof right === 'string' ? left.includes(right) : Array.isArray(left) && left.some((item) => JSON.stringify(item) === JSON.stringify(right))
-    case 'greater-than': return typeof left === 'number' && typeof right === 'number' && left > right
-    case 'less-than': return typeof left === 'number' && typeof right === 'number' && left < right
+    case 'equals': return conditionValuesEqual(left, right)
+    case 'not-equals': return !conditionValuesEqual(left, right)
+    case 'contains': return typeof left === 'string' && typeof right === 'string' ? left.includes(right) : Array.isArray(left) && left.some((item) => conditionValuesEqual(item, right))
+    case 'greater-than': {
+      const leftNumber = conditionNumber(left)
+      const rightNumber = conditionNumber(right)
+      return leftNumber !== undefined && rightNumber !== undefined && leftNumber > rightNumber
+    }
+    case 'less-than': {
+      const leftNumber = conditionNumber(left)
+      const rightNumber = conditionNumber(right)
+      return leftNumber !== undefined && rightNumber !== undefined && leftNumber < rightNumber
+    }
   }
+}
+
+function conditionValuesEqual(left: WorkflowValue, right: WorkflowValue | undefined): boolean {
+  return JSON.stringify(conditionScalar(left)) === JSON.stringify(conditionScalar(right))
+}
+
+/** Plain run fields arrive as text, so recognize unambiguous JSON scalar spellings during comparison. */
+function conditionScalar(value: WorkflowValue | undefined): WorkflowValue | undefined {
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if (trimmed === '') return value
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    return parsed === null || typeof parsed === 'number' || typeof parsed === 'boolean' ? parsed : value
+  } catch {
+    return value
+  }
+}
+
+function conditionNumber(value: WorkflowValue | undefined): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 function transform(template: Extract<WorkflowNode, { type: 'transform' }>['config']['template'], text: string | undefined, value: WorkflowValue): WorkflowValue {

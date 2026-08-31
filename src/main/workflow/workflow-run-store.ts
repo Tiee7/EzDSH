@@ -70,6 +70,13 @@ export class WorkflowRunStore {
     return cloneWorkflow(record)
   }
 
+  async remove(id: string): Promise<boolean> {
+    await this.initialize()
+    const removed = this.runs.delete(id)
+    if (removed) await this.persist()
+    return removed
+  }
+
   /** Remove terminal run history whose configured retention period has elapsed. */
   async pruneExpired(now = new Date()): Promise<string[]> {
     await this.initialize()

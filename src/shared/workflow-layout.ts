@@ -15,10 +15,20 @@ export function layoutWorkflowNodes(workflow: WorkflowDefinition): WorkflowDefin
   const nodeIds = new Set(workflow.nodes.map((node) => node.id))
   const incoming = new Map(workflow.nodes.map((node) => [node.id, 0]))
   const outgoing = new Map<string, string[]>()
+  const dependencyPairs = new Set<string>()
+  const addDependency = (source: string, target: string): void => {
+    if (!nodeIds.has(source) || !nodeIds.has(target) || source === target) return
+    const pair = `${source}\u0000${target}`
+    if (dependencyPairs.has(pair)) return
+    dependencyPairs.add(pair)
+    incoming.set(target, (incoming.get(target) ?? 0) + 1)
+    outgoing.set(source, [...(outgoing.get(source) ?? []), target])
+  }
   for (const edge of workflow.edges) {
-    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target) || edge.source === edge.target) continue
-    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1)
-    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target])
+    addDependency(edge.source, edge.target)
+  }
+  for (const node of workflow.nodes) {
+    for (const binding of node.inputBindings ?? []) addDependency(binding.sourceNodeId, node.id)
   }
 
   const orderById = new Map(workflow.nodes.map((node, index) => [node.id, index]))

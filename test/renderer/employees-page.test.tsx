@@ -29,13 +29,13 @@ describe('EmployeesPage', () => {
     expect(markup).not.toContain('新增步骤')
   })
 
-  it('reloads the whole page from the refresh action', () => {
-    const reload = vi.fn()
-    vi.stubGlobal('window', { location: { reload } })
+  it('requests a local employee-page refresh without reloading the app', () => {
+    const dispatchEvent = vi.fn()
+    vi.stubGlobal('window', { dispatchEvent })
 
     reloadPage()
 
-    expect(reload).toHaveBeenCalledOnce()
+    expect(dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ezdsh:refresh-employees' }))
     vi.unstubAllGlobals()
   })
 

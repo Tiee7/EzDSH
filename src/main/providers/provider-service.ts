@@ -203,12 +203,11 @@ export class ProviderService {
       ? sourceRoute.apiKeyEnv
       : definition?.credentialKey ?? deriveCredentialKey(providerId)
     const credentials = await this.readDocument(this.credentialsPath)
-    const hasStoredKey = typeof credentials[credentialKey] === 'string'
-      && (credentials[credentialKey] as string).trim().length > 0
+    const hasStoredKey = this.readCredential(credentialKey, credentials) !== undefined
     if (apiKey.length === 0 && !hasStoredKey) {
       throw new Error('API Key 不能为空')
     }
-    if (apiKey.length > 0) credentials[credentialKey] = apiKey
+    if (apiKey.length > 0) this.writeCredential(credentialKey, apiKey, credentials)
     await this.writePrivateDocument(this.credentialsPath, credentials)
 
     this.writeRoute(
@@ -255,8 +254,7 @@ export class ProviderService {
       }
     }
 
-    if (credentialKey !== undefined && typeof credentials[credentialKey] === 'string') {
-      delete credentials[credentialKey]
+    if (credentialKey !== undefined && this.deleteCredential(credentialKey, credentials)) {
       await this.writePrivateDocument(this.credentialsPath, credentials)
     }
 
@@ -294,9 +292,7 @@ export class ProviderService {
         : definition?.credentialKey ?? deriveCredentialKey(providerId)
       const apiKey = typeof process.env[credentialKey] === 'string' && process.env[credentialKey]?.trim() !== ''
         ? process.env[credentialKey]!.trim()
-        : typeof credentials[credentialKey] === 'string'
-          ? (credentials[credentialKey] as string).trim()
-          : ''
+        : this.readCredential(credentialKey, credentials) ?? ''
       if (apiKey === '') continue
       const baseUrl = this.normalizeBaseUrl(typeof route.baseURL === 'string' ? route.baseURL : definition?.defaultBaseUrl ?? this.catalogBaseUrl(providerId))
       if (baseUrl === undefined) continue
@@ -326,8 +322,8 @@ export class ProviderService {
     throw new Error('没有可用于轻量智能处理的模型。请先在设置中配置至少一个供应商、API Key 和模型。')
   }
 
-  /** Lists safe, configured model choices for the workflow run dialog. */
-  async listWorkflowModels(): Promise<WorkflowModelOption[]> {
+  /** Lists safe model choices for the workflow run dialog. Refresh may query configured providers. */
+  async listWorkflowModels(refresh = false): Promise<WorkflowModelOption[]> {
     if (this.options.listRuntimeModels !== undefined) {
       try {
         const runtimeModels = await this.options.listRuntimeModels()
@@ -343,9 +339,25 @@ export class ProviderService {
       if (!usable.has(definition.id)) continue
       const profile = await this.getProfile(definition.id)
       const configuredModels: ProviderModel[] = profile?.models ?? (profile?.modelIds ?? []).map((modelId) => ({ id: modelId }))
-      const models: ProviderModel[] = configuredModels.length > 0
-        ? configuredModels
-        : definition.id === 'deepseek-official' ? [{ id: 'deepseek-chat' } satisfies ProviderModel] : []
+      let models: ProviderModel[] = configuredModels
+      if (refresh) {
+        try {
+          const refreshed = await this.listModels({
+            providerId: definition.id,
+            apiKey: '',
+            ...(profile?.baseUrl === undefined ? {} : { baseUrl: profile.baseUrl }),
+            ...(profile?.api === undefined ? {} : { api: profile.api }),
+          })
+          if (refreshed.length > 0) models = refreshed
+        } catch {
+          // Keep configured models when a provider is temporarily unreachable.
+        }
+      }
+      if (models.length === 0) {
+        models = definition.modelCatalogSource === 'catalog'
+          ? this.getCatalogModels(definition.id)
+          : definition.id === 'deepseek-official' ? [{ id: 'deepseek-chat' } satisfies ProviderModel] : []
+      }
       for (const model of models) {
         options.push({
           providerId: definition.id,
@@ -377,9 +389,43 @@ export class ProviderService {
 
   private hasCredential(key: string, credentials: JsonMap): boolean {
     const fromEnvironment = process.env[key]
-    const fromFile = credentials[key]
     return (typeof fromEnvironment === 'string' && fromEnvironment.trim().length > 0)
-      || (typeof fromFile === 'string' && fromFile.trim().length > 0)
+      || this.readCredential(key, credentials) !== undefined
+  }
+
+  /** Read both EzDSH's legacy flat vault and Harness's versioned refs vault. */
+  private readCredential(key: string, credentials: JsonMap): string | undefined {
+    const direct = credentials[key]
+    if (typeof direct === 'string' && direct.trim().length > 0) return direct.trim()
+    const refs = asMap(credentials.refs)
+    const referenced = refs?.[key]
+    return typeof referenced === 'string' && referenced.trim().length > 0 ? referenced.trim() : undefined
+  }
+
+  /** Preserve the existing vault shape when saving a provider credential. */
+  private writeCredential(key: string, value: string, credentials: JsonMap): void {
+    const refs = asMap(credentials.refs)
+    if (refs !== undefined) {
+      refs[key] = value
+      credentials.refs = refs
+      return
+    }
+    credentials[key] = value
+  }
+
+  private deleteCredential(key: string, credentials: JsonMap): boolean {
+    let changed = false
+    if (typeof credentials[key] === 'string') {
+      delete credentials[key]
+      changed = true
+    }
+    const refs = asMap(credentials.refs)
+    if (refs !== undefined && typeof refs[key] === 'string') {
+      delete refs[key]
+      credentials.refs = refs
+      changed = true
+    }
+    return changed
   }
 
   private isRouteConfigured(providerId: string, settings: JsonMap): boolean {
@@ -438,9 +484,8 @@ export class ProviderService {
         ? route.apiKeyEnv
         : definition?.credentialKey ?? deriveCredentialKey(input.providerId)
       const credentials = await this.readDocument(this.credentialsPath)
-      const stored = credentials[credentialKey]
-      if (typeof stored === 'string' && stored.trim().length > 0) apiKey = stored.trim()
-      else throw new Error('API Key 不能为空')
+      apiKey = this.readCredential(credentialKey, credentials) ?? ''
+      if (apiKey === '') throw new Error('API Key 不能为空')
     }
 
     const endpoint = new URL(`${baseUrl.replace(/\/+$/u, '')}/models`).toString()

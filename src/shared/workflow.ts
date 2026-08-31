@@ -56,6 +56,8 @@ export interface WorkflowNodeBase<T extends WorkflowNodeType, C> {
   id: string
   type: T
   label: string
+  /** Optional human-facing context shown above the node's settings. */
+  description?: string
   config: C
   position: WorkflowPosition
   /** Variables this node elects to consume. Control-flow edges never implicitly become prompt inputs. */
@@ -64,9 +66,22 @@ export interface WorkflowNodeBase<T extends WorkflowNodeType, C> {
   outputVariables?: WorkflowNodeOutputVariable[]
 }
 
+export type WorkflowInputFieldType = 'string' | 'number' | 'boolean' | 'json'
+
+/** A named launch parameter exposed by a structured input node. */
+export interface WorkflowInputField {
+  name: string
+  label?: string
+  type?: WorkflowInputFieldType
+  required?: boolean
+  defaultValue?: WorkflowValue
+}
+
 export interface InputNodeConfig {
   name?: string
   defaultValue?: WorkflowValue
+  /** Multiple launch parameters for workflows that start with an object input. */
+  fields?: WorkflowInputField[]
 }
 
 export type AiExecutionMode = 'single' | 'autonomous'
@@ -126,8 +141,14 @@ export interface TransformNodeConfig {
   text?: string
 }
 
+export type WorkflowOutputContentMode = 'variable' | 'text'
+
 export interface OutputNodeConfig {
   label?: string
+  /** Legacy nodes omit this field and keep their existing variable-based output behavior. */
+  contentMode?: WorkflowOutputContentMode
+  /** Text template used when contentMode is text; references output-node input bindings. */
+  text?: string
 }
 
 export interface ShellNodeConfig {
@@ -298,6 +319,10 @@ export interface WorkflowGenerateRequest {
   name?: string
   /** Whether the generator may create missing employees for the workflow. Defaults to true. */
   createEmployees?: boolean
+  /** Renderer-owned correlation ID used to stream progress into the generation page. */
+  generationId?: string
+  /** Optional model override; omitted means the configured workflow model. */
+  model?: WorkflowModelSelection
 }
 
 /** Result of an AI workflow generation, including any employees created on the way. */
@@ -306,6 +331,97 @@ export interface WorkflowGenerateResult {
   createdEmployees: EmployeeSnapshot[]
   /** Non-fatal warnings from the employee planning/creation phase. */
   employeeWarnings?: string[]
+}
+
+export interface WorkflowModifyRequest {
+  /** The current unsaved or persisted definition being used as the modification baseline. */
+  workflow: WorkflowDefinition
+  prompt: string
+  /** Renderer-owned correlation ID used to persist and stream this modification task. */
+  modificationId?: string
+  model?: WorkflowModelSelection
+}
+
+export type WorkflowModificationChangeType = 'added' | 'removed' | 'updated' | 'rewired'
+
+export interface WorkflowModificationChange {
+  type: WorkflowModificationChangeType
+  targetId?: string
+  targetLabel?: string
+  details: string
+}
+
+export interface WorkflowModifyResult {
+  workflow: WorkflowDefinition
+  changes: WorkflowModificationChange[]
+  removedNodes: Array<{ id: string; label: string }>
+}
+
+export const WORKFLOW_MODIFICATION_PHASES = ['preparing', 'analyzing', 'generating', 'validating', 'completed'] as const
+export type WorkflowModificationPhase = (typeof WORKFLOW_MODIFICATION_PHASES)[number]
+export type WorkflowModificationStatus = 'running' | 'completed' | 'failed'
+
+export interface WorkflowModificationProgress {
+  phase: WorkflowModificationPhase | 'failed'
+  status: WorkflowModificationStatus
+  message: string
+  time: string
+}
+
+export interface WorkflowModificationRecord {
+  id: string
+  workflowId: string
+  workflowRevision: number
+  prompt: string
+  status: WorkflowModificationStatus
+  phase: WorkflowModificationPhase | 'failed'
+  model?: WorkflowModelSelection
+  events: WorkflowModificationProgress[]
+  workflow?: WorkflowDefinition
+  changes: WorkflowModificationChange[]
+  removedNodes: Array<{ id: string; label: string }>
+  startedAt: string
+  completedAt?: string
+  error?: string
+}
+
+export interface WorkflowModificationProgressUpdate {
+  phase: WorkflowModificationPhase
+  message: string
+}
+
+export const WORKFLOW_GENERATION_PHASES = ['preparing', 'planning-employees', 'creating-employees', 'generating-workflow', 'validating', 'completed'] as const
+export type WorkflowGenerationPhase = (typeof WORKFLOW_GENERATION_PHASES)[number]
+export type WorkflowGenerationStatus = 'running' | 'completed' | 'failed'
+
+/** One durable progress event emitted by the fixed AI workflow generation pipeline. */
+export interface WorkflowGenerationProgress {
+  phase: WorkflowGenerationPhase | 'failed'
+  status: WorkflowGenerationStatus
+  message: string
+  time: string
+}
+
+/** Persisted history entry for one AI-generated workflow draft. */
+export interface WorkflowGenerationRecord {
+  id: string
+  prompt: string
+  name: string
+  status: WorkflowGenerationStatus
+  phase: WorkflowGenerationPhase | 'failed'
+  model?: WorkflowModelSelection
+  events: WorkflowGenerationProgress[]
+  workflow?: WorkflowDefinition
+  createdEmployees: EmployeeSnapshot[]
+  warnings?: string[]
+  startedAt: string
+  completedAt?: string
+  error?: string
+}
+
+export interface WorkflowGenerationProgressUpdate {
+  phase: WorkflowGenerationPhase
+  message: string
 }
 
 export interface WorkflowValidationIssue {
@@ -368,7 +484,7 @@ export function createDefaultWorkflow(name = '新工作流'): WorkflowDefinition
     description: '从输入开始，交给智能处理节点完成轻量任务，再输出结果。',
     revision: 1,
     nodes: [
-      { id: inputId, type: 'input', label: '输入', config: { name: 'task' }, position: { x: 80, y: 180 } },
+      { id: inputId, type: 'input', label: '开始', config: { name: 'task' }, position: { x: 80, y: 180 } },
       {
         id: aiTaskId,
         type: 'ai-task',
@@ -382,7 +498,7 @@ export function createDefaultWorkflow(name = '新工作流'): WorkflowDefinition
         position: { x: 380, y: 180 },
         inputBindings: [{ id: 'topic', name: 'topic', sourceNodeId: inputId, required: true }],
       },
-      { id: outputId, type: 'output', label: '输出', config: {}, position: { x: 720, y: 180 }, inputBindings: [{ id: 'result', name: 'result', sourceNodeId: aiTaskId, required: true }] },
+      { id: outputId, type: 'output', label: '结束', config: { contentMode: 'variable' }, position: { x: 720, y: 180 }, inputBindings: [{ id: 'result', name: 'result', sourceNodeId: aiTaskId, required: true }] },
     ],
     edges: [
       { id: newId('edge'), source: inputId, target: aiTaskId },
@@ -408,6 +524,21 @@ function readPosition(value: unknown): WorkflowPosition {
 
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function readInputFields(value: unknown): WorkflowInputField[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.name !== 'string' || item.name.trim() === '') return []
+    const type: WorkflowInputFieldType = item.type === 'number' || item.type === 'boolean' || item.type === 'json' ? item.type : 'string'
+    return [{
+      name: item.name.trim(),
+      ...(typeof item.label === 'string' && item.label.trim() !== '' ? { label: item.label.trim() } : {}),
+      type,
+      required: item.required !== false,
+      ...(isWorkflowValue(item.defaultValue) ? { defaultValue: item.defaultValue } : {}),
+    }]
+  })
 }
 
 function readInputBindings(value: unknown): WorkflowNodeInputBinding[] | undefined {
@@ -441,7 +572,14 @@ function normalizeNodeType(value: unknown): WorkflowNodeType | undefined {
 function readNodeConfig(type: WorkflowNodeType, value: unknown): Record<string, unknown> {
   const config = isRecord(value) ? value : {}
   switch (type) {
-    case 'input': return { name: typeof config.name === 'string' ? config.name : undefined, defaultValue: isWorkflowValue(config.defaultValue) ? config.defaultValue : undefined }
+    case 'input': {
+      const fields = readInputFields(config.fields)
+      return {
+        name: typeof config.name === 'string' ? config.name : undefined,
+        defaultValue: isWorkflowValue(config.defaultValue) ? config.defaultValue : undefined,
+        ...(fields === undefined ? {} : { fields }),
+      }
+    }
     case 'ai-task': return {
       instruction: typeof config.instruction === 'string' ? config.instruction : '',
       systemPrompt: typeof config.systemPrompt === 'string' ? config.systemPrompt : undefined,
@@ -465,7 +603,11 @@ function readNodeConfig(type: WorkflowNodeType, value: unknown): Record<string, 
     case 'condition': return { operator: config.operator, value: isWorkflowValue(config.value) ? config.value : undefined }
     case 'approval': return { message: typeof config.message === 'string' ? config.message : '' }
     case 'transform': return { template: config.template, text: typeof config.text === 'string' ? config.text : undefined }
-    case 'output': return { label: typeof config.label === 'string' ? config.label : undefined }
+    case 'output': return {
+      label: typeof config.label === 'string' ? config.label : undefined,
+      contentMode: config.contentMode === 'text' ? 'text' : 'variable',
+      text: typeof config.text === 'string' ? config.text : undefined,
+    }
     case 'shell': return { command: typeof config.command === 'string' ? config.command : '', args: Array.isArray(config.args) ? config.args.filter((arg): arg is string => typeof arg === 'string') : [], cwd: typeof config.cwd === 'string' ? config.cwd : undefined, timeoutMs: typeof config.timeoutMs === 'number' ? config.timeoutMs : undefined }
     case 'file': return { operation: config.operation, path: typeof config.path === 'string' ? config.path : '', content: typeof config.content === 'string' ? config.content : undefined }
     case 'http': return {
@@ -501,6 +643,7 @@ export function normalizeWorkflow(raw: unknown): WorkflowDefinition | undefined 
       id: rawNode.id,
       type,
       label: legacyAgent && (rawLabel === '' || rawLabel === 'Agent') ? '智能处理' : rawLabel || type,
+      ...(typeof rawNode.description === 'string' ? { description: rawNode.description } : {}),
       config: readNodeConfig(type, rawNode.config) as never,
       position: readPosition(rawNode.position),
       ...(inputBindings === undefined ? {} : { inputBindings }),
@@ -654,6 +797,13 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
     validateNodeConfig(node, `nodes.${index}.config`, issues)
   }
 
+  const startNodeCount = workflow.nodes.filter((node) => node.type === 'input').length
+  const endNodeCount = workflow.nodes.filter((node) => node.type === 'output').length
+  if (startNodeCount === 0) issues.push({ path: 'nodes', message: '工作流必须包含固定的开始节点。' })
+  else if (startNodeCount > 1) issues.push({ path: 'nodes', message: '工作流只能包含一个开始节点。' })
+  if (endNodeCount === 0) issues.push({ path: 'nodes', message: '工作流必须包含固定的结束节点。' })
+  else if (endNodeCount > 1) issues.push({ path: 'nodes', message: '工作流只能包含一个结束节点。' })
+
   for (const [index, node] of workflow.nodes.entries()) {
     for (const [bindingIndex, binding] of (node.inputBindings ?? []).entries()) {
       if (!nodeIds.has(binding.sourceNodeId)) issues.push({ path: `nodes.${index}.inputBindings.${bindingIndex}.sourceNodeId`, message: '输入变量必须引用现有节点。' })
@@ -774,11 +924,11 @@ function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowVa
       if (node.config.tool.trim() === '') add('MCP 节点需要工具名。')
       if (node.config.arguments !== undefined && !isWorkflowValue(node.config.arguments)) add('MCP 参数必须是 JSON 兼容对象。')
       break
-    case 'parallel': if (node.config.instructions.length === 0 || node.config.instructions.some((instruction) => instruction.trim() === '')) add('Parallel 节点至少需要一条非空指令。'); break
-    case 'loop': if (node.config.instruction.trim() === '') add('Loop 节点指令不能为空。'); if (node.config.maxIterations !== undefined && (!Number.isInteger(node.config.maxIterations) || node.config.maxIterations < 1 || node.config.maxIterations > 100)) add('Loop 最大迭代次数必须是 1 到 100。'); break
-    case 'condition': if (!['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'].includes(node.config.operator)) add('Condition 操作符无效。'); break
-    case 'approval': if (node.config.message.trim() === '') add('Approval 节点需要审批提示。'); break
-    case 'transform': if (!['identity', 'json', 'extract-text', 'prepend', 'append'].includes(node.config.template)) add('Transform 模板无效。'); break
+    case 'parallel': if (node.config.instructions.length === 0 || node.config.instructions.some((instruction) => instruction.trim() === '')) add('并行处理节点至少需要一条非空指令。'); break
+    case 'loop': if (node.config.instruction.trim() === '') add('循环处理节点指令不能为空。'); if (node.config.maxIterations !== undefined && (!Number.isInteger(node.config.maxIterations) || node.config.maxIterations < 1 || node.config.maxIterations > 100)) add('循环处理最大迭代次数必须是 1 到 100。'); break
+    case 'condition': if (!['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'].includes(node.config.operator)) add('条件判断操作符无效。'); break
+    case 'approval': if (node.config.message.trim() === '') add('人工审批节点需要审批提示。'); break
+    case 'transform': if (!['identity', 'json', 'extract-text', 'prepend', 'append'].includes(node.config.template)) add('数据转换模板无效。'); break
     case 'shell':
       if (node.config.command.trim() === '') add('Shell 命令不能为空。')
       if (/[[\]{}();|&<>`$\\]/u.test(node.config.command)) add('Shell 命令包含不允许的控制字符；执行使用 shell:false。')
@@ -810,8 +960,10 @@ function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowVa
       if (node.config.code.trim() === '') add('代码不能为空。')
       if (node.config.timeoutMs !== undefined && (!Number.isInteger(node.config.timeoutMs) || node.config.timeoutMs < 1_000 || node.config.timeoutMs > 600_000)) add('代码超时必须是 1000 到 600000 毫秒。')
       break
-    case 'input':
     case 'output':
+      if (node.config.contentMode !== undefined && node.config.contentMode !== 'variable' && node.config.contentMode !== 'text') add('结束节点输出内容来源无效。')
+      break
+    case 'input':
       break
   }
 }

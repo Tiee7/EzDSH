@@ -7,10 +7,73 @@ describe('workflow contract', () => {
     expect(validateWorkflow(workflow)).toMatchObject({ valid: true, issues: [] })
     expect(workflow.schemaVersion).toBe(2)
     expect(workflow.nodes.map((node) => node.type)).toEqual(['input', 'ai-task', 'output'])
+    expect(workflow.nodes[0]).toMatchObject({ type: 'input', label: '开始' })
+    expect(workflow.nodes.at(-1)).toMatchObject({ type: 'output', label: '结束', config: { contentMode: 'variable' } })
     expect(workflow.nodes[1]).toMatchObject({
       type: 'ai-task',
       label: '智能处理',
       config: { mode: 'single', outputMode: 'text', skillIds: [] },
+    })
+  })
+
+  it('requires the fixed start and end nodes', () => {
+    const workflow = createDefaultWorkflow('Fixed terminals')
+    const start = workflow.nodes.find((node) => node.type === 'input')!
+    const end = workflow.nodes.find((node) => node.type === 'output')!
+
+    const withoutStart = validateWorkflow({ ...workflow, nodes: workflow.nodes.filter((node) => node.type !== 'input') })
+    const withoutEnd = validateWorkflow({ ...workflow, nodes: workflow.nodes.filter((node) => node.type !== 'output') })
+    const withDuplicateStart = validateWorkflow({ ...workflow, nodes: [...workflow.nodes, { ...start, id: 'duplicate-start' }] })
+    const withDuplicateEnd = validateWorkflow({ ...workflow, nodes: [...workflow.nodes, { ...end, id: 'duplicate-end' }] })
+
+    expect(withoutStart.issues.some((issue) => issue.message.includes('开始节点'))).toBe(true)
+    expect(withoutEnd.issues.some((issue) => issue.message.includes('结束节点'))).toBe(true)
+    expect(withDuplicateStart.issues.some((issue) => issue.message.includes('只能包含一个开始节点'))).toBe(true)
+    expect(withDuplicateEnd.issues.some((issue) => issue.message.includes('只能包含一个结束节点'))).toBe(true)
+  })
+
+  it('normalizes legacy and custom end-node output content', () => {
+    const workflow = createDefaultWorkflow('Output content')
+    const raw = JSON.parse(JSON.stringify(workflow)) as { nodes: Array<{ type: string; config: Record<string, unknown> }> }
+    const output = raw.nodes.find((node) => node.type === 'output')!
+    output.config = { contentMode: 'text', text: '自定义完成文案' }
+
+    expect(normalizeWorkflow(raw)?.nodes.find((node) => node.type === 'output')).toMatchObject({
+      config: { contentMode: 'text', text: '自定义完成文案' },
+    })
+
+    output.config = {}
+    expect(normalizeWorkflow(raw)?.nodes.find((node) => node.type === 'output')).toMatchObject({
+      config: { contentMode: 'variable' },
+    })
+  })
+
+  it('preserves structured input fields for multi-parameter workflows', () => {
+    const workflow = normalizeWorkflow({
+      id: 'structured-input',
+      name: 'Structured input',
+      nodes: [{
+        id: 'start',
+        type: 'input',
+        label: '开始输入',
+        config: {
+          fields: [
+            { name: 'topic', label: '主题', type: 'string', required: true },
+            { name: 'audience', label: '受众', type: 'string', required: false, defaultValue: '产品经理' },
+          ],
+        },
+        position: { x: 0, y: 0 },
+      }],
+      edges: [],
+    })
+
+    expect(workflow?.nodes[0]).toMatchObject({
+      config: {
+        fields: [
+          { name: 'topic', label: '主题', type: 'string', required: true },
+          { name: 'audience', label: '受众', type: 'string', required: false, defaultValue: '产品经理' },
+        ],
+      },
     })
   })
 

@@ -19,6 +19,172 @@ export interface MobilePageOptions {
   locale: MobilePageLocale
 }
 
+interface MobileModelCatalogGroup {
+  id: string
+  name?: string
+  models?: readonly MobileModelCatalogModel[]
+}
+
+interface MobileModelCatalogModel {
+  id: string
+  name?: string
+  description?: string
+  reasoning?: {
+    efforts?: readonly unknown[]
+    defaultEffort?: string
+  }
+}
+
+interface MobileModelCatalogFailure {
+  id: string
+  name?: string
+  message: string
+}
+
+interface MobileModelDirectory {
+  groups?: readonly MobileModelCatalogGroup[]
+  failures?: readonly MobileModelCatalogFailure[]
+}
+
+/** Keep the complete provider catalog for the mobile picker, including the current model. */
+export function mobileModelGroups(directory: MobileModelDirectory): MobileModelCatalogGroup[] {
+  return (directory.groups ?? [])
+    .map(group => ({ ...group, models: [...(group.models ?? [])] }))
+    .filter(group => group.models.length > 0)
+}
+
+/** Preserve provider-local catalog failures so the mobile picker can explain missing groups. */
+export function mobileModelFailures(directory: MobileModelDirectory): MobileModelCatalogFailure[] {
+  return [...(directory.failures ?? [])]
+}
+
+/** Render the small, dependency-free Markdown subset used by the mobile conversation view. */
+export function renderMobileMarkdown(value: string): string {
+  const escapeHtml = (input: unknown): string => String(input ?? '').replace(/[&<>"']/gu, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character] ?? character)
+  const renderInline = (input: string): string => escapeHtml(input)
+    .replace(/\x60([^\x60]+)\x60/gu, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/gu, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^ )]+)\)/gu, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+  const splitTableRow = (line: string): string[] => {
+    let content = line.trim()
+    if (content.startsWith('|')) content = content.slice(1)
+    if (content.endsWith('|') && !content.endsWith('\\|')) content = content.slice(0, -1)
+    const cells: string[] = []
+    let cell = ''
+    let escaping = false
+    let inCode = false
+    for (const character of content) {
+      if (character === '|' && !escaping && !inCode) {
+        cells.push(cell.trim())
+        cell = ''
+        continue
+      }
+      if (character === '`' && !escaping) inCode = !inCode
+      cell += character
+      if (escaping) escaping = false
+      else escaping = character === '\\'
+    }
+    cells.push(cell.trim())
+    return cells
+  }
+  const tableAlignment = (cell: string): 'left' | 'center' | 'right' | undefined => {
+    const normalized = cell.trim()
+    if (!/^:?-{3,}:?$/u.test(normalized)) return undefined
+    if (normalized.startsWith(':') && normalized.endsWith(':')) return 'center'
+    if (normalized.startsWith(':')) return 'left'
+    if (normalized.endsWith(':')) return 'right'
+    return undefined
+  }
+  const tableAt = (lines: string[], index: number): { header: string[]; alignments: Array<'left' | 'center' | 'right' | undefined> } | undefined => {
+    if (index + 1 >= lines.length || !lines[index].includes('|')) return undefined
+    const header = splitTableRow(lines[index])
+    const delimiter = splitTableRow(lines[index + 1])
+    if (header.length === 0 || header.length !== delimiter.length || delimiter.some(cell => !/^:?-{3,}:?$/u.test(cell.trim()))) return undefined
+    return { header, alignments: delimiter.map(tableAlignment) }
+  }
+  const renderCell = (tag: 'th' | 'td', content: string, alignment: 'left' | 'center' | 'right' | undefined): string => {
+    const style = alignment === undefined ? '' : ' style="text-align:' + alignment + '"'
+    return '<' + tag + (tag === 'th' ? ' scope="col"' : '') + style + '>' + renderInline(content) + '</' + tag + '>'
+  }
+
+  const lines = String(value ?? '').replace(/\r\n?/gu, '\n').split('\n')
+  let html = ''
+  let code = false
+  let list = false
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line.trim().startsWith(String.fromCharCode(96, 96, 96))) {
+      if (list) {
+        html += '</ul>'
+        list = false
+      }
+      html += code ? '</code></pre>' : '<pre><code>'
+      code = !code
+      continue
+    }
+    if (code) {
+      html += escapeHtml(line) + '\n'
+      continue
+    }
+
+    const table = tableAt(lines, index)
+    if (table !== undefined) {
+      if (list) {
+        html += '</ul>'
+        list = false
+      }
+      const rows: string[][] = []
+      index += 2
+      while (index < lines.length && lines[index].trim() !== '' && lines[index].includes('|')) {
+        const cells = splitTableRow(lines[index])
+        rows.push([...cells.slice(0, table.header.length), ...Array.from({ length: Math.max(0, table.header.length - cells.length) }, () => '')])
+        index += 1
+      }
+      html += '<div class="markdown-table-wrap"><table class="markdown-table"><thead><tr>'
+        + table.header.map((cell, cellIndex) => renderCell('th', cell, table.alignments[cellIndex])).join('')
+        + '</tr></thead>'
+        + (rows.length === 0 ? '' : '<tbody>' + rows.map(row => '<tr>' + row.map((cell, cellIndex) => renderCell('td', cell, table.alignments[cellIndex])).join('') + '</tr>').join('') + '</tbody>')
+        + '</table></div>'
+      index -= 1
+      continue
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/u)
+    if (heading !== null) {
+      if (list) {
+        html += '</ul>'
+        list = false
+      }
+      const level = heading[1].length
+      html += '<h' + level + '>' + renderInline(heading[2]) + '</h' + level + '>'
+      continue
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/u)
+    if (bullet !== null) {
+      if (!list) {
+        html += '<ul>'
+        list = true
+      }
+      html += '<li>' + renderInline(bullet[1]) + '</li>'
+      continue
+    }
+    if (list) {
+      html += '</ul>'
+      list = false
+    }
+    if (line.trim()) html += '<p>' + renderInline(line) + '</p>'
+  }
+  if (list) html += '</ul>'
+  if (code) html += '</code></pre>'
+  return html
+}
+
 const ICONS = {
   arrowLeft: renderIcon(faArrowLeft),
   arrowUp: renderIcon(faArrowUp),
@@ -64,6 +230,7 @@ export function renderMobilePage({ locale }: MobilePageOptions): string {
     modelEmpty: zh ? '当前没有可切换的模型' : 'No switchable models are available',
     modelSelect: zh ? '选择模型' : 'Choose a model',
     modelSelected: zh ? '已切换模型' : 'Model switched',
+    modelPartialFailure: zh ? '部分模型提供商加载失败，点击重试' : 'Some model providers failed to load. Tap to retry.',
     emptyConversation: zh ? '告诉 Agent 你想完成什么。' : 'Tell the Agent what you want to accomplish.',
     prompt: zh ? '给 Agent 发送消息' : 'Message the Agent',
     send: zh ? '发送' : 'Send',
@@ -104,6 +271,7 @@ export function renderMobilePage({ locale }: MobilePageOptions): string {
     .messages{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;padding:18px 4px 94px;-webkit-overflow-scrolling:touch}.message{max-width:100%;color:var(--ink);line-height:1.65;overflow-wrap:anywhere}.message.user{align-self:flex-end;max-width:84%;margin:8px 0 15px;padding:9px 15px;border-radius:21px;background:var(--surface-strong);white-space:pre-wrap}.message.assistant{align-self:stretch;margin:0;padding:0 4px}.markdown{white-space:normal}.markdown>:first-child{margin-top:0}.markdown>:last-child{margin-bottom:0}.markdown p{margin:0 0 10px}.markdown h1,.markdown h2,.markdown h3{margin:18px 0 8px;line-height:1.3}.markdown h1{font-size:21px}.markdown h2{font-size:18px}.markdown h3{font-size:16px}.markdown ul{margin:8px 0;padding-left:22px}.markdown pre{max-width:100%;overflow:auto;margin:9px 0;padding:12px;border:1px solid var(--line);border-radius:11px;background:var(--surface);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.markdown code{border-radius:5px;padding:2px 5px;background:var(--surface);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}.markdown pre code{padding:0;background:transparent}.markdown a{color:var(--brand)}
     .activity{margin:0;white-space:normal}.activity summary{min-height:34px;display:flex;align-items:center;overflow:hidden;padding:5px 2px;border-radius:7px;cursor:pointer;list-style:none}.activity summary::-webkit-details-marker{display:none}.activity summary:hover{background:var(--surface)}.activity-icon{width:16px;height:16px;margin-right:7px;display:grid;place-items:center;flex:none;color:var(--muted)}.activity-icon svg{width:13px;height:13px}.activity-title{flex:none}.activity-dot{width:2px;height:2px;margin:0 8px;flex:none;border-radius:50%;background:var(--muted)}.activity-summary{min-width:0;flex:1;overflow:hidden;color:var(--muted);text-overflow:ellipsis;white-space:nowrap}.activity-chevron{margin-left:6px;color:var(--muted);transition:transform .14s ease}.activity-chevron svg{width:9px;height:9px}.activity[open] .activity-chevron{transform:rotate(90deg)}.activity-body{padding:3px 0 8px 23px;color:var(--muted);font-size:12px}.activity-body strong{display:block;margin:7px 0 3px;color:var(--ink);font-weight:550}.activity-body pre{max-height:260px;overflow:auto;margin:0 0 5px;padding:10px 11px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);white-space:pre-wrap;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.activity[data-state=error] .activity-icon,.activity[data-state=error] .activity-summary{color:var(--danger)}.streaming::after{content:'';display:inline-block;width:6px;height:15px;margin-left:3px;vertical-align:-2px;background:var(--brand);animation:pulse .7s infinite alternate}.turn-status{height:28px;display:inline-flex;align-items:center;margin:3px 4px 7px;color:var(--brand);font-size:13px;font-weight:620;animation:pulse .9s ease-in-out infinite alternate}
     .chat-error{position:absolute;left:8px;right:8px;bottom:80px;z-index:3;padding:9px 11px;border:1px solid color-mix(in srgb,var(--danger) 35%,var(--line));border-radius:11px;background:var(--card);color:var(--danger);font-size:12px;box-shadow:var(--shadow)}.composer{position:absolute;inset:auto 0 0;z-index:2;padding:10px 0 5px;pointer-events:none}.composer-inner{min-height:58px;display:flex;align-items:flex-end;gap:8px;padding:8px 8px 8px 16px;border:1px solid var(--line);border-radius:23px;background:var(--card);box-shadow:var(--shadow);pointer-events:auto;transition:border-color .15s ease,transform .15s ease}.composer-inner:focus-within{border-color:color-mix(in srgb,var(--ink) 30%,var(--line));transform:translateY(-1px)}.composer textarea{height:40px;min-height:40px;max-height:150px;flex:1;resize:none;overflow-y:auto;border:0;outline:0;padding:9px 0;background:transparent;color:var(--ink);font-size:16px;line-height:22px}.composer textarea::placeholder{color:var(--muted);opacity:.72}.composer-button{width:40px;height:40px;min-width:40px;display:grid;place-items:center;border:1px solid var(--ink);border-radius:50%;padding:0;background:var(--ink);color:var(--paper)}.composer-button svg{width:13px;height:13px}.composer-button.stop{border-color:color-mix(in srgb,var(--danger) 35%,var(--line));background:color-mix(in srgb,var(--danger) 10%,var(--card));color:var(--danger)}.toast{position:fixed;left:50%;top:calc(60px + env(safe-area-inset-top));z-index:6;transform:translate(-50%,-8px);padding:7px 12px;border-radius:999px;background:var(--ink);color:var(--paper);font-size:12px;opacity:0;pointer-events:none;transition:.18s ease}.toast.show{transform:translate(-50%,0);opacity:1}@keyframes pulse{to{opacity:.35}}@keyframes spin{to{transform:rotate(360deg)}}@media(display-mode:standalone){.composer{padding-bottom:calc(5px + env(safe-area-inset-bottom))}.messages{padding-bottom:calc(94px + env(safe-area-inset-bottom))}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+    .markdown-table-wrap{max-width:100%;margin:12px 0;overflow-x:auto;border:1px solid var(--line);border-radius:11px;background:var(--surface);-webkit-overflow-scrolling:touch}.markdown-table{min-width:100%;border-collapse:collapse;font-size:12px}.markdown-table th,.markdown-table td{min-width:88px;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left;white-space:normal}.markdown-table th{background:var(--surface-strong);color:var(--ink);font-weight:650}.markdown-table tr:last-child td{border-bottom:0}.markdown-table td code,.markdown-table th code{white-space:nowrap}
   </style>
 </head>
 <body>
@@ -144,7 +312,29 @@ export function renderMobilePage({ locale }: MobilePageOptions): string {
     function modelKey(selection){return selection?String(selection.provider||'')+'\u0000'+String(selection.model||'')+'\u0000'+String(selection.reasoningEffort||''):''}
     function modelDisplay(selection){if(!selection)return C.modelDefault;const group=(app.modelDirectory?.groups||[]).find(item=>item.id===selection.provider),entry=group?.models?.find(item=>item.id===selection.model);return entry?.name||selection.model||C.modelDefault}
     function modelButton(selection,name,id,selected,isDefault){return '<button class="model-option'+(selected?' selected':'')+'" type="button" data-model-option="true" data-provider="'+esc(selection?.provider||'')+'" data-model="'+esc(selection?.model||'')+'" data-reasoning="'+esc(selection?.reasoningEffort||'')+'" data-default="'+(isDefault?'true':'false')+'"><span class="model-option-icon">'+(isDefault?I.brain:I.terminal)+'</span><span class="model-option-copy"><span class="model-option-name">'+esc(name)+'</span><span class="model-option-id">'+esc(id||'')+'</span></span><span class="model-option-check">'+I.check+'</span></button>'}
-    function renderModelPicker(){const current=app.modelDirectory?.current,defaultModel=app.defaultModel||current,options=$('modelOptions');$('modelTriggerLabel').textContent=current&&defaultModel&&modelKey(current)!==modelKey(defaultModel)?modelDisplay(current):C.modelDefault;$('modelMenuHint').textContent=current?C.modelCurrent+': '+modelDisplay(current):C.modelLoadHint;let html=defaultModel?modelButton(defaultModel,C.modelDefault,modelDisplay(defaultModel),Boolean(current&&modelKey(current)===modelKey(defaultModel)),true):'<div class="model-option selected"><span class="model-option-icon">'+I.brain+'</span><span class="model-option-copy"><span class="model-option-name">'+esc(C.modelDefault)+'</span><span class="model-option-id">'+esc(C.modelLoadHint)+'</span></span><span class="model-option-check">'+I.check+'</span></div>';if(app.modelLoading)html+='<div class="model-menu-state">'+esc(C.modelLoading)+'</div>';else if(app.modelError)html+='<button id="modelRetry" class="model-menu-state error" type="button">'+esc(C.modelLoadingFailed)+'</button>';else if(app.modelDirectory){const groups=app.modelDirectory.groups||[];if(groups.length===0)html+='<div class="model-menu-state">'+esc(C.modelEmpty)+'</div>';else html+=groups.map(group=>{const items=(group.models||[]).filter(item=>!defaultModel||item.id!==defaultModel.model||group.id!==defaultModel.provider);return items.length?'<div class="model-group"><span class="model-group-name">'+esc(group.name||group.id)+'</span>'+items.map(item=>{const selection={provider:group.id,model:item.id};return modelButton(selection,item.name||item.id,item.id,Boolean(current&&current.provider===group.id&&current.model===item.id),false)}).join('')+'</div>':''}).join('');}options.innerHTML=html;document.querySelectorAll('[data-model-option="true"]').forEach(button=>{button.onclick=()=>{const provider=button.dataset.provider,model=button.dataset.model;if(!provider||!model)return;const reasoningEffort=button.dataset.reasoning;void selectModel({provider,model,...reasoningEffort?{reasoningEffort}:{}})}});const retry=$('modelRetry');if(retry)retry.onclick=()=>{app.modelError='';void loadModels()}}
+    function renderModelPicker(){
+      const current=app.modelDirectory?.current,defaultModel=app.defaultModel||current,options=$('modelOptions');
+      $('modelTriggerLabel').textContent=current&&defaultModel&&modelKey(current)!==modelKey(defaultModel)?modelDisplay(current):C.modelDefault;
+      $('modelMenuHint').textContent=current?C.modelCurrent+': '+modelDisplay(current):C.modelLoadHint;
+      const groups=app.modelDirectory?mobileModelGroupsInBrowser(app.modelDirectory):[],failures=app.modelDirectory?mobileModelFailuresInBrowser(app.modelDirectory):[];
+      const defaultListed=defaultModel?groups.some(group=>group.id===defaultModel.provider&&(group.models||[]).some(item=>item.id===defaultModel.model)):false;
+      const showDefaultShortcut=Boolean(defaultModel)&&(!defaultListed||Boolean(current&&modelKey(current)!==modelKey(defaultModel)));
+      let html=showDefaultShortcut?modelButton(defaultModel,C.modelDefault,modelDisplay(defaultModel),Boolean(current&&modelKey(current)===modelKey(defaultModel)),true):app.modelDirectory?'':'<div class="model-option selected"><span class="model-option-icon">'+I.brain+'</span><span class="model-option-copy"><span class="model-option-name">'+esc(C.modelDefault)+'</span><span class="model-option-id">'+esc(C.modelLoadHint)+'</span></span><span class="model-option-check">'+I.check+'</span></div>';
+      if(app.modelLoading)html+='<div class="model-menu-state">'+esc(C.modelLoading)+'</div>';
+      else if(app.modelError)html+='<button id="modelRetry" class="model-menu-state error" type="button">'+esc(C.modelLoadingFailed)+'</button>';
+      else if(app.modelDirectory){
+        if(failures.length){
+          const details=failures.map(failure=>esc((failure.name||failure.id)+': '+failure.message)).join('<br>');
+          html+='<button id="modelRetryPartial" class="model-menu-state error" type="button">'+esc(C.modelPartialFailure)+'<br><span class="model-failure-detail">'+details+'</span></button>';
+        }
+        if(groups.length===0)html+='<div class="model-menu-state">'+esc(C.modelEmpty)+'</div>';
+        else html+=groups.map(group=>'<div class="model-group"><span class="model-group-name">'+esc(group.name||group.id)+'</span>'+(group.models||[]).map(item=>{const selection={provider:group.id,model:item.id},isDefault=Boolean(defaultModel&&defaultModel.provider===group.id&&defaultModel.model===item.id);return modelButton(selection,item.name||item.id,item.id,Boolean(current&&current.provider===group.id&&current.model===item.id),isDefault)}).join('')+'</div>').join('');
+      }
+      options.innerHTML=html;
+      document.querySelectorAll('[data-model-option="true"]').forEach(button=>{button.onclick=()=>{const provider=button.dataset.provider,model=button.dataset.model;if(!provider||!model)return;const reasoningEffort=button.dataset.reasoning;void selectModel({provider,model,...reasoningEffort?{reasoningEffort}:{}})}});
+      const retry=$('modelRetry')||$('modelRetryPartial');
+      if(retry)retry.onclick=()=>{app.modelError='';void loadModels()}
+    }
     async function loadModels(){if(!app.activeSessionId||app.modelLoading)return;const sessionId=app.activeSessionId;app.modelLoading=true;app.modelError='';renderModelPicker();try{const payload=await api('/api/mobile/sessions/'+encodeURIComponent(sessionId)+'/models');if(app.activeSessionId!==sessionId)return;app.modelDirectory=payload;app.defaultModel=payload.current;app.modelLoading=false;renderModelPicker()}catch(error){if(app.activeSessionId!==sessionId)return;app.modelLoading=false;app.modelError=String(error.message||error);renderModelPicker()}}
     function toggleModelMenu(){const menu=$('modelMenu'),open=menu.hidden;menu.hidden=!open;$('modelTrigger').setAttribute('aria-expanded',open?'true':'false');if(open){renderModelPicker();if(!app.modelDirectory&&!app.modelLoading&&!app.modelError)void loadModels()}}
     async function selectModel(selection){if(!selection||app.modelSaving)return;if(app.modelDirectory?.current&&modelKey(selection)===modelKey(app.modelDirectory.current)){toggleModelMenu();return}app.modelSaving=true;renderModelPicker();try{const result=await api('/api/mobile/sessions/'+encodeURIComponent(app.activeSessionId)+'/model',{method:'POST',body:JSON.stringify(selection)});if(result.selected)app.modelDirectory={...app.modelDirectory,current:result.selected};$('modelMenu').hidden=true;$('modelTrigger').setAttribute('aria-expanded','false');showToast(C.modelSelected)}catch(error){showChatError(error)}finally{app.modelSaving=false;renderModelPicker()}}
@@ -159,6 +349,10 @@ export function renderMobilePage({ locale }: MobilePageOptions): string {
     function visibleMessages(events){const output=[],steps=new Map();function ensureStep(data){const key=stepKey(data);if(!steps.has(key)){const message={role:'assistant',key:key||'assistant-'+output.length,blocks:[],streaming:true};steps.set(key,message);output.push(message)}return steps.get(key)}for(const entry of events){const event=entry?.event||entry||{},data=event.data||{},type=String(event.type||'').toLowerCase();if(type==='user/message'){const message=data.message||data,blocks=contentBlocks(message.content).filter(block=>block.kind==='text');if(blocks.length)output.push({role:'user',key:'user-'+event.seq,blocks});continue}if(type==='assistant/chunk'){const chunk=data.chunk||{};if(chunk.type!=='text-delta'&&chunk.type!=='reasoning-delta')continue;const message=ensureStep(data),kind=chunk.type==='text-delta'?'text':'reasoning',streamKey=kind+':'+String(chunk.index??0);let block=message.blocks.find(item=>item.streamKey===streamKey);if(!block){block={kind,text:'',streamKey};message.blocks.push(block)}block.text+=chunk.text||chunk.delta||'';continue}if(type==='assistant/message'){const message=ensureStep(data);message.blocks=contentBlocks(data.message?.content);message.streaming=false;continue}if(type==='tool/call'){const message=ensureStep(data);if(!message.blocks.some(block=>block.kind==='tool'&&block.id===data.callId))message.blocks.push({kind:'tool',id:data.callId,name:data.name,args:data.arguments,status:'running'});continue}if(type==='tool/result'){const message=ensureStep(data),result=(data.message?.content||[]).find(block=>block?.type==='tool-result'),id=result?.toolCallId;let tool=message.blocks.find(block=>block.kind==='tool'&&block.id===id);if(!tool){tool={kind:'tool',id,name:id||'tool',args:'',status:'running'};message.blocks.push(tool)}tool.status=data.error||result?.isError?'error':'done';tool.result=(result?.content||[]).filter(block=>block?.type==='text').map(block=>block.text).join('\\n');message.streaming=false}}return output.filter(message=>message.blocks?.some(Boolean))}
     function inlineMarkdown(text){return esc(text).replace(/\x60([^\x60]+)\x60/g,'<code>$1</code>').replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>').replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^ )]+)\\)/g,'<a href="$2" target="_blank" rel="noreferrer">$1</a>')}
     function markdown(text){const lines=String(text||'').split('\\n');let html='',code=false,list=false;for(const line of lines){if(line.trim().startsWith(String.fromCharCode(96,96,96))){if(list){html+='</ul>';list=false}html+=code?'</code></pre>':'<pre><code>';code=!code;continue}if(code){html+=esc(line)+'\\n';continue}const heading=line.match(/^(#{1,3})\\s+(.+)$/);if(heading){if(list){html+='</ul>';list=false}const level=heading[1].length;html+='<h'+level+'>'+inlineMarkdown(heading[2])+'</h'+level+'>';continue}const bullet=line.match(/^[-*]\\s+(.+)$/);if(bullet){if(!list){html+='<ul>';list=true}html+='<li>'+inlineMarkdown(bullet[1])+'</li>';continue}if(list){html+='</ul>';list=false}if(line.trim())html+='<p>'+inlineMarkdown(line)+'</p>'}if(list)html+='</ul>';if(code)html+='</code></pre>';return html}
+    const renderMobileMarkdownInBrowser=${renderMobileMarkdown.toString()};
+    const mobileModelGroupsInBrowser=${mobileModelGroups.toString()};
+    const mobileModelFailuresInBrowser=${mobileModelFailures.toString()};
+    markdown=renderMobileMarkdownInBrowser;
     function pretty(value){if(!value)return'';try{return JSON.stringify(typeof value==='string'?JSON.parse(value):value,null,2)}catch{return String(value)}}
     function reasoningSummary(text){return String(text||'').split('\\n').map(line=>line.trim()).filter(Boolean)[0]||C.running}
     function renderBlock(block,streaming,key){if(block.kind==='text')return'<div class="markdown'+(streaming?' streaming':'')+'">'+markdown(block.text)+'</div>';if(block.kind==='reasoning')return'<details class="activity" data-state="'+(streaming?'running':'done')+'" data-activity-key="reasoning-'+esc(key)+'"><summary><span class="activity-icon">'+I.brain+'</span><span class="activity-title">'+esc(C.thinking)+'</span><span class="activity-dot"></span><span class="activity-summary">'+esc(reasoningSummary(block.text))+'</span><span class="activity-chevron">'+I.chevronRight+'</span></summary><div class="activity-body markdown">'+markdown(block.text)+'</div></details>';if(block.kind==='tool'){const label=block.status==='running'?C.toolRunning:block.status==='error'?C.toolFailed:C.toolDone;return'<details class="activity" data-state="'+esc(block.status)+'" data-activity-key="tool-'+esc(block.id||key)+'"><summary><span class="activity-icon">'+I.terminal+'</span><span class="activity-title">'+esc(block.name||'tool')+'</span><span class="activity-dot"></span><span class="activity-summary">'+esc(label)+'</span><span class="activity-chevron">'+I.chevronRight+'</span></summary><div class="activity-body">'+(block.args?'<strong>'+esc(C.input)+'</strong><pre>'+esc(pretty(block.args))+'</pre>':'')+(block.result?'<strong>'+esc(C.output)+'</strong><pre>'+esc(block.result)+'</pre>':'')+'</div></details>'}return''}

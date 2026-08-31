@@ -61,6 +61,10 @@ import type {
   WorkflowDefinition,
   WorkflowGenerateRequest,
   WorkflowGenerateResult,
+  WorkflowGenerationRecord,
+  WorkflowModificationRecord,
+  WorkflowModifyRequest,
+  WorkflowModifyResult,
   WorkflowRunOptions,
   WorkflowRunRecord,
   WorkflowUpdateInput,
@@ -142,9 +146,15 @@ export interface EzDSHBridge {
     remove(id: string): Promise<void>
     duplicate(id: string): Promise<WorkflowDefinition>
     generate(request: WorkflowGenerateRequest): Promise<WorkflowGenerateResult>
+    modify(request: WorkflowModifyRequest): Promise<WorkflowModifyResult>
+    listModificationHistory(workflowId?: string): Promise<WorkflowModificationRecord[]>
+    onModificationStateChange(listener: (record: WorkflowModificationRecord) => void): () => void
+    listGenerationHistory(): Promise<WorkflowGenerationRecord[]>
+    onGenerationStateChange(listener: (record: WorkflowGenerationRecord) => void): () => void
     importEmployee(employeeId: string): Promise<WorkflowDefinition>
     listRuns(workflowId?: string): Promise<WorkflowRunRecord[]>
     getRun(runId: string): Promise<WorkflowRunRecord | undefined>
+    removeRun(runId: string): Promise<void>
     start(workflowId: string, input: WorkflowValue, options?: WorkflowRunOptions): Promise<WorkflowRunRecord>
     resume(runId: string): Promise<WorkflowRunRecord>
     cancel(runId: string): Promise<WorkflowRunRecord>

@@ -109,6 +109,8 @@
       "!out/**/*.map",
       "plugins/**/*",
       "node_modules/**/*",
+      "docs/ai-workflow-generation.md",
+      "docs/workflow-schema.md",
       "!**/*.map",
       "!node_modules/node-bin-darwin-arm64/**",
       "!node_modules/node-win-x64/**",

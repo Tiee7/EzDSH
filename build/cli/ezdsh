@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+APP_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+
+for executable in "$APP_ROOT/MacOS/EzDSH" "$APP_ROOT/EzDSH" "$APP_ROOT/ezdsh"; do
+  if [ -x "$executable" ]; then
+    exec "$executable" --cli dsh "$@"
+  fi
+done
+
+echo "EzDSH application executable was not found near $SCRIPT_DIR" >&2
+exit 1

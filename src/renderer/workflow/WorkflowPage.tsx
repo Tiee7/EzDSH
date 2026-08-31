@@ -36,6 +36,8 @@ import {
   parseWorkflowExportDocument,
   type AiExecutionMode,
   type ConditionOperator,
+  type WorkflowInputField,
+  type WorkflowInputFieldType,
   type TransformTemplate,
   type WorkflowDefinition,
   type WorkflowExportDocument,
@@ -50,9 +52,13 @@ import {
   type WorkflowPosition,
   type WorkflowModelOption,
   type WorkflowModelSelection,
+  type WorkflowModificationChange,
+  type WorkflowModificationRecord,
+  type WorkflowModifyResult,
   type WorkflowRunRecord,
   type WorkflowValue,
 } from '../../shared/workflow.js'
+import { WorkflowGenerationPage } from './WorkflowGenerationPage.js'
 import './workflow.css'
 
 export { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
@@ -64,7 +70,7 @@ interface WorkflowPageProps {
   onWorkspaceModeChange?: (active: boolean) => void
 }
 
-type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; status?: WorkflowNodeRunStatus; duration?: string; isRunning?: boolean }>
+type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; inputVariables?: string[]; outputVariables?: string[]; status?: WorkflowNodeRunStatus; duration?: string; isRunning?: boolean }>
 
 const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   input: 'Input',
@@ -72,11 +78,11 @@ const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   employee: '专业员工',
   skill: 'Skill',
   mcp: 'MCP',
-  parallel: 'Parallel',
-  loop: 'Loop',
-  condition: 'Condition',
-  approval: 'Approval',
-  transform: 'Transform',
+  parallel: '并行处理',
+  loop: '循环处理',
+  condition: '条件判断',
+  approval: '人工审批',
+  transform: '数据转换',
   output: 'Output',
   shell: 'Shell',
   file: 'File',
@@ -84,8 +90,39 @@ const nodeTypeLabel: Record<WorkflowNodeType, string> = {
   code: '代码执行',
 }
 
+export function workflowNodeTypeLabel(type: WorkflowNodeType): string {
+  return nodeTypeLabel[type]
+}
+
+const conditionOperatorLabel: Record<ConditionOperator, string> = {
+  truthy: '为真',
+  equals: '等于',
+  'not-equals': '不等于',
+  contains: '包含',
+  'greater-than': '大于',
+  'less-than': '小于',
+}
+
+export function workflowConditionOperatorLabel(operator: ConditionOperator): string {
+  return conditionOperatorLabel[operator]
+}
+
+const transformTemplateLabel: Record<TransformTemplate, string> = {
+  identity: '保持原值',
+  json: '转为 JSON',
+  'extract-text': '提取文本',
+  prepend: '前置文本',
+  append: '追加文本',
+}
+
+export function workflowTransformTemplateLabel(template: TransformTemplate): string {
+  return transformTemplateLabel[template]
+}
+
+export const WORKFLOW_ADDABLE_NODE_TYPES: WorkflowNodeType[] = ['parallel', 'loop', 'condition', 'approval', 'transform', 'ai-task', 'employee', 'skill', 'mcp', 'http', 'code', 'shell', 'file']
+
 const NODE_LIBRARY_GROUPS: Array<{ label: string; types: WorkflowNodeType[] }> = [
-  { label: '流程控制', types: ['input', 'output', 'parallel', 'loop', 'condition', 'approval', 'transform'] },
+  { label: '流程控制', types: ['parallel', 'loop', 'condition', 'approval', 'transform'] },
   { label: '智能能力', types: ['ai-task', 'employee', 'skill', 'mcp'] },
   { label: '外部与本地工具', types: ['http', 'code', 'shell', 'file'] },
 ]
@@ -113,8 +150,9 @@ function id(prefix: string): string {
   return `${prefix}-${suffix}`
 }
 
-const WORKFLOW_FLOW_NODE_WIDTH = 184
-const WORKFLOW_FLOW_NODE_HEIGHT = 64
+const WORKFLOW_FLOW_NODE_WIDTH = 208
+const WORKFLOW_FLOW_NODE_HEIGHT = 96
+const WORKFLOW_FLOW_NODE_WITH_OUTPUT_HEIGHT = 112
 
 export const WORKFLOW_CANVAS_INTERACTION_PROPS = {
   selectionOnDrag: true,
@@ -181,13 +219,25 @@ export function workflowFlowNodes(workflow: WorkflowDefinition, run?: WorkflowRu
       type: node.type === 'condition' ? 'condition' : 'workflow',
       position: node.position,
       width: WORKFLOW_FLOW_NODE_WIDTH,
-      height: WORKFLOW_FLOW_NODE_HEIGHT,
+      height: (node.outputVariables?.length ?? 0) > 0 ? WORKFLOW_FLOW_NODE_WITH_OUTPUT_HEIGHT : WORKFLOW_FLOW_NODE_HEIGHT,
       selected: node.id === selectedNodeId,
-      data: { label: `${node.label}${statusMark}`, nodeType: node.type, status, isRunning: status === 'running', ...(run === undefined ? {} : { duration: formatWorkflowNodeDuration(states.get(node.id)?.elapsedMs) }) },
+      data: { label: `${node.label}${statusMark}`, nodeType: node.type, inputVariables: node.type === 'input' ? workflowInputFieldNames(node.config.fields) : (node.inputBindings ?? []).map((binding) => binding.name.trim()).filter(Boolean), outputVariables: (node.outputVariables ?? []).map((variable) => variable.name.trim()).filter(Boolean), status, isRunning: status === 'running', ...(run === undefined ? {} : { duration: formatWorkflowNodeDuration(states.get(node.id)?.elapsedMs) }) },
       className: status === undefined ? undefined : `workflow-flow-node-${status}`,
     }
   })
 }
+
+/** Keep handle geometry intact when the read-only execution canvas rebuilds its controlled nodes. */
+export function workflowExecutionFlowNodes(workflow: WorkflowDefinition, run?: WorkflowRunRecord, selectedNodeId?: string): FlowNode[] {
+  return workflowFlowNodes(workflow, run, selectedNodeId).map((node) => ({
+    ...node,
+    measured: {
+      width: node.width ?? WORKFLOW_FLOW_NODE_WIDTH,
+      height: node.height ?? WORKFLOW_FLOW_NODE_HEIGHT,
+    },
+  }))
+}
+
 /** Keep exported files portable and readable when a workflow name contains punctuation or path separators. */
 export function workflowExportFileName(name: string): string {
   const safeName = name.trim().replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 80)
@@ -306,7 +356,10 @@ export function getWorkflowNodeRunDetail(workflow: WorkflowDefinition, run: Work
   const node = workflow.nodes.find((candidate) => candidate.id === nodeId)
   const state = run.nodeStates.find((candidate) => candidate.nodeId === nodeId)
   if (node === undefined || state === undefined) return undefined
-  const upstreamIds = workflow.edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source)
+  const upstreamIds = [...new Set([
+    ...workflow.edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source),
+    ...(node.inputBindings ?? []).map((binding) => binding.sourceNodeId),
+  ])]
   const upstreamNodes = upstreamIds.flatMap((upstreamId) => {
     const upstream = workflow.nodes.find((candidate) => candidate.id === upstreamId)
     return upstream === undefined ? [] : [upstream]
@@ -326,6 +379,7 @@ function WorkflowFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element 
   return <div className={`workflow-flow-node ${selected ? 'workflow-flow-node-selected' : ''}`}>
     {handles.input === 'left' ? <Handle type="target" position={Position.Left} /> : null}
     <div className="workflow-flow-node-content"><WorkflowNodeTypeIcon type={data.nodeType} /><span>{data.label}</span></div>
+    <WorkflowFlowNodeVariableSummary inputVariables={data.inputVariables} outputVariables={data.outputVariables} />
     {data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}
     {data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}
     {handles.output === 'right' ? <Handle type="source" position={Position.Right} /> : null}
@@ -333,12 +387,27 @@ function WorkflowFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element 
 }
 
 function ConditionFlowNode({ data, selected }: NodeProps<FlowNode>): JSX.Element {
-  return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><div className="workflow-condition-node-content"><WorkflowNodeTypeIcon type={data.nodeType} /><span>{data.label}</span></div>{data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />true</span><span><Handle type="source" position={Position.Right} id="false" />false</span></div></div>
+  return <div className={`workflow-condition-node ${selected ? 'workflow-condition-node-selected' : ''}`}><Handle type="target" position={Position.Left} id="input" /><div className="workflow-condition-main"><div className="workflow-condition-node-content"><WorkflowNodeTypeIcon type={data.nodeType} /><span>{data.label}</span></div><WorkflowFlowNodeVariableSummary inputVariables={data.inputVariables} outputVariables={data.outputVariables} /></div>{data.isRunning ? <span className="workflow-node-running-indicator" role="status"><i aria-hidden="true" />执行中</span> : null}{data.duration !== undefined ? <small className="workflow-flow-node-duration">{data.duration}</small> : null}<div className="workflow-condition-ports"><span><Handle type="source" position={Position.Right} id="true" />是</span><span><Handle type="source" position={Position.Right} id="false" />否</span></div></div>
+}
+
+function WorkflowFlowNodeVariableSummary({ inputVariables, outputVariables }: { inputVariables?: string[]; outputVariables?: string[] }): JSX.Element {
+  const lines = [
+    { label: '输入变量', variables: inputVariables?.filter(Boolean) ?? [], className: '' },
+    ...((outputVariables?.filter(Boolean).length ?? 0) === 0 ? [] : [{ label: '输出变量', variables: outputVariables!.filter(Boolean), className: 'workflow-flow-node-variable-summary-output' }]),
+  ]
+  return <div className="workflow-flow-node-variable-summary">{lines.map((line) => <div key={line.label} className={`workflow-flow-node-variable-summary-line ${line.className}`}><span>{line.label}</span><div className="workflow-flow-node-variable-list">{line.variables.length === 0 ? <span className="workflow-flow-node-variable-empty">未配置</span> : line.variables.slice(0, 3).map((variable) => <span key={variable} className="workflow-flow-node-variable-chip">{'{{'}{variable}{'}}'}</span>)}{line.variables.length > 3 ? <span className="workflow-flow-node-variable-more">+{line.variables.length - 3}</span> : null}</div></div>)}</div>
 }
 
 /** Compact Dify-style node type marker; the visible node label remains the accessible name. */
 export function WorkflowNodeTypeIcon({ type }: { type: WorkflowNodeType }): JSX.Element {
   return <span className={`workflow-node-type-icon workflow-node-type-${type}`} data-node-icon={type} aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d={workflowNodeIconPath[type]} /></svg></span>
+}
+
+function WorkflowRunActionIcon({ type }: { type: 'mark-unread' | 'delete' }): JSX.Element {
+  const path = type === 'mark-unread'
+    ? 'M4 6h16v12H4V6Zm1 1 7 5 7-5'
+    : 'M5 7h14m-9 4v5m4-5v5M9 4h6l1 3H8l1-3Zm-4 3h14l-1 13H6L5 7Z'
+  return <svg className={`workflow-run-action-icon workflow-run-action-icon-${type}`} viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d={path} /></svg>
 }
 
 const nodeTypes = { workflow: WorkflowFlowNode, condition: ConditionFlowNode }
@@ -384,6 +453,32 @@ export function workflowFlowEdges(workflow: WorkflowDefinition): Edge[] {
     ...(edge.targetPort === undefined || edge.targetPort === 'default' ? {} : { targetHandle: edge.targetPort }),
     label: edge.sourcePort === undefined || edge.sourcePort === 'default' ? undefined : edge.sourcePort,
   }))
+}
+
+/** Execution also visualizes non-linear variable dependencies as light dashed links. */
+export function workflowExecutionEdges(workflow: WorkflowDefinition): Edge[] {
+  const edges = workflowFlowEdges(workflow)
+  const nodeIds = new Set(workflow.nodes.map((node) => node.id))
+  const existingPairs = new Set(edges.map((edge) => `${edge.source}\u0000${edge.target}`))
+  const variableNames = new Map<string, string[]>()
+  for (const node of workflow.nodes) {
+    for (const binding of node.inputBindings ?? []) {
+      if (!nodeIds.has(binding.sourceNodeId) || binding.sourceNodeId === node.id) continue
+      const pair = `${binding.sourceNodeId}\u0000${node.id}`
+      if (existingPairs.has(pair)) continue
+      variableNames.set(pair, [...(variableNames.get(pair) ?? []), binding.name])
+    }
+  }
+  return [...edges, ...Array.from(variableNames.entries(), ([pair, names]) => {
+    const [source, target] = pair.split('\u0000')
+    return {
+      id: `workflow-variable-dependency-${source}-${target}`,
+      source: source ?? '',
+      target: target ?? '',
+      label: names.map((name) => `{{${name}}}`).join(', '),
+      className: 'workflow-variable-dependency-edge',
+    }
+  })]
 }
 
 const flowEdges = workflowFlowEdges
@@ -435,6 +530,10 @@ export interface WorkflowSelection {
   edgeIds?: string[]
 }
 
+export function isWorkflowFixedNodeType(type: WorkflowNodeType): boolean {
+  return type === 'input' || type === 'output'
+}
+
 /** Read all selected canvas objects so keyboard deletion can preserve React Flow multi-selection. */
 export function workflowSelectionFromFlowState(nodes: ReadonlyArray<Pick<Node, 'id' | 'selected'>>, edges: ReadonlyArray<Pick<Edge, 'id' | 'selected'>>): WorkflowSelection {
   return {
@@ -449,6 +548,7 @@ export function removeWorkflowSelection(workflow: WorkflowDefinition, selection:
   const edgeIds = new Set(selection.edgeIds ?? [])
   if (selection.nodeId !== undefined) nodeIds.add(selection.nodeId)
   if (selection.edgeId !== undefined) edgeIds.add(selection.edgeId)
+  for (const node of workflow.nodes) if (isWorkflowFixedNodeType(node.type)) nodeIds.delete(node.id)
   if (nodeIds.size > 0) {
     return {
       ...workflow,
@@ -493,7 +593,7 @@ function preserveWorkflowEdgeSelection<T extends Edge>(edges: ReadonlyArray<T>, 
 }
 
 function newNode(type: WorkflowNodeType, index: number): WorkflowNode {
-  const base = { id: id(type), type, label: nodeTypeLabel[type], position: { x: 120 + (index % 3) * 300, y: 110 + Math.floor(index / 3) * 180 }, ...(type === 'input' ? {} : { inputBindings: [], outputVariables: [] }) }
+  const base = { id: id(type), type, label: nodeTypeLabel[type], description: '', position: { x: 120 + (index % 3) * 300, y: 110 + Math.floor(index / 3) * 180 }, ...(type === 'input' ? {} : { inputBindings: [], outputVariables: [] }) }
   switch (type) {
     case 'input': return { ...base, type, config: { name: 'task' } }
     case 'ai-task': return { ...base, type, config: { instruction: '请完成上游输入交代的任务，并输出清晰结果。', mode: 'single', skillIds: [], outputMode: 'text' } }
@@ -519,11 +619,29 @@ export interface WorkflowVariableOption {
   label: string
 }
 
+export interface WorkflowVariableInsertion {
+  value: string
+  cursor: number
+}
+
+/** Insert a node-local variable reference and return the caret position after it. */
+export function insertWorkflowVariableToken(value: string, token: string, selectionStart: number, selectionEnd = selectionStart): WorkflowVariableInsertion {
+  const start = Math.max(0, Math.min(selectionStart, value.length))
+  const end = Math.max(start, Math.min(selectionEnd, value.length))
+  const insertion = `{{${token}}}`
+  return { value: `${value.slice(0, start)}${insertion}${value.slice(end)}`, cursor: start + insertion.length }
+}
+
 /** Values that can be selected as a node-local input. `result` denotes the full output. */
 export function getWorkflowVariableOptions(workflow: WorkflowDefinition, targetNodeId: string): WorkflowVariableOption[] {
   return workflow.nodes.flatMap((node) => {
-    if (node.id === targetNodeId) return []
+    // A downstream variable would create a cycle as soon as it is bound back
+    // into this node. Keep the picker aligned with execution-time context.
+    if (node.id === targetNodeId || workflowNodeReachable(workflow, targetNodeId, node.id)) return []
     if (node.type === 'input') {
+      if ((node.config.fields?.length ?? 0) > 0) {
+        return node.config.fields!.map((field) => ({ sourceNodeId: node.id, sourcePath: field.name, label: `${node.label} · ${field.label?.trim() || field.name}` }))
+      }
       const name = node.config.name?.trim() || node.label
       return [{ sourceNodeId: node.id, label: `${node.label} · ${name}` }]
     }
@@ -533,9 +651,27 @@ export function getWorkflowVariableOptions(workflow: WorkflowDefinition, targetN
   })
 }
 
+function workflowNodeReachable(workflow: WorkflowDefinition, startNodeId: string, targetNodeId: string): boolean {
+  const visited = new Set<string>()
+  const pending = [startNodeId]
+  while (pending.length > 0) {
+    const current = pending.shift()
+    if (current === undefined || visited.has(current)) continue
+    if (current === targetNodeId) return true
+    visited.add(current)
+    for (const edge of workflow.edges) {
+      if (edge.source === current && !visited.has(edge.target)) pending.push(edge.target)
+    }
+    for (const node of workflow.nodes) {
+      if ((node.inputBindings ?? []).some((binding) => binding.sourceNodeId === current) && !visited.has(node.id)) pending.push(node.id)
+    }
+  }
+  return false
+}
+
 /** Copy only node definitions: connections remain untouched, so a paste is safe to wire independently. */
 export function duplicateWorkflowNodes(nodes: ReadonlyArray<WorkflowNode>, createId: (node: WorkflowNode) => string, offset: WorkflowPosition = { x: 48, y: 32 }): WorkflowNode[] {
-  return nodes.map((node) => {
+  return nodes.filter((node) => !isWorkflowFixedNodeType(node.type)).map((node) => {
     const duplicate = cloneWorkflow(node)
     return {
       ...duplicate,
@@ -548,6 +684,16 @@ export function duplicateWorkflowNodes(nodes: ReadonlyArray<WorkflowNode>, creat
 function formatValue(value: WorkflowValue | undefined): string {
   if (value === undefined) return ''
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+}
+
+/** Store valid JSON literals with their real type while keeping ordinary free text editable. */
+export function parseWorkflowConditionValue(value: string): WorkflowValue {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return isWorkflowValue(parsed) ? parsed : value
+  } catch {
+    return value
+  }
 }
 
 /** Present persisted millisecond timing without inventing time for legacy records. */
@@ -596,14 +742,14 @@ function workflowJsonKind(value: WorkflowValue): string {
   return typeof value
 }
 
-function WorkflowJsonTree({ value, label = '结果集', depth = 0 }: { value: WorkflowValue; label?: string; depth?: number }): JSX.Element {
+export function WorkflowJsonTree({ value, label = '结果集', depth = 0, expandAll }: { value: WorkflowValue; label?: string; depth?: number; expandAll?: boolean }): JSX.Element {
   const isContainer = value !== null && typeof value === 'object'
   if (!isContainer) return <div className="workflow-json-value"><span className="workflow-json-key">{label}</span><code>{JSON.stringify(value)}</code></div>
   const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item] as const) : Object.entries(value)
-  return <details className="workflow-json-tree" open={depth < 1}>
+  return <details className="workflow-json-tree" open={expandAll ?? depth < 1}>
     <summary><span className="workflow-json-key">{label}</span><span className="workflow-json-kind">{workflowJsonKind(value)}</span></summary>
     <div className="workflow-json-children">
-      {entries.length === 0 ? <span className="workflow-json-empty">{Array.isArray(value) ? '[]' : '{}'}</span> : entries.map(([key, child]) => <WorkflowJsonTree key={`${depth}-${key}`} value={child} label={key} depth={depth + 1} />)}
+      {entries.length === 0 ? <span className="workflow-json-empty">{Array.isArray(value) ? '[]' : '{}'}</span> : entries.map(([key, child]) => <WorkflowJsonTree key={`${depth}-${key}`} value={child} label={key} depth={depth + 1} expandAll={expandAll} />)}
     </div>
   </details>
 }
@@ -737,8 +883,10 @@ export interface WorkflowOutputViewerProps {
 export function WorkflowOutputViewer({ copy, value, label, onCopy, onOpenWindow, fontScale = 1, onIncreaseFont, onDecreaseFont }: WorkflowOutputViewerProps): JSX.Element {
   const detectedView = useMemo(() => detectWorkflowOutputView(value), [value])
   const [view, setView] = useState<WorkflowOutputView>(detectedView)
+  const [expandAllJson, setExpandAllJson] = useState<boolean>()
   const [copied, setCopied] = useState(false)
   useEffect(() => setView(detectedView), [detectedView])
+  useEffect(() => setExpandAllJson(undefined), [value])
   const copyOutput = async (): Promise<void> => {
     try {
       const outputText = formatValue(value)
@@ -762,6 +910,8 @@ export function WorkflowOutputViewer({ copy, value, label, onCopy, onOpenWindow,
     }
   }
   const text = formatValue(value)
+  const jsonValue = typeof value === 'string' ? parseWorkflowJsonText(value) ?? value : value
+  const canExpandJson = jsonValue !== null && typeof jsonValue === 'object'
   return <div className="workflow-output workflow-output-viewer" style={{ '--workflow-output-scale': String(fontScale) } as CSSProperties}>
     <div className="workflow-output-header">
       <strong>{label ?? copy.workflowOutput}</strong>
@@ -770,13 +920,14 @@ export function WorkflowOutputViewer({ copy, value, label, onCopy, onOpenWindow,
         {onOpenWindow !== undefined ? <button type="button" className="workflow-output-action-button" onClick={onOpenWindow}>{copy.workflowOpenOutputWindow}</button> : null}
         {onDecreaseFont !== undefined ? <button type="button" className="workflow-output-font-button" aria-label={copy.workflowDecreaseFont} title={copy.workflowDecreaseFont} onClick={onDecreaseFont}>−</button> : null}
         {onIncreaseFont !== undefined ? <button type="button" className="workflow-output-font-button" aria-label={copy.workflowIncreaseFont} title={copy.workflowIncreaseFont} onClick={onIncreaseFont}>+</button> : null}
+        {view === 'json' && canExpandJson ? <><button type="button" className="workflow-output-action-button" onClick={() => setExpandAllJson(true)}>{copy.workflowExpandAllJson}</button><button type="button" className="workflow-output-action-button" onClick={() => setExpandAllJson(false)}>{copy.workflowCollapseAllJson}</button></> : null}
         <div className="workflow-output-view-switch" role="group" aria-label={copy.workflowOutputViewLabel}>
           <button type="button" className={view === 'markdown' ? 'workflow-output-view-active' : ''} aria-pressed={view === 'markdown'} onClick={() => setView('markdown')}>{copy.workflowOutputMarkdown}</button>
           <button type="button" className={view === 'json' ? 'workflow-output-view-active' : ''} aria-pressed={view === 'json'} onClick={() => setView('json')}>{copy.workflowOutputJson}</button>
         </div>
       </div>
     </div>
-    {view === 'json' ? <div className="workflow-output-json"><WorkflowJsonTree value={typeof value === 'string' ? parseWorkflowJsonText(value) ?? value : value} /></div> : <div className="workflow-output-markdown">{renderWorkflowMarkdownBlocks(text)}</div>}
+    {view === 'json' ? <div className="workflow-output-json"><WorkflowJsonTree value={jsonValue} expandAll={expandAllJson} /></div> : <div className="workflow-output-markdown">{renderWorkflowMarkdownBlocks(text)}</div>}
   </div>
 }
 
@@ -852,6 +1003,10 @@ export interface WorkflowRunSummary {
   firstUnviewedRun?: WorkflowRunRecord
 }
 
+export function workflowRunCanDelete(status: WorkflowRunRecord['status']): boolean {
+  return status !== 'queued' && status !== 'running' && status !== 'waiting-approval'
+}
+
 export function summarizeWorkflowRuns(runs: WorkflowRunRecord[], viewedRunIds: ReadonlySet<string>): WorkflowRunSummary {
   const unviewed = runs.filter((run) => !viewedRunIds.has(run.id))
   return {
@@ -905,7 +1060,9 @@ export interface WorkflowLaunchField {
   id: string
   key: string
   label: string
+  type?: WorkflowInputFieldType
   defaultValue?: WorkflowValue
+  required?: boolean
 }
 
 function workflowModelOptionKey(option: WorkflowModelSelection): string {
@@ -917,6 +1074,22 @@ export function getWorkflowLaunchFields(workflow: WorkflowDefinition): WorkflowL
   const usedKeys = new Set<string>()
   return workflow.nodes.flatMap((node) => {
     if (node.type !== 'input') return []
+    if ((node.config.fields?.length ?? 0) > 0) {
+      return node.config.fields!.map((field, index) => {
+        const configuredKey = field.name.trim()
+        const fallbackKey = `${node.id}_${index + 1}`
+        const key = configuredKey === '' || usedKeys.has(configuredKey) ? fallbackKey : configuredKey
+        usedKeys.add(key)
+        return {
+          id: `${node.id}-${index + 1}`,
+          key,
+          label: field.label?.trim() || configuredKey || key,
+          ...(field.type === undefined || field.type === 'string' ? {} : { type: field.type }),
+          ...(field.defaultValue === undefined ? {} : { defaultValue: field.defaultValue }),
+          ...(field.required === undefined ? {} : { required: field.required }),
+        }
+      })
+    }
     const configuredKey = node.config.name?.trim()
     const key = configuredKey === undefined || configuredKey === '' || usedKeys.has(configuredKey) ? node.id : configuredKey
     usedKeys.add(key)
@@ -929,9 +1102,42 @@ export function getWorkflowLaunchFields(workflow: WorkflowDefinition): WorkflowL
   })
 }
 
+function workflowInputFieldNames(fields: WorkflowInputField[] | undefined): string[] {
+  const names = fields?.map((field) => field.label?.trim() || field.name.trim()).filter(Boolean) ?? []
+  return names.length > 0 ? names : ['input']
+}
+
 /** Keep the launch payload JSON-safe while using the configured Input-node names as keys. */
 export function buildWorkflowLaunchInput(fields: WorkflowLaunchField[], values: Record<string, string>): Record<string, WorkflowValue> {
-  return Object.fromEntries(fields.map((field) => [field.key, values[field.key] ?? formatValue(field.defaultValue)])) as Record<string, WorkflowValue>
+  return Object.fromEntries(fields.map((field) => {
+    const value = values[field.key] ?? formatValue(field.defaultValue)
+    return [field.key, parseWorkflowLaunchValue(field, value)]
+  })) as Record<string, WorkflowValue>
+}
+
+function parseWorkflowLaunchValue(field: WorkflowLaunchField, value: string): WorkflowValue {
+  const trimmed = value.trim()
+  switch (field.type ?? 'string') {
+    case 'string': return value
+    case 'number': {
+      const parsed = Number(trimmed)
+      if (trimmed === '' || !Number.isFinite(parsed)) throw new Error(`“${field.label}”必须是有效数字。`)
+      return parsed
+    }
+    case 'boolean':
+      if (trimmed.toLowerCase() === 'true') return true
+      if (trimmed.toLowerCase() === 'false') return false
+      throw new Error(`“${field.label}”必须填写 true 或 false。`)
+    case 'json': {
+      try {
+        const parsed: unknown = JSON.parse(trimmed)
+        if (isWorkflowValue(parsed)) return parsed
+      } catch {
+        // Fall through to the field-specific validation error.
+      }
+      throw new Error(`“${field.label}”必须是有效 JSON。`)
+    }
+  }
 }
 
 function createWorkflowLaunchValues(fields: WorkflowLaunchField[]): Record<string, string> {
@@ -1070,8 +1276,170 @@ export function WorkflowMetadataDialog({ copy, name, description, onChangeName, 
   </div>
 }
 
+interface WorkflowModifyDialogProps {
+  copy: AppCopy
+  workflow: WorkflowDefinition
+  onClose: () => void
+  onApply: (workflow: WorkflowDefinition) => void
+  onOpenHistory?: () => void
+}
+
+function workflowModificationTypeLabel(copy: AppCopy, type: WorkflowModificationChange['type']): string {
+  if (type === 'added') return copy.workflowAiModifyAdded
+  if (type === 'removed') return copy.workflowAiModifyDeletedNodes
+  if (type === 'rewired') return copy.workflowAiModifyRewired
+  return copy.workflowAiModifyUpdated
+}
+
+export function WorkflowModifyDialog({ copy, workflow, onClose, onApply, onOpenHistory }: WorkflowModifyDialogProps): JSX.Element {
+  const [prompt, setPrompt] = useState('')
+  const [modelOptions, setModelOptions] = useState<WorkflowModelOption[]>([])
+  const [modelSelection, setModelSelection] = useState<WorkflowModelSelection>()
+  const [modelLoading, setModelLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [preview, setPreview] = useState<WorkflowModifyResult>()
+  const [record, setRecord] = useState<WorkflowModificationRecord>()
+  const modificationIdRef = useRef<string>()
+
+  useEffect(() => {
+    let active = true
+    void window.EzDSH.providers.listWorkflowModels().then((models) => {
+      if (active) setModelOptions(models)
+    }).catch(() => {
+      // The configured default model remains available even when the optional catalog is unavailable.
+    }).finally(() => {
+      if (active) setModelLoading(false)
+    })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.EzDSH.workflows.onModificationStateChange((incoming) => {
+      if (incoming.id === modificationIdRef.current) setRecord(incoming)
+    })
+    return unsubscribe
+  }, [])
+
+  const start = async (): Promise<void> => {
+    const value = prompt.trim()
+    if (value === '' || busy) return
+    setBusy(true)
+    setError('')
+    setPreview(undefined)
+    const nextModificationId = `modification-${crypto.randomUUID()}`
+    modificationIdRef.current = nextModificationId
+    try {
+      setPreview(await window.EzDSH.workflows.modify({ modificationId: nextModificationId, workflow: cloneWorkflow(workflow), prompt: value, ...(modelSelection === undefined ? {} : { model: modelSelection }) }))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const apply = (): void => {
+    if (preview === undefined || preview.changes.length === 0) return
+    onApply(preview.workflow)
+    onClose()
+  }
+
+  return <div className="workflow-ai-modify-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="workflow-ai-modify-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-ai-modify-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="workflow-ai-modify-header"><div><span className="workflow-kicker">{copy.workflowGenerate}</span><h2 id="workflow-ai-modify-title">{copy.workflowAiModifyTitle}</h2><p>{copy.workflowAiModifyHint}</p><small className="workflow-ai-modify-background-hint">{copy.workflowAiModifyContinueBackground}</small>{onOpenHistory !== undefined ? <button type="button" className="workflow-ai-modify-history-button" onClick={onOpenHistory}><WandMagicSparklesIcon className="workflow-ai-icon" size={13} />{copy.workflowAiModifyHistory}</button> : null}</div><button type="button" aria-label={copy.workflowDismiss} onClick={onClose}>×</button></div>
+      <div className="workflow-ai-modify-body">
+        <label className="workflow-ai-modify-prompt"><span>{copy.workflowAiModifyTitle}</span><textarea autoFocus value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={copy.workflowAiModifyPlaceholder} disabled={busy} /></label>
+        <label className="workflow-ai-modify-model"><div className="workflow-model-control"><select aria-label={copy.workflowModel} value={modelSelection === undefined ? '' : workflowModelOptionKey(modelSelection)} onChange={(event) => setModelSelection(modelOptions.find((option) => workflowModelOptionKey(option) === event.target.value))} disabled={busy || modelLoading}><option value="">{copy.workflowUseDefaultModel}</option>{modelOptions.map((option) => <option key={workflowModelOptionKey(option)} value={workflowModelOptionKey(option)}>{option.providerName} · {option.modelName ?? option.modelId}</option>)}</select></div><small className="workflow-launch-note">{modelOptions.length === 0 ? copy.workflowNoModels : copy.workflowModelHint}</small></label>
+        {error ? <div className="workflow-error" role="alert">{error}</div> : null}
+        {record && record.events.length > 0 ? <div className="workflow-ai-modify-progress" aria-live="polite"><strong>{workflowModificationStatusLabel(copy, record.status)}</strong><p>{record.events.at(-1)?.message}</p><div className="workflow-ai-modify-progress-events">{record.events.map((event, index) => <span key={`${event.time}-${index}`} className={event.status === 'completed' ? 'workflow-ai-modify-progress-complete' : event.status === 'failed' ? 'workflow-ai-modify-progress-failed' : ''}>{event.message}</span>)}</div></div> : null}
+        {preview ? <div className="workflow-ai-modify-preview">
+          <div className="workflow-panel-heading"><strong>{copy.workflowAiModifyChanges}</strong><span className="workflow-run-count">{preview.changes.length}</span></div>
+          {preview.changes.length === 0 ? <p className="workflow-muted">{copy.workflowAiModifyNoChanges}</p> : <ul>{preview.changes.map((change, index) => <li key={`${change.type}-${change.targetId ?? index}`}><span className={`workflow-ai-modify-change-type workflow-ai-modify-change-${change.type}`}>{workflowModificationTypeLabel(copy, change.type)}</span><span>{change.details}</span></li>)}</ul>}
+          {preview.removedNodes.length > 0 ? <div className="workflow-ai-modify-deletion-warning" role="alert"><strong>{copy.workflowAiModifyDeletionWarning}</strong><ul>{preview.removedNodes.map((node) => <li key={node.id}>{node.label}</li>)}</ul></div> : null}
+        </div> : null}
+      </div>
+      <div className="workflow-ai-modify-actions"><button type="button" className="workflow-button-quiet" onClick={onClose}>{copy.workflowCancelEdit}</button>{preview ? <button type="button" className="workflow-button-primary workflow-ai-action-button" onClick={apply} disabled={preview.changes.length === 0}><WandMagicSparklesIcon className="workflow-ai-icon" />{preview.removedNodes.length > 0 ? copy.workflowAiModifyApplyDeletion : copy.workflowAiModifyApply}</button> : <button type="button" className="workflow-button-primary workflow-ai-action-button" onClick={() => void start()} disabled={busy || prompt.trim() === ''}><WandMagicSparklesIcon className="workflow-ai-icon" />{busy ? copy.workflowAiModifyWorking : copy.workflowAiModifyStart}</button>}</div>
+    </section>
+  </div>
+}
+
+export function mergeWorkflowModificationRecord(records: WorkflowModificationRecord[], incoming: WorkflowModificationRecord): WorkflowModificationRecord[] {
+  return [incoming, ...records.filter((record) => record.id !== incoming.id)].sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+}
+
+function workflowModificationStatusLabel(copy: AppCopy, status: WorkflowModificationRecord['status']): string {
+  if (status === 'completed') return copy.workflowGenerationCompleted
+  if (status === 'failed') return copy.workflowGenerationFailed
+  return copy.workflowGenerationRunning
+}
+
+interface WorkflowModificationHistoryDialogProps {
+  copy: AppCopy
+  records: WorkflowModificationRecord[]
+  initialRecordId?: string
+  onClose: () => void
+  onApply: (workflow: WorkflowDefinition) => void
+}
+
+export function WorkflowModificationHistoryDialog({ copy, records, initialRecordId, onClose, onApply }: WorkflowModificationHistoryDialogProps): JSX.Element {
+  const [selectedId, setSelectedId] = useState(initialRecordId ?? records[0]?.id)
+  const [confirmingId, setConfirmingId] = useState<string>()
+  const selectedRecord = records.find((record) => record.id === selectedId) ?? records[0]
+
+  useEffect(() => {
+    setSelectedId((current) => initialRecordId ?? (records.some((record) => record.id === current) ? current : records[0]?.id))
+    setConfirmingId(undefined)
+  }, [initialRecordId, records])
+
+  const applyRecord = (record: WorkflowModificationRecord): void => {
+    if (record.workflow === undefined) return
+    onApply(record.workflow)
+    onClose()
+  }
+
+  return <div className="workflow-ai-modify-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="workflow-ai-modify-dialog workflow-ai-modify-history-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-ai-modify-history-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="workflow-ai-modify-header"><div><span className="workflow-kicker">{copy.workflowAiModifyHistory}</span><h2 id="workflow-ai-modify-history-title">{copy.workflowAiModifyHistoryTitle}</h2></div><button type="button" aria-label={copy.workflowDismiss} onClick={onClose}>×</button></div>
+      <div className="workflow-ai-modify-history-layout">
+        <aside className="workflow-ai-modify-history-list">{records.length === 0 ? <p className="workflow-muted">{copy.workflowAiModifyHistoryEmpty}</p> : records.map((record) => <button type="button" key={record.id} className={selectedRecord?.id === record.id ? 'workflow-ai-modify-history-item workflow-ai-modify-history-item-active' : 'workflow-ai-modify-history-item'} onClick={() => { setSelectedId(record.id); setConfirmingId(undefined) }}><strong>{workflowModificationStatusLabel(copy, record.status)}</strong><small>{new Date(record.startedAt).toLocaleString()} · v{record.workflowRevision}</small><span>{record.prompt}</span></button>)}</aside>
+        <div className="workflow-ai-modify-history-detail">{selectedRecord === undefined ? <p className="workflow-muted">{copy.workflowAiModifyHistoryEmpty}</p> : <>
+          <div className="workflow-panel-heading"><div><strong>{workflowModificationStatusLabel(copy, selectedRecord.status)}</strong><small>{new Date(selectedRecord.startedAt).toLocaleString()} · v{selectedRecord.workflowRevision} · {selectedRecord.model?.modelId ?? copy.workflowUseDefaultModel}</small></div><span className={`workflow-generation-status workflow-generation-status-${selectedRecord.status}`}>{workflowModificationStatusLabel(copy, selectedRecord.status)}</span></div>
+          <p className="workflow-ai-modify-history-prompt">{selectedRecord.prompt}</p>
+          <div className="workflow-ai-modify-progress workflow-ai-modify-history-events">{selectedRecord.events.map((event, index) => <p key={`${event.time}-${index}`} className={event.status === 'failed' ? 'workflow-ai-modify-progress-failed' : ''}>{event.message}</p>)}</div>
+          {selectedRecord.changes.length > 0 ? <><strong>{copy.workflowAiModifyChanges}</strong><ul className="workflow-ai-modify-change-list">{selectedRecord.changes.map((change, index) => <li key={`${change.type}-${change.targetId ?? index}`}><span className={`workflow-ai-modify-change-type workflow-ai-modify-change-${change.type}`}>{workflowModificationTypeLabel(copy, change.type)}</span><span>{change.details}</span></li>)}</ul></> : null}
+          {selectedRecord.removedNodes.length > 0 ? <div className="workflow-ai-modify-deletion-warning" role="alert"><strong>{copy.workflowAiModifyDeletionWarning}</strong><ul>{selectedRecord.removedNodes.map((node) => <li key={node.id}>{node.label}</li>)}</ul></div> : null}
+          {selectedRecord.error ? <div className="workflow-error" role="alert">{selectedRecord.error}</div> : null}
+          {confirmingId === selectedRecord.id ? <div className="workflow-ai-modify-reapply-warning" role="alert"><p>{copy.workflowAiModifyReapplyWarning}</p><div><button type="button" className="workflow-button-quiet" onClick={() => setConfirmingId(undefined)}>{copy.workflowCancelEdit}</button><button type="button" className="workflow-button-primary workflow-ai-action-button" onClick={() => applyRecord(selectedRecord)}><WandMagicSparklesIcon className="workflow-ai-icon" />{copy.workflowAiModifyReapplyConfirm}</button></div></div> : selectedRecord.workflow ? <button type="button" className="workflow-button-primary workflow-ai-action-button" onClick={() => setConfirmingId(selectedRecord.id)}><WandMagicSparklesIcon className="workflow-ai-icon" />{copy.workflowAiModifyReapply}</button> : null}
+        </>}</div>
+      </div>
+      <div className="workflow-ai-modify-actions"><button type="button" className="workflow-button-quiet" onClick={onClose}>{copy.workflowCancelEdit}</button></div>
+    </section>
+  </div>
+}
+
 function WorkflowNodeLibrary({ onAdd }: { onAdd: (type: WorkflowNodeType) => void }): JSX.Element {
   return <details className="workflow-node-library"><summary>＋ 添加节点</summary><div className="workflow-node-library-menu">{NODE_LIBRARY_GROUPS.map((group) => <section key={group.label}><strong>{group.label}</strong><div>{group.types.map((type) => <button key={type} type="button" onClick={() => onAdd(type)}><WorkflowNodeTypeIcon type={type} /><span>{nodeTypeLabel[type]}</span></button>)}</div></section>)}</div></details>
+}
+
+interface WorkflowOutputNodeSettingsProps {
+  workflow: WorkflowDefinition
+  node: Extract<WorkflowNode, { type: 'output' }>
+  onChange: (update: (node: WorkflowNode) => WorkflowNode) => void
+}
+
+export function WorkflowOutputNodeSettings({ workflow, node, onChange }: WorkflowOutputNodeSettingsProps): JSX.Element {
+  const contentMode = node.config.contentMode ?? 'variable'
+  return <>
+    <label>输出内容来源<select value={contentMode} onChange={(event) => {
+      const nextMode = event.target.value as 'variable' | 'text'
+      onChange((current) => current.type === 'output' ? { ...current, config: { ...current.config, contentMode: nextMode } } : current)
+    }}><option value="variable">变量</option><option value="text">自定义文本</option></select></label>
+    <p className="workflow-muted">结束节点先接收输入变量，再决定直接转发变量，或用文本模板重组多个变量。</p>
+    <WorkflowNodeVariablesEditor workflow={workflow} node={node} onChange={onChange} showOutputVariables={false} />
+    {contentMode === 'variable'
+      ? <p className="workflow-muted">变量模式会转发已绑定的输入；绑定一个变量时返回其值，绑定多个变量时返回同名对象。如需再次处理，请切换到自定义文本或在结束节点前新增处理节点。</p>
+      : <WorkflowPromptField label="自定义输出文本" value={node.config.text ?? ''} workflow={workflow} node={node} field="outputText" onChange={(value) => onChange((current) => current.type === 'output' ? { ...current, config: { ...current.config, text: value } } : current)} onChangeNode={onChange} />}
+  </>
 }
 
 export type WorkflowContextMenuTarget = 'canvas' | 'node' | 'edge' | 'selection'
@@ -1233,6 +1601,10 @@ interface WorkflowExecutionReviewProps {
   onReject: () => void
   onResume: () => void
   onSelectNode?: (nodeId: string) => void
+  onMarkUnread?: () => void
+  onDelete?: () => void
+  canMarkUnread?: boolean
+  canDelete?: boolean
   onCopyOutput?: (value: WorkflowValue) => void | Promise<void>
   onOpenOutputWindow?: (key: string, title: string, value: WorkflowValue) => void
   outputFontScale?: number
@@ -1253,8 +1625,18 @@ function WorkflowInputPreview({ copy, value, derived, upstreamNodes, onSelectNod
   </div>
 }
 
+/** Show the exact node prompt/configuration without making execution review noisy by default. */
+function WorkflowNodeConfigurationPreview({ copy, node }: { copy: AppCopy; node: WorkflowNode }): JSX.Element {
+  return <details className="workflow-node-configuration">
+    <summary>{copy.workflowNodeConfiguration}</summary>
+    <div className="workflow-node-configuration-body">
+      <WorkflowJsonTree value={node.config as unknown as WorkflowValue} label={copy.workflowNodeConfiguration} />
+    </div>
+  </details>
+}
+
 /** Read-only run-history inspector. All launch configuration stays in WorkflowRunLaunchDialog. */
-export function WorkflowExecutionReview({ copy, run, nodeDetail, selectedNode, statusLabel, onCancel, onApprove, onReject, onResume, onSelectNode, onCopyOutput, onOpenOutputWindow, outputFontScale = 1, onIncreaseOutputFont, onDecreaseOutputFont }: WorkflowExecutionReviewProps): JSX.Element {
+export function WorkflowExecutionReview({ copy, run, nodeDetail, selectedNode, statusLabel, onCancel, onApprove, onReject, onResume, onSelectNode, onMarkUnread, onDelete, canMarkUnread = false, canDelete = false, onCopyOutput, onOpenOutputWindow, outputFontScale = 1, onIncreaseOutputFont, onDecreaseOutputFont }: WorkflowExecutionReviewProps): JSX.Element {
   const inspectedNode = nodeDetail?.node ?? selectedNode
   const inspectedState = nodeDetail?.state ?? (selectedNode === undefined ? undefined : { nodeId: selectedNode.id, status: 'pending' as const })
   const inspectedEvents = nodeDetail?.events ?? []
@@ -1269,7 +1651,7 @@ export function WorkflowExecutionReview({ copy, run, nodeDetail, selectedNode, s
     onDecreaseFont: onDecreaseOutputFont,
   })
   return <section className="workflow-execution-detail">
-    <div className="workflow-execution-compact-heading">{run ? <><span className={`workflow-status-pill workflow-status-${run.status}`}>{statusLabel(run.status)}</span><span className="workflow-run-id">{run.id}</span></> : <span className="workflow-muted">{copy.workflowChooseRun}</span>}</div>
+    <div className="workflow-execution-compact-heading"><div className="workflow-execution-run-identity">{run ? <><span className={`workflow-status-pill workflow-status-${run.status}`}>{statusLabel(run.status)}</span><span className="workflow-run-id">{run.id}</span></> : <span className="workflow-muted">{copy.workflowChooseRun}</span>}</div>{run ? <div className="workflow-execution-run-actions"><button type="button" className="workflow-button-quiet workflow-icon-button" onClick={onMarkUnread} disabled={!canMarkUnread} aria-label={copy.workflowMarkUnread} title={copy.workflowMarkUnread}><WorkflowRunActionIcon type="mark-unread" /></button><button type="button" className="workflow-button-quiet workflow-danger-button workflow-icon-button" onClick={onDelete} disabled={!canDelete} aria-label={canDelete ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun} title={canDelete ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun}><WorkflowRunActionIcon type="delete" /></button></div> : null}</div>
     {run === undefined ? <p className="workflow-muted">{copy.workflowChooseRun}</p> : <>
       <div className="workflow-execution-actions">
         {run.status === 'running' || run.status === 'queued' || run.status === 'waiting-approval' ? <button type="button" className="workflow-danger-button" onClick={onCancel}>{copy.workflowCancel}</button> : null}
@@ -1284,6 +1666,7 @@ export function WorkflowExecutionReview({ copy, run, nodeDetail, selectedNode, s
       </> : <section className="workflow-node-result">
         <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowNodeResult}</span><strong>{inspectedNode.label}</strong></div><span className={`workflow-status-pill workflow-status-${inspectedState.status}`}>{nodeStatusLabel(inspectedState.status, copy)}</span></div>
         <div className="workflow-node-result-meta">{inspectedState.startedAt ? <span>{copy.workflowNodeStartedAt}: {inspectedState.startedAt}</span> : null}{inspectedState.completedAt ? <span>{copy.workflowNodeCompletedAt}: {inspectedState.completedAt}</span> : null}</div>
+        <WorkflowNodeConfigurationPreview key={inspectedNode.id} copy={copy} node={inspectedNode} />
         <WorkflowInputPreview copy={copy} value={inspectedState.input ?? (inspectedNode.type === 'input' ? run.input : undefined)} derived={(nodeDetail?.upstreamNodes.length ?? 0) > 0} upstreamNodes={nodeDetail?.upstreamNodes ?? []} onSelectNode={onSelectNode} />
         {inspectedState.output === undefined ? <p className="workflow-muted">{copy.workflowNodeNoOutput}</p> : <WorkflowOutputViewer {...outputViewerProps(inspectedNode.id, `${inspectedNode.label} · ${copy.workflowNodeOutput}`, inspectedState.output)} />}
         {inspectedState.error !== undefined ? <div className="workflow-error">{inspectedState.error}</div> : null}
@@ -1334,6 +1717,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [workspaceView, setWorkspaceView] = useState<WorkflowWorkspaceView>('editor')
   const [selectedNodeId, setSelectedNodeId] = useState<string>()
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>()
+  const [nodeInspectorTab, setNodeInspectorTab] = useState<'settings' | 'last-run'>('settings')
   const [nodes, setNodes] = useNodesState<FlowNode>([])
   const [edges, setEdges] = useEdgesState([])
   const [runs, setRuns] = useState<WorkflowRunRecord[]>([])
@@ -1348,7 +1732,12 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [executionDetailHeight, setExecutionDetailHeight] = useState(280)
   const [showMiniMap, setShowMiniMap] = useState(true)
   const [runSetup, setRunSetup] = useState<WorkflowRunSetup>()
-  const [generationPrompt, setGenerationPrompt] = useState('')
+  const [showGenerationPage, setShowGenerationPage] = useState(false)
+  const [showModifyDialog, setShowModifyDialog] = useState(false)
+  const [modificationHistory, setModificationHistory] = useState<WorkflowModificationRecord[]>([])
+  const [showModificationHistory, setShowModificationHistory] = useState(false)
+  const [modificationHistoryFocusId, setModificationHistoryFocusId] = useState<string>()
+  const [pendingModificationId, setPendingModificationId] = useState<string>()
   const [deletedWorkflow, setDeletedWorkflow] = useState<WorkflowDefinition>()
   const [contextMenu, setContextMenu] = useState<WorkflowContextMenuState>()
   const workflowPageRef = useRef<HTMLDivElement>(null)
@@ -1359,6 +1748,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const fitViewRef = useRef<(() => Promise<boolean>)>()
   const copiedWorkflowNodesRef = useRef<WorkflowNode[]>([])
   const workflowPasteCountRef = useRef(0)
+  const modifyDialogOpenRef = useRef(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -1394,6 +1784,10 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   useEffect(() => {
     if (message === '') setDeletedWorkflow(undefined)
   }, [message])
+
+  useEffect(() => {
+    modifyDialogOpenRef.current = showModifyDialog
+  }, [showModifyDialog])
 
   const refresh = useCallback(async (): Promise<void> => {
     setBusy(true)
@@ -1461,7 +1855,35 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     return unsubscribe
   }, [currentRun?.id, updateRunSummary])
 
+  useEffect(() => {
+    const workflowId = selected?.id
+    if (workflowId === undefined) {
+      setModificationHistory([])
+      return
+    }
+    let active = true
+    void window.EzDSH.workflows.listModificationHistory(workflowId).then((records) => {
+      if (active) setModificationHistory(records)
+    }).catch((reason: unknown) => {
+      if (active) setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    })
+    return () => { active = false }
+  }, [copy.workflowLoadFailed, selected?.id])
+
+  useEffect(() => {
+    const unsubscribe = window.EzDSH.workflows.onModificationStateChange((record) => {
+      if (selected?.id !== record.workflowId) return
+      setModificationHistory((current) => mergeWorkflowModificationRecord(current, record))
+      if (record.status === 'completed' && !modifyDialogOpenRef.current) {
+        setPendingModificationId(record.id)
+        setMessage(copy.workflowAiModifyReady)
+      }
+    })
+    return unsubscribe
+  }, [copy.workflowAiModifyReady, selected?.id])
+
   const selectedNode = useMemo(() => selected?.nodes.find((node) => node.id === selectedNodeId), [selected, selectedNodeId])
+  useEffect(() => { setNodeInspectorTab('settings') }, [selectedNodeId])
   const currentRunNodeDetail = useMemo(
     () => selected === undefined || currentRun === undefined ? undefined : getWorkflowNodeRunDetail(selected, currentRun, selectedRunNodeId),
     [currentRun, selected, selectedRunNodeId],
@@ -1513,6 +1935,9 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }
 
   const exitWorkspace = (): void => {
+    setShowGenerationPage(false)
+    setShowModifyDialog(false)
+    setShowModificationHistory(false)
     setSelected(undefined)
     setDraft(false)
     setHistory(undefined)
@@ -1527,6 +1952,39 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setNodes([])
     setEdges([])
     onWorkspaceModeChange?.(false)
+  }
+
+  const openGenerationPage = (): void => {
+    setError('')
+    setMessage('')
+    setShowModifyDialog(false)
+    setShowModificationHistory(false)
+    setSelected(undefined)
+    setDraft(false)
+    setHistory(undefined)
+    setRunSetup(undefined)
+    setContextMenu(undefined)
+    setShowGenerationPage(true)
+  }
+
+  const openModifyDialog = (): void => {
+    if (selected === undefined || workspaceView !== 'editor') return
+    setError('')
+    setShowModifyDialog(true)
+  }
+
+  const openModificationHistory = (recordId?: string): void => {
+    if (selected === undefined) return
+    setModificationHistoryFocusId(recordId)
+    setPendingModificationId(undefined)
+    setShowModificationHistory(true)
+  }
+
+  const applyModification = (workflow: WorkflowDefinition): void => {
+    if (selected === undefined || workflow.id !== selected.id) return
+    applyDefinition(workflow)
+    setPendingModificationId(undefined)
+    setMessage(copy.workflowAiModifyApplied)
   }
 
   const save = async (): Promise<WorkflowDefinition | undefined> => {
@@ -1741,7 +2199,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const addNode = (type: WorkflowNodeType): void => {
     const current = currentDefinition()
-    if (current === undefined) return
+    if (current === undefined || isWorkflowFixedNodeType(type)) return
     const node = newNode(type, current.nodes.length)
     const next = { ...current, nodes: [...current.nodes, node] }
     applyDefinition(next)
@@ -1753,7 +2211,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     if (current === undefined) return
     const selectedIds = new Set(nodes.filter((node) => node.selected === true).map((node) => node.id))
     if (selectedNodeId !== undefined) selectedIds.add(selectedNodeId)
-    const copied = current.nodes.filter((node) => selectedIds.has(node.id)).map((node) => cloneWorkflow(node))
+    const copied = current.nodes.filter((node) => selectedIds.has(node.id) && !isWorkflowFixedNodeType(node.type)).map((node) => cloneWorkflow(node))
     if (copied.length === 0) return
     copiedWorkflowNodesRef.current = copied
     workflowPasteCountRef.current = 0
@@ -1976,6 +2434,52 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     markRunViewed(record)
   }
 
+  const markRunUnread = (record: WorkflowRunRecord): void => {
+    if (!viewedRunIds.has(record.id)) return
+    setViewedRunIds((current) => {
+      if (!current.has(record.id)) return current
+      const next = new Set(current)
+      next.delete(record.id)
+      persistViewedWorkflowRunIds(next)
+      if (selected?.id === record.workflowId) updateRunSummary(record.workflowId, runs, next)
+      return next
+    })
+    setMessage(copy.workflowRunMarkedUnread)
+  }
+
+  const deleteRun = async (record: WorkflowRunRecord): Promise<void> => {
+    if (!workflowRunCanDelete(record.status)) {
+      setError(copy.workflowCannotDeleteActiveRun)
+      return
+    }
+    if (!window.confirm(copy.workflowDeleteRunConfirm)) return
+    setBusy(true)
+    setError('')
+    try {
+      await window.EzDSH.workflows.removeRun(record.id)
+      const nextRuns = runs.filter((item) => item.id !== record.id)
+      setRuns(nextRuns)
+      updateRunSummary(record.workflowId, nextRuns)
+      setViewedRunIds((current) => {
+        if (!current.has(record.id)) return current
+        const next = new Set(current)
+        next.delete(record.id)
+        persistViewedWorkflowRunIds(next)
+        return next
+      })
+      setOutputWindows((current) => current.filter((item) => !item.id.startsWith(`${record.id}:`)))
+      if (currentRun?.id === record.id) {
+        setCurrentRun(undefined)
+        setSelectedRunNodeId(undefined)
+      }
+      setMessage(copy.workflowRunDeleted)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowRunFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const openUnreadRun = (): void => {
     const workflow = selected
     const unread = workflow === undefined ? undefined : workflowRunSummaries[workflow.id]?.firstUnviewedRun
@@ -2048,25 +2552,6 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     try { applyRunRecord(await window.EzDSH.workflows.approve(currentRun.id, approved)) } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) }
   }
 
-  const generate = async (): Promise<void> => {
-    if (generationPrompt.trim() === '') return
-    setBusy(true)
-    setError('')
-    try {
-      const generated = await window.EzDSH.workflows.generate({ prompt: generationPrompt, name: generationPrompt.slice(0, 48) })
-      await open(generated.workflow, true)
-      if (generated.createdEmployees.length > 0) {
-        setMessage(copy.workflowGeneratedWithEmployees(generated.createdEmployees.map((employee) => employee.name).join('、')))
-        void refreshEmployees()
-      } else {
-        setMessage(copy.workflowGenerated)
-      }
-      if ((generated.employeeWarnings?.length ?? 0) > 0) {
-        setError(copy.workflowGeneratedEmployeeWarnings(generated.employeeWarnings!.join('；')))
-      }
-    } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed) } finally { setBusy(false) }
-  }
-
   const importEmployee = async (): Promise<void> => {
     const normalizedEmployeeId = employeeId.trim()
     if (normalizedEmployeeId === '') return
@@ -2097,10 +2582,16 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const runFromContextMenu = (): void => { setContextMenu(undefined); void openRunSetup() }
   const saveFromContextMenu = (): void => { setContextMenu(undefined); focusWorkflowCanvas(); void save() }
   const fitViewFromContextMenu = (): void => { setContextMenu(undefined); focusWorkflowCanvas(); void fitViewRef.current?.() }
+  const openPendingModification = (): void => {
+    if (pendingModificationId === undefined) return
+    openModificationHistory(pendingModificationId)
+  }
+  const toastActionLabel = deletedWorkflow !== undefined ? copy.workflowUndoDelete : pendingModificationId === undefined ? undefined : copy.workflowAiModifyReview
+  const toastAction = deletedWorkflow !== undefined ? () => void restoreDeletedWorkflow() : pendingModificationId === undefined ? undefined : openPendingModification
 
   return (
     <div ref={workflowPageRef} className={`workflow-page ${selected === undefined ? 'workflow-page-browser' : 'workflow-page-workspace'}`}>
-      {selected === undefined ? <>
+      {showGenerationPage ? <WorkflowGenerationPage copy={copy} locale={locale} onBack={() => setShowGenerationPage(false)} onOpenWorkflow={(workflow) => { setShowGenerationPage(false); void open(workflow, true) }} /> : selected === undefined ? <>
         <header className="workflow-browser-header">
           <div>
             <p className="workflow-eyebrow">EZDSH / AUTOMATION</p>
@@ -2114,7 +2605,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               <span>{copy.workflowGenerateWorkflow}</span>
             </button>
             <div className="workflow-import-split" role="group" aria-label={copy.workflowImport}>
-              <button type="button" className="workflow-button-primary workflow-import-main" onClick={() => workflowImportInputRef.current?.click()} disabled={busy}>{copy.workflowImport}</button>
+              <button type="button" className="workflow-button-quiet workflow-import-main" onClick={() => workflowImportInputRef.current?.click()} disabled={busy}>{copy.workflowImport}</button>
               <button type="button" className="workflow-button-quiet workflow-import-clipboard-button" onClick={() => void importWorkflowClipboard()} disabled={busy} aria-label={copy.workflowImportClipboard} title={copy.workflowImportClipboard}>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5h6m-5-2h4a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v12H4V8a2 2 0 0 1 2-2h2V5a2 2 0 0 1 2-2Zm-1 9 3 3 5-5" /></svg>
               </button>
@@ -2136,12 +2627,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             </article>
           })}</div> : null}
           <div className="workflow-browser-tools">
-            <section className="workflow-tool-card workflow-generate-card">
-              <div><span className="workflow-kicker">{copy.workflowGenerate}</span><h3>{copy.workflowGenerate}</h3><p>{copy.workflowGenerateHint}</p></div>
-              <textarea value={generationPrompt} onChange={(event) => setGenerationPrompt(event.target.value)} placeholder={copy.workflowGeneratePlaceholder} />
-              <button type="button" className="workflow-button-primary" onClick={() => void generate()} disabled={busy || generationPrompt.trim() === ''}>{busy ? copy.workflowGenerating : copy.workflowGenerate}</button>
-            </section>
-            <section className="workflow-tool-card">
+            <section className="workflow-tool-card workflow-browser-tool-wide">
               <div><span className="workflow-kicker">{copy.workflowImportEmployee}</span><h3>{copy.workflowImportEmployee}</h3><p>把一个专业员工快速转换为可编辑的工作流。</p></div>
               <div className="workflow-import-row"><select id="workflow-employee-select" className="workflow-employee-select" aria-label={copy.workflowImportEmployee} value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} disabled={busy || employees.length === 0}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} · {employee.id}</option>)}</select><button type="button" onClick={() => void importEmployee()} disabled={busy || employeeId === ''}>{copy.workflowImportEmployee}</button></div>
             </section>
@@ -2188,7 +2674,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               <div className="workflow-editor-toolbar">
                 <WorkflowNodeLibrary onAdd={addNode} />
                 <button type="button" className="workflow-button-quiet workflow-auto-layout-button" onClick={autoLayout} disabled={busy}>自动排版</button>
-                <p className="workflow-editor-flow-hint">一个节点可连接多个下游；多路输入会等待所有可用上游完成，并按节点 ID 汇聚传入。</p>
+                <p className="workflow-editor-flow-hint">连线只负责流程控制；节点输入由变量绑定决定，提示词中使用 {'{{变量名}}'} 读取上下文。</p>
               </div>
               <div ref={workflowCanvasRef} className="workflow-canvas" tabIndex={0} onPointerDownCapture={focusWorkflowCanvas} onKeyDown={onCanvasKeyDown}>
                 <ReactFlow
@@ -2216,15 +2702,20 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               </div>
             </section>
             <aside className="workflow-inspector">
-              <section className="workflow-panel-card workflow-inspector-card">
-                <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowEditor}</span><h2>{copy.workflowInspector}</h2></div>{selectedNode ? <span className="workflow-type-badge"><WorkflowNodeTypeIcon type={selectedNode.type} />{nodeTypeLabel[selectedNode.type]}</span> : null}</div>
-                {selectedNode === undefined ? <p className="workflow-muted">{copy.workflowNodeSelectHint}</p> : <>
+              <section className="workflow-panel-card workflow-inspector-card workflow-node-inspector-card">
+                {selectedNode === undefined ? <div className="workflow-node-inspector-empty"><div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowEditor}</span><h2>{copy.workflowInspector}</h2></div></div><p className="workflow-muted">{copy.workflowNodeSelectHint}</p></div> : <>
+                  <div className="workflow-node-inspector-header"><WorkflowNodeTypeIcon type={selectedNode.type} /><div><h2>{selectedNode.label}</h2><span>{nodeTypeLabel[selectedNode.type]}</span></div></div>
+                  <div className="workflow-node-description"><textarea aria-label="节点描述" value={selectedNode.description ?? ''} placeholder="添加描述…" onChange={(event) => updateNode((node) => ({ ...node, description: event.target.value }))} /></div>
+                  <div className="workflow-node-inspector-tabs" role="tablist" aria-label="节点配置视图"><button type="button" role="tab" aria-selected={nodeInspectorTab === 'settings'} className={nodeInspectorTab === 'settings' ? 'workflow-node-inspector-tab-active' : ''} onClick={() => setNodeInspectorTab('settings')}>设置</button><button type="button" role="tab" aria-selected={nodeInspectorTab === 'last-run'} className={nodeInspectorTab === 'last-run' ? 'workflow-node-inspector-tab-active' : ''} onClick={() => setNodeInspectorTab('last-run')}>上次运行</button></div>
+                </>}
+                {selectedNode !== undefined && (nodeInspectorTab === 'last-run' ? <WorkflowNodeLastRunState copy={copy} run={currentRun} nodeId={selectedNode.id} /> : <div className="workflow-node-inspector-settings">
                   <label>{copy.workflowNodeLabel}<input value={selectedNode.label} onChange={(event) => updateNode((node) => ({ ...node, label: event.target.value }))} /></label>
-                  {selectedNode.type === 'input' ? null : <WorkflowNodeVariablesEditor workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} />}
+                  {selectedNode.type !== 'input' && selectedNode.type !== 'output' ? <WorkflowNodeVariablesEditor workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} /> : null}
                   {selectedNode.type === 'input' ? <label>{copy.workflowName}<input value={selectedNode.config.name ?? ''} onChange={(event) => updateNode((node) => node.type === 'input' ? { ...node, config: { ...node.config, name: event.target.value } } : node)} /></label> : null}
+                  {selectedNode.type === 'output' ? <WorkflowOutputNodeSettings workflow={selected} node={selectedNode} onChange={(update) => updateNode((node) => update(node))} /> : null}
                   {selectedNode.type === 'ai-task' ? <>
-                    <label>{copy.workflowInstruction}<textarea value={selectedNode.config.instruction} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, instruction: event.target.value } } : node)} /></label>
-                    <label>{copy.workflowSystemPrompt}<textarea value={selectedNode.config.systemPrompt ?? ''} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, systemPrompt: event.target.value } } : node)} /></label>
+                    <WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} onChange={(value) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} />
+                    <WorkflowPromptField label={copy.workflowSystemPrompt} value={selectedNode.config.systemPrompt ?? ''} workflow={selected} node={selectedNode} field="systemPrompt" onChange={(value) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, systemPrompt: value } } : node)} onChangeNode={updateNode} />
                     <label>{copy.workflowAiMode}<select value={selectedNode.config.mode} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, mode: event.target.value as AiExecutionMode } } : node)}><option value="single">{copy.workflowAiModeSingle}</option><option value="autonomous">{copy.workflowAiModeAutonomous}</option></select></label>
                     <label>{copy.workflowSkillIds}<textarea value={selectedNode.config.skillIds.join('\n')} onChange={(event) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, skillIds: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) } } : node)} /></label>
                     <OutputModeField copy={copy} value={selectedNode.config.outputMode} onChange={(outputMode) => updateNode((node) => node.type === 'ai-task' ? { ...node, config: { ...node.config, outputMode } } : node)} />
@@ -2232,41 +2723,43 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
                   {selectedNode.type === 'employee' ? <>
                     <label>{copy.workflowSelectEmployee}<select value={selectedNode.config.employeeId} onChange={(event) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, employeeId: event.target.value } } : node)}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} · {employee.role}</option>)}</select></label>
                     <EmployeeProfileContext copy={copy} employee={employees.find((employee) => employee.id === selectedNode.config.employeeId)} />
-                    <label>{copy.workflowInstruction}<textarea value={selectedNode.config.instruction} onChange={(event) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, instruction: event.target.value } } : node)} /></label>
+                    <WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} onChange={(value) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} />
                     <OutputModeField copy={copy} value={selectedNode.config.outputMode} onChange={(outputMode) => updateNode((node) => node.type === 'employee' ? { ...node, config: { ...node.config, outputMode } } : node)} />
                   </> : null}
-                  {selectedNode.type === 'skill' ? <><label>{copy.workflowSkillId}<input value={selectedNode.config.skillId} onChange={(event) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, skillId: event.target.value } } : node)} /></label><label>{copy.workflowInstruction}<textarea value={selectedNode.config.instruction} onChange={(event) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, instruction: event.target.value } } : node)} /></label></> : null}
+                  {selectedNode.type === 'skill' ? <><label>{copy.workflowSkillId}<input value={selectedNode.config.skillId} onChange={(event) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, skillId: event.target.value } } : node)} /></label><WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} onChange={(value) => updateNode((node) => node.type === 'skill' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} /></> : null}
                   {selectedNode.type === 'mcp' ? <><label>{copy.workflowMcpTool}<input value={selectedNode.config.tool} placeholder="server::tool" onChange={(event) => updateNode((node) => node.type === 'mcp' ? { ...node, config: { ...node.config, tool: event.target.value } } : node)} /></label><McpArgumentsField key={selectedNode.id} copy={copy} value={selectedNode.config.arguments} onCommit={(argumentsValue) => updateNode((node) => node.type === 'mcp' ? { ...node, config: { ...node.config, arguments: argumentsValue } } : node)} /></> : null}
                   {selectedNode.type === 'parallel' ? <label>{copy.workflowInstruction}<textarea value={selectedNode.config.instructions.join('\n')} onChange={(event) => updateNode((node) => node.type === 'parallel' ? { ...node, config: { ...node.config, instructions: event.target.value.split('\n').filter(Boolean) } } : node)} /></label> : null}
-                  {selectedNode.type === 'loop' ? <><label>{copy.workflowInstruction}<textarea value={selectedNode.config.instruction} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, instruction: event.target.value } } : node)} /></label><label>{copy.workflowMaxIterations}<input type="number" min="1" max="100" value={selectedNode.config.maxIterations ?? 20} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, maxIterations: Number(event.target.value) } } : node)} /></label></> : null}
-                  {selectedNode.type === 'condition' ? <><label>{copy.workflowConditionOperator}<select value={selectedNode.config.operator} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, operator: event.target.value as ConditionOperator } } : node)}>{(['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'] as ConditionOperator[]).map((operator) => <option key={operator} value={operator}>{operator}</option>)}</select></label><label>{copy.workflowConditionValue}<input value={formatValue(selectedNode.config.value)} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, value: event.target.value } } : node)} /></label></> : null}
-                  {selectedNode.type === 'approval' ? <label>Approval message<textarea value={selectedNode.config.message} onChange={(event) => updateNode((node) => node.type === 'approval' ? { ...node, config: { ...node.config, message: event.target.value } } : node)} /></label> : null}
-                  {selectedNode.type === 'transform' ? <><label>{copy.workflowTransformTemplate}<select value={selectedNode.config.template} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, template: event.target.value as TransformTemplate } } : node)}>{(['identity', 'json', 'extract-text', 'prepend', 'append'] as TransformTemplate[]).map((template) => <option key={template} value={template}>{template}</option>)}</select></label><label>{copy.workflowTransformText}<input value={selectedNode.config.text ?? ''} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, text: event.target.value } } : node)} /></label></> : null}
+                  {selectedNode.type === 'loop' ? <><WorkflowPromptField label={copy.workflowInstruction} value={selectedNode.config.instruction} workflow={selected} node={selectedNode} onChange={(value) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, instruction: value } } : node)} onChangeNode={updateNode} /><label>{copy.workflowMaxIterations}<input type="number" min="1" max="100" value={selectedNode.config.maxIterations ?? 20} onChange={(event) => updateNode((node) => node.type === 'loop' ? { ...node, config: { ...node.config, maxIterations: Number(event.target.value) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'condition' ? <><label>{copy.workflowConditionOperator}<select value={selectedNode.config.operator} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, operator: event.target.value as ConditionOperator } } : node)}>{(['truthy', 'equals', 'not-equals', 'contains', 'greater-than', 'less-than'] as ConditionOperator[]).map((operator) => <option key={operator} value={operator}>{workflowConditionOperatorLabel(operator)}</option>)}</select></label><label>{copy.workflowConditionValue}<input value={formatValue(selectedNode.config.value)} onChange={(event) => updateNode((node) => node.type === 'condition' ? { ...node, config: { ...node.config, value: parseWorkflowConditionValue(event.target.value) } } : node)} /></label></> : null}
+                  {selectedNode.type === 'approval' ? <label>审批提示<textarea value={selectedNode.config.message} onChange={(event) => updateNode((node) => node.type === 'approval' ? { ...node, config: { ...node.config, message: event.target.value } } : node)} /></label> : null}
+                  {selectedNode.type === 'transform' ? <><label>{copy.workflowTransformTemplate}<select value={selectedNode.config.template} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, template: event.target.value as TransformTemplate } } : node)}>{(['identity', 'json', 'extract-text', 'prepend', 'append'] as TransformTemplate[]).map((template) => <option key={template} value={template}>{workflowTransformTemplateLabel(template)}</option>)}</select></label><label>{copy.workflowTransformText}<input value={selectedNode.config.text ?? ''} onChange={(event) => updateNode((node) => node.type === 'transform' ? { ...node, config: { ...node.config, text: event.target.value } } : node)} /></label></> : null}
                   {selectedNode.type === 'shell' ? <><label>{copy.workflowShellCommand}<input value={selectedNode.config.command} onChange={(event) => updateNode((node) => node.type === 'shell' ? { ...node, config: { ...node.config, command: event.target.value } } : node)} /></label><label>{copy.workflowShellArgs}<textarea value={selectedNode.config.args.join('\n')} onChange={(event) => updateNode((node) => node.type === 'shell' ? { ...node, config: { ...node.config, args: event.target.value.split('\n').filter(Boolean) } } : node)} /></label></> : null}
                   {selectedNode.type === 'file' ? <><label>{copy.workflowFileOperation}<select value={selectedNode.config.operation} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, operation: event.target.value as 'read' | 'write' } } : node)}><option value="read">read</option><option value="write">write</option></select></label><label>{copy.workflowFilePath}<input value={selectedNode.config.path} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, path: event.target.value } } : node)} /></label>{selectedNode.config.operation === 'write' ? <label>{copy.workflowFileContent}<textarea value={selectedNode.config.content ?? ''} onChange={(event) => updateNode((node) => node.type === 'file' ? { ...node, config: { ...node.config, content: event.target.value } } : node)} /></label> : null}</> : null}
                   {selectedNode.type === 'http' ? <><label>{copy.workflowHttpMethod}<select value={selectedNode.config.method} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, method: event.target.value as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' } } : node)}>{(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).map((method) => <option key={method} value={method}>{method}</option>)}</select></label><label>{copy.workflowHttpUrl}<input value={selectedNode.config.url} placeholder="https://api.example.com/data" onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, url: event.target.value } } : node)} /></label><McpArgumentsField key={selectedNode.id + '-headers'} copy={copy} value={selectedNode.config.headers} label={copy.workflowHttpHeaders} hint={copy.workflowHttpHeadersHint} onCommit={(headers) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, headers: Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, WorkflowValue] => typeof entry[1] === 'string').map(([key, value]) => [key, value as string])) } } : node)} /><McpArgumentsField key={selectedNode.id + '-query'} copy={copy} value={selectedNode.config.query} label={copy.workflowHttpQuery} hint={copy.workflowMcpArgumentsHint} onCommit={(query) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, query } } : node)} /><WorkflowJsonValueField key={selectedNode.id + '-body'} label={copy.workflowHttpBody} value={selectedNode.config.body} onCommit={(body) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, body } } : node)} /><label>{copy.workflowHttpResponseMode}<select value={selectedNode.config.responseMode} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, responseMode: event.target.value as 'auto' | 'json' | 'text' } } : node)}><option value="auto">auto</option><option value="json">json</option><option value="text">text</option></select></label><label>{copy.workflowHttpTimeout}<input type="number" min="1000" max="600000" step="1000" value={selectedNode.config.timeoutMs ?? 120000} onChange={(event) => updateNode((node) => node.type === 'http' ? { ...node, config: { ...node.config, timeoutMs: Number(event.target.value) } } : node)} /></label></> : null}
                   {selectedNode.type === 'code' ? <><label>{copy.workflowCodeLanguage}<select value={selectedNode.config.language} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, language: event.target.value as 'nodejs' | 'python3' } } : node)}><option value="nodejs">Node.js</option><option value="python3">Python3</option></select></label><label>{copy.workflowCode}<textarea className="workflow-code-editor" value={selectedNode.config.code} spellCheck={false} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, code: event.target.value } } : node)} /></label><p className="workflow-muted">Node.js 可使用 input、previous 并 return 结果；Python3 可使用 input、previous 并给 result 赋值。</p><label>{copy.workflowCodeTimeout}<input type="number" min="1000" max="600000" step="1000" value={selectedNode.config.timeoutMs ?? 120000} onChange={(event) => updateNode((node) => node.type === 'code' ? { ...node, config: { ...node.config, timeoutMs: Number(event.target.value) } } : node)} /></label></> : null}
-                </>}
+                </div>)}
               </section>
             </aside>
           </> : <section className={`workflow-executions ${showRunSidebar ? '' : 'workflow-executions-sidebar-hidden'}`}>
             {showRunSidebar ? <aside className="workflow-run-sidebar">
               <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowExecutions}</span><h2>{copy.workflowRunHistory}</h2></div><div className="workflow-run-sidebar-heading-actions"><span className="workflow-run-count">{runs.length}</span><button type="button" className="workflow-sidebar-toggle" aria-label={copy.workflowHideRunSidebar} title={copy.workflowHideRunSidebar} onClick={() => setShowRunSidebar(false)}>‹</button></div></div>
-              {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <button key={runRecord.id} type="button" className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''}`} onClick={() => selectRun(runRecord)}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {runRecord.startedAt ?? 'queued'}</span></button>)}</div>}
+              {runs.length === 0 ? <p className="workflow-muted">{copy.workflowNoRuns}</p> : <div className="workflow-run-list">{runs.map((runRecord) => <div key={runRecord.id} className={`workflow-run-item ${currentRun?.id === runRecord.id ? 'workflow-run-item-active' : ''}`}><button type="button" className="workflow-run-item-main" onClick={() => selectRun(runRecord)}><strong>{statusLabel(runRecord.status)}</strong><span>{runRecord.id.slice(-12)} · {runRecord.startedAt ?? 'queued'}</span></button><div className="workflow-run-item-actions"><button type="button" className="workflow-button-quiet workflow-icon-button" onClick={() => markRunUnread(runRecord)} disabled={!viewedRunIds.has(runRecord.id) || busy} aria-label={copy.workflowMarkUnread} title={copy.workflowMarkUnread}><WorkflowRunActionIcon type="mark-unread" /></button><button type="button" className="workflow-button-quiet workflow-danger-button workflow-icon-button" onClick={() => void deleteRun(runRecord)} disabled={!workflowRunCanDelete(runRecord.status) || busy} aria-label={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun} title={workflowRunCanDelete(runRecord.status) ? copy.workflowDeleteRun : copy.workflowCannotDeleteActiveRun}><WorkflowRunActionIcon type="delete" /></button></div></div>)}</div>}
             </aside> : <button type="button" className="workflow-sidebar-toggle workflow-sidebar-toggle-floating" aria-label={copy.workflowShowRunSidebar} title={copy.workflowShowRunSidebar} onClick={() => setShowRunSidebar(true)}>›</button>}
             <div ref={executionMainRef} className="workflow-execution-main" style={{ '--workflow-execution-detail-height': `${executionDetailHeight}px` } as CSSProperties}>
-              <div className="workflow-execution-canvas"><ReactFlow {...WORKFLOW_CANVAS_INTERACTION_PROPS} nodes={workflowFlowNodes(selected, currentRun, selectedRunNodeId)} edges={flowEdges(selected)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} onPaneClick={() => setSelectedRunNodeId(undefined)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
+              <div className="workflow-execution-canvas"><ReactFlow key={`${selected.id}:${currentRun?.id ?? 'no-run'}`} {...WORKFLOW_CANVAS_INTERACTION_PROPS} nodes={workflowExecutionFlowNodes(selected, currentRun, selectedRunNodeId)} edges={workflowExecutionEdges(selected)} nodeTypes={nodeTypes} onNodeClick={(_event, node) => setSelectedRunNodeId(node.id)} onPaneClick={() => setSelectedRunNodeId(undefined)} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
               <div className="workflow-execution-resize-handle" role="separator" aria-orientation="horizontal" aria-label={copy.workflowResizeExecutionPanel} onPointerDown={beginExecutionResize}><span /></div>
-              <WorkflowExecutionReview copy={copy} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => void cancel()} onApprove={() => void approve(true)} onReject={() => void approve(false)} onResume={() => void resume()} onSelectNode={setSelectedRunNodeId} onCopyOutput={copyOutput} onOpenOutputWindow={openOutputWindow} outputFontScale={outputFontScale} onIncreaseOutputFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseOutputFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} />
+              <WorkflowExecutionReview copy={copy} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => void cancel()} onApprove={() => void approve(true)} onReject={() => void approve(false)} onResume={() => void resume()} onSelectNode={setSelectedRunNodeId} onMarkUnread={currentRun === undefined ? undefined : () => markRunUnread(currentRun)} onDelete={currentRun === undefined ? undefined : () => void deleteRun(currentRun)} canMarkUnread={currentRun !== undefined && viewedRunIds.has(currentRun.id) && !busy} canDelete={currentRun !== undefined && workflowRunCanDelete(currentRun.status) && !busy} onCopyOutput={copyOutput} onOpenOutputWindow={openOutputWindow} outputFontScale={outputFontScale} onIncreaseOutputFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseOutputFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} />
             </div>
           </section>}
         </div>
       </>}
       {outputWindows.length > 0 ? <WorkflowOutputFloatingWindows copy={copy} windows={outputWindows} fontScale={outputFontScale} onClose={(id) => setOutputWindows((current) => current.filter((item) => item.id !== id))} onCopy={copyOutput} onMove={(id, position) => setOutputWindows((current) => current.map((item) => item.id === id ? { ...item, position } : item))} onFocus={(id) => setOutputWindows((current) => focusWorkflowOutputWindow(current, id))} onIncreaseFont={() => setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1))))} onDecreaseFont={() => setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1))))} /> : null}
       {metadataDraft ? <WorkflowMetadataDialog copy={copy} name={metadataDraft.name} description={metadataDraft.description} onChangeName={(name) => setMetadataDraft((current) => current === undefined ? current : { ...current, name })} onChangeDescription={(description) => setMetadataDraft((current) => current === undefined ? current : { ...current, description })} onClose={() => setMetadataDraft(undefined)} onSave={saveWorkflowMetadata} /> : null}
+      {showModifyDialog && selected ? <WorkflowModifyDialog copy={copy} workflow={currentDefinition() ?? selected} onClose={() => setShowModifyDialog(false)} onOpenHistory={() => openModificationHistory()} onApply={(workflow) => { applyDefinition(workflow); setMessage(copy.workflowAiModifyApplied) }} /> : null}
+      {showModificationHistory && selected ? <WorkflowModificationHistoryDialog copy={copy} records={modificationHistory} initialRecordId={modificationHistoryFocusId} onClose={() => setShowModificationHistory(false)} onApply={applyModification} /> : null}
       {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} allowShellFile={runSetup.allowShellFile} allowCode={runSetup.allowCode} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeAllowCode={(allowCode) => setRunSetup((current) => current === undefined ? current : { ...current, allowCode })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
       {contextMenu ? <WorkflowContextMenu copy={copy} target={contextMenu.target} x={contextMenu.x} y={contextMenu.y} selectedNodeCount={(contextMenu.target === 'canvas' || contextMenu.target === 'selection' || (contextMenu.nodeId !== undefined && nodes.some((node) => node.id === contextMenu.nodeId && node.selected === true))) ? nodes.filter((node) => node.selected === true).length : 0} canUndo={(history?.past.length ?? 0) > 0} canRedo={(history?.future.length ?? 0) > 0} busy={busy} runDisabled={currentRun?.status === 'running'} cancelLabel={draft ? copy.workflowCancelCreate : copy.workflowCancelEdit} onUndo={() => { dismissContextMenu(); undo(); focusWorkflowCanvas() }} onRedo={() => { dismissContextMenu(); redo(); focusWorkflowCanvas() }} onCopy={() => { copySelectedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} onPaste={() => { pasteCopiedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} canPaste={copiedWorkflowNodesRef.current.length > 0} onDelete={deleteContextMenuSelection} onAlign={alignSelectedNodes} onFitView={fitViewFromContextMenu} onSave={saveFromContextMenu} onRun={runFromContextMenu} onCancel={() => { dismissContextMenu(); exitWorkspace() }} /> : null}
-      {message ? <WorkflowToast message={message} copy={copy} actionLabel={deletedWorkflow === undefined ? undefined : copy.workflowUndoDelete} onAction={deletedWorkflow === undefined ? undefined : () => void restoreDeletedWorkflow()} onDismiss={() => setMessage('')} /> : null}
+      {message ? <WorkflowToast message={message} copy={copy} actionLabel={toastActionLabel} onAction={toastAction} onDismiss={() => setMessage('')} /> : null}
       {error ? <WorkflowErrorBanner message={error} copy={copy} onDismiss={() => setError('')} /> : null}
     </div>
   )
@@ -2284,8 +2777,144 @@ function workflowBindingFromOption(option: WorkflowVariableOption, name: string)
   return { id: id('variable'), name, sourceNodeId: option.sourceNodeId, ...(option.sourcePath === undefined ? {} : { sourcePath: option.sourcePath }), required: true }
 }
 
+function workflowInstructionValue(node: WorkflowNode): string | undefined {
+  switch (node.type) {
+    case 'ai-task':
+    case 'employee':
+    case 'skill':
+    case 'loop': return node.config.instruction
+    case 'output': return node.config.text
+    default: return undefined
+  }
+}
+
+function workflowNodeWithInstruction(node: WorkflowNode, instruction: string): WorkflowNode {
+  switch (node.type) {
+    case 'ai-task': return { ...node, config: { ...node.config, instruction } }
+    case 'employee': return { ...node, config: { ...node.config, instruction } }
+    case 'skill': return { ...node, config: { ...node.config, instruction } }
+    case 'loop': return { ...node, config: { ...node.config, instruction } }
+    case 'output': return { ...node, config: { ...node.config, text: instruction } }
+    default: return node
+  }
+}
+
+function workflowVariableName(value: string): string {
+  const normalized = value.replace(/[^A-Za-z0-9_]/gu, '_').replace(/^([^A-Za-z_])/u, '_$1').replace(/_+/gu, '_').replace(/^_+$/u, '')
+  return normalized || 'input'
+}
+
+function workflowSuggestedBindingName(workflow: WorkflowDefinition, node: WorkflowNode, option: WorkflowVariableOption): string {
+  const source = workflow.nodes.find((candidate) => candidate.id === option.sourceNodeId)
+  const preferred = option.sourcePath?.split('.').at(-1)
+    ?? (source?.type === 'input' ? source.config.name : undefined)
+    ?? source?.id
+    ?? 'input'
+  const existingNames = new Set((node.inputBindings ?? []).map((binding) => binding.name))
+  const base = workflowVariableName(preferred)
+  if (!existingNames.has(base)) return base
+  let suffix = 2
+  while (existingNames.has(`${base}_${suffix}`)) suffix += 1
+  return `${base}_${suffix}`
+}
+
+function workflowExistingBinding(node: WorkflowNode, option: WorkflowVariableOption): WorkflowNodeInputBinding | undefined {
+  return (node.inputBindings ?? []).find((binding) => binding.sourceNodeId === option.sourceNodeId && binding.sourcePath === option.sourcePath)
+}
+
+function workflowVariableOptionFieldLabel(workflow: WorkflowDefinition, option: WorkflowVariableOption): string {
+  if (option.sourcePath !== undefined) return option.sourcePath
+  const source = workflow.nodes.find((candidate) => candidate.id === option.sourceNodeId)
+  return source?.type === 'input' ? source.config.name?.trim() || 'value' : 'result'
+}
+
+interface WorkflowPromptFieldProps {
+  label: string
+  value: string
+  workflow: WorkflowDefinition
+  node: WorkflowNode
+  field?: 'instruction' | 'systemPrompt' | 'outputText'
+  onChange: (value: string) => void
+  onChangeNode: (update: (node: WorkflowNode) => WorkflowNode) => void
+}
+
+/** A compact prompt editor with Dify-style variable insertion and local aliases. */
+export function WorkflowPromptField({ label, value, workflow, node, field = 'instruction', onChange, onChangeNode }: WorkflowPromptFieldProps): JSX.Element {
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [variableMenuOpen, setVariableMenuOpen] = useState(false)
+  const options = getWorkflowVariableOptions(workflow, node.id)
+  const bindings = node.inputBindings ?? []
+  const variableGroups = Array.from(options.reduce((groups, option) => {
+    const group = groups.get(option.sourceNodeId) ?? []
+    group.push(option)
+    groups.set(option.sourceNodeId, group)
+    return groups
+  }, new Map<string, WorkflowVariableOption[]>()))
+  const insertVariable = (option: WorkflowVariableOption): void => {
+    const textarea = textareaRef.current
+    const selectionStart = textarea?.selectionStart ?? value.length
+    const selectionEnd = textarea?.selectionEnd ?? selectionStart
+    let cursor = selectionStart
+    onChangeNode((current) => {
+      const currentValue = field === 'systemPrompt' && current.type === 'ai-task' ? current.config.systemPrompt ?? '' : workflowInstructionValue(current) ?? value
+      const binding = workflowExistingBinding(current, option)
+      const name = binding?.name.trim() || workflowSuggestedBindingName(workflow, current, option)
+      const inserted = insertWorkflowVariableToken(currentValue, name, selectionStart, selectionEnd)
+      cursor = inserted.cursor
+      const next = binding === undefined
+        ? { ...current, inputBindings: [...(current.inputBindings ?? []), workflowBindingFromOption(option, name)] }
+        : current
+      return field === 'systemPrompt' && next.type === 'ai-task'
+        ? { ...next, config: { ...next.config, systemPrompt: inserted.value } }
+        : workflowNodeWithInstruction(next, inserted.value)
+    })
+    setVariableMenuOpen(false)
+    requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current
+      if (nextTextarea === null) return
+      nextTextarea.focus()
+      nextTextarea.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  return <div className="workflow-prompt-field">
+    <div className="workflow-prompt-field-heading"><span>{label}</span><span>{value.length}</span></div>
+    <div className="workflow-prompt-editor">
+      <textarea ref={textareaRef} value={value} onChange={(event) => onChange(event.target.value)} placeholder="输入提示词，使用变量让节点读取工作流上下文…" />
+      <div className="workflow-prompt-editor-toolbar">
+        <span>支持 Markdown · 使用 {'{{变量名}}'}</span>
+        <div className="workflow-variable-picker">
+          <button type="button" className="workflow-variable-picker-button" aria-expanded={variableMenuOpen} onMouseDown={(event) => event.preventDefault()} onClick={() => setVariableMenuOpen((open) => !open)}>＋ 插入变量</button>
+          {variableMenuOpen ? <div className="workflow-variable-picker-menu" role="listbox" aria-label="可用变量">
+            {options.length === 0 ? <p className="workflow-variable-picker-empty">暂无可用变量</p> : variableGroups.map(([sourceNodeId, group]) => {
+              const sourceNode = workflow.nodes.find((candidate) => candidate.id === sourceNodeId)
+              return <section key={sourceNodeId} className="workflow-variable-picker-group"><strong>{sourceNode?.label ?? sourceNodeId}</strong>{group.map((option) => {
+                const binding = workflowExistingBinding(node, option)
+                const name = binding?.name.trim() || workflowSuggestedBindingName(workflow, node, option)
+                return <button key={workflowVariableOptionKey(option)} type="button" role="option" className="workflow-variable-picker-option" onMouseDown={(event) => event.preventDefault()} onClick={() => insertVariable(option)}><WorkflowNodeTypeIcon type={sourceNode?.type ?? 'ai-task'} /><span><strong>{workflowVariableOptionFieldLabel(workflow, option)}</strong><small>{`{{${name}}}`}</small></span></button>
+              })}</section>
+            })}
+          </div> : null}
+        </div>
+      </div>
+    </div>
+    {bindings.length > 0 ? <div className="workflow-prompt-bound-variables"><span>已绑定</span>{bindings.map((binding) => <code key={binding.id}>{`{{${binding.name}}}`}</code>)}</div> : null}
+  </div>
+}
+
+function WorkflowNodeLastRunState({ copy: _copy, run, nodeId }: { copy: AppCopy; run: WorkflowRunRecord | undefined; nodeId: string }): JSX.Element {
+  const state = run?.nodeStates.find((candidate) => candidate.nodeId === nodeId)
+  if (run === undefined) return <p className="workflow-node-last-run-empty">还没有运行记录。</p>
+  if (state === undefined) return <p className="workflow-node-last-run-empty">该节点没有参与这次运行。</p>
+  return <div className="workflow-node-last-run"><div className="workflow-node-last-run-row"><span>状态</span><strong className={`workflow-status-pill workflow-status-${state.status}`}>{nodeStatusLabel(state.status, _copy)}</strong></div><div className="workflow-node-last-run-row"><span>执行耗时</span><strong>{formatWorkflowNodeDuration(state.elapsedMs)}</strong></div>{state.startedAt ? <div className="workflow-node-last-run-row"><span>开始时间</span><time>{state.startedAt}</time></div> : null}{state.completedAt ? <div className="workflow-node-last-run-row"><span>完成时间</span><time>{state.completedAt}</time></div> : null}{state.error ? <div className="workflow-error">{state.error}</div> : null}</div>
+}
+
+export function workflowOutputVariableRowKey(index: number): string {
+  return `output-variable-${index}`
+}
+
 /** Dify-style per-node bindings keep variable selection separate from graph connections. */
-function WorkflowNodeVariablesEditor({ workflow, node, onChange }: { workflow: WorkflowDefinition; node: WorkflowNode; onChange: (update: (node: WorkflowNode) => WorkflowNode) => void }): JSX.Element {
+function WorkflowNodeVariablesEditor({ workflow, node, onChange, showOutputVariables = true }: { workflow: WorkflowDefinition; node: WorkflowNode; onChange: (update: (node: WorkflowNode) => WorkflowNode) => void; showOutputVariables?: boolean }): JSX.Element {
   const options = getWorkflowVariableOptions(workflow, node.id)
   const optionsByKey = new Map(options.map((option) => [workflowVariableOptionKey(option), option]))
   const bindings = node.inputBindings ?? []
@@ -2299,9 +2928,9 @@ function WorkflowNodeVariablesEditor({ workflow, node, onChange }: { workflow: W
   }
   const updateOutput = (index: number, update: (variable: WorkflowNodeOutputVariable) => WorkflowNodeOutputVariable): void => onChange((current) => ({ ...current, outputVariables: (current.outputVariables ?? []).map((variable, currentIndex) => currentIndex === index ? update(variable) : variable) }))
   return <>
-    <details className="workflow-variable-editor" open>
-      <summary>输入变量</summary>
-      <p>选择本节点实际使用的上游变量；在提示词中使用 <code>{'{{变量名}}'}</code>。</p>
+    <details className="workflow-variable-editor">
+      <summary>输入变量 <span className="workflow-variable-count">{bindings.length}</span></summary>
+      <p>只声明本节点实际使用的变量；必填变量会等待来源完成，未命中分支的变量请取消必填。</p>
       {bindings.map((binding, index) => <div key={binding.id} className="workflow-variable-editor-row">
         <input aria-label="变量名" value={binding.name} onChange={(event) => updateBinding(index, (current) => ({ ...current, name: event.target.value }))} />
         <select aria-label="变量来源" value={workflowVariableOptionKey({ sourceNodeId: binding.sourceNodeId, sourcePath: binding.sourcePath, label: '' })} onChange={(event) => {
@@ -2313,12 +2942,12 @@ function WorkflowNodeVariablesEditor({ workflow, node, onChange }: { workflow: W
       </div>)}
       <button type="button" className="workflow-variable-add" onClick={addBinding} disabled={options.length === 0}>添加输入变量</button>
     </details>
-    <details className="workflow-variable-editor">
+    {showOutputVariables ? <details className="workflow-variable-editor">
       <summary>输出变量</summary>
       <p><code>result</code> 始终代表整个节点结果；为 JSON 输出补充字段名，供下游选择。</p>
-      {outputVariables.map((variable, index) => <div key={`${variable.name}-${index}`} className="workflow-variable-editor-row"><input aria-label="输出变量名" value={variable.name} onChange={(event) => updateOutput(index, (current) => ({ ...current, name: event.target.value }))} /><input aria-label="输出变量说明" value={variable.description ?? ''} placeholder="说明（可选）" onChange={(event) => updateOutput(index, (current) => ({ ...current, description: event.target.value }))} /><button type="button" className="workflow-variable-remove" aria-label="删除输出变量" onClick={() => onChange((current) => ({ ...current, outputVariables: (current.outputVariables ?? []).filter((_variable, currentIndex) => currentIndex !== index) }))}>×</button></div>)}
+      {outputVariables.map((variable, index) => <div key={workflowOutputVariableRowKey(index)} className="workflow-variable-editor-row"><input aria-label="输出变量名" value={variable.name} onChange={(event) => updateOutput(index, (current) => ({ ...current, name: event.target.value }))} /><input aria-label="输出变量说明" value={variable.description ?? ''} placeholder="说明（可选）" onChange={(event) => updateOutput(index, (current) => ({ ...current, description: event.target.value }))} /><button type="button" className="workflow-variable-remove" aria-label="删除输出变量" onClick={() => onChange((current) => ({ ...current, outputVariables: (current.outputVariables ?? []).filter((_variable, currentIndex) => currentIndex !== index) }))}>×</button></div>)}
       <button type="button" className="workflow-variable-add" onClick={() => onChange((current) => ({ ...current, outputVariables: [...(current.outputVariables ?? []), { name: `output_${(current.outputVariables?.length ?? 0) + 1}` }] }))}>添加输出变量</button>
-    </details>
+    </details> : null}
   </>
 }
 

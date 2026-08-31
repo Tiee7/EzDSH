@@ -25,6 +25,56 @@ function cloneList(items: Iterable<WorkflowDefinition>): WorkflowDefinition[] {
   return Array.from(items, (item) => cloneWorkflow(item))
 }
 
+function availableId(base: string, occupied: Set<string>): string {
+  if (!occupied.has(base)) return base
+  let suffix = 2
+  while (occupied.has(`${base}-${suffix}`)) suffix += 1
+  return `${base}-${suffix}`
+}
+
+/** Persisted workflows predating fixed terminals are repaired once when loaded. */
+function ensureFixedTerminalNodes(workflow: WorkflowDefinition): WorkflowDefinition {
+  const missingInput = !workflow.nodes.some((node) => node.type === 'input')
+  const missingOutput = !workflow.nodes.some((node) => node.type === 'output')
+  if (!missingInput && !missingOutput) return workflow
+
+  const nodes = [...workflow.nodes]
+  const edges = [...workflow.edges]
+  const bodyNodes = nodes.filter((node) => node.type !== 'input' && node.type !== 'output')
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const edgeIds = new Set(edges.map((edge) => edge.id))
+  const left = bodyNodes.length === 0 ? 80 : Math.min(...bodyNodes.map((node) => node.position.x)) - 300
+  const right = bodyNodes.length === 0 ? 720 : Math.max(...bodyNodes.map((node) => node.position.x)) + 300
+  const y = bodyNodes[0]?.position.y ?? 180
+
+  const addEdge = (source: string, target: string): void => {
+    if (edges.some((edge) => edge.source === source && edge.target === target)) return
+    const id = availableId(`edge-${source}-${target}`, edgeIds)
+    edgeIds.add(id)
+    edges.push({ id, source, target })
+  }
+
+  if (missingInput) {
+    const id = availableId(`${workflow.id}-input`, nodeIds)
+    nodeIds.add(id)
+    nodes.unshift({ id, type: 'input', label: '开始', config: { name: 'task' }, position: { x: left, y } })
+    const roots = bodyNodes.filter((node) => !edges.some((edge) => edge.target === node.id && bodyNodes.some((candidate) => candidate.id === edge.source)))
+    const targets = roots.length > 0 ? roots : nodes.filter((node) => node.type === 'output')
+    for (const target of targets) addEdge(id, target.id)
+  }
+
+  if (missingOutput) {
+    const id = availableId(`${workflow.id}-output`, nodeIds)
+    nodeIds.add(id)
+    nodes.push({ id, type: 'output', label: '结束', config: { contentMode: 'variable' }, position: { x: right, y } })
+    const leaves = bodyNodes.filter((node) => !edges.some((edge) => edge.source === node.id && bodyNodes.some((candidate) => candidate.id === edge.target)))
+    const sources = leaves.length > 0 ? leaves : nodes.filter((node) => node.type === 'input')
+    for (const source of sources) addEdge(source.id, id)
+  }
+
+  return { ...workflow, nodes, edges }
+}
+
 export class WorkflowStore {
   private readonly filePath: string
   private readonly workflows = new Map<string, WorkflowDefinition>()
@@ -41,7 +91,8 @@ export class WorkflowStore {
       const raw = JSON.parse(await readFile(this.filePath, 'utf8')) as unknown
       if (Array.isArray(raw)) {
         for (const item of raw) {
-          const workflow = normalizeWorkflow(item)
+          const normalized = normalizeWorkflow(item)
+          const workflow = normalized === undefined ? undefined : ensureFixedTerminalNodes(normalized)
           if (workflow !== undefined && validateWorkflow(workflow).valid) this.workflows.set(workflow.id, workflow)
         }
       }

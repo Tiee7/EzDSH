@@ -41,10 +41,16 @@ export interface EmployeeDefinition {
 
 export type EmployeeSnapshot = EmployeeDefinition
 
+export interface EmployeeGenerateRequest {
+  prompt: string
+}
+
 export type EmployeeCreateInput = Omit<EmployeeDefinition, 'schemaVersion' | 'version' | 'id' | 'createdAt' | 'updatedAt' | 'builtIn'> & {
   id?: string
   builtIn?: boolean
 }
+
+export type EmployeeGeneratedProfile = EmployeeCreateInput
 
 export type EmployeeUpdateInput = Partial<Omit<EmployeeDefinition, 'schemaVersion' | 'version' | 'id' | 'createdAt' | 'updatedAt' | 'builtIn'>>
 

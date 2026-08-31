@@ -7,6 +7,7 @@ import {
   DEFAULT_POSTER_EMPLOYEE,
   DEFAULT_RESEARCH_EMPLOYEE,
   EmployeeService,
+  type EmployeeGenerationClient,
   type EmployeeRunClient,
 } from '../../src/main/employees/employee-service.js'
 
@@ -24,7 +25,7 @@ function fakeClient(outputs = ['分析完成', '文案完成', '设计提示词�
   }
 }
 
-async function createService(client = fakeClient()): Promise<{ service: EmployeeService; root: string }> {
+async function createService(client = fakeClient(), options: { lightweightClient?: EmployeeGenerationClient; getLocale?: () => 'zh' | 'en' } = {}): Promise<{ service: EmployeeService; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'ezdsh-employees-'))
   roots.push(root)
   return {
@@ -33,6 +34,7 @@ async function createService(client = fakeClient()): Promise<{ service: Employee
       configPath: join(root, 'employees.json'),
       cwd: root,
       createClient: () => client,
+      ...options,
     }),
   }
 }
@@ -224,6 +226,44 @@ describe('EmployeeService', () => {
       title: '新建会话',
     })
     expect(client.renameSession).toHaveBeenCalledWith('session-new', '新建会话')
+  })
+
+  it('generates an editable employee profile in the configured language', async () => {
+    const complete = vi.fn().mockResolvedValue(JSON.stringify({
+      name: '内容策划员',
+      role: '短视频内容策划专员',
+      description: '负责把用户需求整理成可执行的短视频内容方案。',
+      businessBoundary: '负责选题和脚本，不负责直接发布。',
+      systemPrompt: '先理解受众，再输出有依据、可执行的内容方案。',
+      operatingGuidelines: ['先分析受众和目标', '再给出内容结构'],
+      qualityStandards: ['信息准确', '方案可以直接执行'],
+      capabilities: ['research', 'copywriting'],
+      skillIds: [],
+      enabled: true,
+    }))
+    const { service } = await createService(fakeClient(), {
+      lightweightClient: { complete },
+      getLocale: () => 'zh',
+    })
+
+    await expect(service.generate({ prompt: '需要一名负责短视频内容策划的员工' })).resolves.toEqual({
+      name: '内容策划员',
+      role: '短视频内容策划专员',
+      description: '负责把用户需求整理成可执行的短视频内容方案。',
+      businessBoundary: '负责选题和脚本，不负责直接发布。',
+      systemPrompt: '先理解受众，再输出有依据、可执行的内容方案。',
+      operatingGuidelines: ['先分析受众和目标', '再给出内容结构'],
+      qualityStandards: ['信息准确', '方案可以直接执行'],
+      capabilities: ['research', 'copywriting'],
+      skillIds: [],
+      enabled: true,
+      builtIn: false,
+    })
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      outputMode: 'json',
+      prompt: '用户需求：需要一名负责短视频内容策划的员工',
+      systemPrompt: expect.stringContaining('简体中文'),
+    }))
   })
 
   it('reuses the selected session instead of creating another session for an employee run', async () => {
