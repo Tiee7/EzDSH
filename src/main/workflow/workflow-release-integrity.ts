@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { normalizeWorkflow, type WorkflowDefinition } from '../../shared/workflow.js'
-import { workflowSnapshotHasSensitiveHttpHeaders, type WorkflowRelease } from '../../shared/workflow-operations.js'
+import { workflowSnapshotHasStaticHttpHeaders, type WorkflowRelease } from '../../shared/workflow-operations.js'
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize)
@@ -15,7 +15,7 @@ function canonicalize(value: unknown): unknown {
 export function canonicalizeWorkflowDefinition(workflow: WorkflowDefinition): string {
   const normalized = normalizeWorkflow(workflow)
   if (normalized === undefined) throw new Error('Invalid workflow release snapshot')
-  if (workflowSnapshotHasSensitiveHttpHeaders(normalized)) throw new Error('Workflow release snapshot contains a sensitive HTTP header')
+  if (workflowSnapshotHasStaticHttpHeaders(normalized)) throw new Error('Workflow release snapshot contains static HTTP headers')
   return JSON.stringify(canonicalize(normalized))
 }
 

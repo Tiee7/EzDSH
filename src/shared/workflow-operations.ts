@@ -73,7 +73,6 @@ export interface WorkflowReleasePublishInput {
 
 const environmentIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u
 const sha256Pattern = /^[a-f0-9]{64}$/iu
-const sensitiveHttpHeaderNames = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key', 'api-key', 'x-auth-token'])
 const observationActions = new Set<WorkflowObservationAction>([
   'run-created', 'run-started', 'node-started', 'node-retry', 'node-effect-prepared', 'node-effect-dispatched', 'node-effect-confirmed', 'node-completed', 'node-skipped', 'node-failed', 'compensation-started', 'compensation-completed', 'compensation-failed', 'approval-requested', 'approval-resolved', 'run-completed', 'run-failed', 'run-paused', 'run-cancelled',
   'release-published', 'release-superseded', 'release-rolled-back',
@@ -116,9 +115,9 @@ export function workflowConnectorGrantsAreSubsetOfPolicy(workflow: WorkflowDefin
   })
 }
 
-/** Release snapshots keep static templates only; connector credentials are injected at execution time. */
-export function workflowSnapshotHasSensitiveHttpHeaders(workflow: WorkflowDefinition): boolean {
-  return workflow.nodes.some((node) => node.type === 'http' && Object.keys(node.config.headers).some((name) => sensitiveHttpHeaderNames.has(name.trim().toLowerCase())))
+/** Release snapshots keep static templates only; HTTP headers are injected at execution time. */
+export function workflowSnapshotHasStaticHttpHeaders(workflow: WorkflowDefinition): boolean {
+  return workflow.nodes.some((node) => node.type === 'http' && Object.keys(node.config.headers).length > 0)
 }
 
 export function normalizeWorkflowCustomerEnvironment(value: unknown): WorkflowCustomerEnvironment | undefined {
@@ -164,7 +163,7 @@ export function normalizeWorkflowRelease(value: unknown): WorkflowRelease | unde
   const workflowSnapshot = normalizeWorkflow(input.workflowSnapshot)
   const connectorGrants = normalizeConnectorGrants(input.connectorGrants)
   if (id === undefined || !environmentIdPattern.test(id) || environmentId === undefined || !environmentIdPattern.test(environmentId) || workflowId === undefined || !environmentIdPattern.test(workflowId) || contentSha256 === undefined || !sha256Pattern.test(contentSha256) || createdAt === undefined || publishedAt === undefined || workflowSnapshot === undefined || connectorGrants === undefined) return undefined
-  if (typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1 || workflowId !== workflowSnapshot.id || workflowRevision !== workflowSnapshot.revision || workflowSnapshotHasSensitiveHttpHeaders(workflowSnapshot) || !workflowConnectorGrantsAreSubsetOfPolicy(workflowSnapshot, connectorGrants)) return undefined
+  if (typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1 || workflowId !== workflowSnapshot.id || workflowRevision !== workflowSnapshot.revision || workflowSnapshotHasStaticHttpHeaders(workflowSnapshot) || !workflowConnectorGrantsAreSubsetOfPolicy(workflowSnapshot, connectorGrants)) return undefined
   if (input.status !== 'published' && input.status !== 'superseded' && input.status !== 'rolled-back') return undefined
   return {
     id,
