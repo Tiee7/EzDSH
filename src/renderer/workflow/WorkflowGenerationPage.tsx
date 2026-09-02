@@ -44,21 +44,22 @@ function formatGenerationTime(value: string, locale: AppLocale): string {
 function statusLabel(record: WorkflowGenerationRecord, copy: AppCopy): string {
   if (record.status === 'completed') return copy.workflowGenerationCompleted
   if (record.status === 'failed') return copy.workflowGenerationFailed
+  if (record.status === 'cancelled') return copy.workflowGenerationCancelled
   return copy.workflowGenerationRunning
 }
 
 function phaseIndex(phase: WorkflowGenerationRecord['phase']): number {
-  if (phase === 'failed') return -1
+  if (phase === 'failed' || phase === 'cancelled') return -1
   return WORKFLOW_GENERATION_PHASES.indexOf(phase)
 }
 
 function effectivePhaseIndex(record: WorkflowGenerationRecord): number {
-  if (record.phase !== 'failed') return phaseIndex(record.phase)
-  const lastWorkingEvent = [...record.events].reverse().find((event) => event.phase !== 'failed')
+  if (record.phase !== 'failed' && record.phase !== 'cancelled') return phaseIndex(record.phase)
+  const lastWorkingEvent = [...record.events].reverse().find((event) => event.phase !== 'failed' && event.phase !== 'cancelled')
   return lastWorkingEvent === undefined ? 0 : phaseIndex(lastWorkingEvent.phase)
 }
 
-export function WorkflowGenerationProgressView({ copy, locale, record, onOpenWorkflow }: { copy: AppCopy; locale: AppLocale; record?: WorkflowGenerationRecord; onOpenWorkflow: (workflow: WorkflowDefinition) => void }): JSX.Element {
+export function WorkflowGenerationProgressView({ copy, locale, record, onOpenWorkflow, onStopGeneration, stopping = false, onResumeGeneration, resuming = false }: { copy: AppCopy; locale: AppLocale; record?: WorkflowGenerationRecord; onOpenWorkflow: (workflow: WorkflowDefinition) => void; onStopGeneration?: (id: string) => void; stopping?: boolean; onResumeGeneration?: (id: string) => void; resuming?: boolean }): JSX.Element {
   const phaseDescriptors = WORKFLOW_GENERATION_PHASES.map((phase) => ({ phase, label: copy[phaseCopyKeys[phase]] as string }))
   const selectedPhaseIndex = record === undefined ? -1 : effectivePhaseIndex(record)
   return <div className="workflow-generation-card workflow-generation-progress-card">
@@ -71,12 +72,17 @@ export function WorkflowGenerationProgressView({ copy, locale, record, onOpenWor
           const complete = record.status === 'completed' || (selectedPhaseIndex >= 0 && index < selectedPhaseIndex)
           const current = record.status === 'running' && selectedPhaseIndex === index
           const failed = record.status === 'failed' && selectedPhaseIndex === index
-          return <li key={phase} className={`workflow-generation-step ${complete ? 'workflow-generation-step-complete' : ''} ${current ? 'workflow-generation-step-current' : ''} ${failed ? 'workflow-generation-step-failed' : ''}`}><span className="workflow-generation-step-mark">{complete ? '✓' : current ? '·' : failed ? '!' : String(index + 1)}</span><div><strong>{label}</strong>{current || failed ? <small>{record.events.filter((event) => event.phase === phase).at(-1)?.message}</small> : null}</div></li>
+          const cancelled = record.status === 'cancelled' && selectedPhaseIndex === index
+          return <li key={phase} className={`workflow-generation-step ${complete ? 'workflow-generation-step-complete' : ''} ${current ? 'workflow-generation-step-current' : ''} ${failed ? 'workflow-generation-step-failed' : ''} ${cancelled ? 'workflow-generation-step-cancelled' : ''}`}><span className="workflow-generation-step-mark">{complete ? '✓' : current ? '·' : failed ? '!' : cancelled ? '×' : String(index + 1)}</span><div><strong>{label}</strong>{current || failed || cancelled ? <small>{record.events.filter((event) => event.phase === phase).at(-1)?.message}</small> : null}</div></li>
         })}
       </ol>
       <div className="workflow-generation-events">{record.events.map((event, index) => <p key={`${event.time}-${index}`}><time>{formatGenerationTime(event.time, locale)}</time><span>{event.message}</span></p>)}</div>
       {record.warnings?.map((warning, index) => <p key={`${warning}-${index}`} className="workflow-generation-warning">{warning}</p>)}
-      {record.workflow ? <button type="button" className="workflow-button-primary" onClick={() => onOpenWorkflow(record.workflow!)}>{copy.workflowGenerationOpenDraft}</button> : <p className="workflow-muted">{copy.workflowGenerationNoWorkflow}</p>}
+      <div className="workflow-generation-progress-actions">
+        {record.status === 'running' && onStopGeneration !== undefined ? <button type="button" className="workflow-ai-stop-button" onClick={() => onStopGeneration(record.id)} disabled={stopping}>{stopping ? copy.workflowGenerationStopping : copy.workflowGenerationStop}</button> : null}
+        {(record.status === 'failed' || record.status === 'cancelled') && onResumeGeneration !== undefined ? <div><button type="button" className="workflow-button-primary" onClick={() => onResumeGeneration(record.id)} disabled={resuming}>{resuming ? copy.workflowGenerationResuming : copy.workflowGenerationResume}</button><small className="workflow-generation-resume-hint">{copy.workflowGenerationResumeHint}</small></div> : null}
+        {record.workflow ? <button type="button" className="workflow-button-primary" onClick={() => onOpenWorkflow(record.workflow!)}>{copy.workflowGenerationOpenDraft}</button> : <p className="workflow-muted">{copy.workflowGenerationNoWorkflow}</p>}
+      </div>
     </>}
   </div>
 }
@@ -89,6 +95,9 @@ export function WorkflowGenerationPage({ copy, locale, onBack, onOpenWorkflow }:
   const [modelSelection, setModelSelection] = useState<WorkflowModelSelection>()
   const [modelLoading, setModelLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [activeGenerationId, setActiveGenerationId] = useState<string>()
+  const [stoppingId, setStoppingId] = useState<string>()
+  const [resumingId, setResumingId] = useState<string>()
   const [error, setError] = useState('')
 
   const selectedRecord = useMemo(() => history.find((record) => record.id === selectedId) ?? history[0], [history, selectedId])
@@ -139,6 +148,7 @@ export function WorkflowGenerationPage({ copy, locale, onBack, onOpenWorkflow }:
     if (value === '' || busy) return
     const generationId = `generation-${crypto.randomUUID()}`
     setBusy(true)
+    setActiveGenerationId(generationId)
     setError('')
     setSelectedId(generationId)
     try {
@@ -155,6 +165,41 @@ export function WorkflowGenerationPage({ copy, locale, onBack, onOpenWorkflow }:
       setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
     } finally {
       setBusy(false)
+      setActiveGenerationId((current) => current === generationId ? undefined : current)
+    }
+  }
+
+  const stopGeneration = async (id: string): Promise<void> => {
+    if (stoppingId === id) return
+    setStoppingId(id)
+    setError('')
+    try {
+      await window.EzDSH.workflows.cancelGeneration(id)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    } finally {
+      setStoppingId(undefined)
+    }
+  }
+
+  const resumeGeneration = async (id: string): Promise<void> => {
+    if (busy || resumingId === id) return
+    setBusy(true)
+    setResumingId(id)
+    setActiveGenerationId(id)
+    setError('')
+    setSelectedId(id)
+    try {
+      await window.EzDSH.workflows.resumeGeneration(id)
+      const records = await window.EzDSH.workflows.listGenerationHistory()
+      setHistory(records)
+      setSelectedId(id)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
+    } finally {
+      setBusy(false)
+      setResumingId((current) => current === id ? undefined : current)
+      setActiveGenerationId((current) => current === id ? undefined : current)
     }
   }
 
@@ -175,10 +220,10 @@ export function WorkflowGenerationPage({ copy, locale, onBack, onOpenWorkflow }:
             <button type="button" className="workflow-button-quiet" onClick={() => void refreshModels()} disabled={busy || modelLoading}>{modelLoading ? copy.workflowRefreshingModels : copy.workflowRefreshModels}</button>
           </div>
           <p className="workflow-generation-model-hint">{modelOptions.length === 0 ? copy.workflowNoModels : copy.workflowModelHint}</p>
-          <button type="button" className="workflow-button-primary workflow-generation-start workflow-ai-action-button" onClick={() => void startGeneration()} disabled={busy || prompt.trim() === ''}><WandMagicSparklesIcon className="workflow-ai-icon" />{busy ? copy.workflowGenerationStarting : copy.workflowGenerationStart}</button>
+          {busy ? <button type="button" className="workflow-ai-stop-button workflow-generation-start" onClick={() => { if (activeGenerationId !== undefined) void stopGeneration(activeGenerationId) }} disabled={activeGenerationId === undefined || stoppingId === activeGenerationId}>{stoppingId === activeGenerationId ? copy.workflowGenerationStopping : copy.workflowGenerationStop}</button> : <button type="button" className="workflow-button-primary workflow-generation-start workflow-ai-action-button" onClick={() => void startGeneration()} disabled={prompt.trim() === ''}><WandMagicSparklesIcon className="workflow-ai-icon" />{copy.workflowGenerationStart}</button>}
           {error ? <div className="workflow-error workflow-generation-error" role="alert">{error}</div> : null}
         </div>
-        <WorkflowGenerationProgressView copy={copy} locale={locale} record={selectedRecord} onOpenWorkflow={onOpenWorkflow} />
+        <WorkflowGenerationProgressView copy={copy} locale={locale} record={selectedRecord} onOpenWorkflow={onOpenWorkflow} onStopGeneration={(id) => void stopGeneration(id)} stopping={selectedRecord !== undefined && stoppingId === selectedRecord.id} onResumeGeneration={(id) => void resumeGeneration(id)} resuming={selectedRecord !== undefined && resumingId === selectedRecord.id} />
       </section>
       <aside className="workflow-generation-history">
         <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowGenerationHistory}</span><h2>{copy.workflowGenerationHistory}</h2></div><span className="workflow-run-count">{history.length}</span></div>

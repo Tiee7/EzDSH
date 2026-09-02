@@ -287,6 +287,26 @@ describe('workflow contract', () => {
     expect(validateWorkflow(workflow!)).toMatchObject({ valid: true, issues: [] })
   })
 
+  it('rejects encoded traversal in managed connector paths and normalizes permission IDs', () => {
+    const workflow = createDefaultWorkflow('Managed connector')
+    const http: WorkflowNode = {
+      id: 'http', type: 'http', label: '请求',
+      config: { method: 'GET', url: '', connectorId: 'api', connectorPath: '/v1/%2e%2e/admin', headers: {}, responseMode: 'json' },
+      position: { x: 240, y: 0 },
+    }
+    const output = workflow.nodes.find((node) => node.type === 'output')!
+    const input = workflow.nodes.find((node) => node.type === 'input')!
+    const candidate = {
+      ...workflow,
+      permissionPolicy: { connectors: [{ connectorId: ' api ', operations: ['read'] as const }] },
+      nodes: [input, http, { ...output, inputBindings: [] }],
+      edges: [{ id: 'input-http', source: input.id, target: http.id }, { id: 'http-output', source: http.id, target: output.id }],
+    }
+    const normalized = normalizeWorkflow(candidate)
+    expect(normalized?.permissionPolicy).toEqual({ connectors: [{ connectorId: 'api', operations: ['read'] }] })
+    expect(validateWorkflow(normalized!).issues.some((issue) => issue.path.endsWith('connectorPath'))).toBe(true)
+  })
+
   it('validates the P0 deterministic data and sub-workflow nodes', () => {
     const workflow = createDefaultWorkflow('P0 nodes')
     const input = workflow.nodes.find((node) => node.type === 'input')!

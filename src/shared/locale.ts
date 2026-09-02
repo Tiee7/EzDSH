@@ -255,6 +255,20 @@ export interface AppCopy {
   workflowHttpBody: string
   workflowHttpResponseMode: string
   workflowHttpTimeout: string
+  workflowHttpConnector: string
+  workflowHttpConnectorNone: string
+  workflowHttpConnectorPath: string
+  workflowHttpConnectorHint: string
+  workflowHttpConnectorLegacyHint: string
+  workflowHttpManagedHeadersHint: string
+  workflowConnectorMissing: string
+  workflowPermissionPolicy: string
+  workflowPermissionPolicyHint: string
+  workflowPermissionNotDeclared: string
+  workflowConnectorRead: string
+  workflowConnectorWrite: string
+  workflowRunConnectorGrants: string
+  workflowRunConnectorGrantsHint: string
   workflowCodeLanguage: string
   workflowCode: string
   workflowCodeTimeout: string
@@ -272,6 +286,40 @@ export interface AppCopy {
   workflowNoModels: string
   workflowCancelSetup: string
   workflowNoLaunchInputs: string
+  workflowSecurityAssets: string
+  workflowSecurityAssetsHint: string
+  workflowRefreshSecurityAssets: string
+  workflowRefreshingSecurityAssets: string
+  workflowCredentials: string
+  workflowConnectors: string
+  workflowNoCredentials: string
+  workflowNoConnectors: string
+  workflowCredentialEditor: string
+  workflowConnectorEditor: string
+  workflowSecurityAssetEditor: string
+  workflowEditSecurityAsset: string
+  workflowSecurityAssetSaved: string
+  workflowSecurityAssetDeleted: string
+  workflowCredentialId: string
+  workflowCredentialLabel: string
+  workflowCredentialType: string
+  workflowCredentialSecret: string
+  workflowCredentialSecretHint: string
+  workflowCredentialOrigin: string
+  workflowCredentialHeader: string
+  workflowCredentialMethods: string
+  workflowCredentialPaths: string
+  workflowCredentialConfigured: string
+  workflowCredentialUnconfigured: string
+  workflowCredentialDelete: string
+  workflowSaveCredential: string
+  workflowConnectorId: string
+  workflowConnectorName: string
+  workflowConnectorBaseUrl: string
+  workflowConnectorCredential: string
+  workflowConnectorPaths: string
+  workflowConnectorDelete: string
+  workflowSaveConnector: string
   workflowCancel: string
   workflowApprove: string
   workflowReject: string
@@ -346,6 +394,9 @@ export interface AppCopy {
   workflowAiModifyPlaceholder: string
   workflowAiModifyStart: string
   workflowAiModifyWorking: string
+  workflowAiModifyStop: string
+  workflowAiModifyStopping: string
+  workflowAiModifyCancelled: string
   workflowAiModifyChanges: string
   workflowAiModifyNoChanges: string
   workflowAiModifyApply: string
@@ -380,12 +431,18 @@ export interface AppCopy {
   workflowGenerationOriginalPrompt: string
   workflowGenerationStart: string
   workflowGenerationStarting: string
+  workflowGenerationStop: string
+  workflowGenerationStopping: string
+  workflowGenerationResume: string
+  workflowGenerationResuming: string
+  workflowGenerationResumeHint: string
   workflowGenerationPipeline: string
   workflowGenerationOpenDraft: string
   workflowGenerationNoWorkflow: string
   workflowGenerationRunning: string
   workflowGenerationCompleted: string
   workflowGenerationFailed: string
+  workflowGenerationCancelled: string
   workflowGenerationPhasePreparing: string
   workflowGenerationPhasePlanningEmployees: string
   workflowGenerationPhaseCreatingEmployees: string
@@ -888,8 +945,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     employeesLoading: '正在加载员工…',
     employeesFailed: '员工数据加载失败',
     employeesEmpty: '还没有员工，先创建一个员工角色。',
-    employeesName: '员工名称',
-    employeesRole: '角色',
+    employeesName: '员工名字',
+    employeesRole: '岗位',
     employeesDescription: '职责简介',
     employeesBusinessBoundary: '业务边界',
     employeesSystemPrompt: '工作原则与系统提示词',
@@ -924,8 +981,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     employeesRunFailed: '执行失败',
     employeesOutput: '输出',
     employeesBuiltIn: '内置示例',
-    employeesNameRequired: '请输入员工名称。',
-    employeesRoleRequired: '请输入员工角色。',
+    employeesNameRequired: '请输入员工名字。',
+    employeesRoleRequired: '请输入员工岗位。',
     employeesPromptRequired: '请输入工作原则或系统提示词。',
     employeesTaskRequired: '请输入要执行的任务。',
     employeesProjectRequired: '请选择项目。',
@@ -1009,6 +1066,20 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowHttpBody: '请求体（JSON 或文本）',
     workflowHttpResponseMode: '响应格式',
     workflowHttpTimeout: '超时（毫秒）',
+    workflowHttpConnector: '托管连接器',
+    workflowHttpConnectorNone: '未绑定（旧版 URL）',
+    workflowHttpConnectorPath: '连接器相对路径',
+    workflowHttpConnectorHint: '请求会在主进程中校验来源、路径、权限和凭证；凭证不会进入工作流。',
+    workflowHttpConnectorLegacyHint: '旧版 URL 不经过托管连接器权限与凭证注入；生产运行默认禁止。',
+    workflowHttpManagedHeadersHint: '敏感认证头由主进程根据凭证范围注入；节点不能自带 Authorization、Cookie 或 API Key。',
+    workflowConnectorMissing: '连接器未找到，请先在安全执行资产中配置。',
+    workflowPermissionPolicy: '连接器权限',
+    workflowPermissionPolicyHint: '这里是工作流允许的上限；开始运行时还要逐项勾选本次一次性授权。',
+    workflowPermissionNotDeclared: '未在工作流策略中声明',
+    workflowConnectorRead: '读取',
+    workflowConnectorWrite: '写入',
+    workflowRunConnectorGrants: '本次授权连接器',
+    workflowRunConnectorGrantsHint: '默认不授予任何连接器操作。只勾选本次运行确实需要的读取或写入权限。',
     workflowCodeLanguage: '代码语言',
     workflowCode: '代码',
     workflowCodeTimeout: '超时（毫秒）',
@@ -1026,6 +1097,40 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowNoModels: '暂无可用模型，请检查供应商配置后刷新。',
     workflowCancelSetup: '取消',
     workflowNoLaunchInputs: '这个工作流没有配置输入节点，可直接开始运行。',
+    workflowSecurityAssets: '安全执行资产',
+    workflowSecurityAssetsHint: '凭证只在主进程加密保存；工作流只引用连接器 ID，不会读取或显示密钥。',
+    workflowRefreshSecurityAssets: '刷新资产',
+    workflowRefreshingSecurityAssets: '刷新中…',
+    workflowCredentials: '凭证',
+    workflowConnectors: '连接器',
+    workflowNoCredentials: '还没有凭证。',
+    workflowNoConnectors: '还没有连接器。',
+    workflowCredentialEditor: '凭证配置',
+    workflowConnectorEditor: '连接器配置',
+    workflowSecurityAssetEditor: '安全执行资产配置',
+    workflowEditSecurityAsset: '载入',
+    workflowSecurityAssetSaved: '安全执行资产已保存',
+    workflowSecurityAssetDeleted: '安全执行资产已删除',
+    workflowCredentialId: '凭证 ID',
+    workflowCredentialLabel: '凭证名称',
+    workflowCredentialType: '凭证类型',
+    workflowCredentialSecret: '密钥（仅本次提交）',
+    workflowCredentialSecretHint: '留空表示保留已有密钥；新凭证必须填写。',
+    workflowCredentialOrigin: '允许来源（HTTPS）',
+    workflowCredentialHeader: '注入请求头名称',
+    workflowCredentialMethods: '允许方法',
+    workflowCredentialPaths: '允许路径前缀（每行一个）',
+    workflowCredentialConfigured: '已配置密钥',
+    workflowCredentialUnconfigured: '未配置密钥',
+    workflowCredentialDelete: '删除凭证',
+    workflowSaveCredential: '保存凭证',
+    workflowConnectorId: '连接器 ID',
+    workflowConnectorName: '连接器名称',
+    workflowConnectorBaseUrl: 'Base URL（HTTPS，末尾 /）',
+    workflowConnectorCredential: '凭证引用（可选）',
+    workflowConnectorPaths: '允许路径前缀（每行一个）',
+    workflowConnectorDelete: '删除连接器',
+    workflowSaveConnector: '保存连接器',
     workflowCancel: '取消运行',
     workflowApprove: '通过审批',
     workflowReject: '拒绝审批',
@@ -1100,6 +1205,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowAiModifyPlaceholder: '例如：把“内容审核”拆成格式检查、事实核验和风险判断三个节点，并保持原有输出变量不变。',
     workflowAiModifyStart: '分析并生成修改方案',
     workflowAiModifyWorking: 'AI 正在分析…',
+    workflowAiModifyStop: '停止 AI 修改',
+    workflowAiModifyStopping: '正在停止…',
+    workflowAiModifyCancelled: '已由用户终止',
     workflowAiModifyChanges: '修改内容',
     workflowAiModifyNoChanges: 'AI 没有发现需要修改的内容。',
     workflowAiModifyApply: '应用修改方案',
@@ -1110,7 +1218,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowAiModifyUpdated: '更新',
     workflowAiModifyRewired: '调整连线',
     workflowAiModifyApplied: 'AI 修改方案已应用，请检查后保存工作流。',
-    workflowAiModifyContinueBackground: '关闭窗口不会中止任务，完成后会在这里通知你。',
+    workflowAiModifyContinueBackground: '关闭窗口不会中止任务；如果提示词需要修改，请点击“停止 AI 修改”。完成后会在这里通知你。',
     workflowAiModifyReady: 'AI 修改方案已完成，可查看并选择是否应用。',
     workflowAiModifyReview: '查看修改方案',
     workflowAiModifyHistory: 'AI 修改记录',
@@ -1131,15 +1239,21 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowGenerationHistory: '生成历史',
     workflowGenerationHistoryEmpty: '还没有生成记录。',
     workflowGenerationChooseHistory: '选择一条历史记录查看生成过程。',
-    workflowGenerationOriginalPrompt: '原始需求',
+    workflowGenerationOriginalPrompt: '用户原始要求',
     workflowGenerationStart: '开始生成',
     workflowGenerationStarting: '正在生成…',
+    workflowGenerationStop: '停止生成',
+    workflowGenerationStopping: '正在停止…',
+    workflowGenerationResume: '从断点继续',
+    workflowGenerationResuming: '正在继续…',
+    workflowGenerationResumeHint: '不要重复已完成的步骤，将复用已保存的产物和 Session。',
     workflowGenerationPipeline: '固定生成流程',
     workflowGenerationOpenDraft: '打开工作流草稿',
     workflowGenerationNoWorkflow: '这条记录没有可打开的工作流草稿。',
     workflowGenerationRunning: '生成中',
     workflowGenerationCompleted: '已完成',
     workflowGenerationFailed: '生成失败',
+    workflowGenerationCancelled: '已由用户终止',
     workflowGenerationPhasePreparing: '整理需求',
     workflowGenerationPhasePlanningEmployees: '规划专业员工',
     workflowGenerationPhaseCreatingEmployees: '处理专业员工',
@@ -1642,7 +1756,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     employeesFailed: 'Failed to load employees',
     employeesEmpty: 'No employees yet. Create an employee role to get started.',
     employeesName: 'Employee name',
-    employeesRole: 'Role',
+    employeesRole: 'Job role',
     employeesDescription: 'Responsibility summary',
     employeesBusinessBoundary: 'Business boundary',
     employeesSystemPrompt: 'Working principles and system prompt',
@@ -1677,8 +1791,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     employeesRunFailed: 'Run failed',
     employeesOutput: 'Output',
     employeesBuiltIn: 'Built-in example',
-    employeesNameRequired: 'Enter an employee name.',
-    employeesRoleRequired: 'Enter the employee role.',
+    employeesNameRequired: 'Enter the employee name.',
+    employeesRoleRequired: 'Enter the employee job role.',
     employeesPromptRequired: 'Enter working principles or a system prompt.',
     employeesTaskRequired: 'Enter a task to run.',
     employeesProjectRequired: 'Select a project.',
@@ -1762,6 +1876,20 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowHttpBody: 'Request body (JSON or text)',
     workflowHttpResponseMode: 'Response format',
     workflowHttpTimeout: 'Timeout (ms)',
+    workflowHttpConnector: 'Managed connector',
+    workflowHttpConnectorNone: 'Unmanaged legacy URL',
+    workflowHttpConnectorPath: 'Connector-relative path',
+    workflowHttpConnectorHint: 'The main process checks origin, path, policy, grant, and credential scope before dispatch; secrets stay out of the workflow.',
+    workflowHttpConnectorLegacyHint: 'Legacy URLs do not receive managed policy or credential injection and are disabled in production runs.',
+    workflowHttpManagedHeadersHint: 'Sensitive authentication headers are injected by the main process; the node cannot provide Authorization, Cookie, or API keys.',
+    workflowConnectorMissing: 'Connector not found. Configure it under Security assets first.',
+    workflowPermissionPolicy: 'Connector permissions',
+    workflowPermissionPolicyHint: 'This is the workflow ceiling. Start a run and explicitly grant only the operations needed for that run.',
+    workflowPermissionNotDeclared: 'Not declared by workflow policy',
+    workflowConnectorRead: 'Read',
+    workflowConnectorWrite: 'Write',
+    workflowRunConnectorGrants: 'Connector grants for this run',
+    workflowRunConnectorGrantsHint: 'No connector operation is granted by default. Check only the read or write access this run needs.',
     workflowCodeLanguage: 'Code language',
     workflowCode: 'Code',
     workflowCodeTimeout: 'Timeout (ms)',
@@ -1779,6 +1907,40 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowNoModels: 'No available models. Check provider settings and refresh.',
     workflowCancelSetup: 'Cancel',
     workflowNoLaunchInputs: 'This workflow has no Input nodes configured and can run immediately.',
+    workflowSecurityAssets: 'Security assets',
+    workflowSecurityAssetsHint: 'Credentials are encrypted in the main process; workflows reference connector IDs and never read or display secrets.',
+    workflowRefreshSecurityAssets: 'Refresh assets',
+    workflowRefreshingSecurityAssets: 'Refreshing…',
+    workflowCredentials: 'Credentials',
+    workflowConnectors: 'Connectors',
+    workflowNoCredentials: 'No credentials yet.',
+    workflowNoConnectors: 'No connectors yet.',
+    workflowCredentialEditor: 'Credential setup',
+    workflowConnectorEditor: 'Connector setup',
+    workflowSecurityAssetEditor: 'Security asset setup',
+    workflowEditSecurityAsset: 'Load',
+    workflowSecurityAssetSaved: 'Security asset saved',
+    workflowSecurityAssetDeleted: 'Security asset deleted',
+    workflowCredentialId: 'Credential ID',
+    workflowCredentialLabel: 'Credential name',
+    workflowCredentialType: 'Credential type',
+    workflowCredentialSecret: 'Secret (submitted once)',
+    workflowCredentialSecretHint: 'Leave blank to keep an existing secret; new credentials need one.',
+    workflowCredentialOrigin: 'Allowed origin (HTTPS)',
+    workflowCredentialHeader: 'Injected header name',
+    workflowCredentialMethods: 'Allowed methods',
+    workflowCredentialPaths: 'Allowed path prefixes (one per line)',
+    workflowCredentialConfigured: 'secret configured',
+    workflowCredentialUnconfigured: 'secret not configured',
+    workflowCredentialDelete: 'Delete credential',
+    workflowSaveCredential: 'Save credential',
+    workflowConnectorId: 'Connector ID',
+    workflowConnectorName: 'Connector name',
+    workflowConnectorBaseUrl: 'Base URL (HTTPS, trailing /)',
+    workflowConnectorCredential: 'Credential reference (optional)',
+    workflowConnectorPaths: 'Allowed path prefixes (one per line)',
+    workflowConnectorDelete: 'Delete connector',
+    workflowSaveConnector: 'Save connector',
     workflowCancel: 'Cancel run',
     workflowApprove: 'Approve',
     workflowReject: 'Reject',
@@ -1853,6 +2015,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowAiModifyPlaceholder: 'For example: split “Content review” into format checks, fact checks, and risk judgment while preserving the existing output variables.',
     workflowAiModifyStart: 'Analyze and propose changes',
     workflowAiModifyWorking: 'AI is analyzing…',
+    workflowAiModifyStop: 'Stop AI modification',
+    workflowAiModifyStopping: 'Stopping…',
+    workflowAiModifyCancelled: 'Stopped by user',
     workflowAiModifyChanges: 'Changes',
     workflowAiModifyNoChanges: 'AI found no changes to apply.',
     workflowAiModifyApply: 'Apply changes',
@@ -1863,7 +2028,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowAiModifyUpdated: 'Updated',
     workflowAiModifyRewired: 'Rewired',
     workflowAiModifyApplied: 'AI changes applied. Review them before saving the workflow.',
-    workflowAiModifyContinueBackground: 'Closing this window will not stop the task. You will be notified here when it finishes.',
+    workflowAiModifyContinueBackground: 'Closing this window will not stop the task. If the prompt needs revision, click “Stop AI modification”. You will be notified here when it finishes.',
     workflowAiModifyReady: 'The AI modification is ready. Review it and choose whether to apply it.',
     workflowAiModifyReview: 'Review changes',
     workflowAiModifyHistory: 'AI modification history',
@@ -1887,12 +2052,18 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowGenerationOriginalPrompt: 'Original user request',
     workflowGenerationStart: 'Start generation',
     workflowGenerationStarting: 'Generating…',
+    workflowGenerationStop: 'Stop generation',
+    workflowGenerationStopping: 'Stopping…',
+    workflowGenerationResume: 'Continue from checkpoint',
+    workflowGenerationResuming: 'Continuing…',
+    workflowGenerationResumeHint: 'Completed steps are skipped; saved artifacts and the session are reused.',
     workflowGenerationPipeline: 'Fixed generation pipeline',
     workflowGenerationOpenDraft: 'Open workflow draft',
     workflowGenerationNoWorkflow: 'This record has no workflow draft to open.',
     workflowGenerationRunning: 'Generating',
     workflowGenerationCompleted: 'Completed',
     workflowGenerationFailed: 'Generation failed',
+    workflowGenerationCancelled: 'Stopped by user',
     workflowGenerationPhasePreparing: 'Prepare request',
     workflowGenerationPhasePlanningEmployees: 'Plan professional employees',
     workflowGenerationPhaseCreatingEmployees: 'Process professional employees',

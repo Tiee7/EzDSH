@@ -21,14 +21,16 @@ import type {
   WorkflowRunRecord,
   WorkflowValue,
   WorkflowModelSelection,
+  WorkflowGenerationCheckpoint,
   ConditionOperator,
   HttpNodeConfig,
   WorkflowCodeLanguage,
   WorkflowJsonSchema,
   ListOperatorNodeConfig,
   MergeNodeConfig,
+  WorkflowRunLease,
 } from '../../shared/workflow.js'
-import { EMPLOYEE_CAPABILITIES } from '../../shared/employees.js'
+import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
 import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
@@ -36,10 +38,13 @@ import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
 import { WorkflowRunStore } from './workflow-run-store.js'
+import { WorkflowRunWorker } from './workflow-run-worker.js'
 import { DshWorkflowAdapter, buildNodePrompt, extractJsonDocument, parseWorkflowJson, type WorkflowSessionClient } from './dsh-workflow-adapter.js'
 import type { WorkflowLightweightClient, WorkflowLightweightRequest } from './workflow-lightweight-client.js'
 import type { WorkflowMcpClient } from './workflow-mcp-client.js'
 import { WorkflowInternalSessionStore, type WorkflowInternalSessionKind } from './workflow-internal-session-store.js'
+import { planWorkflowRetry } from './workflow-retry.js'
+import type { WorkflowConnectorRequest, WorkflowConnectorService } from './workflow-connector-service.js'
 
 export interface WorkflowRunServiceOptions {
   workflowStore: WorkflowStore
@@ -54,10 +59,18 @@ export interface WorkflowRunServiceOptions {
   createEmployee?: (input: EmployeeCreateInput) => Promise<EmployeeSnapshot>
   /** Locale for natural-language fields in AI-generated employee profiles. */
   getLocale?: () => AppLocale
-  /** Canonical EzDSH workflow documentation supplied to generation and modification prompts. */
+  /** Load canonical EzDSH workflow documentation immediately before an AI request. */
+  loadWorkflowAiDocumentation?: () => Promise<string | undefined>
+  /** @deprecated Test and embedding compatibility. Prefer loadWorkflowAiDocumentation. */
   workflowAiDocumentation?: string
   lightweightClient?: Pick<WorkflowLightweightClient, 'complete'>
+  /** Opens a durable model conversation for AI workflow generation. */
+  createGenerationSession?: (options: { sessionId?: string; model?: WorkflowModelSelection }) => Promise<WorkflowGenerationSession>
   mcpClient?: Pick<WorkflowMcpClient, 'call'>
+  /** Main-process managed connector executor. Raw URL HTTP remains for legacy workflows. */
+  connectorService?: Pick<WorkflowConnectorService, 'request'> & Partial<Pick<WorkflowConnectorService, 'authorize'>>
+  /** Keep raw URL HTTP available to compatibility embeddings; production main disables it. */
+  allowLegacyHttp?: boolean
   /** Executes a referenced workflow and returns its final output. */
   executeSubWorkflow?: (workflowId: string, input: WorkflowValue, waitForCompletion: boolean, version?: number | 'latest', options?: WorkflowRunOptions) => Promise<WorkflowValue>
   internalSessionStore?: WorkflowInternalSessionStore
@@ -65,8 +78,23 @@ export interface WorkflowRunServiceOptions {
 
 type RunListener = (record: WorkflowRunRecord) => void
 
+export interface WorkflowGenerationSession {
+  readonly sessionId: string
+  complete(request: WorkflowLightweightRequest): Promise<string>
+  cancel(): Promise<void>
+  archive(): Promise<void>
+}
+
+export interface WorkflowGenerationRunOptions {
+  checkpoint?: WorkflowGenerationCheckpoint
+  onCheckpoint?: (checkpoint: WorkflowGenerationCheckpoint) => Promise<void> | void
+  resumeMessage?: string
+}
+
 interface ActiveRun {
   cancelled: boolean
+  /** Persisted queue ownership was lost; do not write a stale terminal record. */
+  leaseLost: boolean
   pauseRequested?: boolean
   readonly abortController: AbortController
   readonly sessionIds: Set<string>
@@ -81,23 +109,47 @@ export class WorkflowRunService {
   private readonly lightweightClient: Pick<WorkflowLightweightClient, 'complete'>
   private readonly mcpClient: Pick<WorkflowMcpClient, 'call'>
   private readonly internalSessionStore: WorkflowInternalSessionStore
+  private readonly worker: WorkflowRunWorker
+  private readonly compensationActive = new Set<string>()
   private initialized = false
+  private initializationPromise: Promise<void> | undefined
 
   constructor(private readonly options: WorkflowRunServiceOptions) {
     this.adapter = new DshWorkflowAdapter({ cwd: options.workflowRoot, createClient: options.createClient })
     this.lightweightClient = options.lightweightClient ?? { complete: async () => { throw new Error('轻量智能处理不可用：请先配置模型供应商。') } }
     this.mcpClient = options.mcpClient ?? { call: async () => { throw new Error('MCP 直连不可用：请检查 MCP 配置。') } }
     this.internalSessionStore = options.internalSessionStore ?? new WorkflowInternalSessionStore(options.workflowRoot)
+    this.worker = new WorkflowRunWorker({
+      store: options.runStore,
+      executeClaimedRun: (runId, lease, leaseSignal) => this.execute(runId, lease, leaseSignal),
+      onExecutionError: (runId, error) => this.handleWorkerExecutionError(runId, error),
+    })
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return
-    await this.options.workflowStore.initialize()
-    await this.options.runStore.initialize()
-    await this.internalSessionStore.initialize()
-    await this.options.runStore.pauseActiveRuns()
-    await this.options.runStore.pruneExpired()
-    this.initialized = true
+    if (this.initializationPromise !== undefined) return this.initializationPromise
+    const pending = (async () => {
+      await this.options.workflowStore.initialize()
+      await this.options.runStore.initialize()
+      await this.internalSessionStore.initialize()
+      // A new service instance is a new process boundary: any persisted lease
+      // belongs to a process that no longer exists, even if its expiry is in
+      // the future. Reconcile it before starting the fresh Worker.
+      await this.options.runStore.recoverInterruptedRuns(new Date(), true)
+      // Records written before the durable queue existed have no lease and
+      // retain the previous startup-pause behaviour.
+      await this.options.runStore.pauseActiveRuns()
+      await this.options.runStore.pruneExpired()
+      this.initialized = true
+      await this.worker.start()
+    })()
+    this.initializationPromise = pending
+    try {
+      await pending
+    } finally {
+      if (this.initializationPromise === pending) this.initializationPromise = undefined
+    }
   }
 
   watch(listener: RunListener): () => void {
@@ -147,6 +199,7 @@ export class WorkflowRunService {
         await this.save(record, 'run-paused', record.error)
       }
     }
+    await this.worker.stop()
   }
 
   async start(workflowId: string, input: WorkflowValue, options: WorkflowRunOptions = {}): Promise<WorkflowRunRecord> {
@@ -156,9 +209,9 @@ export class WorkflowRunService {
     if (workflow === undefined) throw new Error(`Workflow not found: ${workflowId}`)
     assertValidWorkflow(workflow, '启动运行')
     const record = this.createRecord(workflow, input, options)
-    await this.save(record, 'run-created', '运行已排队')
-    void this.execute(record.id)
-    return cloneWorkflow(record)
+    const enqueued = await this.enqueue(record, '运行已排队')
+    this.worker.wake()
+    return cloneWorkflow(enqueued)
   }
 
   async resume(runId: string): Promise<WorkflowRunRecord> {
@@ -166,6 +219,7 @@ export class WorkflowRunService {
     const record = this.options.runStore.get(runId)
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以恢复')
+    if (record.nodeStates.some((state) => state.effectState === 'unknown' || state.effectState === 'confirmed' && state.status !== 'completed')) throw new Error('运行包含状态不确定的外部副作用，请先完成补偿或人工核对')
     record.status = 'queued'
     record.error = undefined
     record.completedAt = undefined
@@ -180,8 +234,9 @@ export class WorkflowRunService {
         node.output = undefined
       }
     }
+    this.prepareQueuedRecord(record)
     await this.save(record, 'run-created', '运行已重新排队')
-    void this.execute(record.id)
+    this.worker.wake()
     return cloneWorkflow(record)
   }
 
@@ -218,12 +273,14 @@ export class WorkflowRunService {
     record.status = 'queued'
     record.error = undefined
     record.waitingApprovalNodeId = undefined
+    this.prepareQueuedRecord(record)
     await this.save(record, 'approval-resolved', '审批通过，继续运行', node.id)
-    void this.execute(runId)
+    this.worker.wake()
     return this.options.runStore.get(runId) ?? record
   }
 
   async cancel(runId: string): Promise<WorkflowRunRecord> {
+    await this.initialize()
     const record = this.options.runStore.get(runId)
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     const active = this.active.get(runId)
@@ -232,93 +289,234 @@ export class WorkflowRunService {
       active.abortController.abort()
       await this.cancelInternalSessions(active)
     }
-    if (record.status === 'queued' || record.status === 'waiting-approval') {
-      record.status = 'cancelled'
-      record.waitingApprovalNodeId = undefined
-      record.completedAt = new Date().toISOString()
-      await this.save(record, 'run-cancelled', '用户取消了运行')
-    }
+    await this.options.runStore.requestCancellation(runId)
     return this.options.runStore.get(runId) ?? record
   }
 
-  async generate(request: WorkflowGenerateRequest, onProgress?: (update: WorkflowGenerationProgressUpdate) => Promise<void> | void): Promise<WorkflowGenerateResult> {
-    if (request.prompt.trim() === '') throw new Error('AI 生成需求不能为空')
-    const report = async (phase: WorkflowGenerationProgressUpdate['phase'], message: string): Promise<void> => {
-      await onProgress?.({ phase, message })
-    }
-    await report('preparing', '正在整理需求与生成约束。')
-    const existingEmployees = this.options.listEmployees?.() ?? []
-    const catalogEntries = existingEmployees.map(employeeCatalogEntry)
-    const createdEmployees: EmployeeSnapshot[] = []
-    const employeeWarnings: string[] = []
-    const canCreateEmployees = this.options.createEmployee !== undefined && request.createEmployees !== false
-    await report('planning-employees', canCreateEmployees ? '正在判断是否需要专业员工。' : '已跳过专业员工规划。')
-    if (canCreateEmployees) {
+  /**
+   * Run explicitly declared reverse actions after a terminal run. The service
+   * never invents an inverse for a node and never retries a failed compensation
+   * automatically; callers can inspect the durable entry and decide whether
+   * to invoke this method again.
+   */
+  async compensate(runId: string): Promise<WorkflowRunRecord> {
+    await this.initialize()
+    if (this.compensationActive.has(runId)) throw new Error('该运行的补偿正在执行。')
+    const record = this.options.runStore.get(runId)
+    if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+    if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') throw new Error('运行尚未结束，不能执行补偿')
+    this.compensationActive.add(runId)
+    try {
+      const stack = record.compensationStack ?? []
+      for (const entry of [...stack].reverse()) {
+      if (entry.status === 'completed') continue
+      entry.status = 'running'
+      entry.startedAt = new Date().toISOString()
+      entry.error = undefined
+      await this.save(record, 'compensation-started', `开始补偿节点：${entry.sourceNodeId}`, entry.sourceNodeId)
       try {
-        const planText = await this.lightweightClient.complete({
-          systemPrompt: buildEmployeePlanPrompt(catalogEntries, this.options.getLocale?.() ?? DEFAULT_APP_LOCALE),
-          prompt: `用户需求：${request.prompt.slice(0, 8_000)}`,
-          outputMode: 'json',
-          ...(request.model === undefined ? {} : { model: request.model }),
-        })
-        const plan = extractJsonDocument(planText)
-        const specs = isUnknownRecord(plan) && Array.isArray(plan.employees) ? plan.employees : []
-        await report('creating-employees', specs.length === 0 ? '没有需要新建的专业员工。' : `已规划 ${specs.length} 名专业员工，正在创建。`)
-        for (const spec of specs) {
-          const input = employeeSpecToCreateInput(spec)
-          if (input === undefined) {
-            employeeWarnings.push('AI 规划的员工档案格式无效，已跳过。')
-            continue
-          }
-          try {
-            await report('creating-employees', `正在创建专业员工「${input.name}」。`)
-            createdEmployees.push(await this.options.createEmployee!(input))
-          } catch (error) {
-            employeeWarnings.push(`员工「${input.name}」创建失败：${error instanceof Error ? error.message : String(error)}`)
-          }
-        }
-        if (specs.length > 0) await report('creating-employees', createdEmployees.length === specs.length ? `专业员工创建完成，共 ${createdEmployees.length} 名。` : `专业员工处理完成，成功创建 ${createdEmployees.length} 名。`)
+        if (this.options.executeSubWorkflow === undefined) throw new Error('补偿 Workflow 执行器不可用。')
+        const sourceOutput = record.nodeStates.find((state) => state.nodeId === entry.sourceNodeId)?.output ?? null
+        const compensationInput = entry.action.input === undefined
+          ? cloneWorkflow(sourceOutput)
+          : resolveWorkflowTemplateValue(entry.action.input, record.input, sourceOutput)
+        await this.options.executeSubWorkflow(
+          entry.action.workflowId,
+          compensationInput,
+          entry.action.waitForCompletion !== false,
+          undefined,
+          { allowShellFile: record.allowShellFile, allowCode: record.allowCode === true, connectorGrants: record.connectorGrants, ...(record.model === undefined ? {} : { model: record.model }) },
+        )
+        entry.status = 'completed'
+        entry.completedAt = new Date().toISOString()
+        await this.save(record, 'compensation-completed', `补偿完成：${entry.sourceNodeId}`, entry.sourceNodeId)
       } catch (error) {
-        employeeWarnings.push(`员工规划失败，仅使用现有员工：${error instanceof Error ? error.message : String(error)}`)
-        await report('creating-employees', '专业员工规划失败，将继续使用现有员工生成工作流。')
+        entry.status = 'failed'
+        entry.completedAt = new Date().toISOString()
+        entry.error = error instanceof Error ? error.message : String(error)
+        record.error = `补偿失败：${entry.error}`
+        await this.save(record, 'compensation-failed', record.error, entry.sourceNodeId)
+        break
       }
-    } else {
-      await report('creating-employees', '没有需要创建的专业员工。')
-    }
-    const finalCatalog = [...catalogEntries, ...createdEmployees.map(employeeCatalogEntry)]
-    await report('generating-workflow', '正在根据需求、员工目录和固定 Schema 生成工作流草稿。')
-    const text = await this.lightweightClient.complete({
-      systemPrompt: buildWorkflowGenerationPrompt(finalCatalog, this.options.workflowAiDocumentation),
-      prompt: `用户需求：${request.prompt.slice(0, 8_000)}`,
-      outputMode: 'json',
-      ...(request.model === undefined ? {} : { model: request.model }),
-    })
-    const raw = extractJsonDocument(text)
-    const candidate = typeof raw === 'object' && raw !== null ? { ...(raw as Record<string, unknown>), id: `workflow-${randomUUID()}` } : raw
-    const normalizedWorkflow = normalizeWorkflow(request.name?.trim() === '' || request.name === undefined
-      ? candidate
-      : { ...(candidate as Record<string, unknown>), name: request.name.trim() })
-    if (normalizedWorkflow === undefined) throw new Error('AI 返回的 Workflow 文档格式无效')
-    const repaired = repairGeneratedWorkflow(normalizedWorkflow, finalCatalog)
-    await report('validating', '正在规范化节点、补齐布局并校验依赖关系。')
-    const workflow = {
-      ...layoutWorkflowNodes(repaired.workflow),
-      generationPrompt: request.prompt.trim(),
-    }
-    const validation = validateWorkflow(workflow)
-    if (!validation.valid) throw new Error(`AI 返回的 Workflow 不符合结构规范：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join('；')}`)
-    return {
-      workflow,
-      createdEmployees,
-      ...(employeeWarnings.length + repaired.warnings.length > 0 ? { employeeWarnings: [...employeeWarnings, ...repaired.warnings] } : {}),
+      }
+      return this.options.runStore.get(runId) ?? record
+    } finally {
+      this.compensationActive.delete(runId)
     }
   }
 
-  async modify(request: WorkflowModifyRequest, onProgress?: (update: WorkflowModificationProgressUpdate) => Promise<void> | void): Promise<WorkflowModifyResult> {
+  async generate(request: WorkflowGenerateRequest, onProgress?: (update: WorkflowGenerationProgressUpdate) => Promise<void> | void, signal?: AbortSignal, generationOptions: WorkflowGenerationRunOptions = {}): Promise<WorkflowGenerateResult> {
+    let generationSession: WorkflowGenerationSession | undefined
+    let succeeded = false
+    const cancelSession = (): void => {
+      if (generationSession !== undefined) void generationSession.cancel().catch(() => undefined)
+    }
+    if (signal !== undefined) signal.addEventListener('abort', cancelSession, { once: true })
+    try {
+      if (request.prompt.trim() === '') throw new Error('AI 生成需求不能为空')
+      const checkpoint = generationOptions.checkpoint
+      const report = async (phase: WorkflowGenerationProgressUpdate['phase'], message: string): Promise<void> => {
+        throwIfAborted(signal)
+        await onProgress?.({ phase, message })
+      }
+      const persistCheckpoint = async (phase: WorkflowGenerationCheckpoint['phase'], lastModelOutput?: string): Promise<void> => {
+        const next: WorkflowGenerationCheckpoint = {
+          phase,
+          createdEmployees: cloneWorkflow(createdEmployees),
+          warnings: [...employeeWarnings],
+          ...(selectedEmployeeIds.size === 0 ? {} : { selectedEmployeeIds: [...selectedEmployeeIds] }),
+          ...(generationSession === undefined ? (checkpoint?.sessionId === undefined ? {} : { sessionId: checkpoint.sessionId }) : { sessionId: generationSession.sessionId }),
+          ...(lastModelOutput === undefined ? (checkpoint?.lastModelOutput === undefined ? {} : { lastModelOutput: checkpoint.lastModelOutput }) : { lastModelOutput: lastModelOutput.slice(0, 24_000) }),
+        }
+        await generationOptions.onCheckpoint?.(next)
+      }
+      const createdEmployees: EmployeeSnapshot[] = (checkpoint?.createdEmployees ?? []).map(cloneWorkflow)
+      const employeeWarnings = [...(checkpoint?.warnings ?? [])]
+      const selectedEmployeeIds = new Set(checkpoint?.selectedEmployeeIds ?? [])
+      let reusedGenerationSession = checkpoint?.sessionId !== undefined
+      if (this.options.createGenerationSession !== undefined) {
+        try {
+          generationSession = await this.options.createGenerationSession({
+            ...(checkpoint?.sessionId === undefined ? {} : { sessionId: checkpoint.sessionId }),
+            ...(request.model === undefined ? {} : { model: request.model }),
+          })
+        } catch (error) {
+          if (checkpoint?.sessionId === undefined) throw error
+          reusedGenerationSession = false
+          generationSession = await this.options.createGenerationSession({ ...(request.model === undefined ? {} : { model: request.model }) })
+        }
+        await persistCheckpoint(checkpoint?.phase ?? 'preparing', checkpoint?.lastModelOutput)
+      }
+      const complete = (modelRequest: WorkflowLightweightRequest): Promise<string> => generationSession === undefined
+        ? this.lightweightClient.complete(modelRequest)
+        : generationSession.complete(modelRequest)
+      const resumeAtWorkflowGeneration = checkpoint?.phase === 'generating-workflow' || checkpoint?.phase === 'validating'
+      const existingEmployees = this.options.listEmployees?.() ?? []
+      const catalogEntries = existingEmployees.map(employeeCatalogEntry)
+      const enabledEmployeeCount = existingEmployees.filter((employee) => employee.enabled).length
+      if (!resumeAtWorkflowGeneration) {
+        await report('preparing', '正在整理需求与生成约束。')
+        const canCreateEmployees = this.options.createEmployee !== undefined && request.createEmployees !== false
+        await report('planning-employees', canCreateEmployees
+          ? `正在读取员工目录，已召集共计 ${enabledEmployeeCount} 位候选员工；正在判断是否需要新建专业员工。`
+          : `已读取员工目录，共 ${enabledEmployeeCount} 位可用候选员工；已跳过新建专业员工。`)
+        if (canCreateEmployees) {
+          try {
+            const planText = await complete({
+              systemPrompt: buildEmployeePlanPrompt(catalogEntries, this.options.getLocale?.() ?? DEFAULT_APP_LOCALE),
+              prompt: `用户需求：${request.prompt.slice(0, 8_000)}`,
+              outputMode: 'json',
+              signal,
+              ...(request.model === undefined ? {} : { model: request.model }),
+            })
+            const plan = extractJsonDocument(planText)
+            const specs = isUnknownRecord(plan) && Array.isArray(plan.employees) ? plan.employees : []
+            await report('creating-employees', specs.length === 0
+              ? `未创建新员工；这不代表最终员工已经选定，后续将从 ${enabledEmployeeCount} 位已有员工中筛选并复用。`
+              : `已规划 ${specs.length} 名新专业员工，正在创建。`)
+            for (const spec of specs) {
+              throwIfAborted(signal)
+              const input = employeeSpecToCreateInput(spec)
+              if (input === undefined) {
+                employeeWarnings.push('AI 规划的员工档案格式无效，已跳过。')
+                continue
+              }
+              try {
+                await report('creating-employees', `正在创建专业员工「${employeeDisplayName(input)}（${input.role}）」`)
+                createdEmployees.push(await this.options.createEmployee!(input))
+                await persistCheckpoint('creating-employees')
+              } catch (error) {
+                throwIfAborted(signal)
+                employeeWarnings.push(`员工「${employeeDisplayName(input)}（${input.role}）」创建失败：${error instanceof Error ? error.message : String(error)}`)
+              }
+            }
+            if (specs.length > 0) await report('creating-employees', createdEmployees.length === specs.length ? `专业员工创建完成，共 ${createdEmployees.length} 名。` : `专业员工处理完成，成功创建 ${createdEmployees.length} 名。`)
+          } catch (error) {
+            throwIfAborted(signal)
+            employeeWarnings.push(`员工规划失败，仅使用现有员工：${error instanceof Error ? error.message : String(error)}`)
+            await report('creating-employees', '专业员工规划失败，将继续使用现有员工生成工作流。')
+          }
+        } else {
+          await report('creating-employees', `已跳过新员工创建；后续仍会从 ${enabledEmployeeCount} 位已有员工中筛选候选。`)
+        }
+      } else {
+        await report('generating-workflow', '已恢复生成断点，将复用之前处理好的员工和当前 Session。')
+      }
+      const finalEmployees = Array.from(new Map([...existingEmployees, ...createdEmployees].map((employee) => [employee.id, employee])).values())
+      const finalCatalog = finalEmployees.map(employeeCatalogEntry)
+      throwIfAborted(signal)
+      const requiresEmployeeSelection = finalCatalog.length > EMPLOYEE_SELECTION_THRESHOLD || JSON.stringify(finalCatalog).length > EMPLOYEE_SELECTION_CATALOG_CHAR_LIMIT
+      await report('generating-workflow', requiresEmployeeSelection
+        ? '正在从员工目录中按职责覆盖筛选候选员工。'
+        : '员工目录规模较小，将把已有员工候选直接交给 Workflow 生成。')
+      const generationCatalog = checkpoint?.selectedEmployeeIds !== undefined
+        ? finalCatalog.filter((entry) => selectedEmployeeIds.has(entry.id))
+        : resumeAtWorkflowGeneration
+        ? finalCatalog
+        : await this.selectEmployeesForGeneration(request.prompt, finalEmployees, finalCatalog, request.model, employeeWarnings, signal, complete)
+      for (const entry of generationCatalog) selectedEmployeeIds.add(entry.id)
+      await persistCheckpoint('generating-workflow')
+      const selectedEmployeeNames = generationCatalog
+        .filter((entry) => entry.enabled)
+        .map((entry) => `${entry.displayName}（${entry.role}）`)
+      await report('generating-workflow', !requiresEmployeeSelection
+        ? `已准备 ${selectedEmployeeNames.length} 位已有员工候选：${selectedEmployeeNames.join('、') || '无'}。`
+        : selectedEmployeeNames.length === 0
+        ? '没有筛选出可复用的已有员工，后续将使用通用 AI 节点或按需求创建节点。'
+        : `已筛选出 ${selectedEmployeeNames.length} 位候选员工：${selectedEmployeeNames.join('、')}。`)
+      await report('generating-workflow', '正在根据需求、员工目录和固定 Schema 生成工作流草稿。')
+      let text: string
+      {
+        const workflowAiDocumentation = await this.resolveWorkflowAiDocumentation()
+        throwIfAborted(signal)
+        text = await complete({
+          systemPrompt: buildWorkflowGenerationPrompt(generationCatalog, workflowAiDocumentation),
+          prompt: [
+            `用户需求：${request.prompt.slice(0, 8_000)}`,
+            generationOptions.resumeMessage === undefined ? '' : `这是一次从断点继续的生成。上一次任务未完成，请直接修复并输出完整 Workflow JSON。上次失败原因：${generationOptions.resumeMessage}`,
+            !reusedGenerationSession && checkpoint?.lastModelOutput !== undefined ? `上一次模型返回（可能不完整）：\n${checkpoint.lastModelOutput}` : '',
+          ].filter(Boolean).join('\n\n'),
+          outputMode: 'json',
+          signal,
+          ...(request.model === undefined ? {} : { model: request.model }),
+        })
+      }
+      await persistCheckpoint('validating', text)
+      throwIfAborted(signal)
+      const raw = extractJsonDocument(text)
+      const candidate = typeof raw === 'object' && raw !== null ? { ...(raw as Record<string, unknown>), id: `workflow-${randomUUID()}` } : raw
+      const normalizedWorkflow = normalizeWorkflow(request.name?.trim() === '' || request.name === undefined
+        ? candidate
+        : { ...(candidate as Record<string, unknown>), name: request.name.trim() })
+      if (normalizedWorkflow === undefined) throw new Error('AI 返回的 Workflow 文档格式无效')
+      const repaired = repairGeneratedWorkflow(normalizedWorkflow, generationCatalog)
+      await report('validating', '正在规范化节点、补齐布局并校验依赖关系。')
+      const workflow = {
+        ...layoutWorkflowNodes(repaired.workflow),
+        generationPrompt: request.prompt.trim(),
+      }
+      const validation = validateWorkflow(workflow)
+      if (!validation.valid) throw new Error(`AI 返回的 Workflow 不符合结构规范：${validation.issues.map((issue) => `${issue.path} ${issue.message}`).join('；')}`)
+      succeeded = true
+      await generationSession?.archive().catch(() => undefined)
+      return {
+        workflow,
+        createdEmployees,
+        ...(employeeWarnings.length + repaired.warnings.length > 0 ? { employeeWarnings: [...employeeWarnings, ...repaired.warnings] } : {}),
+      }
+    } finally {
+      if (signal !== undefined) signal.removeEventListener('abort', cancelSession)
+      if (!succeeded) await generationSession?.cancel().catch(() => undefined)
+    }
+  }
+
+  async modify(request: WorkflowModifyRequest, onProgress?: (update: WorkflowModificationProgressUpdate) => Promise<void> | void, signal?: AbortSignal): Promise<WorkflowModifyResult> {
     if (request.prompt.trim() === '') throw new Error('AI 修改需求不能为空')
     const report = async (phase: WorkflowModificationProgressUpdate['phase'], message: string): Promise<void> => {
+      throwIfAborted(signal)
       await onProgress?.({ phase, message })
     }
+    throwIfAborted(signal)
     const current = cloneWorkflow(request.workflow)
     await report('preparing', '正在读取当前工作流和修改目标。')
     const validation = validateWorkflow(current)
@@ -326,17 +524,24 @@ export class WorkflowRunService {
     const catalog = (this.options.listEmployees?.() ?? []).map(employeeCatalogEntry)
     await report('analyzing', `正在分析 ${current.nodes.length} 个节点、变量和流程依赖。`)
     await report('generating', '正在根据修改要求生成最小变更方案。')
-    const text = await this.lightweightClient.complete({
-      systemPrompt: buildWorkflowModificationPrompt(this.options.workflowAiDocumentation),
-      prompt: [
-        `用户希望修改当前工作流：${request.prompt.slice(0, 8_000)}`,
-        '当前工作流 JSON：',
-        JSON.stringify(current),
-        `可用专业员工目录（只能保留其中真实存在的 employeeId）：${JSON.stringify(catalog)}`,
-      ].join('\n\n'),
-      outputMode: 'json',
-      ...(request.model === undefined ? {} : { model: request.model }),
-    })
+    let text: string
+    {
+      const workflowAiDocumentation = await this.resolveWorkflowAiDocumentation()
+      throwIfAborted(signal)
+      text = await this.lightweightClient.complete({
+        systemPrompt: buildWorkflowModificationPrompt(workflowAiDocumentation),
+        prompt: [
+          `用户希望修改当前工作流：${request.prompt.slice(0, 8_000)}`,
+          '当前工作流 JSON：',
+          JSON.stringify(current),
+          `可用专业员工目录（只能保留其中真实存在的 employeeId）：${JSON.stringify(catalog)}`,
+        ].join('\n\n'),
+        outputMode: 'json',
+        signal,
+        ...(request.model === undefined ? {} : { model: request.model }),
+      })
+    }
+    throwIfAborted(signal)
     const raw = extractJsonDocument(text)
     const rawWorkflow = isUnknownRecord(raw) && isUnknownRecord(raw.workflow) ? raw.workflow : raw
     if (!isUnknownRecord(rawWorkflow)) throw new Error('AI 返回的 Workflow 修改结果格式无效')
@@ -350,6 +555,7 @@ export class WorkflowRunService {
       createdAt: current.createdAt,
       updatedAt: new Date().toISOString(),
       ...(current.generationPrompt === undefined ? {} : { generationPrompt: current.generationPrompt }),
+      ...(rawWorkflow.permissionPolicy === undefined && current.permissionPolicy !== undefined ? { permissionPolicy: current.permissionPolicy } : {}),
     }
     const normalized = normalizeWorkflow(candidate)
     if (normalized === undefined) throw new Error('AI 返回的 Workflow 修改结果无法解析')
@@ -368,18 +574,63 @@ export class WorkflowRunService {
     }
   }
 
+  private async resolveWorkflowAiDocumentation(): Promise<string | undefined> {
+    if (this.options.loadWorkflowAiDocumentation !== undefined) return this.options.loadWorkflowAiDocumentation()
+    return this.options.workflowAiDocumentation
+  }
+
+  private async selectEmployeesForGeneration(
+    requirement: string,
+    employees: EmployeeSnapshot[],
+    catalog: EmployeeCatalogEntry[],
+    model: WorkflowModelSelection | undefined,
+    warnings: string[],
+    signal?: AbortSignal,
+    complete: (request: WorkflowLightweightRequest) => Promise<string> = (request) => this.lightweightClient.complete(request),
+  ): Promise<Array<EmployeeCatalogEntry | EmployeeFullCatalogEntry>> {
+    throwIfAborted(signal)
+    const catalogSize = JSON.stringify(catalog).length
+    if (catalog.length <= EMPLOYEE_SELECTION_THRESHOLD && catalogSize <= EMPLOYEE_SELECTION_CATALOG_CHAR_LIMIT) return catalog
+    try {
+      const text = await complete({
+        systemPrompt: buildEmployeeSelectionPrompt(catalog),
+        prompt: `用户需求：${requirement.slice(0, 8_000)}`,
+        outputMode: 'json',
+        signal,
+        ...(model === undefined ? {} : { model }),
+      })
+      const raw = extractJsonDocument(text)
+      if (!isUnknownRecord(raw) || !Array.isArray(raw.employeeIds) || raw.employeeIds.some((id) => typeof id !== 'string')) throw new Error('员工筛选结果格式无效')
+      const enabledEmployees = new Map(employees.filter((employee) => employee.enabled).map((employee) => [employee.id, employee]))
+      const selected = [...new Set(raw.employeeIds.filter((id): id is string => typeof id === 'string'))]
+        .map((id) => enabledEmployees.get(id))
+        .filter((employee): employee is EmployeeSnapshot => employee !== undefined)
+      return selected.map(employeeFullCatalogEntry)
+    } catch (error) {
+      throwIfAborted(signal)
+      warnings.push(`员工候选筛选失败，将使用完整员工目录：${error instanceof Error ? error.message : String(error)}`)
+      return catalog
+    }
+  }
+
   private createRecord(workflow: WorkflowDefinition, input: WorkflowValue, options: WorkflowRunOptions): WorkflowRunRecord {
     const model = normalizeModelSelection(options.model)
+    const hasManagedConnector = workflow.nodes.some((node) => node.type === 'http' && node.config.connectorId !== undefined)
+    const connectorGrants = options.connectorGrants === undefined
+      ? hasManagedConnector ? [] : undefined
+      : narrowConnectorGrants(workflow.permissionPolicy, options.connectorGrants)
     return {
       id: `run-${randomUUID()}`,
       workflowId: workflow.id,
       workflowRevision: workflow.revision,
+      ...(options.idempotencyKey?.trim() === undefined || options.idempotencyKey.trim() === '' ? {} : { idempotencyKey: options.idempotencyKey.trim() }),
       status: 'queued',
       input: cloneWorkflow(input),
       nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending', elapsedMs: 0 })),
       events: [],
       allowShellFile: options.allowShellFile === true,
       allowCode: options.allowCode === true,
+      ...(connectorGrants === undefined ? {} : { connectorGrants }),
       debug: options.debug === true,
       ...(model === undefined ? {} : { model }),
     }
@@ -389,12 +640,60 @@ export class WorkflowRunService {
     return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision) ?? this.options.workflowStore.get(record.workflowId)
   }
 
-  private async execute(runId: string): Promise<void> {
-    const active: ActiveRun = { cancelled: false, abortController: new AbortController(), sessionIds: new Set(), archivedSessionIds: new Set(), sessionKeys: new Map() }
+  private prepareQueuedRecord(record: WorkflowRunRecord): void {
+    const now = new Date().toISOString()
+    record.status = 'queued'
+    record.queue = {
+      ...(record.queue ?? { enqueuedAt: now, availableAt: now }),
+      availableAt: now,
+    }
+    delete record.queue.lease
+    delete record.queue.cancellationRequestedAt
+  }
+
+  /** Enqueue and journal creation in one persisted snapshot before waking a worker. */
+  private async enqueue(record: WorkflowRunRecord, message: string): Promise<WorkflowRunRecord> {
+    const now = new Date().toISOString()
+    record.queue = { enqueuedAt: now, availableAt: now }
+    record.events.push({ id: randomUUID(), time: now, type: 'run-created', message })
+    const enqueued = await this.options.runStore.enqueue(record)
+    if (enqueued.id === record.id) {
+      for (const listener of this.listeners) listener(cloneWorkflow(enqueued))
+    }
+    return enqueued
+  }
+
+  private async handleWorkerExecutionError(runId: string, error: unknown): Promise<void> {
+    const record = this.options.runStore.get(runId)
+    if (record === undefined || isRetentionStatus(record.status)) return
+    record.status = 'failed'
+    record.error = error instanceof Error ? error.message : String(error)
+    record.completedAt = new Date().toISOString()
+    await this.save(record, 'run-failed', record.error)
+  }
+
+  private async execute(runId: string, expectedLease?: WorkflowRunLease, leaseSignal?: AbortSignal): Promise<void> {
+    const active: ActiveRun = { cancelled: false, leaseLost: false, abortController: new AbortController(), sessionIds: new Set(), archivedSessionIds: new Set(), sessionKeys: new Map() }
+    const onLeaseLost = (): void => {
+      active.leaseLost = true
+      active.pauseRequested = true
+      active.abortController.abort()
+      void this.cancelInternalSessions(active)
+    }
+    if (leaseSignal?.aborted === true) onLeaseLost()
+    else leaseSignal?.addEventListener('abort', onLeaseLost, { once: true })
     this.active.set(runId, active)
     try {
       const record = this.options.runStore.get(runId)
-      if (record === undefined) return
+      if (record === undefined || active.leaseLost) return
+      if (expectedLease !== undefined && !sameLease(record.queue?.lease, expectedLease)) return
+      if (record.queue?.cancellationRequestedAt !== undefined) {
+        record.status = 'cancelled'
+        record.error = '用户取消了运行'
+        record.completedAt = new Date().toISOString()
+        await this.save(record, 'run-cancelled', record.error)
+        return
+      }
       const workflow = this.workflowForRecord(record)
       if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
       assertValidWorkflow(workflow, '运行工作流')
@@ -423,7 +722,7 @@ export class WorkflowRunService {
       // it must not also be scheduled as an ordinary topological node.
       const loopBodyNodeIds = new Set(workflow.nodes.filter((node) => node.type === 'loop').flatMap((node) => workflowLoopBodyNodeIds(workflow, node.id)))
       const pending = new Set(order.filter((nodeId) => stateMap.get(nodeId)?.status === 'pending' && !loopBodyNodeIds.has(nodeId)))
-      while (pending.size > 0 && !active.cancelled) {
+      while (pending.size > 0 && !active.cancelled && !active.leaseLost) {
         const ready = order.flatMap((nodeId) => {
           if (!pending.has(nodeId)) return []
           if (stateMap.get(nodeId)?.status !== 'pending') {
@@ -460,6 +759,7 @@ export class WorkflowRunService {
         if (outcomes.some((outcome) => outcome === 'waiting-approval' || outcome === 'stopped')) return
       }
 
+      if (active.leaseLost) return
       if (active.cancelled) {
         record.status = active.pauseRequested ? 'paused' : 'cancelled'
         record.error = active.pauseRequested ? '应用正在切换工作区，运行已暂停。' : '用户取消了运行'
@@ -482,6 +782,7 @@ export class WorkflowRunService {
       await this.save(record, active.cancelled ? 'run-cancelled' : 'run-completed', active.cancelled ? '用户取消了运行' : '运行完成')
       await this.options.workflowStore.markLastRun(workflow.id, runId)
     } catch (error) {
+      if (active.leaseLost) return
       const record = this.options.runStore.get(runId)
       if (record === undefined) return
       record.status = 'failed'
@@ -489,6 +790,7 @@ export class WorkflowRunService {
       record.completedAt = new Date().toISOString()
       await this.save(record, 'run-failed', record.error)
     } finally {
+      leaseSignal?.removeEventListener('abort', onLeaseLost)
       await this.archiveInternalSessions(runId, active).catch(() => undefined)
       this.active.delete(runId)
     }
@@ -513,17 +815,23 @@ export class WorkflowRunService {
     try {
       const previous = this.resolveNodeInput(node, incoming, outputs, record.input)
       state.input = cloneWorkflow(previous)
-      const output = node.type === 'loop'
-        ? await this.executeLoopNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record, workflow, nodeMap, stateMap, outputs)
-        : await this.executeNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record)
+      const output = await this.executeNodeWithRetry(
+        node, state, previous, record, active, workflow, nodeMap, stateMap, outputs,
+      )
+      if (active.leaseLost) return 'stopped'
       state.status = 'completed'
+      state.error = undefined
+      state.nextAttemptAt = undefined
       state.output = cloneWorkflow(output)
       state.completedAt = new Date().toISOString()
       state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
       outputs.set(node.id, output)
+      this.registerCompensation(node, record)
       await this.save(record, 'node-completed', `节点完成：${node.label}`, node.id)
       return 'completed'
     } catch (error) {
+      if (active.leaseLost) return 'stopped'
+      if (error instanceof WorkflowRetryScheduled) return 'stopped'
       if (error instanceof WorkflowApprovalRequired) {
         state.status = 'pending'
         state.startedAt = undefined
@@ -535,6 +843,32 @@ export class WorkflowRunService {
         await this.save(record, 'approval-requested', error.message, node.id)
         return 'waiting-approval'
       }
+      if (error instanceof WorkflowAmbiguousEffectError) {
+        state.status = 'pending'
+        state.effectState = 'unknown'
+        state.error = error.message
+        state.completedAt = new Date().toISOString()
+        state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
+        record.status = 'paused'
+        record.error = error.message
+        record.completedAt = new Date().toISOString()
+        await this.save(record, 'run-paused', error.message, node.id)
+        return 'stopped'
+      }
+      if (state.effectState === 'prepared' || state.effectState === 'dispatched' || state.effectState === 'confirmed') {
+        state.effectState = 'unknown'
+        state.status = active.cancelled ? 'cancelled' : 'pending'
+        state.error = error instanceof Error ? error.message : String(error)
+        state.completedAt = new Date().toISOString()
+        state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
+        record.status = active.cancelled ? 'cancelled' : 'paused'
+        record.error = active.cancelled
+          ? `运行已取消，但节点“${node.label}”的外部副作用状态未知。`
+          : `节点“${node.label}”的外部副作用状态未知，已暂停以避免重复执行。`
+        record.completedAt = new Date().toISOString()
+        await this.save(record, active.cancelled ? 'run-cancelled' : 'run-paused', record.error, node.id)
+        return 'stopped'
+      }
       state.status = active.pauseRequested ? 'pending' : active.cancelled ? 'cancelled' : 'failed'
       state.error = error instanceof Error ? error.message : String(error)
       state.completedAt = new Date().toISOString()
@@ -545,6 +879,71 @@ export class WorkflowRunService {
       await this.save(record, active.pauseRequested ? 'run-paused' : active.cancelled ? 'run-cancelled' : 'node-failed', state.error, node.id)
       return 'stopped'
     }
+  }
+
+  private async executeNodeWithRetry(
+    node: WorkflowNode,
+    state: WorkflowNodeRunState,
+    previous: WorkflowValue,
+    record: WorkflowRunRecord,
+    active: ActiveRun,
+    workflow: WorkflowDefinition,
+    nodeMap: Map<string, WorkflowNode>,
+    stateMap: Map<string, WorkflowNodeRunState>,
+    outputs: Map<string, WorkflowValue>,
+  ): Promise<WorkflowValue> {
+    for (;;) {
+      if (active.cancelled) throw new Error('运行已取消。')
+      state.attempt = (state.attempt ?? 0) + 1
+      state.nextAttemptAt = undefined
+      try {
+        return node.type === 'loop'
+          ? await this.executeLoopNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record, workflow, nodeMap, stateMap, outputs, state)
+          : await this.executeNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record, state)
+      } catch (error) {
+        // A cancellation request always wins over a retry plan. In
+        // particular, an idempotent connector may still be awaiting a
+        // response after its effect was dispatched; replaying it after the
+        // user cancelled would violate the run's cancellation contract.
+        if (active.cancelled || record.queue?.cancellationRequestedAt !== undefined) throw error
+        const plan = planWorkflowRetry(node, state, error)
+        if (plan.decision === 'retry') {
+          state.error = error instanceof Error ? error.message : String(error)
+          state.nextAttemptAt = new Date(Date.now() + plan.delayMs).toISOString()
+          state.status = 'pending'
+          state.startedAt = undefined
+          state.completedAt = undefined
+          record.status = 'queued'
+          record.error = state.error
+          record.queue = {
+            ...(record.queue ?? { enqueuedAt: new Date().toISOString(), availableAt: state.nextAttemptAt }),
+            availableAt: state.nextAttemptAt,
+          }
+          await this.save(record, 'node-retry', `节点失败，将在 ${plan.delayMs}ms 后重试（第 ${plan.nextAttempt} 次）`, node.id)
+          throw new WorkflowRetryScheduled()
+        }
+        if (plan.decision === 'pause') throw new WorkflowAmbiguousEffectError(error)
+        throw error
+      }
+    }
+  }
+
+  private registerCompensation(node: WorkflowNode, record: WorkflowRunRecord): void {
+    if (node.compensation === undefined) return
+    const stack = record.compensationStack ?? (record.compensationStack = [])
+    if (stack.some((entry) => entry.sourceNodeId === node.id && entry.status !== 'failed')) return
+    stack.push({ sourceNodeId: node.id, action: cloneWorkflow(node.compensation), status: 'pending' })
+  }
+
+  private async markEffect(
+    record: WorkflowRunRecord,
+    state: WorkflowNodeRunState | undefined,
+    node: WorkflowNode,
+    phase: 'prepared' | 'dispatched' | 'confirmed',
+  ): Promise<void> {
+    if (state === undefined || !isEffectfulNode(node)) return
+    state.effectState = phase
+    await this.save(record, `node-effect-${phase}`, phase === 'prepared' ? `已准备外部副作用：${node.label}` : phase === 'dispatched' ? `已派发外部副作用：${node.label}` : `已确认外部副作用：${node.label}`, node.id)
   }
 
   /** Execute the node connected to a loop's body port once per input item. */
@@ -560,6 +959,7 @@ export class WorkflowRunService {
     nodeMap: Map<string, WorkflowNode>,
     stateMap: Map<string, WorkflowNodeRunState>,
     outputs: Map<string, WorkflowValue>,
+    ownerState?: WorkflowNodeRunState,
   ): Promise<WorkflowValue> {
     const bodyNodeIds = workflowLoopBodyNodeIds(workflow, node.id)
     const bodyNodes = bodyNodeIds.flatMap((bodyNodeId) => {
@@ -569,7 +969,7 @@ export class WorkflowRunService {
     if (bodyNodes.length === 0) {
       // Legacy loop documents had no body edge and are still executable while
       // users migrate them to the structural form.
-      return this.executeNode(node, input, previous, allowShellFile, allowCode, active, record)
+      return this.executeNode(node, input, previous, allowShellFile, allowCode, active, record, ownerState)
     }
 
     const loopInput = this.primaryNodeValue(node, previous)
@@ -604,7 +1004,7 @@ export class WorkflowRunService {
         }
         try {
           const bodyInput = this.resolveLoopBodyInput(bodyNode, current, node.id, iterationOutputs)
-          const output = await this.executeNode(bodyNode, input, bodyInput, allowShellFile, allowCode, active, record)
+          const output = await this.executeNode(bodyNode, input, bodyInput, allowShellFile, allowCode, active, record, bodyState)
           current = cloneWorkflow(output)
           iterationOutputs.set(bodyNode.id, output)
           if (bodyState !== undefined) {
@@ -697,6 +1097,7 @@ export class WorkflowRunService {
     allowCode: boolean,
     active: ActiveRun,
     record: WorkflowRunRecord,
+    state?: WorkflowNodeRunState,
   ): Promise<WorkflowValue> {
     switch (node.type) {
       case 'input': {
@@ -724,20 +1125,39 @@ export class WorkflowRunService {
       case 'sub-workflow': {
         if (this.options.executeSubWorkflow === undefined) throw new Error('子工作流执行器不可用。')
         const childInput = node.config.inputMapping === undefined ? this.primaryNodeValue(node, previous) : resolveWorkflowTemplateValue(node.config.inputMapping, input, previous)
-        return this.options.executeSubWorkflow(node.config.workflowId, childInput, node.config.waitForCompletion !== false, node.config.version, { allowShellFile, allowCode, ...(record.model === undefined ? {} : { model: record.model }) })
+        await this.markEffect(record, state, node, 'prepared')
+        await this.markEffect(record, state, node, 'dispatched')
+        const childOutput = await this.options.executeSubWorkflow(node.config.workflowId, childInput, node.config.waitForCompletion !== false, node.config.version, { allowShellFile, allowCode, connectorGrants: record.connectorGrants, ...(record.model === undefined ? {} : { model: record.model }) })
+        await this.markEffect(record, state, node, 'confirmed')
+        return childOutput
       }
       case 'employee': {
         const employee = this.options.resolveEmployee(node.config.employeeId)
         if (employee === undefined) throw new Error(`Employee "${node.config.employeeId}" was not found`)
         if (!employee.enabled) throw new Error(`Employee "${node.config.employeeId}" is disabled`)
         const sessionId = await this.getInternalSession(record, active, 'employee', node.id, node.config.employeeId)
-        return this.adapter.executeEmployeeInSession(sessionId, node, employee, input, previous)
+        await this.markEffect(record, state, node, 'prepared')
+        await this.markEffect(record, state, node, 'dispatched')
+        const employeeOutput = await this.adapter.executeEmployeeInSession(sessionId, node, employee, input, previous)
+        await this.markEffect(record, state, node, 'confirmed')
+        return employeeOutput
       }
       case 'skill': {
         const sessionId = await this.getInternalSession(record, active, 'skill', node.id)
-        return this.adapter.executeSkillInSession(sessionId, node, input, previous)
+        await this.markEffect(record, state, node, 'prepared')
+        await this.markEffect(record, state, node, 'dispatched')
+        const skillOutput = await this.adapter.executeSkillInSession(sessionId, node, input, previous)
+        await this.markEffect(record, state, node, 'confirmed')
+        return skillOutput
       }
-      case 'mcp': return this.mcpClient.call(node.config.tool, resolveMcpArguments(node.config.arguments ?? {}, input, previous))
+      case 'mcp': {
+        const argumentsValue = resolveMcpArguments(node.config.arguments ?? {}, input, previous)
+        await this.markEffect(record, state, node, 'prepared')
+        await this.markEffect(record, state, node, 'dispatched')
+        const mcpOutput = await this.mcpClient.call(node.config.tool, argumentsValue)
+        await this.markEffect(record, state, node, 'confirmed')
+        return mcpOutput
+      }
       case 'parallel': return Promise.all(node.config.instructions.map((instruction) => this.executeLightweight(
         { id: node.id, label: node.label, type: node.type }, instruction, input, previous, undefined, 'text', active.abortController.signal, record.model,
       )))
@@ -812,14 +1232,74 @@ export class WorkflowRunService {
       }
       case 'shell':
         if (!allowShellFile) throw new Error('Shell/File 节点需要运行时显式授权')
-        return runShell(node.config.command, node.config.args.map((argument) => interpolateNodeTemplate(argument, previous)), resolveWorkspacePath(this.options.workflowRoot, node.config.cwd ?? '.'), node.config.timeoutMs ?? 120_000)
+        {
+          const shellCwd = resolveWorkspacePath(this.options.workflowRoot, node.config.cwd ?? '.')
+          await this.markEffect(record, state, node, 'prepared')
+          await this.markEffect(record, state, node, 'dispatched')
+          const shellOutput = await runShell(node.config.command, node.config.args.map((argument) => interpolateNodeTemplate(argument, previous)), shellCwd, node.config.timeoutMs ?? 120_000, active.abortController.signal)
+          await this.markEffect(record, state, node, 'confirmed')
+          return shellOutput
+        }
       case 'file':
         if (!allowShellFile) throw new Error('Shell/File 节点需要运行时显式授权')
-        return runFile(this.options.workflowRoot, node.config.operation, node.config.path, node.config.content, previous, node.config.recursive === true)
-      case 'http': return runHttp(node.config, input, previous, active.abortController.signal)
+        {
+          if (node.config.operation !== 'write') return runFile(this.options.workflowRoot, node.config.operation, node.config.path, node.config.content, previous, node.config.recursive === true)
+          resolveWorkspacePath(this.options.workflowRoot, node.config.path)
+          await this.markEffect(record, state, node, 'prepared')
+          await this.markEffect(record, state, node, 'dispatched')
+          const fileOutput = await runFile(this.options.workflowRoot, node.config.operation, node.config.path, node.config.content, previous, node.config.recursive === true)
+          await this.markEffect(record, state, node, 'confirmed')
+          return fileOutput
+        }
+      case 'http':
+        if (node.config.connectorId === undefined && this.options.allowLegacyHttp === false) throw new Error('HTTP 节点必须绑定托管连接器。')
+        if (node.config.connectorId !== undefined && this.options.connectorService?.authorize !== undefined) {
+          await this.options.connectorService.authorize(this.buildManagedConnectorRequest(node, record), input, previous)
+        }
+        await this.markEffect(record, state, node, 'prepared')
+        await this.markEffect(record, state, node, 'dispatched')
+        {
+          const httpOutput = node.config.connectorId === undefined
+            ? await runHttp(node.config, input, previous, active.abortController.signal)
+            : await this.executeManagedConnector(node, input, previous, record, active.abortController.signal)
+          await this.markEffect(record, state, node, 'confirmed')
+          return httpOutput
+        }
       case 'code':
         if (!allowCode) throw new Error('代码节点需要运行时显式授权')
-        return runCode(node.config.language, node.config.code, input, previous, this.options.workflowRoot, node.config.timeoutMs ?? 120_000, active.abortController.signal, this.options.nodeCommandPath)
+        await this.markEffect(record, state, node, 'prepared')
+        await this.markEffect(record, state, node, 'dispatched')
+        {
+          const codeOutput = await runCode(node.config.language, node.config.code, input, previous, this.options.workflowRoot, node.config.timeoutMs ?? 120_000, active.abortController.signal, this.options.nodeCommandPath)
+          await this.markEffect(record, state, node, 'confirmed')
+          return codeOutput
+        }
+    }
+  }
+
+  private async executeManagedConnector(node: Extract<WorkflowNode, { type: 'http' }>, input: WorkflowValue, previous: WorkflowValue, record: WorkflowRunRecord, signal: AbortSignal): Promise<WorkflowValue> {
+    if (this.options.connectorService === undefined) throw new Error('托管连接器服务不可用。')
+    const response = await this.options.connectorService.request(this.buildManagedConnectorRequest(node, record), input, previous, signal)
+    return response as unknown as WorkflowValue
+  }
+
+  private buildManagedConnectorRequest(node: Extract<WorkflowNode, { type: 'http' }>, record: WorkflowRunRecord): WorkflowConnectorRequest {
+    const config = node.config
+    if (config.connectorId === undefined || config.connectorPath === undefined) throw new Error('托管 HTTP 节点缺少连接器路径。')
+    return {
+      connectorId: config.connectorId,
+      connectorPath: config.connectorPath,
+      method: config.method,
+      headers: config.headers,
+      query: config.query,
+      body: config.body,
+      responseMode: config.responseMode,
+      timeoutMs: config.timeoutMs,
+      // A stable run/node key makes retries and lease recovery deduplicable at
+      // the remote API when it supports Idempotency-Key.
+      ...(config.method === 'GET' ? {} : { idempotencyKey: `${record.id}:${node.id}` }),
+      workflowPolicy: this.workflowForRecord(record)?.permissionPolicy,
+      runGrant: record.connectorGrants,
     }
   }
 
@@ -1024,6 +1504,9 @@ export class WorkflowRunService {
   }
 
   private async save(record: WorkflowRunRecord, type: WorkflowRunEvent['type'], message: string, nodeId?: string): Promise<void> {
+    // WorkflowRunStore owns lease removal and conflict detection. Keeping the
+    // caller's lease on this snapshot lets the store reject a stale writer if
+    // another Worker reclaimed the run between two checkpoint writes.
     if (isRetentionStatus(record.status) && record.completedAt !== undefined && record.retentionExpiresAt === undefined) {
       record.retentionExpiresAt = retentionExpiry(record)
     }
@@ -1040,8 +1523,32 @@ class WorkflowApprovalRequired extends Error {
   }
 }
 
+class WorkflowAmbiguousEffectError extends Error {
+  constructor(cause: unknown) {
+    super(`节点执行结果不确定，已暂停以避免重复副作用：${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = 'WorkflowAmbiguousEffectError'
+  }
+}
+
+class WorkflowRetryScheduled extends Error {
+  constructor() {
+    super('节点已排队等待重试。')
+    this.name = 'WorkflowRetryScheduled'
+  }
+}
+
 function isTerminalNodeState(status: WorkflowNodeRunState['status'] | undefined): boolean {
   return status === 'completed' || status === 'skipped' || status === 'failed' || status === 'cancelled'
+}
+
+function sameLease(left: WorkflowRunLease | undefined, right: WorkflowRunLease): boolean {
+  return left?.ownerId === right.ownerId && left.claimedAt === right.claimedAt && left.expiresAt === right.expiresAt
+}
+
+function isEffectfulNode(node: WorkflowNode): boolean {
+  if (node.type === 'file') return node.config.operation === 'write'
+  if (node.type === 'http') return node.config.method !== 'GET'
+  return node.type === 'mcp' || node.type === 'shell' || node.type === 'code' || node.type === 'employee' || node.type === 'skill' || node.type === 'sub-workflow'
 }
 
 /**
@@ -1064,8 +1571,27 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Intersect caller-supplied one-run grants with the saved workflow policy. */
+function narrowConnectorGrants(
+  policy: WorkflowDefinition['permissionPolicy'],
+  grants: NonNullable<WorkflowRunOptions['connectorGrants']>,
+): NonNullable<WorkflowRunRecord['connectorGrants']> {
+  const permissions = new Map((policy?.connectors ?? []).map((permission) => [permission.connectorId.trim(), new Set(permission.operations)]))
+  const narrowed = new Map<string, Set<'read' | 'write'>>()
+  for (const grant of grants) {
+    const connectorId = grant.connectorId.trim()
+    const allowed = permissions.get(connectorId)
+    if (allowed === undefined) continue
+    const operations = narrowed.get(connectorId) ?? new Set<'read' | 'write'>()
+    for (const operation of grant.operations) if (allowed.has(operation)) operations.add(operation)
+    if (operations.size > 0) narrowed.set(connectorId, operations)
+  }
+  return [...narrowed.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
+}
+
 interface EmployeeCatalogEntry {
   id: string
+  displayName: string
   name: string
   role: string
   description: string
@@ -1075,9 +1601,19 @@ interface EmployeeCatalogEntry {
   enabled: boolean
 }
 
+interface EmployeeFullCatalogEntry extends EmployeeCatalogEntry {
+  systemPrompt: string
+  operatingGuidelines: string[]
+  qualityStandards: string[]
+}
+
+const EMPLOYEE_SELECTION_THRESHOLD = 12
+const EMPLOYEE_SELECTION_CATALOG_CHAR_LIMIT = 12_000
+
 function employeeCatalogEntry(employee: EmployeeSnapshot): EmployeeCatalogEntry {
   return {
     id: employee.id,
+    displayName: employeeDisplayName(employee),
     name: employee.name,
     role: employee.role,
     description: employee.description,
@@ -1088,16 +1624,37 @@ function employeeCatalogEntry(employee: EmployeeSnapshot): EmployeeCatalogEntry 
   }
 }
 
+function employeeFullCatalogEntry(employee: EmployeeSnapshot): EmployeeFullCatalogEntry {
+  return {
+    ...employeeCatalogEntry(employee),
+    systemPrompt: employee.systemPrompt,
+    operatingGuidelines: [...employee.operatingGuidelines],
+    qualityStandards: [...employee.qualityStandards],
+  }
+}
+
+function buildEmployeeSelectionPrompt(catalog: EmployeeCatalogEntry[]): string {
+  return [
+    '你是 EzDSH 的 Workflow 员工候选筛选助手。根据用户需求识别必须覆盖的职责/角色，并从员工目录中召回所有可能相关的候选员工。',
+    '只输出 JSON，不要 Markdown 代码围栏或解释。格式必须是：{"employeeIds":["真实员工ID"],"reason":"选择理由","missingRoles":["缺少但需要的职责"]}。',
+    '只能返回目录中 enabled 为 true 的真实 employeeId；目录中的 displayName 是个人名字，role 是岗位职责，筛选必须依据岗位职责、边界和能力，而不是个人名字。不要创建员工，不要返回员工名称。',
+    '筛选必须按职责/角色覆盖，而不是按全局人数截断：每一个刚需角色都至少保留一名候选；同一角色下代表不同策略、风格、方法或业务边界的员工都应保留，除非用户明确要求只选择其中一个。不要使用固定的 Top-N，也不要为了凑数排除候选。',
+    '如果没有员工适合当前需求，employeeIds 返回空数组，并在 missingRoles 中说明缺少的职责。',
+    `可用员工目录：${JSON.stringify(catalog)}`,
+  ].join('\n')
+}
+
 function buildEmployeePlanPrompt(catalog: EmployeeCatalogEntry[], locale: AppLocale): string {
   const languageInstruction = locale === 'zh'
-    ? '所有自然语言字段必须使用简体中文，包括 name、role、description、businessBoundary、systemPrompt、operatingGuidelines 和 qualityStandards。'
-    : 'All natural-language fields must be written in English, including name, role, description, businessBoundary, systemPrompt, operatingGuidelines, and qualityStandards.'
+    ? '所有自然语言字段必须使用简体中文。新员工的 displayName 是个人名字（中文名为主，可允许少量自然英文名），name 是兼容字段中的简短岗位名，role 是正式岗位；其余字段使用简体中文。'
+    : 'All natural-language fields must be written in English. A new employee displayName must be a natural English personal name, name is a legacy short role label, role is the formal job title, and all other natural-language fields must be English.'
   return [
     '你是 EZDSH 的 Workflow 员工规划助手。根据用户对工作流的描述，判断需要哪些专业员工（AI Employee）参与，并输出需要新建的员工档案。',
     `已有员工目录（优先复用，不要重复创建职责相同的员工）：${JSON.stringify(catalog)}`,
     '只输出 JSON，不要 Markdown 代码围栏，不要解释。',
-    'JSON 必须是一个对象：{"employees": [ { "name": "...", "role": "...", "description": "...", "businessBoundary": "...", "systemPrompt": "...", "operatingGuidelines": ["..."], "qualityStandards": ["..."], "capabilities": ["research"], "skillIds": [] } ]}',
+    'JSON 必须是一个对象：{"employees": [ { "displayName": "个人名字", "name": "简短岗位名", "role": "正式岗位", "description": "...", "businessBoundary": "...", "systemPrompt": "...", "operatingGuidelines": ["..."], "qualityStandards": ["..."], "capabilities": ["research"], "skillIds": [] } ]}',
     '只有确实需要新建的员工才放进 employees；如果已有目录中的员工能承担全部职责，输出 {"employees": []}。',
+    '同一次生成的新员工 displayName 应彼此不同，并尽量不要与已有员工的个人名字重复；displayName 不能直接使用岗位名称。',
     'capabilities 只能使用 research、copywriting、image-generation、file-read、file-write、workflow；skillIds 必须是技能 ID 字符串数组。',
     '不要输出 id、version、schemaVersion、createdAt、updatedAt 或 builtIn；不要生成 API Key、密码、Token、任意代码或危险命令。',
     languageInstruction,
@@ -1108,13 +1665,17 @@ function employeeSpecToCreateInput(value: unknown): EmployeeCreateInput | undefi
   if (!isUnknownRecord(value)) return undefined
   const readString = (key: string): string => (typeof value[key] === 'string' ? (value[key] as string).trim() : '')
   const readStringArray = (key: string): string[] => Array.isArray(value[key]) ? (value[key] as unknown[]).filter((item): item is string => typeof item === 'string') : []
-  const name = readString('name')
+  const requestedName = readString('name')
+  const requestedDisplayName = readString('displayName')
   const role = readString('role')
   const systemPrompt = readString('systemPrompt')
-  if (name === '' || role === '' || systemPrompt === '') return undefined
+  const name = requestedName || role
+  const displayName = requestedDisplayName || name
+  if (name === '' || displayName === '' || role === '' || systemPrompt === '') return undefined
   const description = readString('description')
   const capabilities = readStringArray('capabilities').filter((capability): capability is EmployeeCapability => (EMPLOYEE_CAPABILITIES as readonly string[]).includes(capability))
   return {
+    displayName,
     name,
     role,
     description,
@@ -1144,7 +1705,7 @@ function findGeneratedEmployee(node: Extract<WorkflowNode, { type: 'employee' }>
   if (exact !== undefined) return exact
   const terms = [node.label, requestedId].map(comparableEmployeeText).filter((value) => value.length >= 2)
   return catalog.find((employee) => employee.enabled && terms.some((term) => {
-    const candidates = [employee.id, employee.name, employee.role].map(comparableEmployeeText)
+    const candidates = [employee.id, employee.displayName, employee.name, employee.role].map(comparableEmployeeText)
     return candidates.some((candidate) => candidate === term || candidate.includes(term) || term.includes(candidate))
   }))
 }
@@ -1199,6 +1760,11 @@ function repairGeneratedNode(node: WorkflowNode, catalog: EmployeeCatalogEntry[]
       return { ...node, type: 'ai-task', config: { instruction: generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
     }
     case 'http': {
+      if (node.config.connectorId !== undefined) {
+        if (node.config.connectorId.trim() !== '' && node.config.connectorPath !== undefined && node.config.connectorPath.trim() !== '') return node
+        warnings.push(`节点「${node.label}」包含无效托管连接器配置，已安全改为智能处理节点。`)
+        return { ...node, type: 'ai-task', config: { instruction: generatedInstruction(node.label), mode: 'single', skillIds: [], outputMode: 'text' } }
+      }
       try {
         const url = new URL(node.config.url)
         if ((url.protocol === 'http:' || url.protocol === 'https:') && ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(node.config.method)) return node
@@ -1301,13 +1867,13 @@ function buildWorkflowGenerationPrompt(catalog: EmployeeCatalogEntry[], workflow
     '一个节点可以绑定多个上游，一个上游也可以被多个下游绑定。多输入默认是 AND：下游等待所有依赖节点进入终态；没有“任意一个完成即可继续”的 any/or/race/first 语义。失败不是成功值。需要择一路径时使用 condition，不要省略绑定或伪造 OR 汇聚。普通 fan-out 用多个画布节点；parallel 只用于同一节点内并行执行多条相似指令并返回数组。',
     '输出变量用于声明 JSON 输出字段，例如 [{"name":"summary","description":"摘要"}]；每个节点的完整输出都隐含为 result，不要重复声明 result。需要字段级下游引用时使用 outputMode: json、声明 outputVariables，并在 instruction 中要求严格只输出 JSON。',
     '节点类型选择：ai-task 是当前工作流的一次轻量内联推理；当 outputMode=json 时可直接声明严格 outputSchema，校验失败会自动重试，简单场景无需额外节点；structured-extract 是显式的文本到 JSON Schema 提取步骤，支持 maxRetries；employee 是可复用、有业务边界和质量标准的专业岗位；skill 是明确技能；mcp 是明确工具调用；transform 是确定性转换；text-merge 是确定性的多文本合并节点，使用 config.template 和多个 inputBindings 中的 {{变量}} 重组字符串；object-builder 用常量、变量和嵌套模板构造 JSON；list-operator 用于筛选、取字段、映射、排序、去重、截取、分组和聚合数组；merge 用于 append、object-merge、join、zip 或 first-non-null 汇聚多个上游；condition 是二路 If true/false 判断；switch 是按输入值精确匹配多个 case 的多路判断，并从 switch:<caseId> 或 default 端口继续；wait-input 的 approval 预设是人工同意/拒绝（旧 approval 仅兼容历史定义）；sub-workflow 用于选择另一个工作流、映射 inputMapping、等待并读取输出，可用 version 固定修订号或 latest 跟随最新版；loop 是不调用模型、把数组逐项传入下方线性循环体子流程并从右侧收集链末端结果的有限遍历；sleep 是固定等待或每次执行重新随机等待指定范围后原样传递输入；output 是固定的最终结果节点。output 也要声明 inputBindings：变量模式会转发一个或多个绑定值；文本模式使用 config.text 模板，并可在文本中使用已绑定的 {{变量}} 或 {{变量.字段}} 重组多个值。http/code/shell/file 只在用户明确要求时使用。',
-    'employee 节点必须引用目录中真实存在且启用的 employeeId，并填写非空 instruction。员工是可复用的专业岗位定义，不是一次性任务或运行会话。不要把员工名称当 ID，也不要猜不存在的员工或技能。没有合适员工时用 ai-task；只有请求允许创建员工并且已经得到真实 employeeId 时才引用新员工。员工长期职责放在员工档案，当前一次性任务放在节点 instruction。',
+    'employee 节点必须引用目录中真实存在且启用的 employeeId，并填写非空 instruction。员工档案包含个人名字 displayName、正式岗位 role 和兼容字段 name；筛选和节点职责描述必须依据 role、业务边界和能力，不要把个人名字当作岗位或 ID。员工是可复用的专业岗位定义，不是一次性任务或运行会话。不要猜不存在的员工或技能。没有合适员工时用 ai-task；只有请求允许创建员工并且已经得到真实 employeeId 时才引用新员工。员工长期职责放在员工档案，当前一次性任务放在节点 instruction。',
     'condition.operator 只能是 truthy、equals、not-equals、contains、greater-than、less-than。每个 condition 最多两条下游路径，必须分别使用 sourcePort: "true" 和 sourcePort: "false"；三种以上情况用嵌套 condition。true/false 汇入共同下游是允许的：未选分支会 skipped，但不要把两个互斥分支结果都设为 required；必要时统一输出结构，或使用 required: false 与 defaultValue。',
     'ai-task.config 必须包含非空 instruction、mode（single 或 autonomous）、skillIds 数组和 outputMode（text 或 json）；json 模式可选 outputSchema（type、properties、required、items、enum、additionalProperties），模型输出必须严格符合 schema。structured-extract.config 必须包含 schema，可选 maxRetries（0 到 5），它是显式的文本到 JSON 提取步骤。employee.config 必须包含真实 employeeId、非空 instruction 和 outputMode。parallel.instructions 至少一条非空字符串；loop 需要一条 sourcePort 为 loop-body 的下方循环体首节点出边、一条 sourcePort 为 loop-next 的右侧后续出边，循环体后续节点只能串成一条线性链，不能分支或连到循环外，maxIterations 在 1 到 100；sleep.config.mode 可为 fixed 或 random，fixed 使用 durationMs，random 使用 minDurationMs 到 maxDurationMs 且每次执行重新取整数；所有时长必须是 0 到 600000 的整数且最小值不能大于最大值；transform.template 只能是 identity、json、extract-text、prepend、append、replace、text，text 模式直接用 config.text 生成新文本，prepend/append/replace 的文本配置可使用已绑定的 {{变量}}；replace 使用 find 和 replacement；text-merge.template 可以是包含 {{变量}} 的文本，template 为空时使用 separator（默认换行）按 inputBindings 顺序合并；file.operation 可为 read、write、list、stat、extract-text，路径必须是 Workflow 工作目录内的相对路径。',
     '需要 HTTP API 时使用 http：method 只能 GET、POST、PUT、PATCH、DELETE，url 只能 http/https，headers 必须是对象，responseMode 只能 auto/json/text，可选 query、body、timeoutMs。代码使用 code：language 只能 nodejs/python3，code 非空；Node.js 使用 input/previous 并 return，Python3 使用 input/previous 并给 result 赋值。code、shell、file 运行前可能需要用户显式授权。',
     '只有用户明确提供 MCP 工具名时才生成 mcp，否则使用 ai-task 或 employee；不要生成空 tool。不要生成 API Key、密码、Token、任意危险命令、eval、反向 Shell、破坏性删除逻辑。不能把会话 ID、运行 ID或运行结果写入工作流定义。',
     '生成流程必须先识别最终结果和启动输入，再拆分职责，设计每个节点的输入绑定与输出字段，之后画控制流和分支，最后校验所有 ID、字段、依赖和无环关系。',
-    `可用专业员工目录（只能引用其中的 employeeId）：${JSON.stringify(catalog)}`,
+    `可用专业员工目录（只能引用其中的 employeeId；目录可能已经过候选筛选，优先重新核对业务边界和质量标准，不要强行使用不匹配的员工）：${JSON.stringify(catalog)}`,
     workflowDocumentationContext(workflowAiDocumentation),
   ].join('\n')
 }
@@ -1322,14 +1888,15 @@ function buildWorkflowModificationPrompt(workflowAiDocumentation?: string): stri
     '所有员工节点必须引用现有员工目录中的真实 employeeId；不要凭空创建员工、技能、MCP 工具或模型。不要把运行结果、会话 ID、API Key、密码或 Token 写入工作流定义。',
     '修改后必须保留且只能保留一个 input 开始节点和一个 output 结束节点；图必须是无环图；每个节点都必须包含合法 type、label、config、position，并正确维护输入绑定和连线引用。',
     '先理解用户要解决的问题，再最小范围修改；如果需求存在多种实现，优先选择用户能在画布和变量面板中直接审阅的实现。',
-    workflowDocumentationContext(workflowAiDocumentation),
+    workflowDocumentationContext(workflowAiDocumentation, 60_000),
   ].join('\n')
 }
 
-function workflowDocumentationContext(documentation?: string): string {
+function workflowDocumentationContext(documentation?: string, maxCharacters?: number): string {
   const text = documentation?.trim()
   if (text === undefined || text === '') return '当前未能读取本地 Workflow 文档；以上运行时规则是最低约束，不能放宽。'
-  return ['以下是随 EzDSH 提供的 Workflow 文档原文，必须把它作为 Schema、变量、执行语义和安全边界的权威约束：', '---', text.slice(0, 60_000), '---'].join('\n')
+  const included = maxCharacters === undefined ? text : text.slice(0, maxCharacters)
+  return ['以下是随 EzDSH 提供的 Workflow 文档原文，必须把它作为 Schema、变量、执行语义和安全边界的权威约束：', '---', included, '---'].join('\n')
 }
 
 function describeWorkflowChanges(before: WorkflowDefinition, after: WorkflowDefinition): WorkflowModificationChange[] {
@@ -1664,6 +2231,7 @@ function extractDocxText(filePath: string): Promise<string> {
 const WORKFLOW_HTTP_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
 async function runHttp(config: HttpNodeConfig, input: WorkflowValue, previous: WorkflowValue, parentSignal: AbortSignal): Promise<WorkflowValue> {
+  if (parentSignal.aborted) throw new Error('HTTP 请求已取消。')
   const renderedUrl = resolveWorkflowTemplate(config.url, input, previous)
   let url: URL
   try {
@@ -1688,7 +2256,8 @@ async function runHttp(config: HttpNodeConfig, input: WorkflowValue, previous: W
   }
   const controller = new AbortController()
   const onAbort = (): void => controller.abort()
-  parentSignal.addEventListener('abort', onAbort, { once: true })
+  if (parentSignal.aborted) controller.abort()
+  else parentSignal.addEventListener('abort', onAbort, { once: true })
   const timeout = setTimeout(() => controller.abort(), clampWorkflowTimeout(config.timeoutMs))
   try {
     let response: Response
@@ -1797,28 +2366,39 @@ function resolvePythonCommand(): string {
 
 function runCodeProcess(command: string, args: string[], cwd: string, payload: string, timeoutMs: number, parentSignal: AbortSignal, extraEnvironment?: NodeJS.ProcessEnv): Promise<WorkflowValue> {
   return new Promise((resolvePromise, reject) => {
+    if (parentSignal.aborted) {
+      reject(new Error('代码节点已取消。'))
+      return
+    }
     const child = spawn(command, args, { cwd, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...extraEnvironment } })
     let stdout = ''
     let stderr = ''
     let timedOut = false
-    const onAbort = (): void => { child.kill(); reject(new Error('代码节点已取消。')) }
-    parentSignal.addEventListener('abort', onAbort, { once: true })
-    const timer = setTimeout(() => { timedOut = true; child.kill(); reject(new Error('代码节点超时。')) }, timeoutMs)
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); if (Buffer.byteLength(stdout, 'utf8') > WORKFLOW_HTTP_MAX_RESPONSE_BYTES) child.kill() })
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-    child.once('error', (error) => { clearTimeout(timer); parentSignal.removeEventListener('abort', onAbort); reject(error) })
-    child.once('close', (code) => {
+    let settled = false
+    const finish = (error?: Error, value?: WorkflowValue): void => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
       parentSignal.removeEventListener('abort', onAbort)
-      if (timedOut || parentSignal.aborted) return
-      if (code !== 0) { reject(new Error(`代码节点退出码 ${String(code)}：${stderr.trim() || stdout.trim()}`)); return }
+      if (error === undefined) resolvePromise(value ?? null)
+      else reject(error)
+    }
+    const onAbort = (): void => { child.kill(); finish(new Error('代码节点已取消。')) }
+    parentSignal.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => { timedOut = true; child.kill(); finish(new Error('代码节点超时。')) }, timeoutMs)
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); if (Buffer.byteLength(stdout, 'utf8') > WORKFLOW_HTTP_MAX_RESPONSE_BYTES) child.kill() })
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    child.once('error', (error) => finish(error))
+    child.once('close', (code) => {
+      if (settled || timedOut || parentSignal.aborted) return
+      if (code !== 0) { finish(new Error(`代码节点退出码 ${String(code)}：${stderr.trim() || stdout.trim()}`)); return }
       const text = stdout.trim()
-      if (text === '') { resolvePromise(null); return }
+      if (text === '') { finish(undefined, null); return }
       try {
         const value = JSON.parse(text) as unknown
         if (!isWorkflowValue(value)) throw new Error('代码输出不是 JSON-safe 值')
-        resolvePromise(value)
-      } catch { resolvePromise(text) }
+        finish(undefined, value)
+      } catch { finish(undefined, text) }
     })
     child.stdin?.end(payload)
   })
@@ -1850,25 +2430,43 @@ function resolveSleepDuration(config: { durationMs: number; mode?: 'fixed' | 'ra
   return min + Math.floor(Math.random() * (max - min + 1))
 }
 
-function runShell(command: string, args: string[], cwd: string, timeoutMs: number): Promise<WorkflowValue> {
+function runShell(command: string, args: string[], cwd: string, timeoutMs: number, parentSignal: AbortSignal): Promise<WorkflowValue> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd, shell: false, windowsHide: true })
     let stdout = ''
     let stderr = ''
+    let settled = false
+    const finish = (error?: Error, value?: WorkflowValue): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      parentSignal.removeEventListener('abort', onAbort)
+      if (error === undefined) resolvePromise(value ?? null)
+      else reject(error)
+    }
+    const onAbort = (): void => {
+      child.kill()
+      finish(new Error('Shell 节点已取消。'))
+    }
     const timer = setTimeout(() => {
       child.kill()
-      reject(new Error('Shell 节点超时'))
+      finish(new Error('Shell 节点超时'))
     }, Math.max(1_000, Math.min(timeoutMs, 10 * 60 * 1_000)))
     child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
     child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-    child.once('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
+    child.once('error', (error) => finish(error))
     child.once('close', (code) => {
-      clearTimeout(timer)
-      if (code !== 0) reject(new Error(`Shell 退出码 ${String(code)}：${stderr.trim() || stdout.trim()}`))
-      else resolvePromise({ stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 0 })
+      if (code !== 0) finish(new Error(`Shell 退出码 ${String(code)}：${stderr.trim() || stdout.trim()}`))
+      else finish(undefined, { stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 0 })
     })
+    if (parentSignal.aborted) onAbort()
+    else parentSignal.addEventListener('abort', onAbort, { once: true })
   })
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return
+  const error = new Error('AI 任务已取消。')
+  error.name = 'AbortError'
+  throw error
 }

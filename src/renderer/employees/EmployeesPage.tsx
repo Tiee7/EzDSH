@@ -9,7 +9,7 @@ import type {
   EmployeeSnapshot,
   EmployeeUpdateInput,
 } from '../../shared/employees.js'
-import { EMPLOYEE_CAPABILITIES } from '../../shared/employees.js'
+import { EMPLOYEE_CAPABILITIES, employeeDisplayLabel, employeeDisplayName } from '../../shared/employees.js'
 import type { AppCopy } from '../../shared/locale.js'
 import { WandMagicSparklesIcon } from '../icons/WandMagicSparklesIcon.js'
 import './employees.css'
@@ -24,6 +24,8 @@ type EditingId = 'new' | string
 
 interface EmployeeDraft {
   id: string
+  displayName: string
+  /** Legacy short role label retained for old persisted profiles. */
   name: string
   role: string
   description: string
@@ -55,6 +57,7 @@ interface EmployeeExecutionTargetProps {
 
 const EMPTY_DRAFT: EmployeeDraft = {
   id: '',
+  displayName: '',
   name: '',
   role: '',
   description: '',
@@ -81,6 +84,7 @@ function capabilityLabels(copy: AppCopy): Record<EmployeeCapability, string> {
 function draftFromEmployee(employee: EmployeeSnapshot): EmployeeDraft {
   return {
     id: employee.id,
+    displayName: employeeDisplayName(employee),
     name: employee.name,
     role: employee.role,
     description: employee.description,
@@ -99,12 +103,15 @@ function normalizedLines(lines: string[]): string[] {
 }
 
 function draftInput(draft: EmployeeDraft, editingId: EditingId): EmployeeCreateInput | EmployeeUpdateInput | string {
-  if (draft.name.trim() === '') return 'name'
+  if (draft.displayName.trim() === '') return 'displayName'
   if (draft.role.trim() === '') return 'role'
   if (draft.systemPrompt.trim() === '') return 'prompt'
 
   const common = {
-    name: draft.name.trim(),
+    // Keep the legacy field stable for existing profiles; new profiles use the
+    // formal role as the compatibility short name.
+    name: draft.name.trim() || draft.role.trim(),
+    displayName: draft.displayName.trim(),
     role: draft.role.trim(),
     description: draft.description.trim(),
     businessBoundary: draft.businessBoundary.trim() || draft.description.trim(),
@@ -358,6 +365,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
       const generated = await window.EzDSH.employees.generate({ prompt })
       setDraft({
         id: '',
+        displayName: generated.displayName?.trim() || generated.name,
         name: generated.name,
         role: generated.role,
         description: generated.description,
@@ -396,7 +404,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
     }
     const input = draftInput(draft, editingId)
     if (typeof input === 'string') {
-      setError(input === 'name' ? copy.employeesNameRequired : input === 'role' ? copy.employeesRoleRequired : copy.employeesPromptRequired)
+      setError(input === 'displayName' ? copy.employeesNameRequired : input === 'role' ? copy.employeesRoleRequired : copy.employeesPromptRequired)
       return
     }
     setBusy(true)
@@ -432,7 +440,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
   }
 
   const remove = async (employee: EmployeeSnapshot): Promise<void> => {
-    if (!window.confirm(`${copy.employeesDelete}: ${employee.name}?`)) return
+    if (!window.confirm(`${copy.employeesDelete}: ${employeeDisplayLabel(employee)}?`)) return
     setBusy(true)
     setError(undefined)
     try {
@@ -550,7 +558,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
       <div className="employees-panel-header">
         <div>
           <p className="employees-section-kicker">{editingId === 'new' ? copy.employeesAdd : copy.employeesEdit}</p>
-          <h2>{editingId === 'new' ? copy.employeesAdd : draft.name || copy.employeesEdit}</h2>
+          <h2>{editingId === 'new' ? copy.employeesAdd : employeeDisplayLabel({ name: draft.name, displayName: draft.displayName, role: draft.role }) || copy.employeesEdit}</h2>
         </div>
         <div className="employees-actions">
           <button type="button" className="employees-button employees-button-quiet" disabled={busy || generating} onClick={cancelEdit}>{copy.employeesCancel}</button>
@@ -594,7 +602,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
       <div className="employees-form-grid">
         <label>
           <span>{copy.employeesName}</span>
-          <input value={draft.name} onChange={(event) => { setDraftField('name', event.target.value) }} autoFocus />
+          <input value={draft.displayName} onChange={(event) => { setDraftField('displayName', event.target.value) }} autoFocus />
         </label>
         <label>
           <span>{copy.employeesRole}</span>
@@ -653,16 +661,15 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
       <div className="employees-detail-stack">
         <section className="employees-panel employees-profile-panel">
           <div className="employees-profile-header">
-            <div className="employees-avatar employees-avatar-large">{initialOf(selectedEmployee.name)}</div>
+            <div className="employees-avatar employees-avatar-large">{initialOf(employeeDisplayName(selectedEmployee))}</div>
             <div className="employees-profile-copy">
               <div className="employees-title-line">
-                <h2>{selectedEmployee.name}</h2>
+                <h2>{employeeDisplayLabel(selectedEmployee)}</h2>
                 <span className={`employees-status ${selectedEmployee.enabled ? 'employees-status-enabled' : 'employees-status-disabled'}`}>
                   {selectedEmployee.enabled ? copy.employeesEnabled : copy.employeesDisabled}
                 </span>
                 {selectedEmployee.builtIn ? <span className="employees-built-in">{copy.employeesBuiltIn}</span> : null}
               </div>
-              <p className="employees-role">{selectedEmployee.role}</p>
               <p className="employees-description">{selectedEmployee.description || selectedEmployee.systemPrompt}</p>
             </div>
             <div className="employees-actions employees-profile-actions">
@@ -703,7 +710,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
           <div className="employees-dialog-header">
             <div>
               <p className="employees-section-kicker">{copy.employeesAssignTask}</p>
-              <h2 id="employees-task-dialog-title">{selectedEmployee.name}</h2>
+              <h2 id="employees-task-dialog-title">{employeeDisplayLabel(selectedEmployee)}</h2>
               <p>{copy.employeesTaskHint}</p>
             </div>
             <button type="button" className="employees-dialog-close" aria-label={copy.employeesCancel} disabled={activeRunCount > 0} onClick={closeAssignment}>×</button>
@@ -727,7 +734,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
             />
             <label>
               <span>{copy.employeesTask}</span>
-              <textarea rows={5} value={task} onChange={(event) => { setTask(event.target.value) }} placeholder={selectedEmployee.name} disabled={busy || creatingSession || !selectedEmployee.enabled} autoFocus />
+              <textarea rows={5} value={task} onChange={(event) => { setTask(event.target.value) }} placeholder={employeeDisplayLabel(selectedEmployee)} disabled={busy || creatingSession || !selectedEmployee.enabled} autoFocus />
             </label>
             <div className="employees-run-actions">
               <button type="button" className="employees-button employees-button-primary" disabled={busy || creatingSession || contextLoading || unlockingSessionId !== undefined || !selectedEmployee.enabled || selectedProjectId === undefined || selectedSessionId === undefined || sessionLocks.some((lock) => lock.sessionId === selectedSessionId)} onClick={() => { void run() }}>
@@ -771,8 +778,8 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
             <div className="employees-list">
               {employees.map((employee) => (
                 <button type="button" className={`employees-list-item ${selectedId === employee.id ? 'employees-list-item-active' : ''}`} key={employee.id} onClick={() => { setSelectedId(employee.id); setEditingId(undefined); setError(undefined); setRunResult(undefined) }}>
-                  <span className="employees-avatar">{initialOf(employee.name)}</span>
-                  <span className="employees-list-copy"><strong>{employee.name}</strong><small>{employee.role}</small></span>
+                  <span className="employees-avatar">{initialOf(employeeDisplayName(employee))}</span>
+                  <span className="employees-list-copy"><strong>{employeeDisplayLabel(employee)}</strong></span>
                   <span className={`employees-list-dot ${employee.enabled ? 'employees-list-dot-enabled' : ''}`} aria-label={employee.enabled ? copy.employeesEnabled : copy.employeesDisabled} />
                 </button>
               ))}

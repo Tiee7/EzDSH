@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { cloneWorkflow, type WorkflowGenerationRecord } from '../../shared/workflow.js'
+import { WORKFLOW_GENERATION_PHASES, cloneWorkflow, type WorkflowGenerationCheckpoint, type WorkflowGenerationRecord } from '../../shared/workflow.js'
 
 const FILE_NAME = 'workflow-generation-history.json'
 
@@ -25,15 +25,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function isGenerationCheckpoint(value: unknown): value is WorkflowGenerationCheckpoint {
+  if (!isRecord(value)) return false
+  return WORKFLOW_GENERATION_PHASES.includes(value.phase as (typeof WORKFLOW_GENERATION_PHASES)[number])
+    && Array.isArray(value.createdEmployees)
+    && Array.isArray(value.warnings)
+    && value.warnings.every((warning) => typeof warning === 'string')
+    && (value.selectedEmployeeIds === undefined || (Array.isArray(value.selectedEmployeeIds) && value.selectedEmployeeIds.every((id) => typeof id === 'string')))
+    && (value.sessionId === undefined || typeof value.sessionId === 'string')
+    && (value.lastModelOutput === undefined || typeof value.lastModelOutput === 'string')
+}
+
 function isGenerationRecord(value: unknown): value is WorkflowGenerationRecord {
   if (!isRecord(value)) return false
   return typeof value.id === 'string'
     && typeof value.prompt === 'string'
     && typeof value.name === 'string'
-    && (value.status === 'running' || value.status === 'completed' || value.status === 'failed')
+    && (value.status === 'running' || value.status === 'completed' || value.status === 'failed' || value.status === 'cancelled')
     && typeof value.phase === 'string'
+    && (value.createEmployees === undefined || typeof value.createEmployees === 'boolean')
     && Array.isArray(value.events)
     && Array.isArray(value.createdEmployees)
+    && (value.checkpoint === undefined || isGenerationCheckpoint(value.checkpoint))
     && typeof value.startedAt === 'string'
 }
 

@@ -46,6 +46,18 @@ describe('WorkflowPage regressions', () => {
     })
   })
 
+  it('adds the personal employee name to the canvas node data without replacing its role label', () => {
+    const workflow = createDefaultWorkflow('Employee labels')
+    const source = workflow.nodes.find((node) => node.type === 'ai-task')!
+    const employeeNode = { ...source, type: 'employee', label: '事实核查', config: { employeeId: 'reviewer', instruction: '审核', outputMode: 'text' } } as never
+    const next = { ...workflow, nodes: workflow.nodes.map((node) => node.id === source.id ? employeeNode : node) }
+    const flowNode = workflowPage.workflowFlowNodes(next, undefined, undefined, [], [{
+      schemaVersion: 2, version: 1, id: 'reviewer', displayName: '顾言', name: '审核员', role: '事实核查专员', description: '', businessBoundary: '', systemPrompt: '审核', operatingGuidelines: [], qualityStandards: [], capabilities: [], skillIds: [], enabled: true, builtIn: false, createdAt: '', updatedAt: '',
+    }]).find((node) => node.id === source.id)
+
+    expect(flowNode).toMatchObject({ data: { label: '事实核查', employeeName: '顾言' } })
+  })
+
   it('keeps canvas deletions and edge deletions when inspector edits the workflow', () => {
     const workflow = graphWithRemovedNode()
     const agent = workflow.nodes.find((node) => node.type === 'ai-task')!
@@ -458,6 +470,16 @@ describe('WorkflowPage regressions', () => {
     expect(executionNodes.every((node) => node.measured?.width === node.width && node.measured?.height === node.height)).toBe(true)
   })
 
+  it('uses an execution-only node position without changing the workflow definition position', () => {
+    const workflow = createDefaultWorkflow('Execution layout')
+    const input = workflow.nodes.find((node) => node.type === 'input')!
+    const originalPosition = { ...input.position }
+    const executionNodes = workflowPage.workflowExecutionFlowNodes(workflow, undefined, undefined, [], { [input.id]: { x: 920, y: 140 } })
+
+    expect(executionNodes.find((node) => node.id === input.id)?.position).toEqual({ x: 920, y: 140 })
+    expect(workflow.nodes.find((node) => node.id === input.id)?.position).toEqual(originalPosition)
+  })
+
   it('automatically lays out a graph by dependency depth instead of trusting overlapping positions', () => {
     const workflow = createDefaultWorkflow('Automatic layout')
     const overlapping = { ...workflow, nodes: workflow.nodes.map((node) => ({ ...node, position: { x: 0, y: 0 } })) }
@@ -476,6 +498,15 @@ describe('WorkflowPage regressions', () => {
       selectionOnDrag: true,
       panOnDrag: false,
       panActivationKeyCode: 'Space',
+    })
+  })
+
+  it('keeps execution topology read-only while allowing node dragging', () => {
+    expect(workflowPage.WORKFLOW_EXECUTION_CANVAS_INTERACTION_PROPS).toMatchObject({
+      nodesDraggable: true,
+      nodesConnectable: false,
+      edgesReconnectable: false,
+      deleteKeyCode: null,
     })
   })
 
@@ -724,6 +755,23 @@ describe('WorkflowPage regressions', () => {
     expect(workflowPage.clampWorkflowExecutionDetailHeight(900, 900)).toBe(660)
   })
 
+  it('keeps floating result windows reachable and constrains all four resize edges', () => {
+    expect(workflowPage.clampWorkflowOutputWindowPosition({ x: -40, y: -80 }, { width: 400, height: 300 }, 900, 700)).toEqual({ x: 12, y: 12 })
+    expect(workflowPage.clampWorkflowOutputWindowPosition({ x: 800, y: 650 }, { width: 400, height: 300 }, 900, 700)).toEqual({ x: 488, y: 388 })
+
+    const start = { edge: 'left' as const, startX: 100, startY: 100, startLeft: 200, startTop: 80, startWidth: 420, startHeight: 300 }
+    expect(workflowPage.resizeWorkflowOutputWindow(start, 400, 100, 900, 700)).toEqual({ position: { x: 300, y: 80 }, size: { width: 320, height: 300 } })
+
+    const right = { ...start, edge: 'right' as const }
+    expect(workflowPage.resizeWorkflowOutputWindow(right, 900, 100, 900, 700)).toEqual({ position: { x: 200, y: 80 }, size: { width: 688, height: 300 } })
+
+    const top = { ...start, edge: 'top' as const }
+    expect(workflowPage.resizeWorkflowOutputWindow(top, 100, 500, 900, 700)).toEqual({ position: { x: 200, y: 140 }, size: { width: 420, height: 240 } })
+
+    const bottom = { ...start, edge: 'bottom' as const }
+    expect(workflowPage.resizeWorkflowOutputWindow(bottom, 100, 900, 900, 700)).toEqual({ position: { x: 200, y: 80 }, size: { width: 420, height: 608 } })
+  })
+
   it('summarizes run history and identifies the first unviewed record', () => {
     const runs: WorkflowRunRecord[] = [
       { id: 'run-new', workflowId: 'workflow-1', workflowRevision: 1, status: 'completed', input: {}, output: 'new', nodeStates: [], events: [], allowShellFile: false },
@@ -732,6 +780,16 @@ describe('WorkflowPage regressions', () => {
 
     expect(workflowPage.summarizeWorkflowRuns(runs, new Set(['run-old']))).toEqual({ count: 2, unviewedCount: 1, firstUnviewedRun: runs[0] })
     expect(workflowPage.summarizeWorkflowRuns(runs, new Set(['run-new', 'run-old']))).toEqual({ count: 2, unviewedCount: 0 })
+  })
+
+  it('only allows an explicit action on the visible execution page to mark a finished run viewed', () => {
+    const completed: WorkflowRunRecord = { id: 'run-viewed', workflowId: 'workflow-1', workflowRevision: 1, status: 'completed', input: {}, nodeStates: [], events: [], allowShellFile: false }
+
+    expect(workflowPage.workflowRunShouldBeMarkedViewed(completed, { pageActive: true, workspaceView: 'executions', userAction: true })).toBe(true)
+    expect(workflowPage.workflowRunShouldBeMarkedViewed(completed, { pageActive: false, workspaceView: 'executions', userAction: true })).toBe(false)
+    expect(workflowPage.workflowRunShouldBeMarkedViewed(completed, { pageActive: true, workspaceView: 'editor', userAction: true })).toBe(false)
+    expect(workflowPage.workflowRunShouldBeMarkedViewed(completed, { pageActive: true, workspaceView: 'executions', userAction: false })).toBe(false)
+    expect(workflowPage.workflowRunShouldBeMarkedViewed({ ...completed, status: 'running' }, { pageActive: true, workspaceView: 'executions', userAction: true })).toBe(false)
   })
 
   it('exposes run history actions and keeps active records protected from deletion', () => {
@@ -837,6 +895,10 @@ describe('WorkflowPage regressions', () => {
     expect(reviewMarkup).toContain('workflow-execution-compact-heading')
     expect(reviewMarkup).toContain('run-compact-heading')
     expect(reviewMarkup).not.toContain('2026-08-30T12:47:45.232Z')
+    expect(windowsMarkup).toContain('workflow-output-window-resize-top')
+    expect(windowsMarkup).toContain('workflow-output-window-resize-right')
+    expect(windowsMarkup).toContain('workflow-output-window-resize-bottom')
+    expect(windowsMarkup).toContain('workflow-output-window-resize-left')
     expect(windowsMarkup).toContain('workflow-output-window-drag-handle')
   })
 

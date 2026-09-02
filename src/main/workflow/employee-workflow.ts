@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { EmployeeDefinition } from '../../shared/employees.js'
+import { employeeDisplayName, type EmployeeDefinition } from '../../shared/employees.js'
 import { WORKFLOW_SCHEMA_VERSION, type WorkflowDefinition, type WorkflowNode, type WorkflowEdge } from '../../shared/workflow.js'
 
 /** Create a quick workflow that invokes one reusable professional employee. */
@@ -13,6 +13,8 @@ export function workflowFromEmployee(employee: EmployeeDefinition): WorkflowDefi
     {
       id: employeeNodeId,
       type: 'employee',
+      // Keep the compact legacy role label in the node body; the personal
+      // displayName is rendered separately in the canvas corner.
       label: employee.name,
       config: {
         employeeId: employee.id,
@@ -30,7 +32,7 @@ export function workflowFromEmployee(employee: EmployeeDefinition): WorkflowDefi
   return {
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
     id: `workflow-${employee.id}-${randomUUID().slice(0, 8)}`,
-    name: `${employee.name} Workflow`,
+    name: `${employeeDisplayName(employee)} Workflow`,
     description: employee.description,
     revision: 1,
     nodes,

@@ -71,6 +71,40 @@ describe('workflow HTTP and code nodes', () => {
     const result = await runNode({ id: 'http', type: 'http', label: 'HTTP', config: { method: 'POST', url: 'https://api.example.com/search', headers: { 'X-Test': '{{value}}' }, query: { term: '{{value}}' }, body: '{{value}}', responseMode: 'json', timeoutMs: 10_000 }, position: { x: 200, y: 0 } }, { topic: 'workflow' })
     expect(result.status).toBe('completed')
     expect(result.output).toMatchObject({ status: 200, ok: true, body: { items: ['ok'] } })
+    expect(result.nodeStates.find((state) => state.nodeId === 'http')?.effectState).toBe('confirmed')
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels an authorized shell child instead of leaving it running', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-shell-cancel-'))
+    const workflowStore = new WorkflowStore(directory)
+    const workflow = await workflowStore.create({
+      id: 'workflow-shell-cancel', name: 'Shell cancel', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'shell', type: 'shell', label: 'Shell', config: { command: 'node', args: ['-e', 'setTimeout(() => {}, 5000)'], timeoutMs: 10_000 }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'shell' }, { id: 'b', source: 'shell', target: 'output' }],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(directory), workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+    const run = await service.start(workflow.id, null, { allowShellFile: true })
+    for (let attempt = 0; attempt < 100 && service.get(run.id)?.nodeStates.find((state) => state.nodeId === 'shell')?.status !== 'running'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    await service.cancel(run.id)
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const current = service.get(run.id)
+      if (current?.status === 'cancelled') {
+        expect(current.nodeStates.find((state) => state.nodeId === 'shell')?.status).toBe('cancelled')
+        await service.stop()
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    await service.stop()
+    throw new Error('shell cancellation did not settle')
   })
 })

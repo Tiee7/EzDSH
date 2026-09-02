@@ -197,6 +197,8 @@ const DEFAULT_SENSITIVE_PATHS = [
   'harness/.credentials.yaml',
   'harness/.env',
   'harness/qq-bridge/config.json',
+  'state/.workflow-credentials.json',
+  'state/.workflow-credentials.json.key',
 ] as const
 const UPDATE_TRANSACTION_FILE = '.ezdsh-update-transaction.json'
 

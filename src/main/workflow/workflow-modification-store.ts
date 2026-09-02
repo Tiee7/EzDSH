@@ -31,7 +31,7 @@ function isModificationRecord(value: unknown): value is WorkflowModificationReco
     && typeof value.workflowId === 'string'
     && typeof value.workflowRevision === 'number'
     && typeof value.prompt === 'string'
-    && (value.status === 'running' || value.status === 'completed' || value.status === 'failed')
+    && (value.status === 'running' || value.status === 'completed' || value.status === 'failed' || value.status === 'cancelled')
     && typeof value.phase === 'string'
     && Array.isArray(value.events)
     && Array.isArray(value.changes)

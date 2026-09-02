@@ -104,6 +104,20 @@ describe('workflow stores', () => {
     expect(store.get('run-1')?.error).toContain('暂停')
   })
 
+  it('does not load a queued record with an invalid availability timestamp', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-invalid-queue-'))
+    await writeFile(join(dir, 'workflow-runs.json'), JSON.stringify([{
+      id: 'invalid-queue', workflowId: 'workflow-1', workflowRevision: 1, status: 'queued', input: null,
+      nodeStates: [], events: [], allowShellFile: false,
+      queue: { enqueuedAt: '2026-01-01T00:00:00.000Z', availableAt: 'not-a-date' },
+    }]))
+    const store = new WorkflowRunStore(dir)
+    await store.initialize()
+
+    expect(store.get('invalid-queue')).toBeUndefined()
+    expect(await store.claimNextDue('worker', 10_000, new Date('2026-01-02T00:00:00.000Z'))).toBeUndefined()
+  })
+
   it('prunes only expired terminal runs and keeps active or unexpired history', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-retention-'))
     const store = new WorkflowRunStore(dir)

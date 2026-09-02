@@ -199,6 +199,7 @@ export class WorkflowStore {
       name: `${source.name} copy`,
       description: source.description,
       ...(source.generationPrompt === undefined ? {} : { generationPrompt: source.generationPrompt }),
+      ...(source.permissionPolicy === undefined ? {} : { permissionPolicy: cloneWorkflow(source.permissionPolicy) }),
       nodes: source.nodes.map((node) => ({
         ...cloneWorkflow(node),
         id: idMap.get(node.id) as string,

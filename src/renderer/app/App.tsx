@@ -417,7 +417,7 @@ export function App() {
                   : null
               case 'workflow':
                 return shouldKeepTabMounted(item.id) || activeTab === 'workflow'
-                  ? <section key="workflow" className={`workspace-pane ${activeTab === 'workflow' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabWorkflow}><WorkflowPage copy={copy} locale={locale} developerMode={developerMode} onWorkspaceModeChange={setWorkflowWorkspaceMode} /></section>
+                  ? <section key="workflow" className={`workspace-pane ${activeTab === 'workflow' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabWorkflow}><WorkflowPage copy={copy} locale={locale} developerMode={developerMode} active={activeTab === 'workflow'} onWorkspaceModeChange={setWorkflowWorkspaceMode} /></section>
                   : null
               case 'presets':
                 return activeTab === 'presets'

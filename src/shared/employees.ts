@@ -24,6 +24,9 @@ export interface EmployeeDefinition {
   schemaVersion: typeof EMPLOYEE_SCHEMA_VERSION
   version: number
   id: string
+  /** Personal name used to distinguish people; legacy profiles may omit it. */
+  displayName?: string
+  /** Legacy short name retained for persisted V2 compatibility. Prefer displayName + role in UI. */
   name: string
   role: string
   description: string
@@ -50,9 +53,21 @@ export type EmployeeCreateInput = Omit<EmployeeDefinition, 'schemaVersion' | 've
   builtIn?: boolean
 }
 
-export type EmployeeGeneratedProfile = EmployeeCreateInput
+export type EmployeeGeneratedProfile = Omit<EmployeeCreateInput, 'displayName'> & { displayName: string }
 
 export type EmployeeUpdateInput = Partial<Omit<EmployeeDefinition, 'schemaVersion' | 'version' | 'id' | 'createdAt' | 'updatedAt' | 'builtIn'>>
+
+/** Return the personal name while remaining compatible with pre-displayName profiles. */
+export function employeeDisplayName(employee: Pick<EmployeeDefinition, 'name' | 'displayName'>): string {
+  return employee.displayName?.trim() || employee.name.trim()
+}
+
+/** User-facing employee identity. */
+export function employeeDisplayLabel(employee: Pick<EmployeeDefinition, 'name' | 'displayName' | 'role'>): string {
+  const displayName = employeeDisplayName(employee)
+  const role = employee.role.trim()
+  return role === '' ? displayName : `${displayName}（${role}）`
+}
 
 export interface EmployeeProjectSummary {
   projectId: string

@@ -47,6 +47,9 @@ import type {
   WorkflowUpdateInput,
   WorkflowValue,
   WorkflowModelOption,
+  WorkflowCredentialMetadata,
+  WorkflowCredentialUpsertInput,
+  WorkflowHttpConnector,
 } from '../shared/workflow.js'
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -144,7 +147,10 @@ const bridge: EzDSHBridge = {
     remove: (id: string) => invoke<void>('workflows:remove', id),
     duplicate: (id: string) => invoke<WorkflowDefinition>('workflows:duplicate', id),
     generate: (request: WorkflowGenerateRequest) => invoke<WorkflowGenerateResult>('workflows:generate', request),
+    cancelGeneration: (id: string) => invoke<WorkflowGenerationRecord>('workflow-generations:cancel', id),
+    resumeGeneration: (id: string) => invoke<WorkflowGenerationRecord>('workflow-generations:resume', id),
     modify: (request: WorkflowModifyRequest) => invoke<WorkflowModifyResult>('workflows:modify', request),
+    cancelModification: (id: string) => invoke<WorkflowModificationRecord>('workflow-modifications:cancel', id),
     listModificationHistory: (workflowId?: string) => invoke<WorkflowModificationRecord[]>('workflow-modifications:list', workflowId),
     onModificationStateChange: (listener: (record: WorkflowModificationRecord) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, record: WorkflowModificationRecord) => listener(record)
@@ -165,11 +171,23 @@ const bridge: EzDSHBridge = {
     resume: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:resume', runId),
     cancel: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:cancel', runId),
     approve: (runId: string, approved: boolean) => invoke<WorkflowRunRecord>('workflow-runs:approve', runId, approved),
+    compensate: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:compensate', runId),
     onStateChange: (listener: (record: WorkflowRunRecord) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, record: WorkflowRunRecord) => listener(record)
       ipcRenderer.on('workflow-runs:state-change', handler)
       return () => ipcRenderer.removeListener('workflow-runs:state-change', handler)
     }
+  },
+  workflowCredentials: {
+    list: () => invoke<WorkflowCredentialMetadata[]>('workflow-credentials:list'),
+    upsert: (input: WorkflowCredentialUpsertInput) => invoke<WorkflowCredentialMetadata>('workflow-credentials:upsert', input),
+    remove: (id: string) => invoke<void>('workflow-credentials:remove', id),
+  },
+  workflowConnectors: {
+    list: () => invoke<WorkflowHttpConnector[]>('workflow-connectors:list'),
+    get: (id: string) => invoke<WorkflowHttpConnector | undefined>('workflow-connectors:get', id),
+    upsert: (input: WorkflowHttpConnector) => invoke<WorkflowHttpConnector>('workflow-connectors:upsert', input),
+    remove: (id: string) => invoke<void>('workflow-connectors:remove', id),
   },
   settings: {
     setLocale: (locale) => invoke('settings:set-locale', locale),

@@ -39,6 +39,26 @@ describe('WorkflowGenerationPage', () => {
     const updated = { ...base, phase: 'completed' as const, status: 'completed' as const, completedAt: '2026-08-31T10:01:00.000Z' }
     expect(mergeWorkflowGenerationRecord([base], updated)).toEqual([updated])
   })
+
+  it('shows a stop action for running generation and preserves the cancelled state in history', () => {
+    const stop = vi.fn()
+    const running = createRecord('running', 'generating-workflow')
+    const runningMarkup = renderToStaticMarkup(<WorkflowGenerationProgressView copy={getAppCopy('zh')} locale="zh" record={running} onOpenWorkflow={vi.fn()} onStopGeneration={stop} />)
+    expect(runningMarkup).toContain('停止生成')
+
+    const cancelled = { ...running, status: 'cancelled' as const, phase: 'cancelled' as const, error: '用户终止了工作流生成。', events: [{ phase: 'cancelled' as const, status: 'cancelled' as const, message: '用户终止了工作流生成。', time: '2026-08-31T10:00:03.000Z' }] }
+    const cancelledMarkup = renderToStaticMarkup(<WorkflowGenerationProgressView copy={getAppCopy('zh')} locale="zh" record={cancelled} onOpenWorkflow={vi.fn()} onStopGeneration={stop} />)
+    expect(cancelledMarkup).toContain('已由用户终止')
+    expect(cancelledMarkup).toContain('用户终止了工作流生成。')
+    expect(cancelledMarkup).not.toContain('停止生成')
+  })
+
+  it('shows a resume action for interrupted generation records', () => {
+    const failed = createRecord('failed', 'failed')
+    const markup = renderToStaticMarkup(<WorkflowGenerationProgressView copy={getAppCopy('zh')} locale="zh" record={failed} onOpenWorkflow={vi.fn()} onResumeGeneration={vi.fn()} />)
+    expect(markup).toContain('从断点继续')
+    expect(markup).toContain('不要重复已完成的步骤')
+  })
 })
 
 function createRecord(status: WorkflowGenerationRecord['status'], phase: WorkflowGenerationRecord['phase']): WorkflowGenerationRecord {

@@ -1,4 +1,4 @@
-import type { EmployeeSnapshot } from '../../shared/employees.js'
+import { employeeDisplayName, type EmployeeSnapshot } from '../../shared/employees.js'
 import { interpolateWorkflowVariables, isWorkflowValue, type WorkflowJsonSchema, type WorkflowModelSelection, type WorkflowNode, type WorkflowNodeOutputVariable, type WorkflowOutputMode, type WorkflowValue } from '../../shared/workflow.js'
 
 /** Minimal DSH contract used only for employee and legacy Skill internal sessions. */
@@ -13,6 +13,20 @@ export interface WorkflowSessionClient {
 export interface DshWorkflowAdapterOptions {
   cwd: string
   createClient: () => WorkflowSessionClient
+}
+
+export class WorkflowJsonParseError extends Error {
+  readonly rawText: string
+  readonly parseAttempt: 'document' | 'embedded-document'
+  readonly causeError?: unknown
+
+  constructor(message: string, rawText: string, parseAttempt: 'document' | 'embedded-document', causeError?: unknown) {
+    super(message)
+    this.name = 'WorkflowJsonParseError'
+    this.rawText = rawText
+    this.parseAttempt = parseAttempt
+    this.causeError = causeError
+  }
 }
 
 interface InstructionNode {
@@ -54,7 +68,7 @@ export class DshWorkflowAdapter {
     previous: WorkflowValue,
   ): Promise<WorkflowValue> {
     const profile = [
-      `你是“${employee.name}”，岗位是“${employee.role}”。`,
+      `你是“${employeeDisplayName(employee)}”，岗位是“${employee.role}”。`,
       `业务边界：${employee.businessBoundary}`,
       `专业原则：${employee.systemPrompt}`,
       `执行规范：\n${employee.operatingGuidelines.map((item) => `- ${item}`).join('\n') || '- 无额外规范'}`,
@@ -139,7 +153,7 @@ export function buildNodePrompt(
 
 export function parseWorkflowJson(text: string): WorkflowValue {
   const value = extractJsonDocument(text)
-  if (!isWorkflowValue(value)) throw new Error('JSON 包含不支持的值')
+  if (!isWorkflowValue(value)) throw new WorkflowJsonParseError('JSON 包含不支持的值', text, 'document')
   return value
 }
 
@@ -147,7 +161,7 @@ export function extractJsonDocument(text: string): unknown {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '')
   try {
     return JSON.parse(trimmed) as unknown
-  } catch {
+  } catch (error) {
     const objectStart = trimmed.indexOf('{')
     const objectEnd = trimmed.lastIndexOf('}')
     const arrayStart = trimmed.indexOf('[')
@@ -155,7 +169,11 @@ export function extractJsonDocument(text: string): unknown {
     const useArray = arrayStart >= 0 && arrayEnd > arrayStart && (objectStart < 0 || arrayStart < objectStart)
     const start = useArray ? arrayStart : objectStart
     const end = useArray ? arrayEnd : objectEnd
-    if (start < 0 || end <= start) throw new Error('AI 返回的 Workflow 不是有效 JSON')
-    return JSON.parse(trimmed.slice(start, end + 1)) as unknown
+    if (start < 0 || end <= start) throw new WorkflowJsonParseError('AI 返回的 Workflow 不是有效 JSON', text, 'document', error)
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1)) as unknown
+    } catch (error) {
+      throw new WorkflowJsonParseError(error instanceof Error ? error.message : String(error), text, 'embedded-document', error)
+    }
   }
 }

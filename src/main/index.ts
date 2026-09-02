@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, safeStorage, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -93,8 +93,12 @@ import { WorkflowLightweightClient } from './workflow/workflow-lightweight-clien
 import { WorkflowRuntimeClient } from './workflow/workflow-runtime-client.js'
 import { WorkflowMcpClient } from './workflow/workflow-mcp-client.js'
 import { WorkflowInternalSessionStore } from './workflow/workflow-internal-session-store.js'
+import { WorkflowAiDiagnostics } from './workflow/workflow-ai-diagnostics.js'
+import { WorkflowCredentialStore, createSafeStorageProtector } from './workflow/workflow-credential-service.js'
+import { WorkflowConnectorStore } from './workflow/workflow-connector-store.js'
+import { WorkflowConnectorService } from './workflow/workflow-connector-service.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
-import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowModifyRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue } from '../shared/workflow.js'
+import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowModifyRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue, WorkflowCredentialUpsertInput, WorkflowHttpConnector } from '../shared/workflow.js'
 import { bindWindowClosedCleanup } from './window-lifecycle.js'
 import { shutdownExternalServicesFirst } from './shutdown.js'
 import { restartApplication, shouldRelaunchWorkspace } from './restart.js'
@@ -153,6 +157,9 @@ let employeeService: EmployeeService | undefined
 let workflowStore: WorkflowStore | undefined
 let workflowRunStore: WorkflowRunStore | undefined
 let workflowRunService: WorkflowRunService | undefined
+let workflowCredentialStore: WorkflowCredentialStore | undefined
+let workflowConnectorStore: WorkflowConnectorStore | undefined
+let workflowConnectorService: WorkflowConnectorService | undefined
 let workflowGenerationService: WorkflowGenerationService | undefined
 let workflowModificationService: WorkflowModificationService | undefined
 let isQuitting = false
@@ -574,7 +581,15 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
 
   workflowStore = new WorkflowStore(layout.state)
   workflowRunStore = new WorkflowRunStore(layout.state)
-  const workflowAiDocumentation = await readWorkflowAiDocumentation()
+  workflowCredentialStore = new WorkflowCredentialStore(layout.state, { protector: createSafeStorageProtector(safeStorage) })
+  workflowConnectorStore = new WorkflowConnectorStore(layout.state)
+  await workflowCredentialStore.initialize()
+  await workflowConnectorStore.initialize()
+  workflowConnectorService = new WorkflowConnectorService({
+    connectors: workflowConnectorStore,
+    credentials: workflowCredentialStore,
+  })
+  const workflowAiDiagnostics = new WorkflowAiDiagnostics(layout.logs)
   workflowRunService = new WorkflowRunService({
     workflowStore,
     runStore: workflowRunStore,
@@ -588,9 +603,14 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
       return employeeService.create(input)
     },
     getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
-    ...(workflowAiDocumentation === undefined ? {} : { workflowAiDocumentation }),
+    loadWorkflowAiDocumentation: readWorkflowAiDocumentation,
+    createGenerationSession: ({ sessionId, model }) => sessionId === undefined
+      ? runtimeWorkflowClient.createSession(model)
+      : runtimeWorkflowClient.resumeSession(sessionId, model),
     lightweightClient,
     mcpClient: new WorkflowMcpClient({ patchPath: join(layout.harness, 'profiles', 'web', 'cordis.patch.yml') }),
+    connectorService: workflowConnectorService,
+    allowLegacyHttp: false,
     executeSubWorkflow: async (childWorkflowId, input, waitForCompletion, version, childOptions) => {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
       if (workflowStore === undefined) throw new Error('Workflow store is not ready')
@@ -622,13 +642,13 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     console.error('[workflows] failed to clean retained internal sessions:', message)
   })
   stopWorkflowWatcher = workflowRunService.watch(emitWorkflowState)
-  workflowGenerationService = new WorkflowGenerationService({ stateDir: layout.state, runService: workflowRunService })
+  workflowGenerationService = new WorkflowGenerationService({ stateDir: layout.state, runService: workflowRunService, diagnostics: workflowAiDiagnostics })
   await workflowGenerationService.initialize().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error('[workflows] failed to initialize generation history:', message)
   })
   stopWorkflowGenerationWatcher = workflowGenerationService.watch(emitWorkflowGenerationState)
-  workflowModificationService = new WorkflowModificationService({ stateDir: layout.state, runService: workflowRunService })
+  workflowModificationService = new WorkflowModificationService({ stateDir: layout.state, runService: workflowRunService, diagnostics: workflowAiDiagnostics })
   await workflowModificationService.initialize().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error('[workflows] failed to initialize modification history:', message)
@@ -1634,10 +1654,34 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('workflow-generations:cancel', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<WorkflowGenerationService['cancel']>>>> => {
+    try {
+      if (workflowGenerationService === undefined) throw new Error('Workflow generation service is not ready')
+      return success(await workflowGenerationService.cancel(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-generations:resume', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<WorkflowGenerationService['resume']>>>> => {
+    try {
+      if (workflowGenerationService === undefined) throw new Error('Workflow generation service is not ready')
+      return success(await workflowGenerationService.resume(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('workflows:modify', async (_event, request: WorkflowModifyRequest): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['modify']>>>> => {
     try {
       if (workflowModificationService === undefined) throw new Error('Workflow modification service is not ready')
       return success(await workflowModificationService.modify(request))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-modifications:cancel', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<WorkflowModificationService['cancel']>>>> => {
+    try {
+      if (workflowModificationService === undefined) throw new Error('Workflow modification service is not ready')
+      return success(await workflowModificationService.cancel(id))
     } catch (error) {
       return failure(error)
     }
@@ -1665,6 +1709,70 @@ function registerIpcHandlers(): void {
       const employee = employeeService.get(employeeId)
       if (employee === undefined) throw new Error(`Employee "${employeeId}" was not found`)
       return success(await workflowStore.create(workflowFromEmployee(employee)))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-credentials:list', async (): Promise<IpcResult<Awaited<ReturnType<WorkflowCredentialStore['listMetadata']>>>> => {
+    try {
+      if (workflowCredentialStore === undefined) throw new Error('Workflow credential store is not ready')
+      await workflowCredentialStore.initialize()
+      return success(workflowCredentialStore.listMetadata())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-credentials:upsert', async (_event, input: WorkflowCredentialUpsertInput): Promise<IpcResult<Awaited<ReturnType<WorkflowCredentialStore['upsert']>>>> => {
+    try {
+      if (workflowCredentialStore === undefined) throw new Error('Workflow credential store is not ready')
+      return success(await workflowCredentialStore.upsert(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-credentials:remove', async (_event, id: string): Promise<IpcResult<void>> => {
+    try {
+      if (workflowCredentialStore === undefined) throw new Error('Workflow credential store is not ready')
+      if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid workflow credential ID')
+      await workflowCredentialStore.remove(id)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-connectors:list', async (): Promise<IpcResult<Awaited<ReturnType<WorkflowConnectorStore['list']>>>> => {
+    try {
+      if (workflowConnectorStore === undefined) throw new Error('Workflow connector store is not ready')
+      await workflowConnectorStore.initialize()
+      return success(workflowConnectorStore.list())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-connectors:get', async (_event, id: string): Promise<IpcResult<Awaited<ReturnType<WorkflowConnectorStore['get']>>>> => {
+    try {
+      if (workflowConnectorStore === undefined) throw new Error('Workflow connector store is not ready')
+      if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid workflow connector ID')
+      await workflowConnectorStore.initialize()
+      return success(workflowConnectorStore.get(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-connectors:upsert', async (_event, input: WorkflowHttpConnector): Promise<IpcResult<Awaited<ReturnType<WorkflowConnectorStore['upsert']>>>> => {
+    try {
+      if (workflowConnectorStore === undefined) throw new Error('Workflow connector store is not ready')
+      return success(await workflowConnectorStore.upsert(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-connectors:remove', async (_event, id: string): Promise<IpcResult<void>> => {
+    try {
+      if (workflowConnectorStore === undefined) throw new Error('Workflow connector store is not ready')
+      if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid workflow connector ID')
+      await workflowConnectorStore.remove(id)
+      return success(undefined)
     } catch (error) {
       return failure(error)
     }
@@ -1727,6 +1835,15 @@ function registerIpcHandlers(): void {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
       if (typeof runId !== 'string' || typeof approved !== 'boolean') throw new Error('Invalid workflow approval input')
       return success(await workflowRunService.approve(runId, approved))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:compensate', async (_event, runId: string): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['compensate']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
+      return success(await workflowRunService.compensate(runId))
     } catch (error) {
       return failure(error)
     }

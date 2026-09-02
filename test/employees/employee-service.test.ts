@@ -247,6 +247,7 @@ describe('EmployeeService', () => {
     })
 
     await expect(service.generate({ prompt: '需要一名负责短视频内容策划的员工' })).resolves.toEqual({
+      displayName: '内容策划员',
       name: '内容策划员',
       role: '短视频内容策划专员',
       description: '负责把用户需求整理成可执行的短视频内容方案。',

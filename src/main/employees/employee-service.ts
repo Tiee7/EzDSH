@@ -17,7 +17,7 @@ import type {
   EmployeeUpdateInput,
   EmployeeWorkflowStep,
 } from '../../shared/employees.js'
-import { EMPLOYEE_CAPABILITIES, EMPLOYEE_SCHEMA_VERSION } from '../../shared/employees.js'
+import { EMPLOYEE_CAPABILITIES, EMPLOYEE_SCHEMA_VERSION, employeeDisplayName } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
 import { extractJsonDocument } from '../workflow/dsh-workflow-adapter.js'
 
@@ -55,12 +55,13 @@ type EmployeeSessionLockState = EmployeeSessionLock
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u
 const STEP_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u
 const DEFAULT_TIMESTAMP = '2026-01-01T00:00:00.000Z'
-const DEFAULTS_VERSION = 2
+const DEFAULTS_VERSION = 3
 
 export const DEFAULT_POSTER_EMPLOYEE: EmployeeDefinition = {
   schemaVersion: EMPLOYEE_SCHEMA_VERSION,
   version: 1,
   id: 'poster-generator',
+  displayName: '林岚',
   name: '宣传海报生成员',
   role: '品牌宣传与视觉创意专员',
   description: '把活动目标、受众和品牌信息整理成可执行的宣传海报方案。',
@@ -88,6 +89,7 @@ export const DEFAULT_RESEARCH_EMPLOYEE: EmployeeDefinition = {
   schemaVersion: EMPLOYEE_SCHEMA_VERSION,
   version: 1,
   id: 'researcher',
+  displayName: '顾言',
   name: '调研员',
   role: '事实核查与知识研究专员',
   description: '把模糊问题拆解成可验证的研究问题，组织多来源证据并输出可追溯的调研报告。',
@@ -121,6 +123,7 @@ export const DEFAULT_DOUYIN_WRITER_EMPLOYEE: EmployeeDefinition = {
   schemaVersion: EMPLOYEE_SCHEMA_VERSION,
   version: 1,
   id: 'douyin-copywriter',
+  displayName: '苏禾',
   name: '抖音文案写手',
   role: '短视频脚本与内容增长专员',
   description: '把选题和卖点转化成抖音原生短视频脚本，兼顾前几秒吸引力、完播路径、互动和发布合规。',
@@ -155,6 +158,7 @@ export const DEFAULT_TOPIC_PLANNER_EMPLOYEE: EmployeeDefinition = {
   schemaVersion: EMPLOYEE_SCHEMA_VERSION,
   version: 1,
   id: 'content-topic-planner',
+  displayName: '周策',
   name: '短视频选题策划员',
   role: '短视频内容策略与选题策划专员',
   description: '根据账号定位、目标受众和近期内容，形成差异化且可验证的候选选题。',
@@ -178,6 +182,7 @@ export const DEFAULT_CONTENT_REVIEWER_EMPLOYEE: EmployeeDefinition = {
   schemaVersion: EMPLOYEE_SCHEMA_VERSION,
   version: 1,
   id: 'content-reviewer',
+  displayName: '陈序',
   name: '短视频内容审核员',
   role: '内容质量、事实与合规审核专员',
   description: '检查短视频选题和脚本的吸引力、逻辑、事实、品牌一致性与表达风险。',
@@ -243,10 +248,16 @@ export class EmployeeService {
     let defaultsAdded = false
     if (defaultsVersion < DEFAULTS_VERSION) {
       for (const employee of DEFAULT_EMPLOYEES) {
-        if (this.employees.has(employee.id)) continue
-        this.employees.set(employee.id, cloneEmployee(employee))
-        defaultsAdded = true
+        const current = this.employees.get(employee.id)
+        if (current === undefined) {
+          this.employees.set(employee.id, cloneEmployee(employee))
+          defaultsAdded = true
+          continue
+        }
       }
+      // Persist the normalized displayName field for legacy profiles as part
+      // of this one-time defaults migration.
+      defaultsAdded = true
     }
     if (defaultsAdded) {
       await this.persist()
@@ -344,13 +355,13 @@ export class EmployeeService {
     if (client === undefined) throw new Error('没有可用于员工生成的模型，请先在设置中配置模型供应商。')
     const locale = this.options.getLocale?.() ?? DEFAULT_APP_LOCALE
     const languageInstruction = locale === 'zh'
-      ? '所有自然语言字段必须使用简体中文，包括 name、role、description、businessBoundary、systemPrompt、operatingGuidelines 和 qualityStandards。'
-      : 'All natural-language fields must be written in English, including name, role, description, businessBoundary, systemPrompt, operatingGuidelines, and qualityStandards.'
+      ? '所有自然语言字段必须使用简体中文。displayName 是员工的个人名字（中文名为主，可允许少量自然的英文名），不能把岗位名称当作 displayName；name 是兼容字段，填写简短岗位名；role 填写正式岗位。其余 description、businessBoundary、systemPrompt、operatingGuidelines 和 qualityStandards 使用简体中文。'
+      : 'All natural-language fields must be written in English. displayName must be a natural English personal name, never a job title; name is a legacy compatibility field containing a short role label; role is the formal job title. Use English for description, businessBoundary, systemPrompt, operatingGuidelines, and qualityStandards.'
     const response = await client.complete({
       systemPrompt: [
         '你是 EZDSH 的 AI 员工设计助手。根据用户对员工的自然语言描述，生成一个可直接编辑和保存的专业员工档案。',
         '只输出一个 JSON 对象，不要输出 Markdown 代码围栏、解释或额外文本。',
-        'JSON 必须包含 name、role、description、businessBoundary、systemPrompt、operatingGuidelines、qualityStandards、capabilities、skillIds 和 enabled 字段。',
+        'JSON 必须包含 displayName、name、role、description、businessBoundary、systemPrompt、operatingGuidelines、qualityStandards、capabilities、skillIds 和 enabled 字段。displayName 是用于区分不同员工的个人名字，应自然、易区分且不能直接使用岗位名；name 仅为旧版本兼容字段，填写简短岗位名；role 填写正式岗位。',
         '员工是可复用的岗位定义，不是一次性任务、工作流节点或运行会话。role 描述长期职责；businessBoundary 明确负责什么、不负责什么以及何时停止或升级；systemPrompt 描述稳定身份和原则；operatingGuidelines 是具体执行步骤；qualityStandards 是可检查的合格标准。一次性用户需求应留在工作流节点 instruction 或员工运行任务中，不要硬编码进长期档案。',
         'operatingGuidelines 和 qualityStandards 必须是具体、可执行的字符串数组；capabilities 只能使用 research、copywriting、image-generation、file-read、file-write、workflow；skillIds 必须是技能 ID 字符串数组，没有明确技能时输出空数组。',
         '不要输出 id、version、schemaVersion、createdAt、updatedAt 或 builtIn；不要生成 API Key、密码、Token、任意代码或危险命令。',
@@ -361,12 +372,17 @@ export class EmployeeService {
     })
     const raw = extractJsonDocument(response)
     if (!isRecord(raw)) throw new Error('AI 返回的员工档案格式无效')
+    const generatedName = stringValue(raw.name) || stringValue(raw.role)
+    const generatedDisplayName = stringValue(raw.displayName) || generatedName
     const normalized = normalizeDefinition({
       ...raw,
+      name: generatedName,
+      displayName: generatedDisplayName,
       id: `generated-${randomUUID()}`,
       builtIn: false,
     })
     return {
+      displayName: normalized.displayName ?? normalized.name,
       name: normalized.name,
       role: normalized.role,
       description: normalized.description,
@@ -558,6 +574,9 @@ function normalizeDefinition(value: unknown): EmployeeDefinition {
   if (!isRecord(value)) throw new Error('Employee must be an object')
   const id = stringValue(value.id)
   const name = stringValue(value.name)
+  const displayName = stringValue(value.displayName) || (value.builtIn === true
+    ? DEFAULT_EMPLOYEES.find((employee) => employee.id === id)?.displayName ?? name
+    : name)
   const role = stringValue(value.role)
   const systemPrompt = stringValue(value.systemPrompt)
   if (!ID_PATTERN.test(id)) throw new Error(`Invalid employee id "${id}"`)
@@ -573,6 +592,7 @@ function normalizeDefinition(value: unknown): EmployeeDefinition {
     schemaVersion: EMPLOYEE_SCHEMA_VERSION,
     version: positiveInteger(value.version) ?? 1,
     id,
+    displayName,
     name,
     role,
     description: stringValue(value.description),
@@ -627,7 +647,7 @@ function buildEmployeePrompt(
   sessionId?: string,
 ): string {
   return [
-    `你是“${employee.name}”，岗位是“${employee.role}”。`,
+    `你是“${employeeDisplayName(employee)}”，岗位是“${employee.role}”。`,
     `业务边界：${employee.businessBoundary}`,
     `专业原则：\n${employee.systemPrompt}`,
     `执行规范：\n${employee.operatingGuidelines.map((item) => `- ${item}`).join('\n')}`,

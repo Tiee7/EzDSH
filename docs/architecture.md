@@ -258,7 +258,7 @@ interface UpdateState {
 
 恢复能力由 EzDSH Main Process 原生实现，不依赖 DSH Runtime 插件。快照包含 `harness/` 与 `state/`，覆盖 Sessions、Settings、Skills、Plugins、Profiles、Presets 和已安装清单；每个快照同时写入 SHA-256、manifest 和插件版本清单。快照按类型轮换：普通手动快照保留最近 7 份，升级前快照保留最近 2 份，插件变更前快照保留最近 7 份，恢复前快照保留最近 1 份。
 
-Credential 明文默认不进入 Archive。受限文件（当前包括 `harness/.credentials.yaml`、`.env` 和 QQ Bridge 配置）只复制到 `backups/vault/<snapshot>/`，文件权限为 `0600`；恢复到新机器时 dry-run 会明确列出需要重新输入的 Credential。Archive 的 checksum 不通过时，恢复会拒绝执行。设置中的“校验备份”只比较 Archive 与记录的 SHA-256，不会恢复或修改数据；删除备份会同时删除 Archive、checksum、manifest 和对应的本机 vault，并拒绝删除当前恢复事务正在依赖的快照。
+Credential 明文默认不进入 Archive。受限文件（当前包括 `harness/.credentials.yaml`、`.env`、QQ Bridge 配置以及 Workflow 的加密凭证库 `state/.workflow-credentials.json`/`.key`）只复制到 `backups/vault/<snapshot>/`，文件权限为 `0600`；恢复到新机器时 dry-run 会明确列出需要重新输入的 Credential。Archive 的 checksum 不通过时，恢复会拒绝执行。设置中的“校验备份”只比较 Archive 与记录的 SHA-256，不会恢复或修改数据；删除备份会同时删除 Archive、checksum、manifest 和对应的本机 vault，并拒绝删除当前恢复事务正在依赖的快照。
 
 真实恢复先校验并解包到 staging，再以目录 rename 方式替换 `harness/` 和 `state/`；失败会回滚到恢复前目录。Session Log doctor 默认只读扫描 `harness/sessions`，只允许显式修复最后一条未完成 JSONL 记录，中间已提交损坏不会自动改写。应用完成升级后会清除升级事务；升级启动失败则保留事务并展示“恢复上一份环境”。
 
@@ -339,30 +339,37 @@ src/
 
 Workflow 是 EZDSH 的核心桌面能力，定义文件与 React Flow 解耦。Renderer 只提交 JSON-safe 的 `WorkflowDefinition`，Main Process 在持久化和执行前再次 normalize/validate；凭据、Node.js、文件系统和子进程能力不会下沉到 Renderer。
 
-产品模型保持单向关系：工作流拥有流程，专业员工只是可被工作流引用的执行角色，员工档案不拥有可执行的内部工作流。智能处理节点用于当前流程中的轻量临时推理，不要求先创建员工。
+产品模型保持单向关系：工作流拥有流程，专业员工只是可被工作流引用的执行角色，员工档案不拥有可执行的内部工作流。员工档案区分个人名字 `displayName` 与正式岗位 `role`，前者用于个性化和区分同岗位员工，后者用于职责匹配；智能处理节点用于当前流程中的轻量临时推理，不要求先创建员工。
 
 ```text
 React Flow Canvas
       │ typed contextBridge IPC
       ▼
-Main: WorkflowStore + WorkflowRunService
+Main: WorkflowStore + WorkflowRunService + local WorkflowRunWorker
+      │                    │                    │
+      │                    │                    ├─ queue/lease/effect checkpoints
+      │                    │                    ├─ state/workflows.json
+      │                    │                    └─ state/workflow-runs.json
       │                    │
-      │                    ├─ state/workflows.json
-      │                    ├─ state/workflow-runs.json
-      │                    └─ node checkpoints/events
+      │                    └─ CredentialStore + ConnectorStore/Service
+      │                         (secrets never enter Renderer or Workflow JSON)
       ▼
 DSH Runtime Session API (AI task / Employee / Skill / MCP)
 ```
 
 Schema V2 的节点类型包括 `input`、`ai-task`、`structured-extract`、`employee`、`skill`、`mcp`、`parallel`、`loop`、`sleep`、`condition`、`switch`、`approval`、`wait-input`、`sub-workflow`、`object-builder`、`list-operator`、`merge`、`transform`、`text-merge`、`output`、`shell`、`file`、`http` 和 `code`。加载 Schema V1 时，旧 `agent` 节点会在 normalize 边界迁移成 `ai-task`，默认标签从 Agent 改成“智能处理”，自定义标签保留；旧 `approval` 节点继续读取，新建流程使用 `wait-input` 的 approval 预设。
 
-`ai-task`、`employee`、Skill 和 MCP 节点通过现有 `DshSessionClient` 创建独立 Session。员工节点先通过 `EmployeeService.get(employeeId)` 解析启用的档案，再把业务边界、工作原则、执行规范、质量标准和技能 ID 注入节点执行；不存在或停用的员工会让节点明确失败。Parallel 以受控并发 fan-out 执行多条指令，Loop 对上游数组逐项执行，Approval 在 Main 进程等待用户决定。
+`ai-task`、`employee`、Skill 和 MCP 节点通过现有 `DshSessionClient` 创建独立 Session。员工节点先通过 `EmployeeService.get(employeeId)` 解析启用的档案，再把个人名字、正式岗位、业务边界、工作原则、执行规范、质量标准和技能 ID 注入节点执行；不存在或停用的员工会让节点明确失败。Parallel 以受控并发 fan-out 执行多条指令，Loop 对上游数组逐项执行，Approval 在 Main 进程等待用户决定。
 
 节点输入输出使用 `WorkflowValue`，即 JSON-safe 的标量、数组和对象。智能处理和员工节点可以输出文本或 JSON；JSON 第一次解析失败时，适配器在同一个 Session 中请求一次格式修复，第二次失败才终止节点。这样桌面端不依赖 Runtime 内部未稳定的 Workflow RPC，同时仍可使用 DSH 已安装的 Skill/MCP 工具。
 
-每个运行记录保存工作流 revision、输入、节点状态、节点输出、错误和事件。节点完成或失败后立即原子写入 `state/workflow-runs.json`；应用重启会把 `queued/running` 记录标记为 `paused`，用户可从最后一个未完成节点恢复。取消在节点之间和 DSH Session 层协作执行；正在运行的外部进程不能被 Renderer 直接杀死。
+每个运行记录保存工作流 revision、输入、节点状态、节点输出、错误、事件以及可选的队列、租约、幂等键和外部副作用状态。节点完成或失败后立即原子写入 `state/workflow-runs.json`；应用运行期间由一个本地 `WorkflowRunWorker` 从持久队列原子抢占记录并续租，重启时会回收旧租约：没有外部副作用的运行重新排队，已准备/派发/确认但未完成落盘的副作用则标记为未知并暂停，绝不自动重放。相同工作流 revision 只有在调用方显式提供相同幂等键时才去重。
 
-Shell/File 是高风险节点：运行按钮必须明确勾选授权，Shell 使用 `shell:false` 且拒绝控制字符，File 只接受 Workflow 工作目录内的相对路径，所有路径由 Main 重新解析和 containment-check。AI 生成只返回待审阅草稿，先做 JSON 提取、Schema normalize 和安全校验，用户保存后才进入定义存储。
+重试是有上限的显式策略：确定性节点可以按指数退避重试；托管 HTTP 连接器只有在声明 `idempotent` 模式、远端支持 `Idempotency-Key` 时才允许写请求重试。原始 HTTP、MCP、Shell、File、Code 和子工作流不会被通用重试或猜测性回滚；不确定副作用必须人工核对，补偿只能执行工作流定义中明确声明的反向 Workflow。取消先持久化请求，再向 DSH Session、HTTP 和子进程传递 `AbortSignal`；租约丢失时停止写入旧 Worker 的终态。
+
+AI 生成任务另存 `workflow-generation-history.json`，关键阶段保存 checkpoint 和生成用 Runtime Session；网络、格式错误、用户终止或重启后可从生成历史继续，已完成的员工处理不会重复，Session 在草稿校验成功后才归档。该 Worker 是应用进程内的本地执行器，不是 24 小时后台服务或分布式队列。
+
+Shell/File 是高风险节点：运行按钮必须明确勾选授权，Shell 使用 `shell:false` 且拒绝控制字符，File 只接受 Workflow 工作目录内的相对路径，所有路径由 Main 重新解析和 containment-check。托管连接器只允许 HTTPS、固定路径前缀、公共 DNS 目标和凭证 scope 与工作流权限/本次运行 grant 的交集；凭证元数据可经 IPC 查看，但密钥只在 Main 进程临时注入请求头，响应和错误会脱敏。原始 URL HTTP 仅为兼容旧嵌入，生产组合默认关闭。AI 生成只返回待审阅草稿，先做 JSON 提取、Schema normalize 和安全校验，用户保存后才进入定义存储。
 
 员工档案使用 Schema V2，包含档案版本、业务边界、执行规范、质量标准和技能 ID。旧 Employee 的线性步骤在加载时迁移成非执行性的执行规范。Main 侧快速转换只生成 `input → employee → output`，不会复制出隐藏的员工内部流程。
 

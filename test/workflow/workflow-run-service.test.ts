@@ -787,6 +787,71 @@ describe('workflow run service', () => {
     expect(generationPrompt).toContain('员工是可复用的专业岗位')
   })
 
+  it('loads workflow documentation at generation time without truncating the generation context', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-generation-docs-'))
+    const complete = vi.fn(async () => JSON.stringify({
+      name: '文档读取测试', description: '', nodes: [
+        { id: 'input', type: 'input', label: '输入', config: {}, position: { x: 0, y: 0 } },
+        { id: 'output', type: 'output', label: '输出', config: {}, position: { x: 200, y: 0 } },
+      ], edges: [{ id: 'input-output', source: 'input', target: 'output' }],
+    }))
+    let loads = 0
+    const documentation = `${'规则 '.repeat(30_005)}文档尾部仍然必须被读取`
+    const service = new WorkflowRunService({
+      workflowStore: new WorkflowStore(dir),
+      runStore: new WorkflowRunStore(dir),
+      workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      loadWorkflowAiDocumentation: async () => {
+        loads += 1
+        return documentation
+      },
+      lightweightClient: { complete },
+    })
+
+    expect(loads).toBe(0)
+    await service.generate({ prompt: '生成一个简单工作流' })
+
+    expect(loads).toBe(1)
+    expect(complete.mock.calls[0]?.[0]?.systemPrompt).toContain('文档尾部仍然必须被读取')
+  })
+
+  it('prefilters a large employee catalog and sends full profiles only for selected employees', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-generation-employee-selection-'))
+    const employees = Array.from({ length: 13 }, (_, index) => ({ ...reviewer(), id: `employee-${index}`, name: `员工${index}` }))
+    const complete = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({ employeeIds: ['employee-7'], reason: '匹配研究职责', missingRoles: [] }))
+      .mockResolvedValueOnce(JSON.stringify({
+        name: '员工筛选工作流', description: '', nodes: [
+          { id: 'input', type: 'input', label: '输入', config: {}, position: { x: 0, y: 0 } },
+          { id: 'employee-node', type: 'employee', label: '员工7', config: { employeeId: 'employee-7', instruction: '完成研究', outputMode: 'text' }, position: { x: 200, y: 0 } },
+          { id: 'output', type: 'output', label: '输出', config: {}, position: { x: 400, y: 0 } },
+        ], edges: [
+          { id: 'input-employee', source: 'input', target: 'employee-node' },
+          { id: 'employee-output', source: 'employee-node', target: 'output' },
+        ],
+      }))
+    const service = new WorkflowRunService({
+      workflowStore: new WorkflowStore(dir),
+      runStore: new WorkflowRunStore(dir),
+      workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: (id) => employees.find((employee) => employee.id === id),
+      listEmployees: () => employees,
+      lightweightClient: { complete },
+    })
+
+    await service.generate({ prompt: '生成一个研究工作流' })
+
+    expect(complete).toHaveBeenCalledTimes(2)
+    expect(complete.mock.calls[0]?.[0]?.systemPrompt).toContain('employee-0')
+    expect(complete.mock.calls[0]?.[0]?.systemPrompt).toContain('employee-12')
+    expect(complete.mock.calls[1]?.[0]?.systemPrompt).toContain('employee-7')
+    expect(complete.mock.calls[1]?.[0]?.systemPrompt).toContain('检查事实')
+    expect(complete.mock.calls[1]?.[0]?.systemPrompt).not.toContain('员工0')
+  })
+
   it('modifies an existing workflow with a dedicated prompt and reports deleted nodes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-modify-'))
     const current = { ...graph(), generationPrompt: '生成一个条件分支工作流' }
@@ -1407,5 +1472,45 @@ describe('workflow run service', () => {
     expect(waiting.waitingApprovalNodeId).toBe('approval')
     await service.approve(initial.id, true)
     expect((await eventually(service, initial.id)).status).toBe('completed')
+  })
+
+  it('runs explicit compensation actions in reverse order', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-'))
+    const workflowStore = new WorkflowStore(dir)
+    const undo = await workflowStore.create({
+      id: 'workflow-undo', name: 'Undo', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 200, y: 0 } },
+      ], edges: [{ id: 'undo-edge', source: 'input', target: 'output' }],
+    })
+    const main = await workflowStore.create({
+      id: 'workflow-compensated', name: 'Compensated', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        {
+          id: 'effect', type: 'mcp', label: 'Effect', config: { tool: 'publish', arguments: {} }, position: { x: 200, y: 0 },
+          compensation: { type: 'workflow', workflowId: undo.id, input: { undoValue: '{{value}}' } },
+        },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'main-a', source: 'input', target: 'effect' }, { id: 'main-b', source: 'effect', target: 'output' }],
+    })
+    const executeSubWorkflow = vi.fn(async () => 'undone')
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      mcpClient: { call: async () => 'published' },
+      executeSubWorkflow,
+    })
+
+    const run = await service.start(main.id, 'order-42')
+    const completed = await eventually(service, run.id)
+    expect(completed.status).toBe('completed')
+    const compensated = await service.compensate(run.id)
+
+    expect(executeSubWorkflow).toHaveBeenCalledWith(undo.id, { undoValue: 'published' }, true, undefined, expect.any(Object))
+    expect(compensated.compensationStack).toMatchObject([{ sourceNodeId: 'effect', status: 'completed' }])
   })
 })

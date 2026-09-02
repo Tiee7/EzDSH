@@ -70,6 +70,9 @@ import type {
   WorkflowUpdateInput,
   WorkflowValue,
   WorkflowModelOption,
+  WorkflowCredentialMetadata,
+  WorkflowCredentialUpsertInput,
+  WorkflowHttpConnector,
 } from './workflow.js'
 
 /** Payload sent from main to renderer when a deep-link install should begin. */
@@ -146,7 +149,10 @@ export interface EzDSHBridge {
     remove(id: string): Promise<void>
     duplicate(id: string): Promise<WorkflowDefinition>
     generate(request: WorkflowGenerateRequest): Promise<WorkflowGenerateResult>
+    cancelGeneration(id: string): Promise<WorkflowGenerationRecord>
+    resumeGeneration(id: string): Promise<WorkflowGenerationRecord>
     modify(request: WorkflowModifyRequest): Promise<WorkflowModifyResult>
+    cancelModification(id: string): Promise<WorkflowModificationRecord>
     listModificationHistory(workflowId?: string): Promise<WorkflowModificationRecord[]>
     onModificationStateChange(listener: (record: WorkflowModificationRecord) => void): () => void
     listGenerationHistory(): Promise<WorkflowGenerationRecord[]>
@@ -159,7 +165,20 @@ export interface EzDSHBridge {
     resume(runId: string): Promise<WorkflowRunRecord>
     cancel(runId: string): Promise<WorkflowRunRecord>
     approve(runId: string, approved: boolean): Promise<WorkflowRunRecord>
+    compensate(runId: string): Promise<WorkflowRunRecord>
     onStateChange(listener: (record: WorkflowRunRecord) => void): () => void
+  }
+  /** Metadata-only credential APIs; secret values are accepted only by upsert and never returned. */
+  workflowCredentials: {
+    list(): Promise<WorkflowCredentialMetadata[]>
+    upsert(input: WorkflowCredentialUpsertInput): Promise<WorkflowCredentialMetadata>
+    remove(id: string): Promise<void>
+  }
+  workflowConnectors: {
+    list(): Promise<WorkflowHttpConnector[]>
+    get(id: string): Promise<WorkflowHttpConnector | undefined>
+    upsert(input: WorkflowHttpConnector): Promise<WorkflowHttpConnector>
+    remove(id: string): Promise<void>
   }
   settings: {
     setLocale(locale: AppLocale): Promise<void>
