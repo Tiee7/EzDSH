@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultWorkflow } from '../../src/shared/workflow.js'
 import { computeWorkflowDefinitionSha256, verifyWorkflowReleaseIntegrity } from '../../src/main/workflow/workflow-release-integrity.js'
-import { deriveEnvironmentConnectorGrants, normalizeWorkflowCustomerEnvironment, normalizeWorkflowRelease, workflowReleaseSummary } from '../../src/shared/workflow-operations.js'
+import { deriveEnvironmentConnectorGrants, normalizeWorkflowCustomerEnvironment, normalizeWorkflowObservationEvent, normalizeWorkflowRelease, workflowReleaseSummary } from '../../src/shared/workflow-operations.js'
 
 describe('workflow operations contracts', () => {
   it('rejects production shell capability while accepting a valid environment', () => {
@@ -44,6 +44,32 @@ describe('workflow operations contracts', () => {
       connectorGrants: [{ connectorId: 'crm', operations: ['write'] }],
       createdAt: '2026-09-03T00:00:00.000Z', publishedAt: '2026-09-03T00:00:00.000Z',
     })).toBeUndefined()
+  })
+
+  it('rejects sensitive HTTP header names from a release snapshot', () => {
+    const workflowSnapshot = createDefaultWorkflow('无秘密快照')
+    workflowSnapshot.nodes.push({
+      id: 'request', type: 'http', label: '请求', position: { x: 200, y: 0 },
+      config: { method: 'GET', url: 'https://api.example.com/orders', headers: { Authorization: 'Bearer secret' }, responseMode: 'json' },
+    })
+    const raw = {
+      id: 'release-acme-sensitive', environmentId: 'customer-acme-prod', workflowId: workflowSnapshot.id,
+      workflowRevision: workflowSnapshot.revision, workflowSnapshot, contentSha256: 'a'.repeat(64), status: 'published', connectorGrants: [],
+      createdAt: '2026-09-03T00:00:00.000Z', publishedAt: '2026-09-03T00:00:00.000Z',
+    }
+    expect(normalizeWorkflowRelease(raw)).toBeUndefined()
+    expect(() => computeWorkflowDefinitionSha256(workflowSnapshot)).toThrow(/sensitive HTTP header/u)
+  })
+
+  it('normalizes observations only from fixed metadata', () => {
+    const event = {
+      id: 'observation-run-1', environmentId: 'customer-acme-prod', releaseId: 'release-acme-1', runId: 'run-1', traceId: 'trace-1',
+      time: '2026-09-03T00:00:00.000Z', kind: 'run', action: 'run-started', severity: 'info', outcome: 'started',
+    }
+    expect(normalizeWorkflowObservationEvent(event)).toEqual(event)
+    expect(normalizeWorkflowObservationEvent({ ...event, action: 'customer prompt: secret' })).toBeUndefined()
+    expect(normalizeWorkflowObservationEvent({ ...event, message: 'Authorization: secret body=private' })).toBeUndefined()
+    expect(normalizeWorkflowObservationEvent({ ...event, payload: { prompt: 'private' } })).toBeUndefined()
   })
 
   it('verifies a canonical snapshot digest and rejects mutation or mismatch', () => {

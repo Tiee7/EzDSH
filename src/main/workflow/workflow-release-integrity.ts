@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { normalizeWorkflow, type WorkflowDefinition } from '../../shared/workflow.js'
-import type { WorkflowRelease } from '../../shared/workflow-operations.js'
+import { workflowSnapshotHasSensitiveHttpHeaders, type WorkflowRelease } from '../../shared/workflow-operations.js'
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize)
@@ -15,6 +15,7 @@ function canonicalize(value: unknown): unknown {
 export function canonicalizeWorkflowDefinition(workflow: WorkflowDefinition): string {
   const normalized = normalizeWorkflow(workflow)
   if (normalized === undefined) throw new Error('Invalid workflow release snapshot')
+  if (workflowSnapshotHasSensitiveHttpHeaders(normalized)) throw new Error('Workflow release snapshot contains a sensitive HTTP header')
   return JSON.stringify(canonicalize(normalized))
 }
 
@@ -24,5 +25,9 @@ export function computeWorkflowDefinitionSha256(workflow: WorkflowDefinition): s
 
 /** Confirm that a release's pinned digest still matches its immutable workflow snapshot. */
 export function verifyWorkflowReleaseIntegrity(release: WorkflowRelease): boolean {
-  return computeWorkflowDefinitionSha256(release.workflowSnapshot) === release.contentSha256
+  try {
+    return computeWorkflowDefinitionSha256(release.workflowSnapshot) === release.contentSha256
+  } catch {
+    return false
+  }
 }

@@ -1,4 +1,4 @@
-import { cloneWorkflow, normalizeWorkflow, type WorkflowConnectorGrant, type WorkflowDefinition } from './workflow.js'
+import { cloneWorkflow, normalizeWorkflow, type WorkflowConnectorGrant, type WorkflowDefinition, type WorkflowRunEventType } from './workflow.js'
 
 export type WorkflowEnvironmentKind = 'development' | 'staging' | 'production'
 
@@ -48,16 +48,20 @@ export interface WorkflowObservationEvent {
   traceId?: string
   time: string
   kind: 'run' | 'node' | 'effect' | 'deployment'
-  action: string
+  action: WorkflowObservationAction
   severity: 'info' | 'warning' | 'error'
   outcome?: 'started' | 'succeeded' | 'failed' | 'unknown' | 'cancelled'
 }
+
+export type WorkflowDeploymentAction = 'release-published' | 'release-superseded' | 'release-rolled-back'
+export type WorkflowObservationAction = WorkflowRunEventType | WorkflowDeploymentAction
+export type WorkflowHealthReason = 'no-observations' | 'recent-failures' | 'release-rolled-back' | 'healthy'
 
 export interface WorkflowOperationsHealth {
   environmentId: string
   status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
   observedAt: string
-  message?: string
+  reason: WorkflowHealthReason
 }
 
 export interface WorkflowReleasePublishInput {
@@ -69,6 +73,11 @@ export interface WorkflowReleasePublishInput {
 
 const environmentIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u
 const sha256Pattern = /^[a-f0-9]{64}$/iu
+const sensitiveHttpHeaderNames = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key', 'api-key', 'x-auth-token'])
+const observationActions = new Set<WorkflowObservationAction>([
+  'run-created', 'run-started', 'node-started', 'node-retry', 'node-effect-prepared', 'node-effect-dispatched', 'node-effect-confirmed', 'node-completed', 'node-skipped', 'node-failed', 'compensation-started', 'compensation-completed', 'compensation-failed', 'approval-requested', 'approval-resolved', 'run-completed', 'run-failed', 'run-paused', 'run-cancelled',
+  'release-published', 'release-superseded', 'release-rolled-back',
+])
 
 function normalizeRequiredString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
@@ -105,6 +114,11 @@ export function workflowConnectorGrantsAreSubsetOfPolicy(workflow: WorkflowDefin
     const allowed = policy.get(grant.connectorId)
     return allowed !== undefined && grant.operations.every((operation) => allowed.has(operation))
   })
+}
+
+/** Release snapshots keep static templates only; connector credentials are injected at execution time. */
+export function workflowSnapshotHasSensitiveHttpHeaders(workflow: WorkflowDefinition): boolean {
+  return workflow.nodes.some((node) => node.type === 'http' && Object.keys(node.config.headers).some((name) => sensitiveHttpHeaderNames.has(name.trim().toLowerCase())))
 }
 
 export function normalizeWorkflowCustomerEnvironment(value: unknown): WorkflowCustomerEnvironment | undefined {
@@ -150,7 +164,7 @@ export function normalizeWorkflowRelease(value: unknown): WorkflowRelease | unde
   const workflowSnapshot = normalizeWorkflow(input.workflowSnapshot)
   const connectorGrants = normalizeConnectorGrants(input.connectorGrants)
   if (id === undefined || !environmentIdPattern.test(id) || environmentId === undefined || !environmentIdPattern.test(environmentId) || workflowId === undefined || !environmentIdPattern.test(workflowId) || contentSha256 === undefined || !sha256Pattern.test(contentSha256) || createdAt === undefined || publishedAt === undefined || workflowSnapshot === undefined || connectorGrants === undefined) return undefined
-  if (typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1 || workflowId !== workflowSnapshot.id || workflowRevision !== workflowSnapshot.revision || !workflowConnectorGrantsAreSubsetOfPolicy(workflowSnapshot, connectorGrants)) return undefined
+  if (typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1 || workflowId !== workflowSnapshot.id || workflowRevision !== workflowSnapshot.revision || workflowSnapshotHasSensitiveHttpHeaders(workflowSnapshot) || !workflowConnectorGrantsAreSubsetOfPolicy(workflowSnapshot, connectorGrants)) return undefined
   if (input.status !== 'published' && input.status !== 'superseded' && input.status !== 'rolled-back') return undefined
   return {
     id,
@@ -176,6 +190,36 @@ export function workflowReleaseSummary(release: WorkflowRelease): WorkflowReleas
     status: release.status,
     createdAt: release.createdAt,
     publishedAt: release.publishedAt,
+  }
+}
+
+/** Reject arbitrary event payloads so observation persistence cannot copy runtime data. */
+export function normalizeWorkflowObservationEvent(value: unknown): WorkflowObservationEvent | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const input = value as Record<string, unknown>
+  const knownKeys = new Set(['id', 'environmentId', 'releaseId', 'runId', 'traceId', 'time', 'kind', 'action', 'severity', 'outcome'])
+  if (Object.keys(input).some((key) => !knownKeys.has(key))) return undefined
+  const id = normalizeRequiredString(input.id)
+  const environmentId = normalizeRequiredString(input.environmentId)
+  const time = normalizeDate(input.time)
+  if (id === undefined || !environmentIdPattern.test(id) || environmentId === undefined || !environmentIdPattern.test(environmentId) || time === undefined) return undefined
+  if (input.kind !== 'run' && input.kind !== 'node' && input.kind !== 'effect' && input.kind !== 'deployment') return undefined
+  if (typeof input.action !== 'string' || !observationActions.has(input.action as WorkflowObservationAction)) return undefined
+  if (input.severity !== 'info' && input.severity !== 'warning' && input.severity !== 'error') return undefined
+  if (input.outcome !== undefined && input.outcome !== 'started' && input.outcome !== 'succeeded' && input.outcome !== 'failed' && input.outcome !== 'unknown' && input.outcome !== 'cancelled') return undefined
+  const optionalIds = [input.releaseId, input.runId, input.traceId].map(normalizeRequiredString)
+  if ([input.releaseId, input.runId, input.traceId].some((value, index) => value !== undefined && (optionalIds[index] === undefined || !environmentIdPattern.test(optionalIds[index])))) return undefined
+  return {
+    id,
+    environmentId,
+    ...(optionalIds[0] === undefined ? {} : { releaseId: optionalIds[0] }),
+    ...(optionalIds[1] === undefined ? {} : { runId: optionalIds[1] }),
+    ...(optionalIds[2] === undefined ? {} : { traceId: optionalIds[2] }),
+    time,
+    kind: input.kind,
+    action: input.action as WorkflowObservationAction,
+    severity: input.severity,
+    ...(input.outcome === undefined ? {} : { outcome: input.outcome }),
   }
 }
 
