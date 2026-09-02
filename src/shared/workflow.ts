@@ -521,6 +521,14 @@ export interface WorkflowRunRecord {
   id: string
   workflowId: string
   workflowRevision: number
+  /** Customer execution context; omitted for local ad-hoc runs. */
+  environmentId?: string
+  /** Immutable release that selected this run's workflow snapshot. */
+  releaseId?: string
+  /** Correlates this run with redacted operational observations. */
+  traceId?: string
+  /** Main-process-only immutable release snapshot; never accepted from renderer run options. */
+  workflowSnapshot?: WorkflowDefinition
   /** Caller-supplied de-duplication key. Omitted runs are never inferred to be equivalent. */
   idempotencyKey?: string
   status: WorkflowRunStatus
@@ -559,6 +567,9 @@ export interface WorkflowRunOptions {
   model?: WorkflowModelSelection
   /** Run an immutable saved workflow revision when supplied. */
   workflowRevision?: number
+  environmentId?: string
+  releaseId?: string
+  traceId?: string
 }
 
 export interface WorkflowModelSelection {
