@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultWorkflow } from '../../src/shared/workflow.js'
+import { computeWorkflowDefinitionSha256, verifyWorkflowReleaseIntegrity } from '../../src/main/workflow/workflow-release-integrity.js'
 import { deriveEnvironmentConnectorGrants, normalizeWorkflowCustomerEnvironment, normalizeWorkflowRelease, workflowReleaseSummary } from '../../src/shared/workflow-operations.js'
 
 describe('workflow operations contracts', () => {
@@ -10,11 +11,13 @@ describe('workflow operations contracts', () => {
       createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z',
     }
     expect(normalizeWorkflowCustomerEnvironment({ ...common, allowShellFile: true })).toBeUndefined()
+    expect(normalizeWorkflowCustomerEnvironment({ ...common, allowShellFile: false, allowCode: true })).toBeUndefined()
     expect(normalizeWorkflowCustomerEnvironment({ ...common, allowShellFile: false })?.connectorIds).toEqual(['crm'])
   })
 
   it('keeps a validated release digest in its snapshot-free summary', () => {
     const workflowSnapshot = createDefaultWorkflow('发布快照')
+    workflowSnapshot.permissionPolicy = { connectors: [{ connectorId: 'crm', operations: ['read'] }] }
     const raw = {
       id: 'release-acme-1', environmentId: 'customer-acme-prod', workflowId: workflowSnapshot.id,
       workflowRevision: workflowSnapshot.revision, workflowSnapshot,
@@ -30,6 +33,32 @@ describe('workflow operations contracts', () => {
       contentSha256: raw.contentSha256, status: 'published', createdAt: raw.createdAt, publishedAt: raw.publishedAt,
     })
     expect(normalizeWorkflowRelease({ ...raw, contentSha256: 'not-a-digest' })).toBeUndefined()
+  })
+
+  it('rejects release grants that exceed the snapshot connector policy', () => {
+    const workflowSnapshot = createDefaultWorkflow('最小授权')
+    workflowSnapshot.permissionPolicy = { connectors: [{ connectorId: 'crm', operations: ['read'] }] }
+    expect(normalizeWorkflowRelease({
+      id: 'release-acme-escalation', environmentId: 'customer-acme-prod', workflowId: workflowSnapshot.id,
+      workflowRevision: workflowSnapshot.revision, workflowSnapshot, contentSha256: 'a'.repeat(64), status: 'published',
+      connectorGrants: [{ connectorId: 'crm', operations: ['write'] }],
+      createdAt: '2026-09-03T00:00:00.000Z', publishedAt: '2026-09-03T00:00:00.000Z',
+    })).toBeUndefined()
+  })
+
+  it('verifies a canonical snapshot digest and rejects mutation or mismatch', () => {
+    const workflowSnapshot = createDefaultWorkflow('完整性快照')
+    const contentSha256 = computeWorkflowDefinitionSha256(workflowSnapshot)
+    const release = normalizeWorkflowRelease({
+      id: 'release-acme-integrity', environmentId: 'customer-acme-prod', workflowId: workflowSnapshot.id,
+      workflowRevision: workflowSnapshot.revision, workflowSnapshot, contentSha256, status: 'published', connectorGrants: [],
+      createdAt: '2026-09-03T00:00:00.000Z', publishedAt: '2026-09-03T00:00:00.000Z',
+    })!
+    expect(verifyWorkflowReleaseIntegrity(release)).toBe(true)
+    expect(computeWorkflowDefinitionSha256(Object.fromEntries(Object.entries(workflowSnapshot).reverse()) as typeof workflowSnapshot)).toBe(contentSha256)
+    expect(verifyWorkflowReleaseIntegrity({ ...release, contentSha256: 'b'.repeat(64) })).toBe(false)
+    release.workflowSnapshot.name = '已篡改'
+    expect(verifyWorkflowReleaseIntegrity(release)).toBe(false)
   })
 
   it('intersects workflow connector policy with the environment allowlist', () => {

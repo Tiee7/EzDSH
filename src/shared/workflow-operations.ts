@@ -98,6 +98,15 @@ function normalizeConnectorGrants(value: unknown): WorkflowConnectorGrant[] | un
   return [...grants.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
 }
 
+/** True only when every release grant is already permitted by the workflow snapshot. */
+export function workflowConnectorGrantsAreSubsetOfPolicy(workflow: WorkflowDefinition, grants: readonly WorkflowConnectorGrant[]): boolean {
+  const policy = new Map((workflow.permissionPolicy?.connectors ?? []).map((permission) => [permission.connectorId.trim(), new Set(permission.operations)]))
+  return grants.every((grant) => {
+    const allowed = policy.get(grant.connectorId)
+    return allowed !== undefined && grant.operations.every((operation) => allowed.has(operation))
+  })
+}
+
 export function normalizeWorkflowCustomerEnvironment(value: unknown): WorkflowCustomerEnvironment | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const input = value as Record<string, unknown>
@@ -135,18 +144,19 @@ export function normalizeWorkflowRelease(value: unknown): WorkflowRelease | unde
   const environmentId = normalizeRequiredString(input.environmentId)
   const workflowId = normalizeRequiredString(input.workflowId)
   const contentSha256 = normalizeRequiredString(input.contentSha256)
+  const workflowRevision = input.workflowRevision
   const createdAt = normalizeDate(input.createdAt)
   const publishedAt = normalizeDate(input.publishedAt)
   const workflowSnapshot = normalizeWorkflow(input.workflowSnapshot)
   const connectorGrants = normalizeConnectorGrants(input.connectorGrants)
   if (id === undefined || !environmentIdPattern.test(id) || environmentId === undefined || !environmentIdPattern.test(environmentId) || workflowId === undefined || !environmentIdPattern.test(workflowId) || contentSha256 === undefined || !sha256Pattern.test(contentSha256) || createdAt === undefined || publishedAt === undefined || workflowSnapshot === undefined || connectorGrants === undefined) return undefined
-  if (!Number.isInteger(input.workflowRevision) || input.workflowRevision < 1 || workflowId !== workflowSnapshot.id || input.workflowRevision !== workflowSnapshot.revision) return undefined
+  if (typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1 || workflowId !== workflowSnapshot.id || workflowRevision !== workflowSnapshot.revision || !workflowConnectorGrantsAreSubsetOfPolicy(workflowSnapshot, connectorGrants)) return undefined
   if (input.status !== 'published' && input.status !== 'superseded' && input.status !== 'rolled-back') return undefined
   return {
     id,
     environmentId,
     workflowId,
-    workflowRevision: input.workflowRevision,
+    workflowRevision,
     contentSha256: contentSha256.toLowerCase(),
     workflowSnapshot: cloneWorkflow(workflowSnapshot),
     status: input.status,
