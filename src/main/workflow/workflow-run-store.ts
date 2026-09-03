@@ -186,6 +186,8 @@ export class WorkflowRunStore {
           candidate.workflowId === snapshot.workflowId
           && candidate.workflowRevision === snapshot.workflowRevision
           && candidate.idempotencyKey === idempotencyKey
+          && candidate.environmentId === snapshot.environmentId
+          && candidate.releaseId === snapshot.releaseId
         ))
         if (existing !== undefined) return cloneWorkflow(existing)
       }

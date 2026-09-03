@@ -31,9 +31,8 @@ export class WorkflowDeploymentService {
     if (workflow.enabled !== true) throw new Error('只能发布已启用的工作流')
     assertValidWorkflow(workflow, '发布工作流')
     const environment = this.requireActiveEnvironment(input.environmentId)
-    const connectorGrants = deriveEnvironmentConnectorGrants(workflow, environment)
-    this.assertDeployableWorkflow(workflow, environment, connectorGrants)
-    const workflowSnapshot = cloneWorkflow(workflow)
+    const connectorGrants = this.collectReleaseConnectorGrants(workflow, environment)
+    const workflowSnapshot = withMergedConnectorPolicy(cloneWorkflow(workflow), connectorGrants)
     return this.options.releaseStore.publish({
       id: input.id?.trim() || `release-${randomUUID()}`,
       environmentId: environment.id,
@@ -102,12 +101,35 @@ export class WorkflowDeploymentService {
     return release
   }
 
-  private assertDeployableWorkflow(
+  private collectReleaseConnectorGrants(
     workflow: WorkflowDefinition,
     environment: WorkflowCustomerEnvironment,
-    connectorGrants: WorkflowConnectorGrant[],
+  ): WorkflowConnectorGrant[] {
+    const collected = new Map<string, Set<'read' | 'write'>>()
+    const visited = new Set<string>()
+    this.collectWorkflowDeploymentState(workflow, environment, collected, [], visited)
+    return [...collected.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
+  }
+
+  private collectWorkflowDeploymentState(
+    workflow: WorkflowDefinition,
+    environment: WorkflowCustomerEnvironment,
+    collected: Map<string, Set<'read' | 'write'>>,
+    stack: string[],
+    visited: Set<string>,
   ): void {
+    const workflowKey = `${workflow.id}@${String(workflow.revision)}`
+    if (stack.includes(workflowKey)) throw new Error(`子工作流存在循环依赖：${[...stack, workflowKey].join(' -> ')}`)
+    if (visited.has(workflowKey)) return
+    visited.add(workflowKey)
+    const nextStack = [...stack, workflowKey]
+    const connectorGrants = deriveEnvironmentConnectorGrants(workflow, environment)
     const allowedOperations = new Map(connectorGrants.map((grant) => [grant.connectorId.trim(), new Set(grant.operations)]))
+    for (const grant of connectorGrants) {
+      const operations = collected.get(grant.connectorId) ?? new Set<'read' | 'write'>()
+      for (const operation of grant.operations) operations.add(operation)
+      if (operations.size > 0) collected.set(grant.connectorId, operations)
+    }
     for (const node of workflow.nodes) {
       if (node.type === 'http' && node.config.connectorId !== undefined) {
         const connectorId = node.config.connectorId.trim()
@@ -124,6 +146,15 @@ export class WorkflowDeploymentService {
       if (node.type === 'shell' || node.type === 'file' || node.type === 'code') {
         throw new Error(`生产环境禁止 ${node.type} 节点`)
       }
+    }
+    for (const node of workflow.nodes) {
+      if (node.type !== 'sub-workflow') continue
+      const child = this.resolveWorkflowOrThrow(
+        node.config.workflowId,
+        typeof node.config.version === 'number' ? node.config.version : undefined,
+      )
+      assertValidWorkflow(child, `发布子工作流 ${child.name}`)
+      this.collectWorkflowDeploymentState(child, environment, collected, nextStack, visited)
     }
   }
 }
@@ -147,4 +178,29 @@ function intersectConnectorGrants(
     if (operations.size > 0) narrowed.set(connectorId, operations)
   }
   return [...narrowed.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
+}
+
+function withMergedConnectorPolicy(
+  workflow: WorkflowDefinition,
+  grants: readonly WorkflowConnectorGrant[],
+): WorkflowDefinition {
+  const connectors = new Map<string, Set<'read' | 'write'>>()
+  for (const permission of workflow.permissionPolicy?.connectors ?? []) {
+    const connectorId = permission.connectorId.trim()
+    const operations = connectors.get(connectorId) ?? new Set<'read' | 'write'>()
+    for (const operation of permission.operations) operations.add(operation)
+    if (operations.size > 0) connectors.set(connectorId, operations)
+  }
+  for (const grant of grants) {
+    const connectorId = grant.connectorId.trim()
+    const operations = connectors.get(connectorId) ?? new Set<'read' | 'write'>()
+    for (const operation of grant.operations) operations.add(operation)
+    if (operations.size > 0) connectors.set(connectorId, operations)
+  }
+  return {
+    ...workflow,
+    permissionPolicy: {
+      connectors: [...connectors.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] })),
+    },
+  }
 }

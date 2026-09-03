@@ -5,6 +5,9 @@ import { join } from 'node:path'
 import { WorkflowDeploymentService } from '../../src/main/workflow/workflow-deployment-service.js'
 import { computeWorkflowDefinitionSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
 import { WorkflowEnvironmentStore } from '../../src/main/workflow/workflow-environment-store.js'
+import { WorkflowConnectorStore } from '../../src/main/workflow/workflow-connector-store.js'
+import { WorkflowCredentialStore } from '../../src/main/workflow/workflow-credential-service.js'
+import { WorkflowConnectorService } from '../../src/main/workflow/workflow-connector-service.js'
 import { WorkflowReleaseStore } from '../../src/main/workflow/workflow-release-store.js'
 import { WorkflowRunService } from '../../src/main/workflow/workflow-run-service.js'
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
@@ -172,6 +175,89 @@ describe('WorkflowDeploymentService', () => {
       allowCode: false,
       connectorGrants: [{ connectorId: 'crm', operations: ['write'] }],
     })
+  })
+
+  it('publishes child managed connector grants into the parent release and passes them to the child run', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-deployment-child-'))
+    const childRunDirectory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-deployment-child-run-'))
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const workflowStore = new WorkflowStore(directory)
+    const environmentStore = new WorkflowEnvironmentStore(directory)
+    const releaseStore = new WorkflowReleaseStore(directory, { now: () => '2026-09-03T09:00:00.000Z' })
+    const credentials = new WorkflowCredentialStore(directory)
+    const connectors = new WorkflowConnectorStore(directory)
+    await connectors.upsert({ id: 'api', name: 'API', kind: 'http', baseUrl: 'https://api.example.test/', allowedPathPrefixes: ['/items'] })
+    const connectorService = new WorkflowConnectorService({ connectors, credentials, resolveHost: async () => [{ address: '93.184.216.34' }] })
+
+    const child = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-child-connector',
+      name: 'child-connector',
+      permissionPolicy: { connectors: [{ connectorId: 'api', operations: ['read'] }] },
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'request', type: 'http', label: 'Request', config: { method: 'GET', connectorId: 'api', connectorPath: '/items', url: '', headers: {}, responseMode: 'json' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'child-a', source: 'input', target: 'request' }, { id: 'child-b', source: 'request', target: 'output' }],
+    }))
+    const parent = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-parent-release',
+      name: 'parent-release',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: child.id, waitForCompletion: true }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'parent-a', source: 'input', target: 'child' }, { id: 'parent-b', source: 'child', target: 'output' }],
+    }))
+    await environmentStore.upsert(createEnvironment({ connectorIds: ['api'] }))
+
+    const childRunService = new WorkflowRunService({
+      workflowStore,
+      runStore: new WorkflowRunStore(childRunDirectory),
+      workflowRoot: childRunDirectory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      connectorService,
+      allowLegacyHttp: false,
+    })
+    const runService = new WorkflowRunService({
+      workflowStore,
+      runStore: new WorkflowRunStore(directory),
+      workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      connectorService,
+      allowLegacyHttp: false,
+      resolveReleasedWorkflow: (releaseId) => releaseStore.get(releaseId),
+      executeSubWorkflow: async (childWorkflowId, input, waitForCompletion, version, childOptions) => {
+        const childRun = await childRunService.start(childWorkflowId, input, { ...(childOptions ?? {}), ...(typeof version === 'number' ? { workflowRevision: version } : {}) })
+        if (!waitForCompletion) return { runId: childRun.id }
+        const settled = await eventually(childRunService, childRun.id)
+        if (settled.status !== 'completed') throw new Error(settled.error ?? '子工作流执行失败')
+        return settled.output ?? null
+      },
+    })
+    const deploymentService = new WorkflowDeploymentService({
+      workflowStore,
+      environmentStore,
+      releaseStore,
+      runService,
+    })
+
+    const release = await deploymentService.publish({ workflowId: parent.id, environmentId: 'customer-acme-staging' })
+    expect(release.connectorGrants).toEqual([{ connectorId: 'api', operations: ['read'] }])
+
+    const initialRun = await deploymentService.start(release.id, { customerId: '42' })
+    const completed = await eventually(runService, initialRun.id)
+
+    expect(completed.status).toBe('completed')
+    expect(completed.connectorGrants).toEqual([{ connectorId: 'api', operations: ['read'] }])
+    expect(completed.output).toEqual({ status: 200, ok: true, headers: { 'content-type': 'application/json' }, body: { ok: true } })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await childRunService.stop()
+    await runService.stop()
   })
 
   it('rejects production releases that use raw URL HTTP, latest sub-workflows, or shell/file/code nodes', async () => {

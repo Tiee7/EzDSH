@@ -54,6 +54,35 @@ describe('workflow safe execution store', () => {
     expect(second.id).toBe(first.id)
   })
 
+  it('does not deduplicate explicit idempotency keys across different release or environment contexts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-safe-execution-'))
+    const store = new WorkflowRunStore(directory) as unknown as QueueStore
+
+    const first = await store.enqueue({
+      ...queuedRecord('run-release-a', 'publish-42'),
+      environmentId: 'customer-acme-staging',
+      releaseId: 'release-a',
+      traceId: 'trace-a',
+    })
+    const differentRelease = await store.enqueue({
+      ...queuedRecord('run-release-b', 'publish-42'),
+      environmentId: 'customer-acme-staging',
+      releaseId: 'release-b',
+      traceId: 'trace-b',
+    })
+    const differentEnvironment = await store.enqueue({
+      ...queuedRecord('run-release-c', 'publish-42'),
+      environmentId: 'customer-acme-prod',
+      releaseId: 'release-a',
+      traceId: 'trace-c',
+    })
+
+    expect(differentRelease.id).toBe('run-release-b')
+    expect(differentEnvironment.id).toBe('run-release-c')
+    expect(differentRelease.id).not.toBe(first.id)
+    expect(differentEnvironment.id).not.toBe(first.id)
+  })
+
   it('allows exactly one worker to claim a due queued run', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-safe-execution-'))
     const store = new WorkflowRunStore(directory) as unknown as QueueStore
