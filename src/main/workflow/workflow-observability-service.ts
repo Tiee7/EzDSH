@@ -35,6 +35,10 @@ function actionForReleaseStatus(status: WorkflowRelease['status']): WorkflowDepl
   }
 }
 
+function buildDeploymentObservationId(action: WorkflowDeploymentAction, releaseIdOrEnvironmentId: string, time: string): string {
+  return `deployment-${action}-${releaseIdOrEnvironmentId}-${String(Date.parse(time))}`
+}
+
 export class WorkflowObservabilityService {
   private readonly now: () => string
   private readonly recentFailureWindowMs: number
@@ -52,18 +56,16 @@ export class WorkflowObservabilityService {
     }
   }
 
-  async recordDeployment(input: WorkflowDeploymentObservationInput | WorkflowRelease): Promise<void> {
+  async recordDeployment(input: WorkflowDeploymentObservationInput | WorkflowRelease, timeOverride?: string): Promise<void> {
     const deployment = isWorkflowRelease(input)
       ? {
-          id: input.id,
           environmentId: input.environmentId,
           releaseId: input.id,
-          time: input.publishedAt,
           action: actionForReleaseStatus(input.status),
         }
       : input
-    const time = deployment.time?.trim() || this.now()
-    const id = deployment.id?.trim() || `deployment-${deployment.action}-${deployment.releaseId ?? deployment.environmentId}-${String(Date.parse(time))}`
+    const time = deployment.time?.trim() || timeOverride?.trim() || this.now()
+    const id = deployment.id?.trim() || buildDeploymentObservationId(deployment.action, deployment.releaseId ?? deployment.environmentId, time)
     await this.options.store.append({
       id,
       environmentId: deployment.environmentId,

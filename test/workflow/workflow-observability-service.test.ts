@@ -205,7 +205,7 @@ describe('WorkflowObservabilityService', () => {
     expect(persisted).not.toContain('customer prompt: secret')
   })
 
-  it('accepts a release object directly and records the release status without copying runtime data', async () => {
+  it('records each release lifecycle event with a unique observation id and the supplied lifecycle time', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-release-'))
     const store = new WorkflowObservationStore(dir)
     const service = new WorkflowObservabilityService({
@@ -221,26 +221,32 @@ describe('WorkflowObservabilityService', () => {
       workflowRevision: workflowSnapshot.revision,
       workflowSnapshot,
       contentSha256: 'a'.repeat(64),
-      status: 'rolled-back',
+      status: 'published',
       connectorGrants: [{ connectorId: 'crm', operations: ['read'] }],
       createdAt: '2026-09-03T10:00:00.000Z',
       publishedAt: '2026-09-03T10:00:00.000Z',
     })!
 
-    await service.recordDeployment(release)
+    await service.recordDeployment(release, '2026-09-03T10:00:00.000Z')
+    release.status = 'superseded'
+    await service.recordDeployment(release, '2026-09-03T10:01:00.000Z')
+    release.status = 'rolled-back'
+    await service.recordDeployment(release, '2026-09-03T10:02:00.000Z')
 
-    expect(store.list()).toEqual([
-      {
-        id: 'release-record-1',
-        environmentId: 'customer-acme-prod',
-        releaseId: 'release-record-1',
-        time: '2026-09-03T10:00:00.000Z',
-        kind: 'deployment',
-        action: 'release-rolled-back',
-        severity: 'info',
-        outcome: 'unknown',
-      },
+    const observations = store.list()
+    expect(observations).toHaveLength(3)
+    expect(new Set(observations.map((event) => event.id)).size).toBe(3)
+    expect(observations.map((event) => event.action)).toEqual([
+      'release-published',
+      'release-superseded',
+      'release-rolled-back',
     ])
-    expect(JSON.stringify(store.list())).not.toContain('发布记录')
+    expect(observations.map((event) => event.time)).toEqual([
+      '2026-09-03T10:00:00.000Z',
+      '2026-09-03T10:01:00.000Z',
+      '2026-09-03T10:02:00.000Z',
+    ])
+    expect(observations.every((event) => event.releaseId === 'release-record-1')).toBe(true)
+    expect(JSON.stringify(observations)).not.toContain('发布记录')
   })
 })
