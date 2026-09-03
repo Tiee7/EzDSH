@@ -51,6 +51,13 @@ import type {
   WorkflowCredentialUpsertInput,
   WorkflowHttpConnector,
 } from '../shared/workflow.js'
+import type {
+  WorkflowCustomerEnvironment,
+  WorkflowObservationEvent,
+  WorkflowOperationsHealth,
+  WorkflowReleasePublishInput,
+  WorkflowReleaseSummary,
+} from '../shared/workflow-operations.js'
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const result = await ipcRenderer.invoke(channel, ...args) as IpcResult<T>
@@ -177,6 +184,18 @@ const bridge: EzDSHBridge = {
       ipcRenderer.on('workflow-runs:state-change', handler)
       return () => ipcRenderer.removeListener('workflow-runs:state-change', handler)
     }
+  },
+  workflowEnvironments: {
+    list: () => invoke<WorkflowCustomerEnvironment[]>('workflow-environments:list'),
+    upsert: (input: WorkflowCustomerEnvironment) => invoke<WorkflowCustomerEnvironment>('workflow-environments:upsert', input),
+  },
+  workflowReleases: {
+    list: (workflowId?: string, environmentId?: string) => invoke<WorkflowReleaseSummary[]>('workflow-releases:list', workflowId, environmentId),
+    publish: (input: WorkflowReleasePublishInput) => invoke<WorkflowReleaseSummary>('workflow-releases:publish', input),
+    start: (releaseId: string, input: WorkflowValue, options?: WorkflowRunOptions) => invoke<WorkflowRunRecord>('workflow-releases:start', releaseId, input, options ?? {}),
+    rollback: (releaseId: string) => invoke<WorkflowReleaseSummary>('workflow-releases:rollback', releaseId),
+    listObservations: (environmentId?: string) => invoke<WorkflowObservationEvent[]>('workflow-observations:list', environmentId),
+    getHealth: (environmentId: string) => invoke<WorkflowOperationsHealth>('workflow-observability:health', environmentId),
   },
   workflowCredentials: {
     list: () => invoke<WorkflowCredentialMetadata[]>('workflow-credentials:list'),

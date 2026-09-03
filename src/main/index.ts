@@ -97,8 +97,14 @@ import { WorkflowAiDiagnostics } from './workflow/workflow-ai-diagnostics.js'
 import { WorkflowCredentialStore, createSafeStorageProtector } from './workflow/workflow-credential-service.js'
 import { WorkflowConnectorStore } from './workflow/workflow-connector-store.js'
 import { WorkflowConnectorService } from './workflow/workflow-connector-service.js'
+import { WorkflowEnvironmentStore } from './workflow/workflow-environment-store.js'
+import { WorkflowReleaseStore } from './workflow/workflow-release-store.js'
+import { WorkflowDeploymentService } from './workflow/workflow-deployment-service.js'
+import { WorkflowObservationStore } from './workflow/workflow-observation-store.js'
+import { WorkflowObservabilityService } from './workflow/workflow-observability-service.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
 import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowModifyRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue, WorkflowCredentialUpsertInput, WorkflowHttpConnector } from '../shared/workflow.js'
+import { workflowReleaseSummary, type WorkflowCustomerEnvironment, type WorkflowReleasePublishInput } from '../shared/workflow-operations.js'
 import { bindWindowClosedCleanup } from './window-lifecycle.js'
 import { shutdownExternalServicesFirst } from './shutdown.js'
 import { restartApplication, shouldRelaunchWorkspace } from './restart.js'
@@ -160,6 +166,10 @@ let workflowRunService: WorkflowRunService | undefined
 let workflowCredentialStore: WorkflowCredentialStore | undefined
 let workflowConnectorStore: WorkflowConnectorStore | undefined
 let workflowConnectorService: WorkflowConnectorService | undefined
+let workflowEnvironmentStore: WorkflowEnvironmentStore | undefined
+let workflowReleaseStore: WorkflowReleaseStore | undefined
+let workflowDeploymentService: WorkflowDeploymentService | undefined
+let workflowObservabilityService: WorkflowObservabilityService | undefined
 let workflowGenerationService: WorkflowGenerationService | undefined
 let workflowModificationService: WorkflowModificationService | undefined
 let isQuitting = false
@@ -581,6 +591,13 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
 
   workflowStore = new WorkflowStore(layout.state)
   workflowRunStore = new WorkflowRunStore(layout.state)
+  workflowEnvironmentStore = new WorkflowEnvironmentStore(layout.state)
+  workflowReleaseStore = new WorkflowReleaseStore(layout.state)
+  const workflowObservationStore = new WorkflowObservationStore(layout.state)
+  await workflowEnvironmentStore.initialize()
+  await workflowReleaseStore.initialize()
+  await workflowObservationStore.initialize()
+  workflowObservabilityService = new WorkflowObservabilityService({ store: workflowObservationStore })
   workflowCredentialStore = new WorkflowCredentialStore(layout.state, { protector: createSafeStorageProtector(safeStorage) })
   workflowConnectorStore = new WorkflowConnectorStore(layout.state)
   await workflowCredentialStore.initialize()
@@ -610,6 +627,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     lightweightClient,
     mcpClient: new WorkflowMcpClient({ patchPath: join(layout.harness, 'profiles', 'web', 'cordis.patch.yml') }),
     connectorService: workflowConnectorService,
+    resolveReleasedWorkflow: (releaseId) => workflowReleaseStore?.get(releaseId),
     allowLegacyHttp: false,
     executeSubWorkflow: async (childWorkflowId, input, waitForCompletion, version, childOptions) => {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
@@ -630,6 +648,12 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     },
     internalSessionStore: new WorkflowInternalSessionStore(layout.state),
   })
+  workflowDeploymentService = new WorkflowDeploymentService({
+    workflowStore,
+    environmentStore: workflowEnvironmentStore,
+    releaseStore: workflowReleaseStore,
+    runService: workflowRunService,
+  })
   await workflowRunService.initialize().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error('[workflows] failed to initialize:', message)
@@ -641,7 +665,10 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     const message = error instanceof Error ? error.message : String(error)
     console.error('[workflows] failed to clean retained internal sessions:', message)
   })
-  stopWorkflowWatcher = workflowRunService.watch(emitWorkflowState)
+  stopWorkflowWatcher = workflowRunService.watch((record) => {
+    void workflowObservabilityService?.observeRun(record)
+    emitWorkflowState(record)
+  })
   workflowGenerationService = new WorkflowGenerationService({ stateDir: layout.state, runService: workflowRunService, diagnostics: workflowAiDiagnostics })
   await workflowGenerationService.initialize().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
@@ -1709,6 +1736,78 @@ function registerIpcHandlers(): void {
       const employee = employeeService.get(employeeId)
       if (employee === undefined) throw new Error(`Employee "${employeeId}" was not found`)
       return success(await workflowStore.create(workflowFromEmployee(employee)))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-environments:list', async (): Promise<IpcResult<WorkflowCustomerEnvironment[]>> => {
+    try {
+      if (workflowEnvironmentStore === undefined) throw new Error('Workflow environment store is not ready')
+      await workflowEnvironmentStore.initialize()
+      return success(workflowEnvironmentStore.list())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-environments:upsert', async (_event, input: WorkflowCustomerEnvironment): Promise<IpcResult<WorkflowCustomerEnvironment>> => {
+    try {
+      if (workflowEnvironmentStore === undefined) throw new Error('Workflow environment store is not ready')
+      return success(await workflowEnvironmentStore.upsert(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-releases:list', async (_event, workflowId?: string, environmentId?: string): Promise<IpcResult<ReturnType<typeof workflowReleaseSummary>[]>> => {
+    try {
+      if (workflowReleaseStore === undefined) throw new Error('Workflow release store is not ready')
+      await workflowReleaseStore.initialize()
+      return success(workflowReleaseStore.list()
+        .filter((release) => (workflowId === undefined || release.workflowId === workflowId) && (environmentId === undefined || release.environmentId === environmentId))
+        .map(workflowReleaseSummary))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-releases:publish', async (_event, input: WorkflowReleasePublishInput): Promise<IpcResult<ReturnType<typeof workflowReleaseSummary>>> => {
+    try {
+      if (workflowDeploymentService === undefined || workflowObservabilityService === undefined) throw new Error('Workflow deployment service is not ready')
+      const release = await workflowDeploymentService.publish(input)
+      await workflowObservabilityService.recordDeployment(release)
+      return success(workflowReleaseSummary(release))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-releases:start', async (_event, releaseId: string, input: WorkflowValue, options: WorkflowRunOptions = {}): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['startReleased']>>>> => {
+    try {
+      if (workflowDeploymentService === undefined) throw new Error('Workflow deployment service is not ready')
+      return success(await workflowDeploymentService.start(releaseId, input, options))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-releases:rollback', async (_event, releaseId: string): Promise<IpcResult<ReturnType<typeof workflowReleaseSummary>>> => {
+    try {
+      if (workflowDeploymentService === undefined || workflowObservabilityService === undefined) throw new Error('Workflow deployment service is not ready')
+      const target = await workflowDeploymentService.rollback(releaseId)
+      await workflowObservabilityService.recordDeployment({ environmentId: target.environmentId, releaseId, action: 'release-rolled-back' })
+      return success(workflowReleaseSummary(target))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-observations:list', async (_event, environmentId?: string): Promise<IpcResult<Awaited<ReturnType<WorkflowObservationStore['list']>>>> => {
+    try {
+      if (workflowObservabilityService === undefined) throw new Error('Workflow observability service is not ready')
+      return success(workflowObservabilityService.list(environmentId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-observability:health', async (_event, environmentId: string): Promise<IpcResult<ReturnType<WorkflowObservabilityService['health']>>> => {
+    try {
+      if (workflowObservabilityService === undefined) throw new Error('Workflow observability service is not ready')
+      return success(workflowObservabilityService.health(environmentId))
     } catch (error) {
       return failure(error)
     }

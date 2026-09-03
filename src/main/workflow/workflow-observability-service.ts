@@ -80,6 +80,10 @@ export class WorkflowObservabilityService {
     })
   }
 
+  list(environmentId?: string): WorkflowObservationEvent[] {
+    return this.options.store.list(environmentId)
+  }
+
   health(environmentId: string): WorkflowOperationsHealth {
     const observedAt = this.now()
     const observations = this.options.store.list(environmentId)

@@ -74,6 +74,13 @@ import type {
   WorkflowCredentialUpsertInput,
   WorkflowHttpConnector,
 } from './workflow.js'
+import type {
+  WorkflowCustomerEnvironment,
+  WorkflowObservationEvent,
+  WorkflowOperationsHealth,
+  WorkflowReleasePublishInput,
+  WorkflowReleaseSummary,
+} from './workflow-operations.js'
 
 /** Payload sent from main to renderer when a deep-link install should begin. */
 export interface DeepLinkInstallTarget {
@@ -167,6 +174,19 @@ export interface EzDSHBridge {
     approve(runId: string, approved: boolean): Promise<WorkflowRunRecord>
     compensate(runId: string): Promise<WorkflowRunRecord>
     onStateChange(listener: (record: WorkflowRunRecord) => void): () => void
+  }
+  /** Local release/environment metadata APIs. Release snapshots never cross this boundary. */
+  workflowEnvironments: {
+    list(): Promise<WorkflowCustomerEnvironment[]>
+    upsert(input: WorkflowCustomerEnvironment): Promise<WorkflowCustomerEnvironment>
+  }
+  workflowReleases: {
+    list(workflowId?: string, environmentId?: string): Promise<WorkflowReleaseSummary[]>
+    publish(input: WorkflowReleasePublishInput): Promise<WorkflowReleaseSummary>
+    start(releaseId: string, input: WorkflowValue, options?: WorkflowRunOptions): Promise<WorkflowRunRecord>
+    rollback(releaseId: string): Promise<WorkflowReleaseSummary>
+    listObservations(environmentId?: string): Promise<WorkflowObservationEvent[]>
+    getHealth(environmentId: string): Promise<WorkflowOperationsHealth>
   }
   /** Metadata-only credential APIs; secret values are accepted only by upsert and never returned. */
   workflowCredentials: {

@@ -25,6 +25,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
+import type { EzDSHBridge } from '../../shared/contracts.js'
+import type { WorkflowCustomerEnvironment, WorkflowObservationEvent, WorkflowOperationsHealth, WorkflowReleaseSummary } from '../../shared/workflow-operations.js'
 import { employeeDisplayLabel, employeeDisplayName, type EmployeeCreateInput, type EmployeeSnapshot } from '../../shared/employees.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { WandMagicSparklesIcon } from '../icons/WandMagicSparklesIcon.js'
@@ -81,6 +83,126 @@ interface WorkflowPageProps {
   /** The page remains mounted across navigation, so visibility must come from App. */
   active?: boolean
   onWorkspaceModeChange?: (active: boolean) => void
+}
+
+interface WorkflowReleasePanelProps {
+  copy: AppCopy
+  workflow?: WorkflowDefinition
+  workflows?: WorkflowDefinition[]
+  locale?: AppLocale
+}
+
+function workflowBridge(): EzDSHBridge | undefined {
+  return (globalThis as typeof globalThis & { EzDSH?: EzDSHBridge }).EzDSH
+}
+
+/** Renderer-only release controls. It receives summaries and never a release snapshot. */
+export function WorkflowReleasePanel({ copy: _copy, workflow, workflows = [], locale = 'zh' }: WorkflowReleasePanelProps): JSX.Element {
+  const [environments, setEnvironments] = useState<WorkflowCustomerEnvironment[]>([])
+  const [releases, setReleases] = useState<WorkflowReleaseSummary[]>([])
+  const [observations, setObservations] = useState<WorkflowObservationEvent[]>([])
+  const [health, setHealth] = useState<WorkflowOperationsHealth>()
+  const [environmentId, setEnvironmentId] = useState('')
+  const [workflowId, setWorkflowId] = useState(workflow?.id ?? workflows[0]?.id ?? '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const selectedWorkflow = workflow ?? workflows.find((item) => item.id === workflowId)
+
+  const refresh = useCallback(async (): Promise<void> => {
+    const bridge = workflowBridge()
+    if (bridge === undefined) return
+    try {
+      const next = await bridge.workflowEnvironments.list()
+      setEnvironments(next)
+      setEnvironmentId((current) => current !== '' && next.some((item) => item.id === current) ? current : next[0]?.id ?? '')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法读取客户环境')
+    }
+  }, [])
+
+  const refreshReleaseData = useCallback(async (): Promise<void> => {
+    const bridge = workflowBridge()
+    if (bridge === undefined || environmentId === '') return
+    try {
+      const [nextReleases, nextObservations, nextHealth] = await Promise.all([
+        bridge.workflowReleases.list(selectedWorkflow?.id, environmentId),
+        bridge.workflowReleases.listObservations(environmentId),
+        bridge.workflowReleases.getHealth(environmentId),
+      ])
+      setReleases(nextReleases)
+      setObservations(nextObservations)
+      setHealth(nextHealth)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法读取发布状态')
+    }
+  }, [environmentId, selectedWorkflow?.id])
+
+  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { void refreshReleaseData() }, [refreshReleaseData])
+
+  const publish = async (): Promise<void> => {
+    const bridge = workflowBridge()
+    if (bridge === undefined || selectedWorkflow === undefined) return
+    setBusy(true); setError('')
+    try {
+      const targetEnvironmentId = environmentId || (await bridge.workflowEnvironments.list()).find((item) => item.status === 'active')?.id
+      if (targetEnvironmentId === undefined) throw new Error('请先创建一个启用中的本地客户环境。')
+      await bridge.workflowReleases.publish({ workflowId: selectedWorkflow.id, environmentId: targetEnvironmentId })
+      await refreshReleaseData()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '发布失败')
+    } finally { setBusy(false) }
+  }
+
+  const createEnvironment = async (): Promise<void> => {
+    const bridge = workflowBridge()
+    if (bridge === undefined) return
+    const now = new Date().toISOString()
+    const id = `customer-local-${Date.now()}`
+    setBusy(true); setError('')
+    try {
+      await bridge.workflowEnvironments.upsert({ id, customerName: '本地客户', name: '本地生产环境', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false, createdAt: now, updatedAt: now })
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '创建环境失败')
+    } finally { setBusy(false) }
+  }
+
+  const activeRelease = releases.find((release) => release.status === 'published')
+  const start = async (): Promise<void> => {
+    const bridge = workflowBridge()
+    if (bridge === undefined || activeRelease === undefined) return
+    setBusy(true); setError('')
+    try { await bridge.workflowReleases.start(activeRelease.id, {}) } catch (reason) { setError(reason instanceof Error ? reason.message : '启动失败') } finally { setBusy(false) }
+  }
+  const rollback = async (releaseId: string): Promise<void> => {
+    const bridge = workflowBridge()
+    if (bridge === undefined) return
+    setBusy(true); setError('')
+    try { await bridge.workflowReleases.rollback(releaseId); await refreshReleaseData() } catch (reason) { setError(reason instanceof Error ? reason.message : '回滚失败') } finally { setBusy(false) }
+  }
+
+  const label = locale === 'en' ? {
+    title: 'Release & customer environment',
+    workflow: 'Workflow', environment: 'Environment', publish: 'Publish to customer environment', create: 'Create local environment', noEnv: 'Create an active local customer environment first.', health: 'Health', events: 'Redacted observations', start: 'Start release', rollback: 'Rollback', empty: 'No release yet.',
+  } : {
+    title: '发布与客户环境', workflow: '工作流', environment: '客户环境', publish: '发布到客户环境', create: '创建本地环境', noEnv: '请先创建一个启用中的本地客户环境。', health: '健康状态', events: '脱敏观测', start: '启动发布', rollback: '回滚', empty: '暂无发布记录。',
+  }
+
+  return <section className="workflow-tool-card workflow-release-panel" aria-label={label.title}>
+    <div className="workflow-panel-heading"><div><span className="workflow-kicker">{label.title}</span><h3>{label.title}</h3><p>Release 只保存静态定义摘要；运行输入、输出、凭证和请求头不会进入 Renderer。</p></div></div>
+    {selectedWorkflow === undefined && workflows.length > 0 ? <label>{label.workflow}<select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}><option value="">选择工作流</option>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label> : null}
+    <label>{label.environment}<select value={environmentId} onChange={(event) => setEnvironmentId(event.target.value)} disabled={environments.length === 0}><option value="">{environments.length === 0 ? label.noEnv : '选择客户环境'}</option>{environments.map((item) => <option key={item.id} value={item.id}>{item.customerName} · {item.name}</option>)}</select></label>
+    <div className="workflow-release-actions">
+      <button type="button" className="workflow-button-primary" onClick={() => void publish()} disabled={busy || selectedWorkflow === undefined}>{label.publish}</button>
+      <button type="button" onClick={() => void createEnvironment()} disabled={busy}>{label.create}</button>
+      {activeRelease !== undefined ? <button type="button" onClick={() => void start()} disabled={busy}>{label.start}</button> : null}
+    </div>
+    {error !== '' ? <p className="workflow-error">{error}</p> : null}
+    <div className="workflow-release-summary"><strong>{label.health}: {health?.status ?? '—'}</strong><span>{health?.reason ?? ''}</span></div>
+    <div className="workflow-release-list">{releases.length === 0 ? <span className="workflow-muted">{label.empty}</span> : releases.map((release) => <div className="workflow-release-row" key={release.id}><span><strong>v{release.workflowRevision}</strong> · {release.status} · {release.contentSha256.slice(0, 12)}</span>{release.status === 'superseded' ? <button type="button" onClick={() => void rollback(release.id)} disabled={busy}>{label.rollback}</button> : null}</div>)}</div>
+    <div className="workflow-observation-list">{observations.slice(-8).map((event) => <div key={event.id}><span>{event.time}</span><strong>{event.action}</strong><em>{event.severity}</em></div>)}</div>
+  </section>
 }
 
 type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; employeeName?: string; inputVariables?: string[]; outputVariables?: string[]; switchCases?: Array<{ id: string; label?: string }>; status?: WorkflowNodeRunStatus; duration?: string; isRunning?: boolean }>
@@ -3368,6 +3490,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             </article>
           })}</div> : null}
           <div className="workflow-browser-tools">
+            <WorkflowReleasePanel copy={copy} locale={locale} workflows={workflows} />
             <section className="workflow-tool-card workflow-browser-tool-wide">
               <div><span className="workflow-kicker">{copy.workflowImportEmployee}</span><h3>{copy.workflowImportEmployee}</h3><p>把一个专业员工快速转换为可编辑的工作流。</p></div>
               <div className="workflow-import-row"><select id="workflow-employee-select" className="workflow-employee-select" aria-label={copy.workflowImportEmployee} value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} disabled={busy || employees.length === 0}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employeeDisplayLabel(employee)} · {employee.id}</option>)}</select><button type="button" onClick={() => void importEmployee()} disabled={busy || employeeId === ''}>{copy.workflowImportEmployee}</button></div>

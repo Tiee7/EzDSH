@@ -1,3 +1,6 @@
+import { createWindow } from '@mixmark-io/domino'
+import { createRoot } from 'react-dom/client'
+import { act } from 'react-dom/test-utils'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import * as workflowPage from '../../src/renderer/workflow/WorkflowPage.js'
@@ -13,6 +16,96 @@ function graphWithRemovedNode(): WorkflowDefinition {
 }
 
 describe('WorkflowPage regressions', () => {
+  it('publishes the selected workflow revision into a selected customer environment', async () => {
+    const workflow = createDefaultWorkflow('发布控制')
+    const publish = vi.fn(async () => undefined)
+    const listEnvironments = vi.fn(async () => [{
+      id: 'customer-acme-prod',
+      customerName: 'Acme',
+      name: 'Acme Production',
+      kind: 'production',
+      status: 'active',
+      connectorIds: [],
+      allowShellFile: false,
+      allowCode: false,
+      createdAt: '2026-09-03T00:00:00.000Z',
+      updatedAt: '2026-09-03T00:00:00.000Z',
+    }])
+    const previousGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      navigator: globalThis.navigator,
+      HTMLElement: globalThis.HTMLElement,
+      Node: globalThis.Node,
+      Event: globalThis.Event,
+      MouseEvent: globalThis.MouseEvent,
+      KeyboardEvent: globalThis.KeyboardEvent,
+      CustomEvent: globalThis.CustomEvent,
+      getComputedStyle: globalThis.getComputedStyle,
+      EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH,
+    }
+    const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+    Object.assign(globalThis, {
+      window: domWindow,
+      document: domWindow.document,
+      HTMLElement: domWindow.HTMLElement,
+      Node: domWindow.Node,
+      Event: domWindow.Event,
+      MouseEvent: domWindow.MouseEvent,
+      KeyboardEvent: domWindow.KeyboardEvent,
+      CustomEvent: domWindow.CustomEvent,
+      getComputedStyle: domWindow.getComputedStyle.bind(domWindow),
+    })
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+    ;(globalThis as { EzDSH?: unknown }).EzDSH = {
+      workflowEnvironments: {
+        list: listEnvironments,
+        upsert: vi.fn(),
+      },
+      workflowReleases: {
+        publish,
+        list: vi.fn(async () => []),
+        get: vi.fn(async () => undefined),
+        start: vi.fn(async () => undefined),
+        rollback: vi.fn(async () => undefined),
+        listObservations: vi.fn(async () => []),
+        getHealth: vi.fn(async () => undefined),
+      },
+    }
+
+    try {
+      const root = createRoot(domWindow.document.getElementById('root')!)
+      await act(async () => {
+        root.render(<workflowPage.WorkflowReleasePanel copy={getAppCopy('zh')} workflow={workflow} />)
+      })
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      const button = domWindow.document.querySelector('button[type="button"]')
+      if (button === null) throw new Error('release publish button should render')
+      expect(button.textContent).toContain('发布到客户环境')
+      expect(button.hasAttribute('disabled')).toBe(false)
+      await act(async () => {
+        button.click()
+        await Promise.resolve()
+      })
+      expect(publish).toHaveBeenCalledWith({ workflowId: workflow.id, environmentId: 'customer-acme-prod' })
+    } finally {
+      delete (globalThis as { EzDSH?: unknown }).EzDSH
+      const { navigator: previousNavigator, ...previousGlobalsWithoutNavigator } = previousGlobals
+      Object.assign(globalThis, previousGlobalsWithoutNavigator)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    }
+  })
+
+  it('shows workflow release controls in the browser view', () => {
+    const markup = renderToStaticMarkup(
+      <workflowPage.WorkflowPage copy={getAppCopy('zh')} locale="zh" />,
+    )
+
+    expect(markup).toContain('发布到客户环境')
+  })
+
   it('shows the saved AI generation prompt in workflow metadata', () => {
     const markup = renderToStaticMarkup(<workflowPage.WorkflowMetadataDialog
       copy={getAppCopy('zh')}

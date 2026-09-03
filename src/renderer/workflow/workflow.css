@@ -108,6 +108,19 @@
 .workflow-unviewed-run-button { align-self: flex-start; margin: 0 20px 15px; border-color: color-mix(in srgb, var(--ezdsh-brand) 45%, var(--ezdsh-panel-border)) !important; padding: 5px 8px !important; background: var(--ezdsh-active-background) !important; color: var(--ezdsh-brand) !important; font-size: 10px !important; }
 .workflow-unviewed-run-header { margin: 0; }
 .workflow-browser-tools { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .8fr); gap: 14px; max-width: 1240px; margin: 28px auto 0; }
+.workflow-release-panel { grid-column: 1 / -1; gap: 12px; }
+.workflow-release-panel label { display: grid; gap: 5px; color: var(--ezdsh-text-muted); font-size: 11px; }
+.workflow-release-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.workflow-release-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; border-top: 1px solid var(--ezdsh-panel-border); padding-top: 10px; color: var(--ezdsh-text-muted); font-size: 11px; }
+.workflow-release-summary strong { color: var(--ezdsh-text-heading); }
+.workflow-release-list, .workflow-observation-list { display: grid; gap: 6px; }
+.workflow-release-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--ezdsh-panel-border); padding-top: 7px; color: var(--ezdsh-text-muted); font-size: 10px; }
+.workflow-release-row strong { color: var(--ezdsh-text-heading); }
+.workflow-release-row button { padding: 5px 8px; font-size: 10px; }
+.workflow-observation-list { max-height: 130px; overflow: auto; border-top: 1px solid var(--ezdsh-panel-border); padding-top: 8px; }
+.workflow-observation-list > div { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; color: var(--ezdsh-text-faint); font-size: 9px; }
+.workflow-observation-list strong { color: var(--ezdsh-text-body); font-weight: 600; }
+.workflow-observation-list em { color: var(--ezdsh-text-muted); font-style: normal; }
 .workflow-browser-tool-wide { grid-column: 1 / -1; }
 .workflow-tool-card { display: flex; flex-direction: column; gap: 16px; min-width: 0; padding: 20px; border: 1px solid var(--ezdsh-panel-border); border-radius: 12px; background: color-mix(in srgb, var(--ezdsh-panel-background) 86%, transparent); }
 .workflow-tool-card h3 { margin: 5px 0 0; color: var(--ezdsh-text-heading); font-size: 16px; }
