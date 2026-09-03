@@ -47,6 +47,7 @@ export interface WorkflowObservationEvent {
   releaseId?: string
   runId?: string
   traceId?: string
+  nodeId?: string
   time: string
   kind: 'run' | 'node' | 'effect' | 'deployment'
   action: WorkflowObservationAction
@@ -241,7 +242,7 @@ export function workflowReleaseSummary(release: WorkflowRelease): WorkflowReleas
 export function normalizeWorkflowObservationEvent(value: unknown): WorkflowObservationEvent | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const input = value as Record<string, unknown>
-  const knownKeys = new Set(['id', 'environmentId', 'releaseId', 'runId', 'traceId', 'time', 'kind', 'action', 'severity', 'outcome'])
+  const knownKeys = new Set(['id', 'environmentId', 'releaseId', 'runId', 'traceId', 'nodeId', 'time', 'kind', 'action', 'severity', 'outcome'])
   if (Object.keys(input).some((key) => !knownKeys.has(key))) return undefined
   const id = normalizeRequiredString(input.id)
   const environmentId = normalizeRequiredString(input.environmentId)
@@ -251,14 +252,15 @@ export function normalizeWorkflowObservationEvent(value: unknown): WorkflowObser
   if (typeof input.action !== 'string' || !observationActions.has(input.action as WorkflowObservationAction)) return undefined
   if (input.severity !== 'info' && input.severity !== 'warning' && input.severity !== 'error') return undefined
   if (input.outcome !== undefined && input.outcome !== 'started' && input.outcome !== 'succeeded' && input.outcome !== 'failed' && input.outcome !== 'unknown' && input.outcome !== 'cancelled') return undefined
-  const optionalIds = [input.releaseId, input.runId, input.traceId].map(normalizeRequiredString)
-  if ([input.releaseId, input.runId, input.traceId].some((value, index) => value !== undefined && (optionalIds[index] === undefined || !environmentIdPattern.test(optionalIds[index])))) return undefined
+  const optionalIds = [input.releaseId, input.runId, input.traceId, input.nodeId].map(normalizeRequiredString)
+  if ([input.releaseId, input.runId, input.traceId, input.nodeId].some((value, index) => value !== undefined && (optionalIds[index] === undefined || !environmentIdPattern.test(optionalIds[index])))) return undefined
   return {
     id,
     environmentId,
     ...(optionalIds[0] === undefined ? {} : { releaseId: optionalIds[0] }),
     ...(optionalIds[1] === undefined ? {} : { runId: optionalIds[1] }),
     ...(optionalIds[2] === undefined ? {} : { traceId: optionalIds[2] }),
+    ...(optionalIds[3] === undefined ? {} : { nodeId: optionalIds[3] }),
     time,
     kind: input.kind,
     action: input.action as WorkflowObservationAction,
