@@ -106,6 +106,8 @@ Renderer 不负责：
 
 首次启动时，Renderer 让 Main 启动 DSH Runtime，并在健康检查通过后将本地 URL 放入受限 iframe。Runtime 页面中的模型设置和供应商配置由 Harness Web UI 提供，EzDSH 负责应用级的启动、退出、日志和更新边界。
 
+工作流发布、客户环境和观测也遵循同样的边界：Renderer 只能看到发布摘要、环境摘要和脱敏后的健康/观测记录；不可变的 release snapshot、工作流定义副本、运行载荷、凭据明文和原始响应始终保留在 Main Process 的本机存储中。
+
 ### 2.4 语言同步
 
 EzDSH 与 DSH Runtime 共用 `harness/settings.yaml`。主进程读取其中的 `locale.preference`（`zh` 或 `en`），并通过 Preload IPC 同步给 Renderer；设置文件发生变化时，主进程使用轻量文件轮询通知 Renderer 更新外层页面和应用菜单。Runtime 内部的 Web UI 继续读取同一配置文件，因此内外界面保持同一种语言。配置缺失或值不受支持时，EzDSH 使用英文作为安全默认值，不阻止 Runtime 启动。

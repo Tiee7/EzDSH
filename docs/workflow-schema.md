@@ -4,6 +4,8 @@
 
 AI workflow generation, persistence and the `workflow` field inside an import/export document use this JSON definition. The UI exchange envelope is documented in `docs/workflow-json.md`; a workflow is valid only when it satisfies the required fields and node rules below.
 
+发布、客户环境和观测记录不属于这个 schema；发布时会把当前 workflow 固化为 Main 侧的不可变 release snapshot，并单独保存环境摘要、脱敏健康状态和观测事件。
+
 ```json
 {
   "schemaVersion": 2,
