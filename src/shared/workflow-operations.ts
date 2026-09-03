@@ -22,6 +22,7 @@ export interface WorkflowRelease {
   workflowRevision: number
   contentSha256: string
   workflowSnapshot: WorkflowDefinition
+  workflowDependencies?: WorkflowDefinition[]
   status: 'published' | 'superseded' | 'rolled-back'
   connectorGrants: WorkflowConnectorGrant[]
   createdAt: string
@@ -106,9 +107,29 @@ function normalizeConnectorGrants(value: unknown): WorkflowConnectorGrant[] | un
   return [...grants.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
 }
 
-/** True only when every release grant is already permitted by the workflow snapshot. */
-export function workflowConnectorGrantsAreSubsetOfPolicy(workflow: WorkflowDefinition, grants: readonly WorkflowConnectorGrant[]): boolean {
-  const policy = new Map((workflow.permissionPolicy?.connectors ?? []).map((permission) => [permission.connectorId.trim(), new Set(permission.operations)]))
+function buildReleasePolicyMap(
+  workflow: WorkflowDefinition,
+  dependencies: readonly WorkflowDefinition[] = [],
+): Map<string, Set<'read' | 'write'>> {
+  const policy = new Map<string, Set<'read' | 'write'>>()
+  for (const definition of [workflow, ...dependencies]) {
+    for (const permission of definition.permissionPolicy?.connectors ?? []) {
+      const connectorId = permission.connectorId.trim()
+      const operations = policy.get(connectorId) ?? new Set<'read' | 'write'>()
+      for (const operation of permission.operations) operations.add(operation)
+      if (operations.size > 0) policy.set(connectorId, operations)
+    }
+  }
+  return policy
+}
+
+/** True only when every release grant is already permitted by the release snapshots. */
+export function workflowConnectorGrantsAreSubsetOfPolicy(
+  workflow: WorkflowDefinition,
+  grants: readonly WorkflowConnectorGrant[],
+  dependencies: readonly WorkflowDefinition[] = [],
+): boolean {
+  const policy = buildReleasePolicyMap(workflow, dependencies)
   return grants.every((grant) => {
     const allowed = policy.get(grant.connectorId)
     return allowed !== undefined && grant.operations.every((operation) => allowed.has(operation))
@@ -118,6 +139,26 @@ export function workflowConnectorGrantsAreSubsetOfPolicy(workflow: WorkflowDefin
 /** Release snapshots keep static templates only; HTTP headers are injected at execution time. */
 export function workflowSnapshotHasStaticHttpHeaders(workflow: WorkflowDefinition): boolean {
   return workflow.nodes.some((node) => node.type === 'http' && Object.keys(node.config.headers).length > 0)
+}
+
+function normalizeWorkflowDependencies(
+  value: unknown,
+  rootWorkflowId: string,
+  rootWorkflowRevision: number,
+): WorkflowDefinition[] | undefined {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<string>([`${rootWorkflowId}@${String(rootWorkflowRevision)}`])
+  const dependencies: WorkflowDefinition[] = []
+  for (const entry of value) {
+    const dependency = normalizeWorkflow(entry)
+    if (dependency === undefined || workflowSnapshotHasStaticHttpHeaders(dependency)) return undefined
+    const key = `${dependency.id}@${String(dependency.revision)}`
+    if (seen.has(key)) return undefined
+    seen.add(key)
+    dependencies.push(cloneWorkflow(dependency))
+  }
+  return dependencies
 }
 
 export function normalizeWorkflowCustomerEnvironment(value: unknown): WorkflowCustomerEnvironment | undefined {
@@ -161,9 +202,12 @@ export function normalizeWorkflowRelease(value: unknown): WorkflowRelease | unde
   const createdAt = normalizeDate(input.createdAt)
   const publishedAt = normalizeDate(input.publishedAt)
   const workflowSnapshot = normalizeWorkflow(input.workflowSnapshot)
+  const workflowDependencies = workflowSnapshot === undefined || typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1
+    ? undefined
+    : normalizeWorkflowDependencies(input.workflowDependencies, workflowSnapshot.id, workflowRevision)
   const connectorGrants = normalizeConnectorGrants(input.connectorGrants)
-  if (id === undefined || !environmentIdPattern.test(id) || environmentId === undefined || !environmentIdPattern.test(environmentId) || workflowId === undefined || !environmentIdPattern.test(workflowId) || contentSha256 === undefined || !sha256Pattern.test(contentSha256) || createdAt === undefined || publishedAt === undefined || workflowSnapshot === undefined || connectorGrants === undefined) return undefined
-  if (typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1 || workflowId !== workflowSnapshot.id || workflowRevision !== workflowSnapshot.revision || workflowSnapshotHasStaticHttpHeaders(workflowSnapshot) || !workflowConnectorGrantsAreSubsetOfPolicy(workflowSnapshot, connectorGrants)) return undefined
+  if (id === undefined || !environmentIdPattern.test(id) || environmentId === undefined || !environmentIdPattern.test(environmentId) || workflowId === undefined || !environmentIdPattern.test(workflowId) || contentSha256 === undefined || !sha256Pattern.test(contentSha256) || createdAt === undefined || publishedAt === undefined || workflowSnapshot === undefined || workflowDependencies === undefined || connectorGrants === undefined) return undefined
+  if (typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1 || workflowId !== workflowSnapshot.id || workflowRevision !== workflowSnapshot.revision || workflowSnapshotHasStaticHttpHeaders(workflowSnapshot) || !workflowConnectorGrantsAreSubsetOfPolicy(workflowSnapshot, connectorGrants, workflowDependencies)) return undefined
   if (input.status !== 'published' && input.status !== 'superseded' && input.status !== 'rolled-back') return undefined
   return {
     id,
@@ -172,6 +216,7 @@ export function normalizeWorkflowRelease(value: unknown): WorkflowRelease | unde
     workflowRevision,
     contentSha256: contentSha256.toLowerCase(),
     workflowSnapshot: cloneWorkflow(workflowSnapshot),
+    ...(workflowDependencies.length === 0 ? {} : { workflowDependencies: workflowDependencies.map((dependency) => cloneWorkflow(dependency)) }),
     status: input.status,
     connectorGrants,
     createdAt,

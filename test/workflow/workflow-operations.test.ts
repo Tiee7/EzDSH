@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultWorkflow } from '../../src/shared/workflow.js'
-import { computeWorkflowDefinitionSha256, verifyWorkflowReleaseIntegrity } from '../../src/main/workflow/workflow-release-integrity.js'
+import { computeWorkflowDefinitionSha256, computeWorkflowReleaseSha256, verifyWorkflowReleaseIntegrity } from '../../src/main/workflow/workflow-release-integrity.js'
 import { deriveEnvironmentConnectorGrants, normalizeWorkflowCustomerEnvironment, normalizeWorkflowObservationEvent, normalizeWorkflowRelease, workflowReleaseSummary } from '../../src/shared/workflow-operations.js'
 
 describe('workflow operations contracts', () => {
@@ -86,6 +86,43 @@ describe('workflow operations contracts', () => {
     expect(computeWorkflowDefinitionSha256(Object.fromEntries(Object.entries(workflowSnapshot).reverse()) as typeof workflowSnapshot)).toBe(contentSha256)
     expect(verifyWorkflowReleaseIntegrity({ ...release, contentSha256: 'b'.repeat(64) })).toBe(false)
     release.workflowSnapshot.name = '已篡改'
+    expect(verifyWorkflowReleaseIntegrity(release)).toBe(false)
+  })
+
+  it('covers dependency snapshots in release integrity and normalization', () => {
+    const workflowSnapshot = createDefaultWorkflow('父流程')
+    workflowSnapshot.nodes = [
+      { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+      { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: 'workflow-child', version: 3, waitForCompletion: true }, position: { x: 200, y: 0 } },
+      { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+    ]
+    workflowSnapshot.edges = [{ id: 'a', source: 'input', target: 'child' }, { id: 'b', source: 'child', target: 'output' }]
+    workflowSnapshot.permissionPolicy = { connectors: [{ connectorId: 'crm', operations: ['read'] }] }
+    const dependency = createDefaultWorkflow('子流程')
+    dependency.id = 'workflow-child'
+    dependency.revision = 3
+    dependency.permissionPolicy = { connectors: [{ connectorId: 'billing', operations: ['write'] }] }
+    const release = normalizeWorkflowRelease({
+      id: 'release-acme-deps',
+      environmentId: 'customer-acme-prod',
+      workflowId: workflowSnapshot.id,
+      workflowRevision: workflowSnapshot.revision,
+      workflowSnapshot,
+      workflowDependencies: [dependency],
+      contentSha256: computeWorkflowReleaseSha256({
+        workflowSnapshot,
+        workflowDependencies: [dependency],
+      }),
+      status: 'published',
+      connectorGrants: [{ connectorId: 'crm', operations: ['read'] }, { connectorId: 'billing', operations: ['write'] }],
+      createdAt: '2026-09-03T00:00:00.000Z',
+      publishedAt: '2026-09-03T00:00:00.000Z',
+    })!
+    expect(release.workflowDependencies).toHaveLength(1)
+    expect(verifyWorkflowReleaseIntegrity(release)).toBe(true)
+    dependency.name = '已篡改子流程'
+    expect(release.workflowDependencies[0]?.name).toBe('子流程')
+    release.workflowDependencies[0]!.name = '已篡改快照'
     expect(verifyWorkflowReleaseIntegrity(release)).toBe(false)
   })
 

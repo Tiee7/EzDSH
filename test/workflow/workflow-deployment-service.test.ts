@@ -260,6 +260,94 @@ describe('WorkflowDeploymentService', () => {
     await runService.stop()
   })
 
+  it('starts a released parent with the published child snapshot after the child source changes or is removed', async () => {
+    const { workflowStore, environmentStore, deploymentService, runService } = await createFixture()
+    await environmentStore.upsert(createEnvironment())
+    const child = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-child-pinned',
+      name: 'child-pinned',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'transform', type: 'transform', label: 'Transform', config: { template: 'prepend', text: 'child-v1:' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'c1', source: 'input', target: 'transform' }, { id: 'c2', source: 'transform', target: 'output' }],
+    }))
+    const parent = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-parent-pinned',
+      name: 'parent-pinned',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: child.id, waitForCompletion: true }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'p1', source: 'input', target: 'child' }, { id: 'p2', source: 'child', target: 'output' }],
+    }))
+
+    const release = await deploymentService.publish({ workflowId: parent.id, environmentId: 'customer-acme-staging' })
+    expect(release.workflowDependencies?.map((dependency) => `${dependency.id}@${String(dependency.revision)}`)).toEqual([`${child.id}@1`])
+    expect(release.workflowSnapshot.nodes.find((node) => node.id === 'child' && node.type === 'sub-workflow')).toMatchObject({
+      config: { workflowId: child.id, version: 1 },
+    })
+
+    await workflowStore.update(child.id, {
+      name: 'child-pinned-v2',
+      description: child.description,
+      nodes: child.nodes.map((node) => (
+        node.id === 'transform' && node.type === 'transform'
+          ? { ...node, config: { ...node.config, text: 'child-v2:' } }
+          : node
+      )),
+      edges: child.edges,
+    })
+    await workflowStore.remove(child.id)
+
+    const initialRun = await deploymentService.start(release.id, '42')
+    const completed = await eventually(runService, initialRun.id)
+
+    expect(completed.status).toBe('completed')
+    expect(completed.output).toBe('child-v1:42')
+  })
+
+  it('rejects publish when a sub-workflow dependency is missing or cyclic', async () => {
+    const { workflowStore, environmentStore, deploymentService } = await createFixture()
+    await environmentStore.upsert(createEnvironment())
+
+    const missing = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-parent-missing-child',
+      name: 'missing-child',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: 'workflow-does-not-exist', waitForCompletion: true }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'm1', source: 'input', target: 'child' }, { id: 'm2', source: 'child', target: 'output' }],
+    }))
+    await expect(deploymentService.publish({ workflowId: missing.id, environmentId: 'customer-acme-staging' })).rejects.toThrow(/Workflow not found|不存在/u)
+
+    const parent = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-parent-cycle',
+      name: 'cycle-parent',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: 'workflow-child-cycle', waitForCompletion: true }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'pc1', source: 'input', target: 'child' }, { id: 'pc2', source: 'child', target: 'output' }],
+    }))
+    await workflowStore.create(createWorkflowInput({
+      id: 'workflow-child-cycle',
+      name: 'cycle-child',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'parent', type: 'sub-workflow', label: 'Parent', config: { workflowId: parent.id, waitForCompletion: true }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'cc1', source: 'input', target: 'parent' }, { id: 'cc2', source: 'parent', target: 'output' }],
+    }))
+    await expect(deploymentService.publish({ workflowId: parent.id, environmentId: 'customer-acme-staging' })).rejects.toThrow(/循环/u)
+  })
+
   it('rejects production releases that use raw URL HTTP, latest sub-workflows, or shell/file/code nodes', async () => {
     const { workflowStore, environmentStore, deploymentService } = await createFixture()
     await environmentStore.upsert(createEnvironment({ id: 'customer-acme-prod', name: '生产', kind: 'production' }))

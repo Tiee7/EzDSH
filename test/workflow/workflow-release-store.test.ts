@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { computeWorkflowDefinitionSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
+import { computeWorkflowDefinitionSha256, computeWorkflowReleaseSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
 import { WorkflowReleaseStore } from '../../src/main/workflow/workflow-release-store.js'
 import { createDefaultWorkflow, type WorkflowDefinition } from '../../src/shared/workflow.js'
 import type { WorkflowRelease } from '../../src/shared/workflow-operations.js'
@@ -15,7 +15,8 @@ function createWorkflowSnapshot(name = '发布快照'): WorkflowDefinition {
 
 function createRelease(id: string, overrides: Partial<WorkflowRelease> = {}): WorkflowRelease {
   const workflowSnapshot = overrides.workflowSnapshot ?? createWorkflowSnapshot()
-  const contentSha256 = overrides.contentSha256 ?? computeWorkflowDefinitionSha256(workflowSnapshot)
+  const workflowDependencies = overrides.workflowDependencies?.map((dependency) => ({ ...dependency })) ?? []
+  const contentSha256 = overrides.contentSha256 ?? computeWorkflowReleaseSha256({ workflowSnapshot, workflowDependencies })
   return {
     id,
     environmentId: 'customer-acme-prod',
@@ -23,6 +24,7 @@ function createRelease(id: string, overrides: Partial<WorkflowRelease> = {}): Wo
     workflowRevision: workflowSnapshot.revision,
     contentSha256,
     workflowSnapshot,
+    workflowDependencies,
     status: 'published',
     connectorGrants: [{ connectorId: 'crm', operations: ['read'] }],
     createdAt: '2026-09-03T00:00:00.000Z',
@@ -90,6 +92,36 @@ describe('WorkflowReleaseStore', () => {
       workflowRevision: workflowSnapshot.revision,
       contentSha256: 'a'.repeat(64),
     }))).rejects.toThrow(/header|release/i)
+  })
+
+  it('skips persisted releases whose dependency snapshot no longer matches the saved digest', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-releases-dependency-integrity-'))
+    const workflowSnapshot = createWorkflowSnapshot('父流程')
+    workflowSnapshot.nodes = [
+      { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+      { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: 'workflow-child', version: 2, waitForCompletion: true }, position: { x: 200, y: 0 } },
+      { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+    ]
+    workflowSnapshot.edges = [{ id: 'a', source: 'input', target: 'child' }, { id: 'b', source: 'child', target: 'output' }]
+    const dependency = createDefaultWorkflow('子流程')
+    dependency.id = 'workflow-child'
+    dependency.revision = 2
+    dependency.permissionPolicy = { connectors: [{ connectorId: 'crm', operations: ['read'] }] }
+    const valid = createRelease('release-with-dependency', { workflowSnapshot, workflowDependencies: [dependency] })
+    await writeFile(join(dir, 'workflow-releases.json'), JSON.stringify([
+      valid,
+      {
+        ...valid,
+        id: 'release-tampered-dependency',
+        workflowDependencies: [{ ...dependency, name: '已篡改子流程' }],
+      },
+    ]))
+
+    const store = new WorkflowReleaseStore(dir)
+    await store.initialize()
+
+    expect(store.list().map((release) => release.id)).toEqual(['release-with-dependency'])
+    expect(store.get('release-with-dependency')?.workflowDependencies).toHaveLength(1)
   })
 
   it('rejects non-published inputs and duplicate release ids', async () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { verifyWorkflowReleaseIntegrity, computeWorkflowDefinitionSha256 } from './workflow-release-integrity.js'
+import { computeWorkflowReleaseSha256, verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
 import { WorkflowEnvironmentStore } from './workflow-environment-store.js'
 import { WorkflowReleaseStore } from './workflow-release-store.js'
 import { WorkflowRunService } from './workflow-run-service.js'
@@ -11,13 +11,19 @@ import {
   type WorkflowRelease,
   type WorkflowReleasePublishInput,
 } from '../../shared/workflow-operations.js'
-import { cloneWorkflow, isWorkflowValue, type WorkflowConnectorGrant, type WorkflowDefinition, type WorkflowRunOptions, type WorkflowRunRecord, type WorkflowValue } from '../../shared/workflow.js'
+import { cloneWorkflow, isWorkflowValue, type WorkflowConnectorGrant, type WorkflowDefinition, type WorkflowNode, type WorkflowRunOptions, type WorkflowRunRecord, type WorkflowValue } from '../../shared/workflow.js'
 
 interface WorkflowDeploymentServiceOptions {
   workflowStore: WorkflowStore
   environmentStore: WorkflowEnvironmentStore
   releaseStore: WorkflowReleaseStore
   runService: WorkflowRunService
+}
+
+interface WorkflowReleasePlan {
+  workflowSnapshot: WorkflowDefinition
+  workflowDependencies: WorkflowDefinition[]
+  connectorGrants: WorkflowConnectorGrant[]
 }
 
 export class WorkflowDeploymentService {
@@ -31,17 +37,17 @@ export class WorkflowDeploymentService {
     if (workflow.enabled !== true) throw new Error('只能发布已启用的工作流')
     assertValidWorkflow(workflow, '发布工作流')
     const environment = this.requireActiveEnvironment(input.environmentId)
-    const connectorGrants = this.collectReleaseConnectorGrants(workflow, environment)
-    const workflowSnapshot = withMergedConnectorPolicy(cloneWorkflow(workflow), connectorGrants)
+    const releasePlan = this.collectReleasePlan(workflow, environment)
     return this.options.releaseStore.publish({
       id: input.id?.trim() || `release-${randomUUID()}`,
       environmentId: environment.id,
-      workflowId: workflow.id,
-      workflowRevision: workflow.revision,
-      contentSha256: computeWorkflowDefinitionSha256(workflowSnapshot),
-      workflowSnapshot,
+      workflowId: releasePlan.workflowSnapshot.id,
+      workflowRevision: releasePlan.workflowSnapshot.revision,
+      contentSha256: computeWorkflowReleaseSha256(releasePlan),
+      workflowSnapshot: releasePlan.workflowSnapshot,
+      ...(releasePlan.workflowDependencies.length === 0 ? {} : { workflowDependencies: releasePlan.workflowDependencies }),
       status: 'published',
-      connectorGrants,
+      connectorGrants: releasePlan.connectorGrants,
       createdAt: new Date().toISOString(),
       publishedAt: new Date().toISOString(),
     })
@@ -101,27 +107,31 @@ export class WorkflowDeploymentService {
     return release
   }
 
-  private collectReleaseConnectorGrants(
+  private collectReleasePlan(
     workflow: WorkflowDefinition,
     environment: WorkflowCustomerEnvironment,
-  ): WorkflowConnectorGrant[] {
+  ): WorkflowReleasePlan {
     const collected = new Map<string, Set<'read' | 'write'>>()
-    const visited = new Set<string>()
-    this.collectWorkflowDeploymentState(workflow, environment, collected, [], visited)
-    return [...collected.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
+    const dependencies = new Map<string, WorkflowDefinition>()
+    const workflowSnapshot = this.collectWorkflowDeploymentState(workflow, environment, collected, dependencies, [])
+    return {
+      workflowSnapshot,
+      workflowDependencies: [...dependencies.entries()]
+        .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+        .map(([, dependency]) => cloneWorkflow(dependency)),
+      connectorGrants: [...collected.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] })),
+    }
   }
 
   private collectWorkflowDeploymentState(
     workflow: WorkflowDefinition,
     environment: WorkflowCustomerEnvironment,
     collected: Map<string, Set<'read' | 'write'>>,
+    dependencies: Map<string, WorkflowDefinition>,
     stack: string[],
-    visited: Set<string>,
-  ): void {
+  ): WorkflowDefinition {
     const workflowKey = `${workflow.id}@${String(workflow.revision)}`
     if (stack.includes(workflowKey)) throw new Error(`子工作流存在循环依赖：${[...stack, workflowKey].join(' -> ')}`)
-    if (visited.has(workflowKey)) return
-    visited.add(workflowKey)
     const nextStack = [...stack, workflowKey]
     const connectorGrants = deriveEnvironmentConnectorGrants(workflow, environment)
     const allowedOperations = new Map(connectorGrants.map((grant) => [grant.connectorId.trim(), new Set(grant.operations)]))
@@ -130,31 +140,60 @@ export class WorkflowDeploymentService {
       for (const operation of grant.operations) operations.add(operation)
       if (operations.size > 0) collected.set(grant.connectorId, operations)
     }
-    for (const node of workflow.nodes) {
-      if (node.type === 'http' && node.config.connectorId !== undefined) {
-        const connectorId = node.config.connectorId.trim()
-        const connectorPath = node.config.connectorPath?.trim()
-        if (connectorId === '' || connectorPath === undefined || connectorPath === '') throw new Error(`托管 HTTP 节点缺少 connectorPath: ${node.label}`)
-        const requiredOperation = node.config.method === 'GET' ? 'read' : 'write'
-        if (!allowedOperations.get(connectorId)?.has(requiredOperation)) {
-          throw new Error(`环境未授予连接器 ${connectorId} 的 ${requiredOperation} 权限`)
-        }
-      }
-      if (environment.kind !== 'production') continue
-      if (node.type === 'http' && node.config.connectorId === undefined) throw new Error('生产环境禁止 raw URL HTTP 节点')
-      if (node.type === 'sub-workflow' && node.config.version === 'latest') throw new Error('生产环境禁止 latest 子工作流版本')
-      if (node.type === 'shell' || node.type === 'file' || node.type === 'code') {
-        throw new Error(`生产环境禁止 ${node.type} 节点`)
+    const pinnedNodes = workflow.nodes.map((node) => this.pinDeploymentNode(node, environment, allowedOperations, collected, dependencies, nextStack))
+    return {
+      ...cloneWorkflow(workflow),
+      nodes: pinnedNodes,
+    }
+  }
+
+  private pinDeploymentNode(
+    node: WorkflowNode,
+    environment: WorkflowCustomerEnvironment,
+    allowedOperations: Map<string, Set<'read' | 'write'>>,
+    collected: Map<string, Set<'read' | 'write'>>,
+    dependencies: Map<string, WorkflowDefinition>,
+    stack: string[],
+  ): WorkflowNode {
+    this.assertNodeAllowedForDeployment(node, environment, allowedOperations)
+    if (node.type !== 'sub-workflow') return cloneWorkflow(node)
+    const child = this.resolveWorkflowOrThrow(
+      node.config.workflowId,
+      typeof node.config.version === 'number' ? node.config.version : undefined,
+    )
+    if (child.enabled !== true) throw new Error(`只能发布已启用的子工作流：${child.name}`)
+    assertValidWorkflow(child, `发布子工作流 ${child.name}`)
+    const childSnapshot = this.collectWorkflowDeploymentState(child, environment, collected, dependencies, stack)
+    dependencies.set(`${childSnapshot.id}@${String(childSnapshot.revision)}`, cloneWorkflow(childSnapshot))
+    return {
+      ...cloneWorkflow(node),
+      config: {
+        ...node.config,
+        workflowId: childSnapshot.id,
+        version: childSnapshot.revision,
+      },
+    }
+  }
+
+  private assertNodeAllowedForDeployment(
+    node: WorkflowNode,
+    environment: WorkflowCustomerEnvironment,
+    allowedOperations: Map<string, Set<'read' | 'write'>>,
+  ): void {
+    if (node.type === 'http' && node.config.connectorId !== undefined) {
+      const connectorId = node.config.connectorId.trim()
+      const connectorPath = node.config.connectorPath?.trim()
+      if (connectorId === '' || connectorPath === undefined || connectorPath === '') throw new Error(`托管 HTTP 节点缺少 connectorPath: ${node.label}`)
+      const requiredOperation = node.config.method === 'GET' ? 'read' : 'write'
+      if (!allowedOperations.get(connectorId)?.has(requiredOperation)) {
+        throw new Error(`环境未授予连接器 ${connectorId} 的 ${requiredOperation} 权限`)
       }
     }
-    for (const node of workflow.nodes) {
-      if (node.type !== 'sub-workflow') continue
-      const child = this.resolveWorkflowOrThrow(
-        node.config.workflowId,
-        typeof node.config.version === 'number' ? node.config.version : undefined,
-      )
-      assertValidWorkflow(child, `发布子工作流 ${child.name}`)
-      this.collectWorkflowDeploymentState(child, environment, collected, nextStack, visited)
+    if (environment.kind !== 'production') return
+    if (node.type === 'http' && node.config.connectorId === undefined) throw new Error('生产环境禁止 raw URL HTTP 节点')
+    if (node.type === 'sub-workflow' && node.config.version === 'latest') throw new Error('生产环境禁止 latest 子工作流版本')
+    if (node.type === 'shell' || node.type === 'file' || node.type === 'code') {
+      throw new Error(`生产环境禁止 ${node.type} 节点`)
     }
   }
 }
@@ -178,29 +217,4 @@ function intersectConnectorGrants(
     if (operations.size > 0) narrowed.set(connectorId, operations)
   }
   return [...narrowed.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
-}
-
-function withMergedConnectorPolicy(
-  workflow: WorkflowDefinition,
-  grants: readonly WorkflowConnectorGrant[],
-): WorkflowDefinition {
-  const connectors = new Map<string, Set<'read' | 'write'>>()
-  for (const permission of workflow.permissionPolicy?.connectors ?? []) {
-    const connectorId = permission.connectorId.trim()
-    const operations = connectors.get(connectorId) ?? new Set<'read' | 'write'>()
-    for (const operation of permission.operations) operations.add(operation)
-    if (operations.size > 0) connectors.set(connectorId, operations)
-  }
-  for (const grant of grants) {
-    const connectorId = grant.connectorId.trim()
-    const operations = connectors.get(connectorId) ?? new Set<'read' | 'write'>()
-    for (const operation of grant.operations) operations.add(operation)
-    if (operations.size > 0) connectors.set(connectorId, operations)
-  }
-  return {
-    ...workflow,
-    permissionPolicy: {
-      connectors: [...connectors.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] })),
-    },
-  }
 }

@@ -31,6 +31,7 @@ function cloneRelease(release: WorkflowRelease): WorkflowRelease {
     workflowRevision: release.workflowRevision,
     contentSha256: release.contentSha256,
     workflowSnapshot: cloneWorkflow(release.workflowSnapshot),
+    ...(release.workflowDependencies === undefined ? {} : { workflowDependencies: release.workflowDependencies.map((dependency) => cloneWorkflow(dependency)) }),
     status: release.status,
     connectorGrants: release.connectorGrants.map((grant) => ({ connectorId: grant.connectorId, operations: [...grant.operations] })),
     createdAt: release.createdAt,

@@ -223,11 +223,7 @@ export class WorkflowRunService {
     if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
     const release = this.resolveReleasedWorkflowOrThrow(releaseId)
     if (release.status !== 'published') throw new Error('只能启动已发布的 workflow release')
-    assertValidWorkflow(release.workflowSnapshot, '启动发布工作流')
-    const record = this.createRecord(release.workflowSnapshot, input, options, release)
-    const enqueued = await this.enqueue(record, '发布运行已排队')
-    this.worker.wake()
-    return cloneWorkflow(enqueued)
+    return this.startReleasedDefinition(release.id, release.workflowSnapshot, input, options, release)
   }
 
   async resume(runId: string): Promise<WorkflowRunRecord> {
@@ -670,8 +666,7 @@ export class WorkflowRunService {
     if (record.releaseId !== undefined) {
       const release = this.options.resolveReleasedWorkflow?.(record.releaseId)
       if (release === undefined || !verifyWorkflowReleaseIntegrity(release)) return undefined
-      if (release.workflowId !== record.workflowId || release.workflowRevision !== record.workflowRevision) return undefined
-      return cloneWorkflow(release.workflowSnapshot)
+      return this.resolveReleasedDefinition(release, record.workflowId, record.workflowRevision)
     }
     return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision) ?? this.options.workflowStore.get(record.workflowId)
   }
@@ -681,6 +676,44 @@ export class WorkflowRunService {
     if (release === undefined) throw new Error(`Workflow release not found: ${releaseId}`)
     if (!verifyWorkflowReleaseIntegrity(release)) throw new Error('Workflow release integrity verification failed')
     return release
+  }
+
+  private resolveReleasedDefinition(
+    release: WorkflowRelease,
+    workflowId: string,
+    workflowRevision: number,
+  ): WorkflowDefinition | undefined {
+    const definitions = [release.workflowSnapshot, ...(release.workflowDependencies ?? [])]
+    const matched = definitions.find((definition) => definition.id === workflowId && definition.revision === workflowRevision)
+    return matched === undefined ? undefined : cloneWorkflow(matched)
+  }
+
+  private resolveReleasedDefinitionOrThrow(
+    release: WorkflowRelease,
+    workflowId: string,
+    workflowRevision: number,
+  ): WorkflowDefinition {
+    const workflow = this.resolveReleasedDefinition(release, workflowId, workflowRevision)
+    if (workflow === undefined) throw new Error(`Workflow release snapshot not found: ${workflowId}@${String(workflowRevision)}`)
+    return workflow
+  }
+
+  private async startReleasedDefinition(
+    releaseId: string,
+    definition: Pick<WorkflowDefinition, 'id' | 'revision'>,
+    input: WorkflowValue,
+    options: WorkflowRunOptions = {},
+    releaseOverride?: WorkflowRelease,
+    wakeWorker = true,
+  ): Promise<WorkflowRunRecord> {
+    const release = releaseOverride ?? this.resolveReleasedWorkflowOrThrow(releaseId)
+    if (release.status !== 'published') throw new Error('只能启动已发布的 workflow release')
+    const workflow = this.resolveReleasedDefinitionOrThrow(release, definition.id, definition.revision)
+    assertValidWorkflow(workflow, '启动发布工作流')
+    const record = this.createRecord(workflow, input, options, release)
+    const enqueued = await this.enqueue(record, '发布运行已排队')
+    if (wakeWorker) this.worker.wake()
+    return cloneWorkflow(enqueued)
   }
 
   private prepareQueuedRecord(record: WorkflowRunRecord): void {
@@ -1132,6 +1165,58 @@ export class WorkflowRunService {
     }
   }
 
+  private async executeLiveSubWorkflow(
+    node: Extract<WorkflowNode, { type: 'sub-workflow' }>,
+    childInput: WorkflowValue,
+    allowShellFile: boolean,
+    allowCode: boolean,
+    record: WorkflowRunRecord,
+  ): Promise<WorkflowValue> {
+    if (this.options.executeSubWorkflow === undefined) throw new Error('子工作流执行器不可用。')
+    return this.options.executeSubWorkflow(
+      node.config.workflowId,
+      childInput,
+      node.config.waitForCompletion !== false,
+      node.config.version,
+      { allowShellFile, allowCode, connectorGrants: record.connectorGrants, ...(record.model === undefined ? {} : { model: record.model }) },
+    )
+  }
+
+  private async executeReleasedSubWorkflow(
+    node: Extract<WorkflowNode, { type: 'sub-workflow' }>,
+    childInput: WorkflowValue,
+    allowShellFile: boolean,
+    allowCode: boolean,
+    record: WorkflowRunRecord,
+  ): Promise<WorkflowValue> {
+    const releaseId = record.releaseId
+    if (releaseId === undefined) throw new Error('发布运行缺少 release 上下文')
+    const release = this.resolveReleasedWorkflowOrThrow(releaseId)
+    const workflowRevision = node.config.version
+    if (typeof workflowRevision !== 'number') throw new Error(`发布子工作流缺少固定版本：${node.config.workflowId}`)
+    const childWorkflow = this.resolveReleasedDefinitionOrThrow(release, node.config.workflowId, workflowRevision)
+    const waitForCompletion = node.config.waitForCompletion !== false
+    const childRun = await this.startReleasedDefinition(
+      release.id,
+      childWorkflow,
+      childInput,
+      {
+        allowShellFile,
+        allowCode,
+        ...(record.connectorGrants === undefined ? {} : { connectorGrants: record.connectorGrants }),
+        ...(record.model === undefined ? {} : { model: record.model }),
+      },
+      release,
+      !waitForCompletion,
+    )
+    if (!waitForCompletion) return { runId: childRun.id }
+    await this.execute(childRun.id)
+    const settled = this.options.runStore.get(childRun.id)
+    if (settled === undefined) throw new Error(`Workflow run not found: ${childRun.id}`)
+    if (settled.status !== 'completed') throw new Error(settled.error ?? '子工作流执行失败')
+    return settled.output ?? null
+  }
+
   private async executeNode(
     node: WorkflowNode,
     input: WorkflowValue,
@@ -1166,11 +1251,12 @@ export class WorkflowRunService {
       case 'structured-extract':
         return this.executeStructuredExtract(node, input, previous, active.abortController.signal, record.model)
       case 'sub-workflow': {
-        if (this.options.executeSubWorkflow === undefined) throw new Error('子工作流执行器不可用。')
         const childInput = node.config.inputMapping === undefined ? this.primaryNodeValue(node, previous) : resolveWorkflowTemplateValue(node.config.inputMapping, input, previous)
         await this.markEffect(record, state, node, 'prepared')
         await this.markEffect(record, state, node, 'dispatched')
-        const childOutput = await this.options.executeSubWorkflow(node.config.workflowId, childInput, node.config.waitForCompletion !== false, node.config.version, { allowShellFile, allowCode, connectorGrants: record.connectorGrants, ...(record.model === undefined ? {} : { model: record.model }) })
+        const childOutput = record.releaseId === undefined
+          ? await this.executeLiveSubWorkflow(node, childInput, allowShellFile, allowCode, record)
+          : await this.executeReleasedSubWorkflow(node, childInput, allowShellFile, allowCode, record)
         await this.markEffect(record, state, node, 'confirmed')
         return childOutput
       }
