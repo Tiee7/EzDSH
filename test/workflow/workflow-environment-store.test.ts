@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -24,6 +24,7 @@ function createEnvironment(overrides: Partial<WorkflowCustomerEnvironment> = {})
 describe('WorkflowEnvironmentStore', () => {
   it('persists normalized environments across restart without unknown fields', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-environments-'))
+    await chmod(dir, 0o755)
     const store = new WorkflowEnvironmentStore(dir)
     const saved = await store.upsert({
       ...createEnvironment(),
@@ -35,6 +36,7 @@ describe('WorkflowEnvironmentStore', () => {
 
     expect(saved).toEqual(createEnvironment())
     expect(await readFile(join(dir, 'workflow-customer-environments.json'), 'utf8')).not.toContain('unexpectedSecret')
+    expect((await stat(dir)).mode & 0o777).toBe(0o700)
     expect((await stat(join(dir, 'workflow-customer-environments.json'))).mode & 0o777).toBe(0o600)
 
     const reloaded = new WorkflowEnvironmentStore(dir)

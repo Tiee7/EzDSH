@@ -25,7 +25,7 @@ function cloneEnvironment(environment: WorkflowCustomerEnvironment): WorkflowCus
 }
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
+  await ensurePrivateDirectory(dirname(filePath))
   const tempPath = `${filePath}.${randomUUID()}.tmp`
   try {
     await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
@@ -53,7 +53,7 @@ export class WorkflowEnvironmentStore {
     if (this.initialized) return
     if (this.initializationPromise !== undefined) return this.initializationPromise
     const pending = (async () => {
-      await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+      await ensurePrivateDirectory(dirname(this.filePath))
       try {
         const parsed = JSON.parse(await readFile(this.filePath, 'utf8')) as unknown
         const entries = Array.isArray(parsed)
@@ -126,4 +126,9 @@ export class WorkflowEnvironmentStore {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 })
+  await chmod(path, 0o700)
 }

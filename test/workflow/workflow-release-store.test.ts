@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -34,11 +34,18 @@ function createRelease(id: string, overrides: Partial<WorkflowRelease> = {}): Wo
 describe('WorkflowReleaseStore', () => {
   it('persists verified releases across restart with restrictive permissions', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-releases-'))
-    const store = new WorkflowReleaseStore(dir)
+    await chmod(dir, 0o755)
+    const store = new WorkflowReleaseStore(dir, { now: () => '2026-09-03T09:00:00.000Z' })
     const saved = await store.publish(createRelease('release-1', { unexpectedSecret: 'private' } as Partial<WorkflowRelease>))
 
-    expect(saved).toMatchObject({ id: 'release-1', status: 'published' })
+    expect(saved).toMatchObject({
+      id: 'release-1',
+      status: 'published',
+      createdAt: '2026-09-03T09:00:00.000Z',
+      publishedAt: '2026-09-03T09:00:00.000Z',
+    })
     expect(await readFile(join(dir, 'workflow-releases.json'), 'utf8')).not.toContain('unexpectedSecret')
+    expect((await stat(dir)).mode & 0o777).toBe(0o700)
     expect((await stat(join(dir, 'workflow-releases.json'))).mode & 0o777).toBe(0o600)
 
     const reloaded = new WorkflowReleaseStore(dir)
@@ -83,6 +90,31 @@ describe('WorkflowReleaseStore', () => {
       workflowRevision: workflowSnapshot.revision,
       contentSha256: 'a'.repeat(64),
     }))).rejects.toThrow(/header|release/i)
+  })
+
+  it('rejects non-published inputs and duplicate release ids', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-releases-invalid-status-'))
+    const store = new WorkflowReleaseStore(dir, { now: () => '2026-09-03T09:00:00.000Z' })
+
+    await expect(store.publish(createRelease('release-superseded', { status: 'superseded' }))).rejects.toThrow(/published|release/i)
+    await expect(store.publish(createRelease('release-rolled-back', { status: 'rolled-back' }))).rejects.toThrow(/published|release/i)
+
+    await store.publish(createRelease('release-1'))
+    await expect(store.publish(createRelease('release-1'))).rejects.toThrow(/duplicate|exists|release/i)
+  })
+
+  it('overrides input timestamps with the store clock during publish', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-releases-time-'))
+    const store = new WorkflowReleaseStore(dir, { now: () => '2026-09-03T10:15:00.000Z' })
+    const saved = await store.publish(createRelease('release-time', {
+      createdAt: '2020-01-01T00:00:00.000Z',
+      publishedAt: '2020-01-01T00:00:00.000Z',
+    }))
+
+    expect(saved.createdAt).toBe('2026-09-03T10:15:00.000Z')
+    expect(saved.publishedAt).toBe('2026-09-03T10:15:00.000Z')
+    expect(store.get('release-time')?.createdAt).toBe('2026-09-03T10:15:00.000Z')
+    expect(store.get('release-time')?.publishedAt).toBe('2026-09-03T10:15:00.000Z')
   })
 
   it('supersedes the active release for one workflow and environment atomically', async () => {

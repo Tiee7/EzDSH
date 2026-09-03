@@ -7,6 +7,10 @@ import { cloneWorkflow } from '../../shared/workflow.js'
 
 const FILE_NAME = 'workflow-releases.json'
 
+export interface WorkflowReleaseStoreOptions {
+  now?: () => string
+}
+
 function isNotFound(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
 }
@@ -35,7 +39,7 @@ function cloneRelease(release: WorkflowRelease): WorkflowRelease {
 }
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
+  await ensurePrivateDirectory(dirname(filePath))
   const tempPath = `${filePath}.${randomUUID()}.tmp`
   try {
     await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
@@ -56,20 +60,22 @@ function normalizeVerifiedRelease(value: unknown): WorkflowRelease | undefined {
 
 export class WorkflowReleaseStore {
   private readonly filePath: string
+  private readonly now: () => string
   private readonly releases = new Map<string, WorkflowRelease>()
   private initialized = false
   private initializationPromise: Promise<void> | undefined
   private mutationChain: Promise<void> = Promise.resolve()
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, options: WorkflowReleaseStoreOptions = {}) {
     this.filePath = join(stateDir, FILE_NAME)
+    this.now = options.now ?? (() => new Date().toISOString())
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return
     if (this.initializationPromise !== undefined) return this.initializationPromise
     const pending = (async () => {
-      await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+      await ensurePrivateDirectory(dirname(this.filePath))
       try {
         const parsed = JSON.parse(await readFile(this.filePath, 'utf8')) as unknown
         const entries = Array.isArray(parsed)
@@ -116,9 +122,17 @@ export class WorkflowReleaseStore {
 
   async publish(input: WorkflowRelease): Promise<WorkflowRelease> {
     await this.initialize()
-    const normalized = normalizeVerifiedRelease(input)
+    if (input.status !== 'published') throw new Error('Workflow release publish input must have published status')
+    const timestamp = this.now()
+    const normalized = normalizeVerifiedRelease({
+      ...input,
+      status: 'published',
+      createdAt: timestamp,
+      publishedAt: timestamp,
+    })
     if (normalized === undefined) throw new Error('Invalid workflow release or failed integrity verification')
     return this.mutate(async () => {
+      if (this.releases.has(normalized.id)) throw new Error('Workflow release id already exists')
       for (const release of this.releases.values()) {
         if (release.id === normalized.id) continue
         if (release.workflowId === normalized.workflowId && release.environmentId === normalized.environmentId && release.status === 'published') {
@@ -170,4 +184,9 @@ export class WorkflowReleaseStore {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 })
+  await chmod(path, 0o700)
 }
