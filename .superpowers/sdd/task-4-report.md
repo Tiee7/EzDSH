@@ -14,11 +14,17 @@ GREEN
 - Extended `WorkflowObservationEvent` with a safe optional `nodeId`.
 - Allowed `recordDeployment` to accept either explicit deployment metadata or a `WorkflowRelease`, mapping release status to deployment action.
 
+REVIEW FIX
+
+- `recordDeployment(WorkflowRelease)` no longer reuses `release.id` as the observation id.
+- Release lifecycle observations now use the actual call time or an explicit lifecycle time override, so published/superseded/rolled-back events stay distinct.
+
 VERIFICATION
 
 - `npx vitest run test/workflow/workflow-operations.test.ts test/workflow/workflow-observation-store.test.ts test/workflow/workflow-observability-service.test.ts` passed.
+- `npx vitest run test/workflow/workflow-observation-store.test.ts test/workflow/workflow-observability-service.test.ts` passed after the review fix.
 - `NODE_OPTIONS=--max-old-space-size=4096 npx tsc -p tsconfig.json --noEmit` failed on pre-existing baseline issues outside the Task 4 scope.
 
 COMMIT
 
-- `c491ec0 feat: observe workflow deployments locally`
+- `3058fdb fix: separate workflow release deployment observations`
