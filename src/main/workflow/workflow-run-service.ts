@@ -45,6 +45,8 @@ import type { WorkflowMcpClient } from './workflow-mcp-client.js'
 import { WorkflowInternalSessionStore, type WorkflowInternalSessionKind } from './workflow-internal-session-store.js'
 import { planWorkflowRetry } from './workflow-retry.js'
 import type { WorkflowConnectorRequest, WorkflowConnectorService } from './workflow-connector-service.js'
+import type { WorkflowRelease } from '../../shared/workflow-operations.js'
+import { verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
 
 export interface WorkflowRunServiceOptions {
   workflowStore: WorkflowStore
@@ -71,6 +73,8 @@ export interface WorkflowRunServiceOptions {
   connectorService?: Pick<WorkflowConnectorService, 'request'> & Partial<Pick<WorkflowConnectorService, 'authorize'>>
   /** Keep raw URL HTTP available to compatibility embeddings; production main disables it. */
   allowLegacyHttp?: boolean
+  /** Main-process only immutable release resolver for published workflow starts. */
+  resolveReleasedWorkflow?: (releaseId: string) => WorkflowRelease | undefined
   /** Executes a referenced workflow and returns its final output. */
   executeSubWorkflow?: (workflowId: string, input: WorkflowValue, waitForCompletion: boolean, version?: number | 'latest', options?: WorkflowRunOptions) => Promise<WorkflowValue>
   internalSessionStore?: WorkflowInternalSessionStore
@@ -210,6 +214,18 @@ export class WorkflowRunService {
     assertValidWorkflow(workflow, '启动运行')
     const record = this.createRecord(workflow, input, options)
     const enqueued = await this.enqueue(record, '运行已排队')
+    this.worker.wake()
+    return cloneWorkflow(enqueued)
+  }
+
+  async startReleased(releaseId: string, input: WorkflowValue, options: WorkflowRunOptions = {}): Promise<WorkflowRunRecord> {
+    await this.initialize()
+    if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
+    const release = this.resolveReleasedWorkflowOrThrow(releaseId)
+    if (release.status !== 'published') throw new Error('只能启动已发布的 workflow release')
+    assertValidWorkflow(release.workflowSnapshot, '启动发布工作流')
+    const record = this.createRecord(release.workflowSnapshot, input, options, release)
+    const enqueued = await this.enqueue(record, '发布运行已排队')
     this.worker.wake()
     return cloneWorkflow(enqueued)
   }
@@ -613,16 +629,30 @@ export class WorkflowRunService {
     }
   }
 
-  private createRecord(workflow: WorkflowDefinition, input: WorkflowValue, options: WorkflowRunOptions): WorkflowRunRecord {
+  private createRecord(
+    workflow: WorkflowDefinition,
+    input: WorkflowValue,
+    options: WorkflowRunOptions,
+    release?: WorkflowRelease,
+  ): WorkflowRunRecord {
     const model = normalizeModelSelection(options.model)
     const hasManagedConnector = workflow.nodes.some((node) => node.type === 'http' && node.config.connectorId !== undefined)
-    const connectorGrants = options.connectorGrants === undefined
-      ? hasManagedConnector ? [] : undefined
-      : narrowConnectorGrants(workflow.permissionPolicy, options.connectorGrants)
+    const connectorGrants = release === undefined
+      ? options.connectorGrants === undefined
+        ? hasManagedConnector ? [] : undefined
+        : narrowConnectorGrants(workflow.permissionPolicy, options.connectorGrants)
+      : options.connectorGrants === undefined
+        ? cloneConnectorGrants(release.connectorGrants)
+        : intersectConnectorGrants(release.connectorGrants, options.connectorGrants)
     return {
       id: `run-${randomUUID()}`,
       workflowId: workflow.id,
       workflowRevision: workflow.revision,
+      ...(release === undefined ? {} : {
+        environmentId: release.environmentId,
+        releaseId: release.id,
+        traceId: `trace-${randomUUID()}`,
+      }),
       ...(options.idempotencyKey?.trim() === undefined || options.idempotencyKey.trim() === '' ? {} : { idempotencyKey: options.idempotencyKey.trim() }),
       status: 'queued',
       input: cloneWorkflow(input),
@@ -637,7 +667,20 @@ export class WorkflowRunService {
   }
 
   private workflowForRecord(record: WorkflowRunRecord): WorkflowDefinition | undefined {
+    if (record.releaseId !== undefined) {
+      const release = this.options.resolveReleasedWorkflow?.(record.releaseId)
+      if (release === undefined || !verifyWorkflowReleaseIntegrity(release)) return undefined
+      if (release.workflowId !== record.workflowId || release.workflowRevision !== record.workflowRevision) return undefined
+      return cloneWorkflow(release.workflowSnapshot)
+    }
     return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision) ?? this.options.workflowStore.get(record.workflowId)
+  }
+
+  private resolveReleasedWorkflowOrThrow(releaseId: string): WorkflowRelease {
+    const release = this.options.resolveReleasedWorkflow?.(releaseId)
+    if (release === undefined) throw new Error(`Workflow release not found: ${releaseId}`)
+    if (!verifyWorkflowReleaseIntegrity(release)) throw new Error('Workflow release integrity verification failed')
+    return release
   }
 
   private prepareQueuedRecord(record: WorkflowRunRecord): void {
@@ -1584,6 +1627,29 @@ function narrowConnectorGrants(
     if (allowed === undefined) continue
     const operations = narrowed.get(connectorId) ?? new Set<'read' | 'write'>()
     for (const operation of grant.operations) if (allowed.has(operation)) operations.add(operation)
+    if (operations.size > 0) narrowed.set(connectorId, operations)
+  }
+  return [...narrowed.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
+}
+
+function cloneConnectorGrants(
+  grants: readonly { connectorId: string; operations: readonly ('read' | 'write')[] }[],
+): NonNullable<WorkflowRunRecord['connectorGrants']> {
+  return grants.map((grant) => ({ connectorId: grant.connectorId, operations: [...grant.operations] }))
+}
+
+function intersectConnectorGrants(
+  base: readonly { connectorId: string; operations: readonly ('read' | 'write')[] }[],
+  requested: readonly { connectorId: string; operations: readonly ('read' | 'write')[] }[],
+): NonNullable<WorkflowRunRecord['connectorGrants']> {
+  const allowed = new Map(base.map((grant) => [grant.connectorId.trim(), new Set(grant.operations)]))
+  const narrowed = new Map<string, Set<'read' | 'write'>>()
+  for (const grant of requested) {
+    const connectorId = grant.connectorId.trim()
+    const permitted = allowed.get(connectorId)
+    if (permitted === undefined) continue
+    const operations = narrowed.get(connectorId) ?? new Set<'read' | 'write'>()
+    for (const operation of grant.operations) if (permitted.has(operation)) operations.add(operation)
     if (operations.size > 0) narrowed.set(connectorId, operations)
   }
   return [...narrowed.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
