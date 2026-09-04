@@ -31,6 +31,74 @@ describe('published DSH Runtime version', () => {
     expect(() => assertPinnedDshRuntimeVersion('fixture', '0.1.2-rc.1')).not.toThrow()
   })
 
+  it('verifies the authenticated token URL with slash-style workspace and session RPCs', async () => {
+    const bundleRoot = await mkdtemp(join(tmpdir(), 'ezdsh-authenticated-runtime-bundle-'))
+    const runtimeEntry = join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+    const nodeExecutable = join(bundleRoot, 'node-runtime', 'bin', process.platform === 'win32' ? 'node.exe' : 'node')
+    const pnpmExecutable = join(bundleRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm')
+    const shellQuote = (value: string): string => `'${value.replace(/'/gu, "'\\\"'\\\"'")}'`
+
+    try {
+      await mkdir(dirname(runtimeEntry), { recursive: true })
+      await mkdir(dirname(nodeExecutable), { recursive: true })
+      await mkdir(dirname(pnpmExecutable), { recursive: true })
+      await mkdir(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh-agent-loop'), { recursive: true })
+      await mkdir(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh-tools'), { recursive: true })
+      await writeFile(nodeExecutable, `#!/bin/sh\nexec ${shellQuote(process.execPath)} \"$@\"\n`, { mode: 0o755 })
+      await writeFile(pnpmExecutable, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+      await writeFile(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.2-rc.1' }))
+      await writeFile(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh-agent-loop', 'index.js'), 'module.exports = {}\n')
+      await writeFile(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh-tools', 'index.js'), 'module.exports = {}\n')
+      await writeFile(runtimeEntry, `
+const http = require('node:http')
+const port = Number(process.argv[process.argv.indexOf('--port') + 1])
+const token = 'runtime-token'
+const cookie = 'dsh-auth-runtime=cookie-value'
+const server = http.createServer(async (request, response) => {
+  const requestUrl = new URL(request.url, 'http://127.0.0.1')
+  if (request.method === 'GET' && requestUrl.pathname === '/' && requestUrl.searchParams.get('token') === token) {
+    response.writeHead(303, { location: '/', 'set-cookie': cookie + '; HttpOnly; Path=/' })
+    response.end()
+    return
+  }
+  if (request.headers.cookie !== cookie) {
+    if (requestUrl.pathname === '/api/host.describe') setTimeout(() => process.exit(2), 0)
+    response.writeHead(401)
+    response.end('missing auth cookie')
+    return
+  }
+  if (request.method === 'GET' && requestUrl.pathname === '/') {
+    response.end('authenticated runtime root')
+    return
+  }
+  let body = ''
+  for await (const chunk of request) body += chunk
+  const envelope = JSON.parse(body)
+  const send = (value) => response.end(JSON.stringify({ type: 'server-response', rpcId: envelope.rpcId, result: { ok: true, value } }))
+  if (requestUrl.pathname === '/api/workspace/create' && envelope.method === 'workspace/create' && envelope.payload?.args?.request?.path) {
+    send({ workspace: { workspaceId: 'workspace-1' } })
+    return
+  }
+  if (requestUrl.pathname === '/api/session/create' && envelope.method === 'session/create' && envelope.payload?.args?.request?.workspaceId === 'workspace-1') {
+    send({ sessionId: 'session-1' })
+    return
+  }
+  response.writeHead(404)
+  response.end('unexpected RPC contract')
+})
+server.listen(port, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + port + '/?token=' + token))
+`)
+
+      const verifier = resolve('scripts/verify-runtime-bundle.mjs')
+      const result = spawnSync(process.execPath, [verifier, bundleRoot], { encoding: 'utf8', timeout: 15_000 })
+      expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0)
+      expect(result.stdout).toMatch(/workspace and session creation succeeded/)
+      expect(result.stderr).not.toContain('host.describe')
+    } finally {
+      await rm(bundleRoot, { recursive: true, force: true })
+    }
+  }, 20_000)
+
   it('rejects a selected Runtime entry whose owning manifest is stale before Runtime startup', async () => {
     const bundleRoot = await mkdtemp(join(tmpdir(), 'ezdsh-stale-runtime-bundle-'))
     const runtimeEntry = join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')

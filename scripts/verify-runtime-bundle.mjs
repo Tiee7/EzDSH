@@ -123,15 +123,15 @@ async function allocatePort() {
 const port = await allocatePort()
 const url = `http://127.0.0.1:${String(port)}`
 
-async function rpc(method, payload) {
+async function rpc(method, payload, cookie) {
   const response = await fetch(`${url}/api/${method}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', Cookie: cookie },
     body: JSON.stringify({
       type: 'client-request',
       rpcId: `ezdsh-verification-${method}`,
       method,
-      payload
+      payload: { args: payload }
     }),
     signal: AbortSignal.timeout(10_000)
   })
@@ -164,8 +164,17 @@ const child = spawn(nodeExecutable, [
 })
 
 let output = ''
+let resolveRuntimeWebUrl
+const announcedRuntimeWebUrl = new Promise((resolveRuntimeUrl) => {
+  resolveRuntimeWebUrl = resolveRuntimeUrl
+})
 const capture = (chunk) => {
   output = `${output}${String(chunk)}`.slice(-20_000)
+  const match = /dsh web:\s*(https?:\/\/[^\s]+)/iu.exec(output)
+  if (match !== null && resolveRuntimeWebUrl !== undefined) {
+    resolveRuntimeWebUrl(match[1])
+    resolveRuntimeWebUrl = undefined
+  }
 }
 child.stdout.on('data', capture)
 child.stderr.on('data', capture)
@@ -216,9 +225,35 @@ async function waitForExit(timeoutMs) {
 try {
   const deadline = Date.now() + 45_000
   let healthy = false
+  let runtimeWebUrl
+  let authCookie
+  while (Date.now() < deadline && childExit === undefined && runtimeWebUrl === undefined) {
+    const remainingMs = deadline - Date.now()
+    runtimeWebUrl = await Promise.race([
+      announcedRuntimeWebUrl,
+      exited.then(() => undefined),
+      new Promise((resolveWait) => setTimeout(() => resolveWait(undefined), Math.min(250, remainingMs)))
+    ])
+  }
+  if (runtimeWebUrl !== undefined) {
+    const tokenResponse = await fetch(runtimeWebUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10_000)
+    })
+    authCookie = tokenResponse.headers.get('set-cookie')?.split(';', 1)[0]
+    if (authCookie === undefined || authCookie === '') {
+      throw new Error(`Bundled DSH Runtime token exchange failed: ${String(tokenResponse.status)} ${await tokenResponse.text()}`)
+    }
+  }
   while (Date.now() < deadline && childExit === undefined) {
     try {
-      await rpc('host.describe', {})
+      if (authCookie === undefined) throw new Error('Runtime did not announce a tokenized web URL')
+      const rootResponse = await fetch(url, {
+        headers: { Cookie: authCookie },
+        signal: AbortSignal.timeout(10_000)
+      })
+      if (!rootResponse.ok) throw new Error(`authenticated Runtime root failed: HTTP ${String(rootResponse.status)}`)
       healthy = true
       break
     } catch {
@@ -238,12 +273,12 @@ try {
 
   const workspacePath = join(testRoot, 'workspace')
   await mkdir(workspacePath)
-  const createdWorkspace = await rpc('workspace.create', { path: workspacePath })
+  const createdWorkspace = await rpc('workspace/create', { request: { path: workspacePath } }, authCookie)
   const workspaceId = createdWorkspace?.workspace?.workspaceId
   if (typeof workspaceId !== 'string') {
     throw new Error(`workspace.create returned no workspace id: ${JSON.stringify(createdWorkspace)}`)
   }
-  const createdSession = await rpc('session.create', { workspaceId })
+  const createdSession = await rpc('session/create', { request: { workspaceId } }, authCookie)
   if (typeof createdSession?.sessionId !== 'string') {
     throw new Error(`session.create returned no session id: ${JSON.stringify(createdSession)}`)
   }

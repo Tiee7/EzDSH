@@ -228,6 +228,88 @@ describe('RuntimeNotificationService', () => {
     ])
   })
 
+  it('exchanges a tokenized Runtime URL once and sends its cookie on WebSocket downlinks', async () => {
+    const headers: Array<Record<string, string> | undefined> = []
+    const sockets: FakeNotificationWebSocket[] = []
+    let exchanges = 0
+    const webSocketFactory = (_url: string, requestHeaders?: Record<string, string>): RuntimeWebSocketLike => {
+      headers.push(requestHeaders)
+      const socket = new FakeNotificationWebSocket()
+      sockets.push(socket)
+      return socket
+    }
+    const fetchImpl: typeof fetch = async (input, init) => {
+      expect(String(input)).toBe('http://127.0.0.1:3690/?token=runtime-token')
+      expect(init?.method).toBe('GET')
+      expect(init?.redirect).toBe('manual')
+      exchanges += 1
+      return new Response(null, {
+        status: 303,
+        headers: { 'set-cookie': 'dsh-auth-runtime=cookie-value; HttpOnly; Path=/' },
+      })
+    }
+    const service = new RuntimeNotificationService({
+      fetchImpl,
+      webSocketFactory,
+      reconnectDelayMs: 60_000,
+      onSignal: () => undefined,
+    })
+
+    service.start('http://127.0.0.1:3690/?token=runtime-token')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    service.stop()
+
+    expect(exchanges).toBe(1)
+    expect(sockets).toHaveLength(2)
+    expect(headers).toEqual([
+      { Cookie: 'dsh-auth-runtime=cookie-value' },
+      { Cookie: 'dsh-auth-runtime=cookie-value' },
+    ])
+  })
+
+  it('sends the exchanged token cookie on SSE downlinks', async () => {
+    const eventCookies: Array<string | null> = []
+    let exchanges = 0
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (String(input) === 'http://127.0.0.1:3690/?token=runtime-token') {
+        exchanges += 1
+        return new Response(null, {
+          status: 303,
+          headers: { 'set-cookie': 'dsh-auth-runtime=cookie-value; HttpOnly; Path=/' },
+        })
+      }
+      eventCookies.push(new Headers(init?.headers).get('Cookie'))
+      const payload = String(input).endsWith('.mux')
+        ? { type: 'approval/requested', sessionId: 'session-1', approvalId: 'approval-1', toolName: 'bash' }
+        : { type: 'host/agent-error', sessionId: 'session-1', message: 'Host unavailable' }
+      const frame = JSON.stringify({ type: 'server-request', rpcId: String(input), payload })
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${frame}\n\n`))
+          controller.close()
+        },
+      })
+      return new Response(body, { status: 200 })
+    }
+    let resolveSignals: () => void = () => undefined
+    const signalsReady = new Promise<void>((resolve) => { resolveSignals = resolve })
+    const service = new RuntimeNotificationService({
+      fetchImpl,
+      reconnectDelayMs: 60_000,
+      onSignal: () => resolveSignals(),
+    })
+
+    service.start('http://127.0.0.1:3690/?token=runtime-token')
+    await signalsReady
+    service.stop()
+
+    expect(exchanges).toBe(1)
+    expect(eventCookies).toEqual([
+      'dsh-auth-runtime=cookie-value',
+      'dsh-auth-runtime=cookie-value',
+    ])
+  })
+
   it('forwards JSON frames received from WebSocket downlinks', async () => {
     const signals: string[] = []
     let resolveSignals: () => void = () => undefined

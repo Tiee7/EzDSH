@@ -259,12 +259,12 @@ export interface RuntimeWebSocketLike {
   close(): void
 }
 
-export type RuntimeWebSocketFactory = (url: string) => RuntimeWebSocketLike
+export type RuntimeWebSocketFactory = (url: string, headers?: Record<string, string>) => RuntimeWebSocketLike
 
 const require = createRequire(import.meta.url)
-const defaultWebSocketFactory: RuntimeWebSocketFactory = (url) => {
-  const WebSocketConstructor = require('ws') as new (address: string) => RuntimeWebSocketLike
-  return new WebSocketConstructor(url)
+const defaultWebSocketFactory: RuntimeWebSocketFactory = (url, headers) => {
+  const WebSocketConstructor = require('ws') as new (address: string, options?: { headers?: Record<string, string> }) => RuntimeWebSocketLike
+  return new WebSocketConstructor(url, headers === undefined ? undefined : { headers })
 }
 
 /** Reconnecting reader for the DSH Web mux and host WebSocket event streams. */
@@ -273,6 +273,7 @@ export class RuntimeNotificationService {
   private readonly webSocketFactory: RuntimeWebSocketFactory
   private readonly tracker = new RuntimeNotificationTracker()
   private readonly reconnectDelayMs: number
+  private readonly authExchanges = new Map<string, Promise<string>>()
   private controller: AbortController | undefined
   private generation = 0
 
@@ -308,14 +309,15 @@ export class RuntimeNotificationService {
     generation: number,
     onEnvelope: (envelope: RuntimeMuxEnvelope) => void,
   ): Promise<void> {
-    const base = runtimeUrl.endsWith('/') ? runtimeUrl.slice(0, -1) : runtimeUrl
+    const base = runtimeBaseUrl(runtimeUrl)
     while (!signal.aborted && generation === this.generation) {
       try {
+        const cookie = await this.exchangeRuntimeToken(runtimeUrl)
         if (this.options.webSocketFactory !== undefined || this.fetchImpl === undefined) {
-          const socket = this.webSocketFactory(toWebSocketUrl(base, path))
+          const socket = this.webSocketFactory(toWebSocketUrl(base, path), cookie === undefined ? undefined : { Cookie: cookie })
           await readWebSocket(socket, signal, onEnvelope)
         } else {
-          const response = await this.fetchImpl(`${base}${path}`, { signal })
+          const response = await this.fetchImpl(`${base}${path}`, cookie === undefined ? { signal } : { signal, headers: { Cookie: cookie } })
           if (!response.ok || response.body === null) throw new Error(`Runtime event stream failed: HTTP ${String(response.status)}`)
           await readSse(response.body, signal, (envelope) => onEnvelope(envelope))
         }
@@ -326,6 +328,36 @@ export class RuntimeNotificationService {
       if (!signal.aborted && generation === this.generation) await delay(this.reconnectDelayMs, signal)
     }
   }
+
+  private async exchangeRuntimeToken(runtimeUrl: string): Promise<string | undefined> {
+    if (!new URL(runtimeUrl).searchParams.has('token')) return undefined
+    let exchange = this.authExchanges.get(runtimeUrl)
+    if (exchange === undefined) {
+      exchange = (async () => {
+        const response = await (this.fetchImpl ?? fetch)(runtimeUrl, { method: 'GET', redirect: 'manual' })
+        const cookie = response.headers.get('set-cookie')?.split(';', 1)[0]
+        if (cookie === undefined || cookie === '') {
+          const text = await response.text()
+          throw new Error(`Runtime notification token exchange failed: ${String(response.status)} ${text}`)
+        }
+        return cookie
+      })()
+      this.authExchanges.set(runtimeUrl, exchange)
+    }
+    try {
+      return await exchange
+    } catch (error) {
+      if (this.authExchanges.get(runtimeUrl) === exchange) this.authExchanges.delete(runtimeUrl)
+      throw error
+    }
+  }
+}
+
+function runtimeBaseUrl(runtimeUrl: string): string {
+  const url = new URL(runtimeUrl)
+  url.search = ''
+  url.hash = ''
+  return url.toString().replace(/\/$/u, '')
 }
 
 function toWebSocketUrl(runtimeUrl: string, path: string): string {
