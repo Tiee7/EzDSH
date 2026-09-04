@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:workflow:p0": "vitest run test/workflow/workflow-worker-integration.test.ts test/workflow/workflow-safe-execution.test.ts test/workflow/workflow-retry.test.ts test/workflow/workflow-credential-store.test.ts test/workflow/workflow-connector-store.test.ts test/workflow/workflow-connector-service.test.ts test/workflow/workflow-deployment-service.test.ts test/workflow/workflow-observation-store.test.ts test/workflow/workflow-observability-service.test.ts test/workflow/workflow-production-acceptance.test.ts --testTimeout=20000",
     "check:runtime": "node scripts/check-runtime.mjs",
     "dsh:source:install": "node node_modules/pnpm/bin/pnpm.mjs --dir vendor/deepseek-harness install --frozen-lockfile",
     "dsh:source:build": "node node_modules/pnpm/bin/pnpm.mjs --dir vendor/deepseek-harness run build",
