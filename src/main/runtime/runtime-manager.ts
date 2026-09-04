@@ -419,13 +419,18 @@ export class RuntimeManager {
   }
 
   private writeLog(chunk: Buffer | string, stream: WriteStream | undefined = this.logStream): void {
-    if (stream !== undefined && !stream.destroyed && !stream.writableEnded) stream.write(chunk)
+    if (stream !== undefined && !stream.destroyed && !stream.writableEnded) stream.write(redactRuntimeLog(chunk))
   }
 
   private closeLog(): void {
     this.logStream?.end()
     this.logStream = undefined
   }
+}
+
+/** Runtime launch URLs remain in the live snapshot, but never in persisted logs. */
+function redactRuntimeLog(chunk: Buffer | string): string {
+  return String(chunk).replace(/([?&]token=)[^&#\s]+/giu, '$1[REDACTED]')
 }
 
 function readRuntimeWebUrl(output: string): string | undefined {

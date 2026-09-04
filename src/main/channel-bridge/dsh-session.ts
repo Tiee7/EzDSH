@@ -112,6 +112,7 @@ interface SessionCreateResponse {
 }
 
 interface SessionPromptRequest {
+  requestId?: string
   sessionId: string
   mode: 'queue' | 'steer'
   content: Array<{ type: 'text'; text: string }>
@@ -145,6 +146,7 @@ interface WorkspaceRenameResponse {
 
 interface SessionHistoryRequest {
   sessionId: string
+  throughSeq?: number
   beforeSeq?: number
   maxMessages?: number
 }
@@ -209,6 +211,14 @@ export class DshApiError extends Error {
   }
 }
 
+/** A public EzDSH operation with no unary equivalent in DSH 0.1.2-rc.1. */
+export class DshRuntimeCompatibilityError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DshRuntimeCompatibilityError'
+  }
+}
+
 export class DshSessionClient {
   private readonly pollIntervalMs: number
   private readonly modernRuntime: boolean
@@ -241,6 +251,7 @@ export class DshSessionClient {
   }
 
   async unarchiveSession(sessionId: string): Promise<WorkspaceArchiveResponse> {
+    if (this.modernRuntime) throw new DshRuntimeCompatibilityError('DSH RC1 does not provide a workspace unarchive endpoint')
     return this.post<WorkspaceArchiveResponse>('/api/workspace.unarchiveSession', { sessionId })
   }
 
@@ -249,6 +260,7 @@ export class DshSessionClient {
   }
 
   async listWorkspaces(): Promise<DshWorkspaceSummary[]> {
+    if (this.modernRuntime) throw new DshRuntimeCompatibilityError('DSH RC1 does not provide a unary workspace list endpoint; use workspace/follow')
     const response = await this.listWorkspaceResponse()
     const archived = new Set(response.archivedSessionIds)
     return response.items.map((workspace) => ({
@@ -311,15 +323,18 @@ export class DshSessionClient {
     return typeof title === 'string' && title.length > 0 ? title : undefined
   }
 
-  async getSessionHistory(sessionId: string, options?: { beforeSeq?: number; maxMessages?: number }): Promise<DshSessionHistoryResponse> {
-    return this.post<DshSessionHistoryResponse>('/api/session.history', {
+  async getSessionHistory(sessionId: string, options?: { throughSeq?: number; beforeSeq?: number; maxMessages?: number }): Promise<DshSessionHistoryResponse> {
+    const response = await this.post<DshSessionHistoryResponse | { records: DshSessionHistoryEntry[]; hasMore: boolean }>('/api/session.history', {
       sessionId,
+      throughSeq: options?.throughSeq,
       beforeSeq: options?.beforeSeq,
       maxMessages: options?.maxMessages,
     } satisfies SessionHistoryRequest)
+    return 'records' in response ? { events: response.records, hasMore: response.hasMore } : response
   }
 
   async getSessionModels(sessionId: string): Promise<DshSessionModels> {
+    if (this.modernRuntime) throw new DshRuntimeCompatibilityError('DSH RC1 does not provide a per-session model endpoint; use session/modelCatalog')
     return this.post<DshSessionModels>('/api/session.models', { sessionId })
   }
 
@@ -362,6 +377,7 @@ export class DshSessionClient {
 
   async queuePrompt(sessionId: string, text: string): Promise<SessionPromptResponse> {
     return this.post<SessionPromptResponse>('/api/session.prompt', {
+      ...this.modernRuntime ? { requestId: randomUUID() } : {},
       sessionId,
       mode: 'queue',
       content: [{ type: 'text', text }],
@@ -374,6 +390,9 @@ export class DshSessionClient {
     callbacks: TurnTrackerCallbacks,
     options: { timeoutMs: number; statusIntervalMs: number },
   ): Promise<void> {
+    if (this.modernRuntime) {
+      throw new DshRuntimeCompatibilityError('DSH RC1 prompt completion requires the session/follow stream; legacy history polling is unavailable')
+    }
     const sinceSeq = await this.getCurrentMaxSeq(sessionId)
 
     await this.queuePrompt(sessionId, text)
@@ -424,7 +443,10 @@ export class DshSessionClient {
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    if (this.modernRuntime) return this.postModern<T>(path, body)
+    if (this.modernRuntime) {
+      const call = this.modernCall(path, body)
+      return this.postModern<T>(call.endpoint, call.args)
+    }
 
     const url = `${this.options.baseUrl.replace(/\/$/u, '')}${path}`
     const method = path.replace(/^\/api\//u, '')
@@ -453,15 +475,14 @@ export class DshSessionClient {
     return rpcResponse.result.value
   }
 
-  private async postModern<T>(path: string, body: unknown): Promise<T> {
-    const url = `${this.modernApiBaseUrl}${path.replace(/\./gu, '/')}`
+  private async postModern<T>(endpoint: string, args: unknown): Promise<T> {
+    const url = `${this.modernApiBaseUrl}/api/${endpoint}`
     const cookie = await this.exchangeRuntimeToken()
-    const method = path.replace(/^\/api\//u, '').replace(/\./gu, '/')
     const envelope: RpcRequestEnvelope<{ args: unknown }> = {
       type: 'client-request',
       rpcId: randomUUID(),
-      method,
-      payload: { args: body },
+      method: endpoint,
+      payload: { args },
     }
     const response = await fetch(url, {
       method: 'POST',
@@ -474,13 +495,13 @@ export class DshSessionClient {
 
     if (!response.ok) {
       const text = await response.text()
-      throw new DshApiError(path, response.status, `DSH API ${path} failed: ${response.status} ${text}`)
+      throw new DshApiError(`/api/${endpoint}`, response.status, `DSH API /api/${endpoint} failed: ${response.status} ${text}`)
     }
 
     const payload = await response.json()
     if (isRpcResponseEnvelope(payload)) {
       if (!payload.result.ok) {
-        throw new Error(`DSH API ${path} error: ${payload.result.error.code} ${payload.result.error.message}`)
+        throw new Error(`DSH API /api/${endpoint} error: ${payload.result.error.code} ${payload.result.error.message}`)
       }
       return payload.result.value as T
     }
@@ -492,10 +513,10 @@ export class DshSessionClient {
     if (this.authExchange === undefined) {
       this.authExchange = (async () => {
         const response = await fetch(this.options.baseUrl, { method: 'GET', redirect: 'manual' })
-        const cookie = response.headers.get('set-cookie')?.split(';', 1)[0]
-        if (cookie === undefined || cookie === '') {
+        const cookie = dshAuthCookie(response.headers.get('set-cookie'))
+        if (response.status !== 303 || cookie === undefined) {
           const text = await response.text()
-          throw new DshApiError('/', response.status, `DSH Runtime token exchange failed: ${response.status} ${text}`)
+          throw new DshApiError('/', response.status, `DSH Runtime token exchange failed: expected 303 with dsh-auth-* Set-Cookie, got ${response.status} ${text}`)
         }
         return cookie
       })()
@@ -513,6 +534,49 @@ export class DshSessionClient {
   private async listWorkspaceResponse(): Promise<WorkspaceListResponse> {
     return this.post<WorkspaceListResponse>('/api/workspace.list', {})
   }
+
+  private modernCall(path: string, body: unknown): { endpoint: string; args: unknown } {
+    switch (path) {
+      case '/api/session.create':
+      case '/api/session.rename':
+      case '/api/session.prompt':
+      case '/api/session.cancel':
+      case '/api/session.selectModel':
+      case '/api/workspace.create':
+      case '/api/workspace.rename':
+      case '/api/workspace.archiveSession':
+        return { endpoint: path.slice('/api/'.length).replace(/\./gu, '/'), args: { request: body } }
+      case '/api/session.list':
+        return { endpoint: 'session/list', args: { _request: body } }
+      case '/api/llm.models':
+        return { endpoint: 'session/modelCatalog', args: {} }
+      case '/api/session.history': {
+        const request = body as SessionHistoryRequest
+        if (!Number.isSafeInteger(request.throughSeq) || (request.throughSeq as number) < -1) {
+          throw new DshRuntimeCompatibilityError('DSH RC1 session/page requires a session/follow throughSeq cursor')
+        }
+        return {
+          endpoint: 'session/page',
+          args: {
+            request: {
+              address: { kind: 'session', sessionId: request.sessionId },
+              throughSeq: request.throughSeq,
+              ...request.beforeSeq === undefined ? {} : { beforeSeq: request.beforeSeq },
+              ...request.maxMessages === undefined ? {} : { maxMessages: request.maxMessages },
+            },
+          },
+        }
+      }
+      default:
+        throw new DshRuntimeCompatibilityError(`DSH RC1 does not provide a compatible unary endpoint for ${path}`)
+    }
+  }
+}
+
+function dshAuthCookie(setCookie: string | null): string | undefined {
+  if (setCookie === null) return undefined
+  const match = /(?:^|,\s*)(dsh-auth-[^=;]+=[^;]+)/iu.exec(setCookie)
+  return match?.[1]
 }
 
 function isRpcResponseEnvelope(value: unknown): value is RpcResponseEnvelope<unknown> {

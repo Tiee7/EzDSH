@@ -223,3 +223,42 @@ commit hash
 concerns
 
 - No new functional concerns beyond the release snapshot now explicitly carrying descendant workflow definitions as Main-only immutable data.
+
+---
+
+## DSH Runtime RC1 RPC compatibility hardening
+
+### Verified contract
+
+- The published `dsh-v0.1.2-rc.1` source uses slash RPC routes with an outer
+  `payload: { args: ... }` envelope. Session/workspace commands receive named
+  `request` arguments; `session/list` instead receives `_request`; the model
+  catalog is `session/modelCatalog`; history is `session/page` and needs a
+  session address plus an exact `throughSeq` cursor.
+- Legacy unary workspace list/unarchive and per-session model routes are not
+  present in RC1. The main-process client now rejects those calls explicitly
+  instead of calling invented/removed routes. Prompt completion likewise
+  reports that RC1 requires `session/follow`, rather than silently polling the
+  removed history endpoint.
+
+### TDD and security fixes
+
+- Added failing mapping tests before implementation, then mapped supported
+  public operations to the RC1 routes and argument shapes while preserving all
+  clean-URL legacy fixtures.
+- Added failing readiness tests for a 303 without `dsh-auth-*` and a token URL
+  that returns 200. Tokenized Runtime readiness now requires exactly the 303
+  exchange and the auth-cookie family.
+- Runtime output retains the tokenized URL only in memory; the persisted
+  `harness.log` redacts `token=` values.
+
+### Verification
+
+- `npx vitest run test/runtime/health-check.test.ts test/runtime/runtime-manager.test.ts test/channel-bridge/dsh-session.test.ts`
+  - passed: 3 files, 38 tests.
+- `git diff --check`
+  - passed.
+- `npm run typecheck`
+  - attempted; currently blocked by in-progress, out-of-scope edits in
+    `src/main/notifications/runtime-notification-service.ts` at line 162
+    (`summary` possibly undefined). This task did not modify that file.

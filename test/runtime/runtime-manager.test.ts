@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -179,7 +179,10 @@ describe('RuntimeManager', () => {
         return true
       }
     })
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 303 }))
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, {
+      status: 303,
+      headers: { 'set-cookie': 'dsh-auth-session=authenticated; HttpOnly; Path=/' },
+    }))
     const manager = new RuntimeManager({
       layout,
       runtimeEntryPath: '/dev/null',
@@ -205,7 +208,11 @@ describe('RuntimeManager', () => {
       expect.objectContaining({ method: 'GET' }),
     )
     expect(ready.url).toBe('http://127.0.0.1:4567/?token=runtime-token')
+    await new Promise((resolve) => setTimeout(resolve, 10))
     await manager.stop()
+    const runtimeLog = await readFile(join(layout.logs, 'harness.log'), 'utf8')
+    expect(runtimeLog).not.toContain('runtime-token')
+    expect(runtimeLog).toContain('token=[REDACTED]')
   })
 
   it('increments the port and starts a new Runtime when the selected port is occupied', async () => {

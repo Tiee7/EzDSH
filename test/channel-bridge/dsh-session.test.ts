@@ -32,7 +32,7 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
-  it('exchanges a tokenized Runtime URL once before calling slash-style RPC with its auth cookie', async () => {
+  it('exchanges a tokenized Runtime URL once before calling the RC1 model catalog route with its auth cookie', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({ url: String(input), init })
@@ -59,7 +59,7 @@ describe('DshSessionClient', () => {
     expect(requests).toEqual([
       expect.objectContaining({ url: 'http://127.0.0.1:4567/?token=runtime-token', init: expect.objectContaining({ method: 'GET' }) }),
       expect.objectContaining({
-        url: 'http://127.0.0.1:4567/api/llm/models',
+        url: 'http://127.0.0.1:4567/api/session/modelCatalog',
         init: expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({ Cookie: 'dsh-auth-session=authenticated' }),
@@ -68,11 +68,128 @@ describe('DshSessionClient', () => {
     ])
     expect(JSON.parse(String(requests[1]?.init?.body))).toEqual(expect.objectContaining({
       type: 'client-request',
-      method: 'llm/models',
+      method: 'session/modelCatalog',
       payload: { args: {} },
     }))
 
     vi.unstubAllGlobals()
+  })
+
+  it('maps RC1 session and workspace commands to slash routes with named request arguments', async () => {
+    const requests: Array<{ url: string; body?: { method: string; payload: { args: Record<string, unknown> } } }> = []
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'GET') {
+        return {
+          ok: false,
+          status: 303,
+          headers: new Headers({ 'set-cookie': 'dsh-auth-session=authenticated; HttpOnly; Path=/' }),
+          text: async () => '',
+        } as Response
+      }
+      const body = JSON.parse(String(init?.body)) as { method: string; payload: { args: Record<string, unknown> } }
+      requests.push({ url, body })
+      const value = body.method === 'session/create'
+        ? { sessionId: 'session-1' }
+        : body.method === 'session/list'
+          ? { items: [] }
+          : body.method === 'session/selectModel'
+            ? { selected: { provider: 'deepseek', model: 'deepseek-v4-pro' } }
+            : body.method === 'session/rename'
+              ? { title: 'Renamed session', seq: 1 }
+        : body.method === 'workspace/create'
+          ? { workspace: { workspaceId: 'workspace-1', path: '/work', title: 'Work', sessionIds: [], createdAt: 'now', updatedAt: 'now' }, created: true }
+          : body.method === 'workspace/rename'
+            ? { workspace: { workspaceId: 'workspace-1', path: '/work', title: 'Renamed', sessionIds: [], createdAt: 'now', updatedAt: 'now' } }
+            : { accepted: true }
+      return { ok: true, status: 200, json: async () => ok(value), text: async () => '' } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://127.0.0.1:4567/?token=runtime-token', timeoutMs: 1000 })
+
+    await client.createSession({ sessionId: 'session-1', cwd: '/work' })
+    await client.queuePrompt('session-1', 'hello')
+    await client.renameSession('session-1', 'Renamed session')
+    await client.selectSessionModel('session-1', { provider: 'deepseek', model: 'deepseek-v4-pro' })
+    await client.listSessions()
+    await client.cancelSession('session-1')
+    await client.archiveSession('session-1')
+    await client.createWorkspace('/work')
+    await client.renameWorkspace('workspace-1', 'Renamed')
+
+    expect(requests).toEqual([
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/create',
+        body: expect.objectContaining({ method: 'session/create', payload: { args: { request: { sessionId: 'session-1', cwd: '/work' } } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/prompt',
+        body: expect.objectContaining({ method: 'session/prompt', payload: { args: { request: expect.objectContaining({ sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'hello' }], requestId: expect.any(String) }) } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/rename',
+        body: expect.objectContaining({ method: 'session/rename', payload: { args: { request: { sessionId: 'session-1', title: 'Renamed session' } } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/selectModel',
+        body: expect.objectContaining({ method: 'session/selectModel', payload: { args: { request: { sessionId: 'session-1', provider: 'deepseek', model: 'deepseek-v4-pro' } } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/list',
+        body: expect.objectContaining({ method: 'session/list', payload: { args: { _request: {} } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/cancel',
+        body: expect.objectContaining({ method: 'session/cancel', payload: { args: { request: { sessionId: 'session-1' } } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/workspace/archiveSession',
+        body: expect.objectContaining({ method: 'workspace/archiveSession', payload: { args: { request: { sessionId: 'session-1' } } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/workspace/create',
+        body: expect.objectContaining({ method: 'workspace/create', payload: { args: { request: { path: '/work' } } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/workspace/rename',
+        body: expect.objectContaining({ method: 'workspace/rename', payload: { args: { request: { workspaceId: 'workspace-1', title: 'Renamed' } } } }),
+      }),
+    ])
+    vi.unstubAllGlobals()
+  })
+
+  it('maps RC1 history to a session page with the exact address and cursor', async () => {
+    const requests: Array<{ url: string; body?: { method: string; payload: { args: Record<string, unknown> } } }> = []
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'GET') return {
+        ok: false,
+        status: 303,
+        headers: new Headers({ 'set-cookie': 'dsh-auth-session=authenticated; HttpOnly; Path=/' }),
+        text: async () => '',
+      } as Response
+      const body = JSON.parse(String(init?.body)) as { method: string; payload: { args: Record<string, unknown> } }
+      requests.push({ url, body })
+      return { ok: true, status: 200, json: async () => ok({ records: [{ type: 'event', event: { type: 'turn/end', seq: 7, time: 1, data: {} } }], hasMore: false }), text: async () => '' } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://127.0.0.1:4567/?token=runtime-token', timeoutMs: 1000 })
+
+    await expect(client.getSessionHistory('session-1', { throughSeq: 7, beforeSeq: 3, maxMessages: 20 })).resolves.toMatchObject({
+      events: [{ event: { type: 'turn/end', seq: 7 } }],
+      hasMore: false,
+    })
+    expect(requests).toEqual([expect.objectContaining({
+      url: 'http://127.0.0.1:4567/api/session/page',
+      body: expect.objectContaining({ method: 'session/page', payload: { args: { request: { address: { kind: 'session', sessionId: 'session-1' }, throughSeq: 7, beforeSeq: 3, maxMessages: 20 } } } }),
+    })])
+    vi.unstubAllGlobals()
+  })
+
+  it('fails clearly instead of calling RC1 endpoints that do not exist', async () => {
+    const client = new DshSessionClient({ baseUrl: 'http://127.0.0.1:4567/?token=runtime-token', timeoutMs: 1000 })
+
+    await expect(client.unarchiveSession('session-1')).rejects.toThrow(/does not provide.*unarchive/i)
+    await expect(client.listWorkspaces()).rejects.toThrow(/does not provide.*workspace list/i)
+    await expect(client.getSessionModels('session-1')).rejects.toThrow(/does not provide.*per-session model/i)
   })
 
   it('lists native DSH workspaces', async () => {
