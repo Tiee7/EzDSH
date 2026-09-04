@@ -27,6 +27,7 @@ const host = (payload: Record<string, unknown>, rpcId = 'rpc-1'): RuntimeHostEnv
 
 class FakeNotificationWebSocket implements RuntimeWebSocketLike {
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>()
+  readonly outbound: unknown[] = []
 
   addEventListener(type: string, listener: (event: unknown) => void): void {
     const listeners = this.listeners.get(type) ?? new Set<(event: unknown) => void>()
@@ -46,7 +47,11 @@ class FakeNotificationWebSocket implements RuntimeWebSocketLike {
     for (const listener of this.listeners.get(type) ?? []) listener(event)
   }
 
-  send(envelope: Record<string, unknown>): void {
+  send(data: string): void {
+    this.outbound.push(JSON.parse(data))
+  }
+
+  emitFrame(envelope: Record<string, unknown>): void {
     this.emit('message', { data: JSON.stringify(envelope) })
   }
 }
@@ -199,6 +204,25 @@ describe('RuntimeNotificationTracker', () => {
     }, 'resolve-rpc'))).toEqual([])
     expect(tracker.consumeMux(mux(request, 'question-rpc'))).toHaveLength(1)
   })
+
+  it('maps rc1 forwarded session, error, subagent, and question events to notification signals', () => {
+    const tracker = new RuntimeNotificationTracker()
+
+    expect(tracker.consumeRemoteEmit('api-session/added', [{
+      sessionId: 'child-1', parentSessionId: 'session-1', origin: 'subagent', running: true,
+    }])).toEqual([])
+    expect(tracker.consumeRemoteEmit('api-session/status', ['child-1', false])).toEqual([
+      expect.objectContaining({ event: 'subagent', sessionId: 'child-1' }),
+    ])
+    expect(tracker.consumeRemoteEmit('api-session/error', ['session-1', 'Runtime unavailable'])).toEqual([
+      expect.objectContaining({ event: 'error', sessionId: 'session-1', detail: 'Runtime unavailable' }),
+    ])
+    expect(tracker.consumeRemoteWaterfall('user-questions/request', 'question-event', 'session-1', {
+      questions: [{ id: 'q-1', question: 'Choose a target' }],
+    })).toEqual([
+      expect.objectContaining({ event: 'question', sessionId: 'session-1', detail: 'Choose a target' }),
+    ])
+  })
 })
 
 describe('RuntimeNotificationService', () => {
@@ -228,7 +252,7 @@ describe('RuntimeNotificationService', () => {
     ])
   })
 
-  it('exchanges a tokenized Runtime URL once and sends its cookie on WebSocket downlinks', async () => {
+  it('exchanges a tokenized Runtime URL once and sends its cookie on the rc1 remote event mux', async () => {
     const headers: Array<Record<string, string> | undefined> = []
     const sockets: FakeNotificationWebSocket[] = []
     let exchanges = 0
@@ -260,24 +284,13 @@ describe('RuntimeNotificationService', () => {
     service.stop()
 
     expect(exchanges).toBe(1)
-    expect(sockets).toHaveLength(2)
-    expect(headers).toEqual([
-      { Cookie: 'dsh-auth-runtime=cookie-value' },
-      { Cookie: 'dsh-auth-runtime=cookie-value' },
-    ])
+    expect(sockets).toHaveLength(1)
+    expect(headers).toEqual([{ Cookie: 'dsh-auth-runtime=cookie-value' }])
   })
 
-  it('sends the exchanged token cookie on SSE downlinks', async () => {
+  it('keeps clean Runtime URLs on the legacy SSE fixture transport', async () => {
     const eventCookies: Array<string | null> = []
-    let exchanges = 0
     const fetchImpl: typeof fetch = async (input, init) => {
-      if (String(input) === 'http://127.0.0.1:3690/?token=runtime-token') {
-        exchanges += 1
-        return new Response(null, {
-          status: 303,
-          headers: { 'set-cookie': 'dsh-auth-runtime=cookie-value; HttpOnly; Path=/' },
-        })
-      }
       eventCookies.push(new Headers(init?.headers).get('Cookie'))
       const payload = String(input).endsWith('.mux')
         ? { type: 'approval/requested', sessionId: 'session-1', approvalId: 'approval-1', toolName: 'bash' }
@@ -299,15 +312,11 @@ describe('RuntimeNotificationService', () => {
       onSignal: () => resolveSignals(),
     })
 
-    service.start('http://127.0.0.1:3690/?token=runtime-token')
+    service.start('http://127.0.0.1:3690/')
     await signalsReady
     service.stop()
 
-    expect(exchanges).toBe(1)
-    expect(eventCookies).toEqual([
-      'dsh-auth-runtime=cookie-value',
-      'dsh-auth-runtime=cookie-value',
-    ])
+    expect(eventCookies).toEqual([null, null])
   })
 
   it('forwards JSON frames received from WebSocket downlinks', async () => {
@@ -320,7 +329,7 @@ describe('RuntimeNotificationService', () => {
         const payload = url.endsWith('.mux')
           ? { type: 'approval/requested', sessionId: 'session-1', approvalId: 'approval-1', toolName: 'bash' }
           : { type: 'host/agent-error', sessionId: 'session-1', message: 'Host unavailable' }
-        socket.send({ type: 'server-request', rpcId: url, payload })
+        socket.emitFrame({ type: 'server-request', rpcId: url, payload })
       })
       return socket
     }
@@ -372,5 +381,86 @@ describe('RuntimeNotificationService', () => {
     service.stop()
 
     expect(signals.sort()).toEqual(['approval', 'error'])
+  })
+
+  it('opens the tokenized rc1 remote event mux, forwards signals, and releases waterfall delivery', async () => {
+    const urls: string[] = []
+    const sockets: FakeNotificationWebSocket[] = []
+    const eventResults: unknown[] = []
+    const signals: string[] = []
+    const webSocketFactory = (url: string, headers?: Record<string, string>): RuntimeWebSocketLike => {
+      urls.push(url)
+      expect(headers).toEqual({ Cookie: 'dsh-auth-runtime=cookie-value' })
+      const socket = new FakeNotificationWebSocket()
+      sockets.push(socket)
+      return socket
+    }
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (String(input) === 'http://127.0.0.1:3690/?token=runtime-token') {
+        return new Response(null, {
+          status: 303,
+          headers: { 'set-cookie': 'dsh-auth-runtime=cookie-value; HttpOnly; Path=/' },
+        })
+      }
+      expect(String(input)).toBe('http://127.0.0.1:3690/api/$events/result')
+      expect(new Headers(init?.headers).get('Cookie')).toBe('dsh-auth-runtime=cookie-value')
+      eventResults.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ result: { ok: true, value: undefined } }), { status: 200 })
+    }
+    const service = new RuntimeNotificationService({
+      fetchImpl,
+      webSocketFactory,
+      reconnectDelayMs: 60_000,
+      onSignal: (signal) => signals.push(signal.event),
+    })
+
+    service.start('http://127.0.0.1:3690/?token=runtime-token')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(urls).toEqual(['ws://127.0.0.1:3690/api/remote.mux'])
+    expect(sockets).toHaveLength(1)
+    sockets[0].emit('open', {})
+    expect(sockets[0].outbound).toEqual([
+      expect.objectContaining({ type: 'open', endpoint: '$events', payload: { args: {} } }),
+    ])
+
+    sockets[0].emitFrame({
+      type: 'item',
+      streamId: (sockets[0].outbound[0] as { streamId: string }).streamId,
+      value: { type: 'ready', clientId: 'event-client', host: { home: '/tmp' } },
+    })
+    sockets[0].emitFrame({
+      type: 'item',
+      streamId: (sockets[0].outbound[0] as { streamId: string }).streamId,
+      value: { type: 'emit', event: 'api-session/status', args: ['session-1', true] },
+    })
+    sockets[0].emitFrame({
+      type: 'item',
+      streamId: (sockets[0].outbound[0] as { streamId: string }).streamId,
+      value: { type: 'emit', event: 'api-session/status', args: ['session-1', false] },
+    })
+    sockets[0].emitFrame({
+      type: 'item',
+      streamId: (sockets[0].outbound[0] as { streamId: string }).streamId,
+      value: {
+        type: 'waterfall',
+        event: 'approval/request',
+        eventId: 'approval-event',
+        agentId: 'session-1',
+        request: { toolName: 'bash', reason: 'Run tests' },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    service.stop()
+
+    expect(signals).toEqual(['task', 'approval'])
+    expect(eventResults).toEqual([
+      expect.objectContaining({
+        method: '$events/result',
+        payload: {
+          args: { clientId: 'event-client', eventId: 'approval-event', outcome: { kind: 'next' } },
+        },
+      }),
+    ])
   })
 })

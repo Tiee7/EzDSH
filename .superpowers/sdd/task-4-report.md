@@ -28,3 +28,26 @@ VERIFICATION
 COMMIT
 
 - `3058fdb fix: separate workflow release deployment observations`
+
+---
+
+## DSH 0.1.2-rc.1 notification transport follow-up
+
+Date: 2026-09-04
+
+RED
+
+- Added a tokenized Runtime regression that requires exactly one authenticated WebSocket at `/api/remote.mux`, an `$events` logical-stream open frame, `item` downlink decoding, and a `$events/result` `next` reply for forwarded waterfalls.
+- Before the change it failed because the notification observer still opened the removed `/api/events.mux` and `/api/events.host` paths.
+
+GREEN
+
+- Tokenized rc1 Runtimes now authenticate once, connect to `/api/remote.mux`, open `$events`, and preserve the old clean-URL SSE/WebSocket fixtures as the legacy transport.
+- `api-session/added`, `api-session/status`, and `api-session/error`, plus `approval/request` and `user-questions/request`, map to the existing subagent/task/error/approval/question notification signals.
+- Each received waterfall is acknowledged through authenticated `/api/$events/result` with `outcome: { kind: 'next' }`, releasing this observer's delivery without claiming the user decision.
+
+VERIFICATION
+
+- `npx vitest run test/main/notifications.test.ts` passed (13 tests).
+- `npm run typecheck` passed.
+- `git diff --check` passed.

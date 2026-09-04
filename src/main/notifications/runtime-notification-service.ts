@@ -1,4 +1,5 @@
 import type { NotificationSignal } from '../../shared/notifications.js'
+import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 
 /** Minimal JSON shape accepted from the DSH server-request SSE envelopes. */
@@ -81,6 +82,9 @@ export class RuntimeNotificationTracker {
   private readonly jobs = new Map<string, Map<string, JobRecord>>()
   private readonly subagentParents = new Map<string, string>()
   private readonly subagentRunning = new Map<string, boolean>()
+  private readonly remoteSessionRunning = new Map<string, boolean>()
+  private readonly remoteCompletedTurns = new Map<string, number>()
+  private readonly remoteErrorKeys = new Set<string>()
 
   consumeMux(envelope: RuntimeMuxEnvelope): NotificationSignal[] {
     const payload = envelope.payload
@@ -143,6 +147,78 @@ export class RuntimeNotificationTracker {
       return [signal('error', sessionId, `agent-error:${sessionId}:${envelope.rpcId}`, clipDetail(stringValue(payload.message)))]
     }
     if (type === 'stream/error') return [this.consumeStreamError(payload, envelope.rpcId)]
+    return []
+  }
+
+  consumeRemoteEmit(event: string, args: unknown[]): NotificationSignal[] {
+    if (event === 'api-session/added') {
+      const summary = asRecord(args[0])
+      if (summary === undefined) return []
+      const sessionId = stringValue(summary.sessionId)
+      if (sessionId === undefined) return []
+      if (summary.origin === 'subagent') {
+        const parentSessionId = stringValue(summary.parentSessionId)
+        if (parentSessionId !== undefined) this.subagentParents.set(sessionId, parentSessionId)
+      }
+      if (typeof summary.running === 'boolean') this.remoteSessionRunning.set(sessionId, summary.running)
+      return []
+    }
+
+    if (event === 'api-session/status') {
+      const sessionId = stringValue(args[0])
+      const running = args[1]
+      if (sessionId === undefined || typeof running !== 'boolean') return []
+      const wasRunning = this.remoteSessionRunning.get(sessionId)
+      this.remoteSessionRunning.set(sessionId, running)
+      if (wasRunning !== true || running) return []
+      if (this.subagentParents.has(sessionId)) return [signal('subagent', sessionId, `subagent:${sessionId}`)]
+      const turn = (this.remoteCompletedTurns.get(sessionId) ?? 0) + 1
+      this.remoteCompletedTurns.set(sessionId, turn)
+      return [signal('task', sessionId, `task:${sessionId}:status:${String(turn)}`)]
+    }
+
+    if (event === 'api-session/error') {
+      const sessionId = stringValue(args[0])
+      if (sessionId === undefined) return []
+      const detail = clipDetail(stringValue(args[1]))
+      const dedupeKey = `api-session-error:${sessionId}:${detail ?? ''}`
+      if (this.remoteErrorKeys.has(dedupeKey)) return []
+      this.remoteErrorKeys.add(dedupeKey)
+      return [signal('error', sessionId, dedupeKey, detail)]
+    }
+
+    if (event === 'api-session/removed') {
+      const sessionId = stringValue(args[0])
+      if (sessionId !== undefined) {
+        this.subagentParents.delete(sessionId)
+        this.subagentRunning.delete(sessionId)
+        this.remoteSessionRunning.delete(sessionId)
+        this.remoteCompletedTurns.delete(sessionId)
+      }
+    }
+    return []
+  }
+
+  consumeRemoteWaterfall(event: string, eventId: string, agentId: string, request: Record<string, unknown>): NotificationSignal[] {
+    if (event === 'approval/request') {
+      const dedupeKey = `approval:${agentId}:${eventId}`
+      if (this.approvalKeys.has(dedupeKey)) return []
+      this.approvalKeys.add(dedupeKey)
+      return [signal(
+        'approval',
+        agentId,
+        dedupeKey,
+        clipDetail(stringValue(request.reason)) ?? stringValue(request.toolName),
+      )]
+    }
+    if (event === 'user-questions/request') {
+      const dedupeKey = `question:${agentId}:${eventId}`
+      if (this.questionKeys.has(dedupeKey)) return []
+      this.questionKeys.add(dedupeKey)
+      const questions = Array.isArray(request.questions) ? request.questions : []
+      const first = asRecord(questions[0])
+      return [signal('question', agentId, dedupeKey, clipDetail(stringValue(first?.question)))]
+    }
     return []
   }
 
@@ -256,6 +332,7 @@ export interface RuntimeNotificationServiceOptions {
 export interface RuntimeWebSocketLike {
   addEventListener(type: string, listener: (event: unknown) => void, options?: { once?: boolean }): void
   removeEventListener?(type: string, listener: (event: unknown) => void): void
+  send(data: string): void
   close(): void
 }
 
@@ -288,12 +365,16 @@ export class RuntimeNotificationService {
     const generation = ++this.generation
     const controller = new AbortController()
     this.controller = controller
-    void this.runStream(runtimeUrl, '/api/events.mux', controller.signal, generation, (envelope) => {
-      for (const notification of this.tracker.consumeMux(envelope)) this.options.onSignal(notification)
-    })
-    void this.runStream(runtimeUrl, '/api/events.host', controller.signal, generation, (envelope) => {
-      for (const notification of this.tracker.consumeHost(envelope)) this.options.onSignal(notification)
-    })
+    if (new URL(runtimeUrl).searchParams.has('token')) {
+      void this.runRemoteEventMux(runtimeUrl, controller.signal, generation)
+    } else {
+      void this.runStream(runtimeUrl, '/api/events.mux', controller.signal, generation, (envelope) => {
+        for (const notification of this.tracker.consumeMux(envelope)) this.options.onSignal(notification)
+      })
+      void this.runStream(runtimeUrl, '/api/events.host', controller.signal, generation, (envelope) => {
+        for (const notification of this.tracker.consumeHost(envelope)) this.options.onSignal(notification)
+      })
+    }
   }
 
   stop(): void {
@@ -315,7 +396,10 @@ export class RuntimeNotificationService {
         const cookie = await this.exchangeRuntimeToken(runtimeUrl)
         if (this.options.webSocketFactory !== undefined || this.fetchImpl === undefined) {
           const socket = this.webSocketFactory(toWebSocketUrl(base, path), cookie === undefined ? undefined : { Cookie: cookie })
-          await readWebSocket(socket, signal, onEnvelope)
+          await readWebSocket(socket, signal, (event) => {
+            const envelope = parseSocketEnvelope(event)
+            if (envelope !== undefined) onEnvelope(envelope)
+          })
         } else {
           const response = await this.fetchImpl(`${base}${path}`, cookie === undefined ? { signal } : { signal, headers: { Cookie: cookie } })
           if (!response.ok || response.body === null) throw new Error(`Runtime event stream failed: HTTP ${String(response.status)}`)
@@ -326,6 +410,71 @@ export class RuntimeNotificationService {
         console.warn(`[notifications] ${path} disconnected:`, error instanceof Error ? error.message : String(error))
       }
       if (!signal.aborted && generation === this.generation) await delay(this.reconnectDelayMs, signal)
+    }
+  }
+
+  private async runRemoteEventMux(runtimeUrl: string, signal: AbortSignal, generation: number): Promise<void> {
+    const base = runtimeBaseUrl(runtimeUrl)
+    while (!signal.aborted && generation === this.generation) {
+      try {
+        const cookie = await this.exchangeRuntimeToken(runtimeUrl)
+        const socket = this.webSocketFactory(toWebSocketUrl(base, '/api/remote.mux'), cookie === undefined ? undefined : { Cookie: cookie })
+        const streamId = randomUUID()
+        let clientId: string | undefined
+        await readWebSocket(socket, signal, (event) => {
+          const frame = parseRemoteMuxItem(event)
+          if (frame === undefined || frame.streamId !== streamId) return
+          const value = asRecord(frame.value)
+          const type = stringValue(value?.type)
+          if (type === 'ready') {
+            clientId = stringValue(value?.clientId)
+            return
+          }
+          if (type === 'emit') {
+            const eventName = stringValue(value?.event)
+            const args = Array.isArray(value?.args) ? value.args : undefined
+            if (eventName === undefined || args === undefined) return
+            for (const notification of this.tracker.consumeRemoteEmit(eventName, args)) this.options.onSignal(notification)
+            return
+          }
+          if (type !== 'waterfall') return
+          const eventName = stringValue(value?.event)
+          const eventId = stringValue(value?.eventId)
+          const agentId = stringValue(value?.agentId)
+          const request = asRecord(value?.request)
+          if (eventName === undefined || eventId === undefined || agentId === undefined || request === undefined) return
+          for (const notification of this.tracker.consumeRemoteWaterfall(eventName, eventId, agentId, request)) this.options.onSignal(notification)
+          if (clientId !== undefined) void this.sendRemoteEventNext(base, cookie, clientId, eventId, signal)
+        }, () => {
+          socket.send(JSON.stringify({ type: 'open', streamId, endpoint: '$events', payload: { args: {} } }))
+        })
+      } catch (error) {
+        if (signal.aborted || generation !== this.generation) return
+        console.warn('[notifications] /api/remote.mux disconnected:', error instanceof Error ? error.message : String(error))
+      }
+      if (!signal.aborted && generation === this.generation) await delay(this.reconnectDelayMs, signal)
+    }
+  }
+
+  private async sendRemoteEventNext(base: string, cookie: string | undefined, clientId: string, eventId: string, signal: AbortSignal): Promise<void> {
+    try {
+      const response = await (this.fetchImpl ?? fetch)(`${base}/api/$events/result`, {
+        method: 'POST',
+        signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(cookie === undefined ? {} : { Cookie: cookie }),
+        },
+        body: JSON.stringify({
+          type: 'client-request',
+          rpcId: randomUUID(),
+          method: '$events/result',
+          payload: { args: { clientId, eventId, outcome: { kind: 'next' } } },
+        }),
+      })
+      if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
+    } catch (error) {
+      if (!signal.aborted) console.warn('[notifications] $events/result failed:', error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -389,10 +538,29 @@ function parseSocketEnvelope(event: unknown): RuntimeMuxEnvelope | undefined {
   }
 }
 
+interface RemoteMuxItemFrame {
+  type: 'item'
+  streamId: string
+  value: unknown
+}
+
+function parseRemoteMuxItem(event: unknown): RemoteMuxItemFrame | undefined {
+  const text = socketMessageText(event)
+  if (text === undefined) return undefined
+  try {
+    const frame = asRecord(JSON.parse(text))
+    if (frame?.type !== 'item' || typeof frame.streamId !== 'string') return undefined
+    return { type: 'item', streamId: frame.streamId, value: frame.value }
+  } catch {
+    return undefined
+  }
+}
+
 async function readWebSocket(
   socket: RuntimeWebSocketLike,
   signal: AbortSignal,
-  onEnvelope: (envelope: RuntimeMuxEnvelope) => void,
+  onMessage: (event: unknown) => void,
+  onOpen?: () => void,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let settled = false
@@ -400,15 +568,13 @@ async function readWebSocket(
       if (settled) return
       settled = true
       socket.removeEventListener?.('message', onMessage)
+      socket.removeEventListener?.('open', opened)
       socket.removeEventListener?.('close', onClose)
       socket.removeEventListener?.('error', onError)
       if (error === undefined) resolve()
       else reject(error)
     }
-    const onMessage = (event: unknown): void => {
-      const envelope = parseSocketEnvelope(event)
-      if (envelope !== undefined) onEnvelope(envelope)
-    }
+    const opened = (): void => onOpen?.()
     const onClose = (): void => finish()
     const onError = (event: unknown): void => {
       const detail = clipDetail(stringValue(asRecord(event)?.message))
@@ -424,6 +590,7 @@ async function readWebSocket(
     }
 
     socket.addEventListener('message', onMessage)
+    if (onOpen !== undefined) socket.addEventListener('open', opened, { once: true })
     socket.addEventListener('close', onClose, { once: true })
     socket.addEventListener('error', onError, { once: true })
     signal.addEventListener('abort', onAbort, { once: true })
