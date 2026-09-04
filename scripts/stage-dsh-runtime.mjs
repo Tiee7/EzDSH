@@ -2,9 +2,12 @@ import { access, cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink } fr
 import { execFileSync } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pruneRuntimeFiles } from './prune-runtime-files.mjs'
+import { assertPinnedDshRuntimeVersion } from './dsh-runtime-version.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const runtimeSource = join(projectRoot, 'vendor', 'deepseek-harness')
+const sourceManifest = JSON.parse(await readFile(join(runtimeSource, 'apps', 'cli', 'package.json'), 'utf8'))
+assertPinnedDshRuntimeVersion('source Runtime @deepseek-ai/dsh', sourceManifest.version)
 const destination = join(projectRoot, 'out', 'dsh-runtime')
 const legacyArchive = join(projectRoot, 'out', 'dsh-runtime.tar.gz')
 const linkType = process.platform === 'win32' ? 'junction' : undefined
