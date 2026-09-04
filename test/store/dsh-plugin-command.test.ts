@@ -91,7 +91,6 @@ describe('createDshPluginCommand', () => {
       '--profile',
       'web',
       'add',
-      '-w',
       'npm:dsh-agent-teams@1.0.0'
     ])
     expect(captured?.env?.DSH_HOME).toBe('/data/harness')
@@ -149,9 +148,9 @@ describe('createDshPluginCommand', () => {
     const log = await readFile(join(root, 'logs', 'plugins', files[0] as string), 'utf8')
     expect(log).toContain('DSH plugin operation')
     expect(log).toContain('profile=web')
-    expect(log).toContain('dshVersion=0.1.1-rc.2')
+    expect(log).toContain('dshVersion=0.1.2-rc.1')
     expect(log).toContain('pnpmVersion=11.7.0')
-    expect(log).toContain('workspaceRootWorkaroundApplied=true')
+    expect(log).toContain('workspaceRootWorkaroundApplied=false')
     expect(log).toContain('ERR_PNPM_ADDING_TO_ROOT')
     expect(log).toContain('exitCode=1')
   })
