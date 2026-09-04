@@ -167,6 +167,7 @@ interface SessionSummaryWire {
   running: boolean
   blank?: boolean
   projections?: {
+    asOfSeq?: unknown
     values?: {
       title?: unknown
     }
@@ -324,13 +325,18 @@ export class DshSessionClient {
   }
 
   async getSessionHistory(sessionId: string, options?: { throughSeq?: number; beforeSeq?: number; maxMessages?: number }): Promise<DshSessionHistoryResponse> {
+    const throughSeq = this.modernRuntime
+      ? await this.getModernHistoryCursor(sessionId)
+      : options?.throughSeq
     const response = await this.post<DshSessionHistoryResponse | { records: DshSessionHistoryEntry[]; hasMore: boolean }>('/api/session.history', {
       sessionId,
-      throughSeq: options?.throughSeq,
+      throughSeq,
       beforeSeq: options?.beforeSeq,
       maxMessages: options?.maxMessages,
     } satisfies SessionHistoryRequest)
-    return 'records' in response ? { events: response.records, hasMore: response.hasMore } : response
+    return 'records' in response
+      ? { events: response.records.map((record) => ({ event: record.event })), hasMore: response.hasMore }
+      : response
   }
 
   async getSessionModels(sessionId: string): Promise<DshSessionModels> {
@@ -390,9 +396,6 @@ export class DshSessionClient {
     callbacks: TurnTrackerCallbacks,
     options: { timeoutMs: number; statusIntervalMs: number },
   ): Promise<void> {
-    if (this.modernRuntime) {
-      throw new DshRuntimeCompatibilityError('DSH RC1 prompt completion requires the session/follow stream; legacy history polling is unavailable')
-    }
     const sinceSeq = await this.getCurrentMaxSeq(sessionId)
 
     await this.queuePrompt(sessionId, text)
@@ -436,10 +439,24 @@ export class DshSessionClient {
   }
 
   private async getCurrentMaxSeq(sessionId: string): Promise<number> {
+    if (this.modernRuntime) return this.getModernHistoryCursor(sessionId)
     const history = await this.getSessionHistory(sessionId)
 
     if (history.events.length === 0) return -1
     return Math.max(...history.events.map((entry) => entry.event.seq))
+  }
+
+  private async getModernHistoryCursor(sessionId: string): Promise<number> {
+    const response = await this.post<SessionListResponse>('/api/session.list', {})
+    const summary = response.items.find((item) => item.sessionId === sessionId)
+    if (summary === undefined) {
+      throw new DshRuntimeCompatibilityError(`DSH RC1 session/list did not include session ${sessionId}`)
+    }
+
+    const asOfSeq = summary.projections?.asOfSeq
+    if (isSessionSeqCursor(asOfSeq)) return asOfSeq
+    if (summary.blank === true) return -1
+    throw new DshRuntimeCompatibilityError(`DSH RC1 session/list did not provide a valid projection cursor for session ${sessionId}`)
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
@@ -588,6 +605,10 @@ function isRpcResponseEnvelope(value: unknown): value is RpcResponseEnvelope<unk
 function readProjectedTitle(item: SessionSummaryWire): string | undefined {
   const title = item.projections?.values?.title
   return typeof title === 'string' && title.length > 0 ? title : undefined
+}
+
+function isSessionSeqCursor(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= -1 && !Object.is(value, -0)
 }
 
 function extractAssistantText(events: DshSessionEvent[]): string {

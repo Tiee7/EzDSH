@@ -157,7 +157,7 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
-  it('maps RC1 history to a session page with the exact address and cursor', async () => {
+  it('maps RC1 history through the session-list projection cursor to a session page', async () => {
     const requests: Array<{ url: string; body?: { method: string; payload: { args: Record<string, unknown> } } }> = []
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -169,18 +169,134 @@ describe('DshSessionClient', () => {
       } as Response
       const body = JSON.parse(String(init?.body)) as { method: string; payload: { args: Record<string, unknown> } }
       requests.push({ url, body })
+      if (body.method === 'session/list') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ok({
+            items: [{
+              sessionId: 'session-1',
+              updatedAt: 1,
+              running: false,
+              projections: { asOfSeq: 7, values: {} },
+            }],
+          }),
+          text: async () => '',
+        } as Response
+      }
       return { ok: true, status: 200, json: async () => ok({ records: [{ type: 'event', event: { type: 'turn/end', seq: 7, time: 1, data: {} } }], hasMore: false }), text: async () => '' } as Response
     })
     const client = new DshSessionClient({ baseUrl: 'http://127.0.0.1:4567/?token=runtime-token', timeoutMs: 1000 })
 
-    await expect(client.getSessionHistory('session-1', { throughSeq: 7, beforeSeq: 3, maxMessages: 20 })).resolves.toMatchObject({
+    await expect(client.getSessionHistory('session-1', { beforeSeq: 3, maxMessages: 20 })).resolves.toMatchObject({
       events: [{ event: { type: 'turn/end', seq: 7 } }],
       hasMore: false,
     })
-    expect(requests).toEqual([expect.objectContaining({
-      url: 'http://127.0.0.1:4567/api/session/page',
-      body: expect.objectContaining({ method: 'session/page', payload: { args: { request: { address: { kind: 'session', sessionId: 'session-1' }, throughSeq: 7, beforeSeq: 3, maxMessages: 20 } } } }),
-    })])
+    expect(requests).toEqual([
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/list',
+        body: expect.objectContaining({ method: 'session/list', payload: { args: { _request: {} } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/page',
+        body: expect.objectContaining({ method: 'session/page', payload: { args: { request: { address: { kind: 'session', sessionId: 'session-1' }, throughSeq: 7, beforeSeq: 3, maxMessages: 20 } } } }),
+      }),
+    ])
+    vi.unstubAllGlobals()
+  })
+
+  it('completes an RC1 prompt by polling the session-list cursor and pages', async () => {
+    const requests: Array<{ url: string; body?: { method: string; payload: { args: Record<string, unknown> } } }> = []
+    let listCalls = 0
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'GET') return {
+        ok: false,
+        status: 303,
+        headers: new Headers({ 'set-cookie': 'dsh-auth-session=authenticated; HttpOnly; Path=/' }),
+        text: async () => '',
+      } as Response
+      const body = JSON.parse(String(init?.body)) as { method: string; payload: { args: Record<string, unknown> } }
+      requests.push({ url, body })
+      if (body.method === 'session/list') {
+        listCalls++
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ok({
+            items: [{
+              sessionId: 'session-1',
+              updatedAt: listCalls,
+              running: listCalls > 1,
+              projections: { asOfSeq: listCalls === 1 ? 1 : 5, values: {} },
+            }],
+          }),
+          text: async () => '',
+        } as Response
+      }
+      if (body.method === 'session/prompt') {
+        return { ok: true, status: 200, json: async () => ok({ accepted: true }), text: async () => '' } as Response
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ok({
+          records: [
+            {
+              type: 'event',
+              event: {
+                type: 'assistant/message',
+                seq: 4,
+                time: 4,
+                data: { message: { role: 'assistant', content: [{ type: 'text', text: 'rc1 answer' }] } },
+              },
+            },
+            { type: 'event', event: { type: 'turn/end', seq: 5, time: 5, data: {} } },
+          ],
+          hasMore: false,
+        }), text: async () => '',
+      } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://127.0.0.1:4567/?token=runtime-token', timeoutMs: 1000, pollIntervalMs: 1 })
+    const deltas: string[] = []
+    const completed: string[] = []
+
+    await client.sendPromptAsync(
+      'session-1',
+      'hi',
+      {
+        onAcknowledged: () => {},
+        onDelta: (text) => deltas.push(text),
+        onProgress: () => {},
+        onComplete: (text) => completed.push(text),
+        onError: (error) => { throw new Error(error) },
+      },
+      { timeoutMs: 1000, statusIntervalMs: 1000 },
+    )
+
+    expect(deltas).toEqual(['rc1 answer'])
+    expect(completed).toEqual(['rc1 answer'])
+    expect(requests).toEqual([
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/list',
+        body: expect.objectContaining({ method: 'session/list', payload: { args: { _request: {} } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/prompt',
+        body: expect.objectContaining({
+          method: 'session/prompt',
+          payload: { args: { request: { sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'hi' }], requestId: expect.any(String) } } },
+        }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/list',
+        body: expect.objectContaining({ method: 'session/list', payload: { args: { _request: {} } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/session/page',
+        body: expect.objectContaining({ method: 'session/page', payload: { args: { request: { address: { kind: 'session', sessionId: 'session-1' }, throughSeq: 5 } } } }),
+      }),
+    ])
     vi.unstubAllGlobals()
   })
 
