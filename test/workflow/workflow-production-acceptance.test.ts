@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -175,7 +175,18 @@ describe('workflow production-candidate acceptance', () => {
     const releaseSummaries = [workflowReleaseSummary(first), workflowReleaseSummary(second), workflowReleaseSummary(restored)]
     const observedEvents = observations.list('customer-acme-production')
     const publicData = JSON.stringify({ releases: releaseSummaries, observations: observedEvents })
+    const persistedReleaseData = await readFile(join(dir, 'workflow-releases.json'), 'utf8')
+    const persistedObservationData = await readFile(join(dir, 'workflow-observations.jsonl'), 'utf8')
+    const persistedReleases = JSON.parse(persistedReleaseData) as {
+      releases: Array<{ id: string; workflowSnapshot: { name: string; revision: number } }>
+    }
+
+    expect(persistedReleases.releases.find((release) => release.id === first.id)).toMatchObject({
+      workflowSnapshot: { name: '生产验收', revision: workflow.revision },
+    })
     expect(publicData).not.toMatch(/order-42|runtime-secret|connector-secret|runtime-authorization|Authorization|raw-response-body/u)
+    expect(persistedReleaseData).not.toMatch(/order-42|runtime-secret|connector-secret|runtime-authorization|Authorization|raw-response-body/u)
+    expect(persistedObservationData).not.toMatch(/order-42|runtime-secret|connector-secret|runtime-authorization|Authorization|raw-response-body/u)
     expect(releaseSummaries.every((release) => !('workflowSnapshot' in release) && !('connectorGrants' in release))).toBe(true)
     expect(observedEvents.every((event) => !('input' in event) && !('output' in event) && !('message' in event))).toBe(true)
   })
