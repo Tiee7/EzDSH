@@ -1,17 +1,17 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { assertPinnedDshRuntimeVersion } from './dsh-runtime-version.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const isPrePackageVerification = process.argv[2] === undefined
 const bundleRoot = isPrePackageVerification
   ? join(projectRoot, 'out')
   : resolve(projectRoot, process.argv[2])
-const temporaryRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-bundle-'))
 
 const nodeExecutableName = process.platform === 'win32' ? 'node.exe' : 'node'
 const nodeCandidates = [
@@ -42,6 +42,30 @@ if (nodeExecutable === undefined) {
 if (runtimeEntry === undefined) {
   throw new Error(`Bundled DSH Runtime package was not found under ${bundleRoot}`)
 }
+
+function findSelectedDshRuntimeManifest(entry) {
+  let directory = dirname(entry)
+  while (true) {
+    const manifestPath = join(directory, 'package.json')
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+      if (manifest.name === '@deepseek-ai/dsh') {
+        return { manifest, manifestPath }
+      }
+    }
+    const parent = dirname(directory)
+    if (parent === directory) break
+    directory = parent
+  }
+  throw new Error(`Selected DSH Runtime entry has no owning @deepseek-ai/dsh manifest: ${entry}`)
+}
+
+const selectedRuntimeManifest = findSelectedDshRuntimeManifest(runtimeEntry)
+assertPinnedDshRuntimeVersion(
+  `selected DSH Runtime manifest at ${selectedRuntimeManifest.manifestPath}`,
+  selectedRuntimeManifest.manifest.version
+)
+const temporaryRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-bundle-'))
 
 // DSH's plugin command invokes pnpm by name. Verify the application ships it
 // so a production install never depends on the shell PATH of the user who

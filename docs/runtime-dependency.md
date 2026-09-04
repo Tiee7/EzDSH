@@ -14,6 +14,8 @@ Runtime version:    0.1.1-rc.2
 Checked at:         2026-08-22
 ```
 
+`0.1.1-rc.2` 是发布硬门禁：打包前会核验根项目 `node_modules/@deepseek-ai/dsh`，暂存和最终安装包校验会从实际选中的 Runtime 入口向上找到所属 `@deepseek-ai/dsh/package.json` 并再次核验。任何其他版本（包括 `0.1.0-rc.8`）都会在 Runtime 启动前阻断发布。已有的 `1.8.1528` 安装包仍是旧产物，不会因为仓库升级而被追溯更新；需要重新构建并发布新安装包。
+
 项目依赖最终以 `package.json` 和 lockfile 中的精确版本为准。EzDSH 默认直接消费已经发布的 DSH 包，不再在 `postinstall` 或正式打包前安装完整 upstream workspace。生产入口为 `node_modules/@deepseek-ai/dsh/lib/bin.js`，electron-builder 会把生产依赖随 `node_modules/**/*` 放入安装包。
 
 根项目通过 npm 精确锁定 `node-bin-darwin-arm64@24.18.0` 和 `pnpm@11.7.0`。二者安装在被 Git 忽略的 `node_modules` 中；Node 平台包及其完整性哈希直接记录在根 `package-lock.json`，不经过隐藏的二次安装。打包时仅把 Node 可执行文件和许可证复制到同样被忽略的 `out/node-runtime`，最终进入安装包。正式运行时，EzDSH 从 `Contents/Resources/app/out/node-runtime/bin/node` 启动 DSH，不读取系统 PATH，也不要求用户安装 Node、npm 或 pnpm。
@@ -218,6 +220,8 @@ EZDSH_DSH_SOURCE="$PWD/vendor/deepseek-harness/apps/cli" npm run dev
 ```
 
 源码联调只影响本地开发，不会改变正式安装包。要让源码修改进入发布包，应先发布新的 DSH npm 版本，再更新 EzDSH 的 `package.json` 和 lockfile。
+
+`stage:dsh:source-runtime` 也会读取 `vendor/deepseek-harness/apps/cli/package.json` 并执行同一 pin 校验。因此，旧 vendor checkout（例如仍声明 `0.1.0-rc.8`）会在暂存前被拒绝，不能作为发布 Runtime 的回退来源。
 
 ### 8.3 验证产物
 

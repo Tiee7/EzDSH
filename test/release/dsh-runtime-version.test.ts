@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import {
   PINNED_DSH_RUNTIME_VERSION,
   assertPinnedDshRuntimeVersion
@@ -16,5 +20,42 @@ describe('published DSH Runtime version', () => {
 
   it('accepts the pinned version', () => {
     expect(() => assertPinnedDshRuntimeVersion('fixture', '0.1.1-rc.2')).not.toThrow()
+  })
+
+  it('rejects a selected Runtime entry whose owning manifest is stale before Runtime startup', async () => {
+    const bundleRoot = await mkdtemp(join(tmpdir(), 'ezdsh-stale-runtime-bundle-'))
+    const runtimeEntry = join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+    const nodeExecutable = join(
+      bundleRoot,
+      'node-runtime',
+      'bin',
+      process.platform === 'win32' ? 'node.exe' : 'node'
+    )
+    const pnpmExecutable = join(
+      bundleRoot,
+      'node_modules',
+      '.bin',
+      process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+    )
+
+    try {
+      await mkdir(dirname(runtimeEntry), { recursive: true })
+      await mkdir(dirname(nodeExecutable), { recursive: true })
+      await mkdir(dirname(pnpmExecutable), { recursive: true })
+      await writeFile(runtimeEntry, '// The version gate must run before this entry can start.\n')
+      await writeFile(
+        join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+        JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.0-rc.8' })
+      )
+      await writeFile(nodeExecutable, '')
+      await writeFile(pnpmExecutable, '')
+
+      const verifier = resolve('scripts/verify-runtime-bundle.mjs')
+      const result = spawnSync(process.execPath, [verifier, bundleRoot], { encoding: 'utf8' })
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/selected DSH Runtime.*0\.1\.1-rc\.2.*0\.1\.0-rc\.8/)
+    } finally {
+      await rm(bundleRoot, { recursive: true, force: true })
+    }
   })
 })
