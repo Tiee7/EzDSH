@@ -17,3 +17,9 @@ Task 3: complete (commits 58dc844..0243e5a, review clean; immutable root/depende
 Task 4: complete (commits c491ec0..0ecbe2a; append-only redacted observations, deployment recording, lifecycle-safe IDs/timestamps, and health summary; review clean)
 Task 5: complete (Main, IPC, and Workflow UI; release summaries only in Renderer, local customer environments, publish/start/rollback controls, redacted observation history, and rollback-health semantics fixed)
 Task 6: complete (documentation and verification; product requirements updated and targeted tests/build/typecheck passed)
+
+## Workflow P0 production-candidate hardening
+
+Task 1: complete (commits 8b82cbf..c75f6d3, review clean; end-to-end release, approval, connector, redaction, supersede, and rollback acceptance fixture)
+Task 2: complete (commit c362005, review clean; repeatable P0 workflow verification command and packaged macOS runtime verification)
+Task 2 fix wave: complete (commit d2e1782, re-review clean; expanded cancellation/compensation/contracts/Renderer coverage, persisted redaction assertions, and explicit P0/P0.5 scope boundary)
