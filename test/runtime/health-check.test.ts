@@ -7,6 +7,16 @@ describe('waitForRuntimeHealthy', () => {
     await expect(waitForRuntimeHealthy('http://127.0.0.1:1', { fetchImpl })).resolves.toBeUndefined()
   })
 
+  it('accepts the token exchange redirect from an authenticated Runtime URL', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 303 }))
+
+    await expect(waitForRuntimeHealthy('http://127.0.0.1:1/?token=runtime-token', { fetchImpl })).resolves.toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://127.0.0.1:1/?token=runtime-token',
+      expect.objectContaining({ method: 'GET', redirect: 'manual' }),
+    )
+  })
+
   it('keeps polling after connection failures', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
       .mockRejectedValueOnce(new Error('connection refused'))

@@ -32,6 +32,49 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
+  it('exchanges a tokenized Runtime URL once before calling slash-style RPC with its auth cookie', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init })
+      if (requests.length === 1) {
+        return {
+          ok: false,
+          status: 303,
+          headers: new Headers({ 'set-cookie': 'dsh-auth-session=authenticated; HttpOnly; Path=/' }),
+          json: async () => undefined,
+          text: async () => '',
+        } as Response
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ok({ groups: [], failures: [] }),
+        text: async () => '',
+      } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://127.0.0.1:4567/?token=runtime-token', timeoutMs: 1000 })
+
+    await expect(client.getModelCatalog()).resolves.toEqual({ groups: [], failures: [] })
+
+    expect(requests).toEqual([
+      expect.objectContaining({ url: 'http://127.0.0.1:4567/?token=runtime-token', init: expect.objectContaining({ method: 'GET' }) }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/llm/models',
+        init: expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({ Cookie: 'dsh-auth-session=authenticated' }),
+        }),
+      }),
+    ])
+    expect(JSON.parse(String(requests[1]?.init?.body))).toEqual(expect.objectContaining({
+      type: 'client-request',
+      method: 'llm/models',
+      payload: { args: {} },
+    }))
+
+    vi.unstubAllGlobals()
+  })
+
   it('lists native DSH workspaces', async () => {
     const mockFetch = createMockFetch([
       ok({

@@ -286,8 +286,20 @@ export class RuntimeManager {
     const childExit = new Promise<never>((_resolve, reject) => {
       rejectChildExit = reject
     })
+    let resolveAnnouncedRuntimeUrl: ((url: string) => void) | undefined
+    const announcedRuntimeUrl = new Promise<string>((resolve) => {
+      resolveAnnouncedRuntimeUrl = resolve
+    })
+    let outputBuffer = ''
     const captureOutput = (chunk: Buffer | string): void => {
       if (isPortOccupiedMessage(chunk)) portOccupied = true
+      outputBuffer = `${outputBuffer}${String(chunk)}`.slice(-8_192)
+      const runtimeUrl = readRuntimeWebUrl(outputBuffer)
+      if (runtimeUrl !== undefined) {
+        resolveAnnouncedRuntimeUrl?.(runtimeUrl)
+        resolveAnnouncedRuntimeUrl = undefined
+        this.setSnapshot({ url: runtimeUrl })
+      }
       this.writeLog(chunk, processLogStream)
     }
     this.setSnapshot({ pid })
@@ -317,8 +329,12 @@ export class RuntimeManager {
 
     try {
       const healthCheck = this.config.waitForHealthy ?? waitForRuntimeHealthy
+      // Test hooks intentionally retain the clean URL contract used by older fixtures.
+      const healthUrl = this.config.waitForHealthy === undefined
+        ? await waitForRuntimeWebUrl(announcedRuntimeUrl, childExit, this.options.startupTimeoutMs)
+        : url
       await Promise.race([
-        healthCheck(url, {
+        healthCheck(healthUrl, {
           timeoutMs: this.options.startupTimeoutMs,
           fetchImpl: this.config.fetchImpl
         }),
@@ -409,6 +425,30 @@ export class RuntimeManager {
   private closeLog(): void {
     this.logStream?.end()
     this.logStream = undefined
+  }
+}
+
+function readRuntimeWebUrl(output: string): string | undefined {
+  const match = /dsh web:\s*(https?:\/\/[^\s]+)/iu.exec(output)
+  return match?.[1]
+}
+
+async function waitForRuntimeWebUrl(
+  announcedRuntimeUrl: Promise<string>,
+  childExit: Promise<never>,
+  timeoutMs: number,
+): Promise<string> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      announcedRuntimeUrl,
+      childExit,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Runtime did not announce its web URL')), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
   }
 }
 

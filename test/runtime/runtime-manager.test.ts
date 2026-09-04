@@ -166,6 +166,48 @@ describe('RuntimeManager', () => {
     await expect(import('node:fs/promises').then(({ access }) => access(layout.harness))).resolves.toBeUndefined()
   })
 
+  it('uses the tokenized Runtime URL announced by dsh web for its default health check and ready snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-token-url-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    const child = Object.assign(new EventEmitter(), {
+      pid: 12346,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill(signal: NodeJS.Signals): boolean {
+        this.emit('exit', 0, signal)
+        return true
+      }
+    })
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 303 }))
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      command: process.execPath,
+      allocatePort: async () => 4567,
+      fetchImpl,
+      spawnProcess: () => {
+        queueMicrotask(() => {
+          child.stdout.emit('data', 'dsh web: http://127.0.0.1:4567/?token=runtime-token\n')
+        })
+        return child as never
+      },
+      processKill: (_pid, signal) => {
+        child.emit('exit', 0, signal)
+        return true
+      }
+    })
+
+    const ready = await manager.start()
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://127.0.0.1:4567/?token=runtime-token',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(ready.url).toBe('http://127.0.0.1:4567/?token=runtime-token')
+    await manager.stop()
+  })
+
   it('increments the port and starts a new Runtime when the selected port is occupied', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-port-'))
     roots.push(root)

@@ -30,8 +30,10 @@ export async function waitForRuntimeHealthy(
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), remainingMs)
     try {
-      const response = await fetchImpl(url, { method: 'GET', signal: controller.signal })
-      if (response.ok) return
+      const response = await fetchImpl(url, { method: 'GET', redirect: 'manual', signal: controller.signal })
+      // DSH 0.1.2 exchanges the launch token for an auth cookie with a redirect.
+      // A legacy Runtime still responds directly with 200.
+      if (response.ok || response.status === 303) return
     } catch {
       // The server may still be binding. Connection failures are expected during startup.
     } finally {

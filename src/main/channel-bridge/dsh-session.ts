@@ -211,9 +211,16 @@ export class DshApiError extends Error {
 
 export class DshSessionClient {
   private readonly pollIntervalMs: number
+  private readonly modernRuntime: boolean
+  private readonly modernApiBaseUrl: string
+  private authCookie: string | undefined
+  private authExchange: Promise<string> | undefined
 
   constructor(private readonly options: DshSessionClientOptions) {
     this.pollIntervalMs = options.pollIntervalMs ?? 500
+    const runtimeUrl = new URL(options.baseUrl)
+    this.modernRuntime = runtimeUrl.searchParams.has('token')
+    this.modernApiBaseUrl = runtimeUrl.origin
   }
 
   async createSession(params?: { sessionId?: string; cwd?: string; workspaceId?: string }): Promise<DshSession> {
@@ -417,6 +424,8 @@ export class DshSessionClient {
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
+    if (this.modernRuntime) return this.postModern<T>(path, body)
+
     const url = `${this.options.baseUrl.replace(/\/$/u, '')}${path}`
     const method = path.replace(/^\/api\//u, '')
     const envelope: RpcRequestEnvelope<unknown> = {
@@ -444,9 +453,72 @@ export class DshSessionClient {
     return rpcResponse.result.value
   }
 
+  private async postModern<T>(path: string, body: unknown): Promise<T> {
+    const url = `${this.modernApiBaseUrl}${path.replace(/\./gu, '/')}`
+    const cookie = await this.exchangeRuntimeToken()
+    const method = path.replace(/^\/api\//u, '').replace(/\./gu, '/')
+    const envelope: RpcRequestEnvelope<{ args: unknown }> = {
+      type: 'client-request',
+      rpcId: randomUUID(),
+      method,
+      payload: { args: body },
+    }
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: cookie,
+      },
+      body: JSON.stringify(envelope),
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      throw new DshApiError(path, response.status, `DSH API ${path} failed: ${response.status} ${text}`)
+    }
+
+    const payload = await response.json()
+    if (isRpcResponseEnvelope(payload)) {
+      if (!payload.result.ok) {
+        throw new Error(`DSH API ${path} error: ${payload.result.error.code} ${payload.result.error.message}`)
+      }
+      return payload.result.value as T
+    }
+    return payload as T
+  }
+
+  private async exchangeRuntimeToken(): Promise<string> {
+    if (this.authCookie !== undefined) return this.authCookie
+    if (this.authExchange === undefined) {
+      this.authExchange = (async () => {
+        const response = await fetch(this.options.baseUrl, { method: 'GET', redirect: 'manual' })
+        const cookie = response.headers.get('set-cookie')?.split(';', 1)[0]
+        if (cookie === undefined || cookie === '') {
+          const text = await response.text()
+          throw new DshApiError('/', response.status, `DSH Runtime token exchange failed: ${response.status} ${text}`)
+        }
+        return cookie
+      })()
+    }
+
+    try {
+      this.authCookie = await this.authExchange
+      return this.authCookie
+    } catch (error) {
+      this.authExchange = undefined
+      throw error
+    }
+  }
+
   private async listWorkspaceResponse(): Promise<WorkspaceListResponse> {
     return this.post<WorkspaceListResponse>('/api/workspace.list', {})
   }
+}
+
+function isRpcResponseEnvelope(value: unknown): value is RpcResponseEnvelope<unknown> {
+  if (typeof value !== 'object' || value === null || !('result' in value)) return false
+  const result = value.result
+  return typeof result === 'object' && result !== null && 'ok' in result && typeof result.ok === 'boolean'
 }
 
 function readProjectedTitle(item: SessionSummaryWire): string | undefined {
