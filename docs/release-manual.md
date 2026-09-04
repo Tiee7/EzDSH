@@ -27,7 +27,7 @@ npm ci
 确认以下内容已经准备好：
 
 - 当前分支包含要发布的代码和 `vendor/deepseek-harness` 子模块提交；
-- `@deepseek-ai/dsh` 必须精确为 `0.1.1-rc.2`；这是发布硬门禁，旧 `1.8.1528` 安装包仍是旧产物，不能作为本次 Runtime 已升级的证据；
+- `@deepseek-ai/dsh` 必须精确为 `0.1.2-rc.1`；这是发布硬门禁，旧 `1.8.1528` 安装包仍是旧产物，不能作为本次 Runtime 已升级的证据；
 - 当前平台与发布目标匹配：macOS arm64 或 Windows x64；
 - 签名、公证所需的证书和 CI Secret 已通过环境变量注入；
 - 自动更新源和安装包上传位置可用；
@@ -90,7 +90,7 @@ npm run build
 
 - 应用展示版本从 `package.json` 正确读取；
 - Runtime 依赖没有重复的 `@deepseek-ai/dsh-tools` 模块；
-- DSH Runtime 的实际所属 manifest 为 `@deepseek-ai/dsh@0.1.1-rc.2`，且能启动、健康检查能通过；
+- DSH Runtime 的实际所属 manifest 为 `@deepseek-ai/dsh@0.1.2-rc.1`，且能启动、健康检查能通过；
 - Session、Workspace、Plugin 和用户数据目录没有被构建流程写入或删除；
 - 开发模式仍可正常运行：
 
@@ -108,7 +108,7 @@ npm run dev
 npm run package:mac
 ```
 
-该命令会先校验已发布的 `@deepseek-ai/dsh@0.1.1-rc.2`，再构建 EzDSH、暂存 Runtime、执行 Runtime 健康检查和 Electron 打包，并验证最终 `.app` 内实际选中的 Runtime manifest。源码 Runtime 暂存是显式操作；若 vendor checkout 仍为旧 pin，会在暂存前被拒绝。
+该命令会先校验已发布的 `@deepseek-ai/dsh@0.1.2-rc.1`，再构建 EzDSH、暂存 Runtime、执行 Runtime 健康检查和 Electron 打包，并验证最终 `.app` 内实际选中的 Runtime manifest。源码 Runtime 暂存是显式操作；若 vendor checkout 仍为旧 pin（例如 `0.1.0-rc.8`），会在暂存前被拒绝。
 
 ### 6.2 macOS 正式包
 

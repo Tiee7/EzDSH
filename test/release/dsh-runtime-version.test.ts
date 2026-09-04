@@ -67,4 +67,41 @@ describe('published DSH Runtime version', () => {
       await rm(bundleRoot, { recursive: true, force: true })
     }
   })
+
+  it('rejects a selected Runtime entry from the previous pin before Runtime startup', async () => {
+    const bundleRoot = await mkdtemp(join(tmpdir(), 'ezdsh-previous-runtime-bundle-'))
+    const runtimeEntry = join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+    const nodeExecutable = join(
+      bundleRoot,
+      'node-runtime',
+      'bin',
+      process.platform === 'win32' ? 'node.exe' : 'node'
+    )
+    const pnpmExecutable = join(
+      bundleRoot,
+      'node_modules',
+      '.bin',
+      process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+    )
+
+    try {
+      await mkdir(dirname(runtimeEntry), { recursive: true })
+      await mkdir(dirname(nodeExecutable), { recursive: true })
+      await mkdir(dirname(pnpmExecutable), { recursive: true })
+      await writeFile(runtimeEntry, '// The version gate must run before this entry can start.\n')
+      await writeFile(
+        join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+        JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.1-rc.2' })
+      )
+      await writeFile(nodeExecutable, '')
+      await writeFile(pnpmExecutable, '')
+
+      const verifier = resolve('scripts/verify-runtime-bundle.mjs')
+      const result = spawnSync(process.execPath, [verifier, bundleRoot], { encoding: 'utf8' })
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/selected DSH Runtime.*0\.1\.2-rc\.1.*0\.1\.1-rc\.2/)
+    } finally {
+      await rm(bundleRoot, { recursive: true, force: true })
+    }
+  })
 })
