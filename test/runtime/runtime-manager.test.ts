@@ -46,6 +46,72 @@ describe('RuntimeManager', () => {
     expect(spawnProcess).not.toHaveBeenCalled()
   })
 
+  it('records an early startup failure in the Runtime log', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-early-failure-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      allocatePort: async () => {
+        throw new Error('Unable to allocate a loopback port')
+      }
+    })
+
+    await expect(manager.start()).rejects.toThrow('Unable to allocate a loopback port')
+    expect(manager.snapshot()).toMatchObject({
+      phase: 'failed',
+      message: 'Unable to allocate a loopback port',
+      logPath: join(layout.logs, 'harness.log')
+    })
+    await expect(readFile(join(layout.logs, 'harness.log'), 'utf8')).resolves.toContain('Unable to allocate a loopback port')
+  })
+
+  it('runs the compatibility hook before every Runtime startup attempt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-before-start-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    const beforeStart = vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      allocatePort: async () => {
+        throw new Error('startup blocked for test')
+      },
+      beforeStart,
+    })
+
+    await expect(manager.start()).rejects.toThrow('startup blocked for test')
+    expect(beforeStart).toHaveBeenCalledOnce()
+  })
+
+  it('includes the child Runtime output in a startup failure for recovery diagnosis', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-child-failure-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    const child = Object.assign(new EventEmitter(), {
+      pid: 12347,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+    })
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      command: process.execPath,
+      allocatePort: async () => 4567,
+      spawnProcess: () => {
+        queueMicrotask(() => {
+          child.stderr.emit('data', 'failed to import loader entry 2bf082d6 (mode-menu-plus): client-modules: require("@deepseek-ai/dsh-client-runtime/client") missed the module table')
+          child.emit('exit', 1, null)
+        })
+        return child as never
+      },
+    })
+
+    await expect(manager.start()).rejects.toThrow(/mode-menu-plus.*missed the module table/i)
+    expect(manager.snapshot().message).toMatch(/mode-menu-plus.*missed the module table/i)
+  })
+
   it('uses the published Runtime during development when it is available', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-path-'))
     roots.push(root)
@@ -77,12 +143,46 @@ describe('RuntimeManager', () => {
     })).toBe(join(root, 'source-runtime', 'lib', 'bin.js'))
   })
 
-  it('resolves the packaged Runtime directly inside the Electron app resources', () => {
+  it('uses the built vendored Runtime during development when it is available', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-vendored-source-'))
+    roots.push(root)
+    const sourceEntry = join(root, 'vendor', 'deepseek-harness', 'apps', 'cli', 'lib', 'bin.js')
+    await mkdir(join(root, 'vendor', 'deepseek-harness', 'apps', 'cli', 'lib'), { recursive: true })
+    await writeFile(sourceEntry, '')
+    await mkdir(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
+    await writeFile(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '')
+
     expect(resolveRuntimeEntryPath({
-      appPath: '/Applications/EzDSH.app/Contents/Resources/app',
-      resourcesPath: '/Applications/EzDSH.app/Contents/Resources',
+      appPath: root,
+      isPackaged: false
+    })).toBe(sourceEntry)
+  })
+
+  it('resolves the staged source Runtime inside packaged Electron app resources', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-packaged-source-'))
+    roots.push(root)
+    const stagedEntry = join(root, 'out', 'dsh-runtime', 'lib', 'bin.js')
+    await mkdir(join(root, 'out', 'dsh-runtime', 'lib'), { recursive: true })
+    await writeFile(stagedEntry, '')
+
+    expect(resolveRuntimeEntryPath({
+      appPath: root,
+      resourcesPath: join(root, 'resources'),
       isPackaged: true
-    })).toBe('/Applications/EzDSH.app/Contents/Resources/app/node_modules/@deepseek-ai/dsh/lib/bin.js')
+    })).toBe(stagedEntry)
+  })
+
+  it('falls back to the published Runtime when packaged source staging is absent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-packaged-published-'))
+    roots.push(root)
+    const publishedEntry = join(root, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+    await mkdir(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
+    await writeFile(publishedEntry, '')
+
+    expect(resolveRuntimeEntryPath({
+      appPath: root,
+      isPackaged: true
+    })).toBe(publishedEntry)
   })
 
   it('resolves the packaged Node executable inside the Electron app resources', () => {
@@ -133,6 +233,8 @@ describe('RuntimeManager', () => {
       layout,
       runtimeEntryPath: '/dev/null',
       command: process.execPath,
+      appVersion: '1.8.1540',
+      runtimeVersion: '0.1.3-alpha.1',
       startupTimeoutMs: 2_000,
       stopTimeoutMs: 1_000,
       allocatePort: async () => 4567,
@@ -164,6 +266,11 @@ describe('RuntimeManager', () => {
     expect(ownership.unregister).toHaveBeenCalledWith(12345)
     if (process.platform !== 'win32') expect(processSignals).toContainEqual([-12345, 'SIGTERM'])
     await expect(import('node:fs/promises').then(({ access }) => access(layout.harness))).resolves.toBeUndefined()
+    const runtimeLog = await readFile(join(layout.logs, 'harness.log'), 'utf8')
+    expect(runtimeLog).toContain('appVersion=1.8.1540')
+    expect(runtimeLog).toContain('runtimeVersion=0.1.3-alpha.1')
+    expect(runtimeLog).toContain('runtimeEntryPath=/dev/null')
+    expect(runtimeLog).toContain(`DSH_HOME=${layout.harness}`)
   })
 
   it('uses the tokenized Runtime URL announced by dsh web for its default health check and ready snapshot', async () => {
@@ -179,10 +286,7 @@ describe('RuntimeManager', () => {
         return true
       }
     })
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, {
-      status: 303,
-      headers: { 'set-cookie': 'dsh-auth-session=authenticated; HttpOnly; Path=/' },
-    }))
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('manifest', { status: 200 }))
     const manager = new RuntimeManager({
       layout,
       runtimeEntryPath: '/dev/null',
@@ -204,14 +308,14 @@ describe('RuntimeManager', () => {
     const ready = await manager.start()
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'http://127.0.0.1:4567/?token=runtime-token',
+      'http://127.0.0.1:4567/manifest.webmanifest',
       expect.objectContaining({ method: 'GET' }),
     )
     expect(ready.url).toBe('http://127.0.0.1:4567/?token=runtime-token')
     await new Promise((resolve) => setTimeout(resolve, 10))
     await manager.stop()
     const runtimeLog = await readFile(join(layout.logs, 'harness.log'), 'utf8')
-    expect(runtimeLog).not.toContain('runtime-token')
+    expect(runtimeLog).not.toContain('token=runtime-token')
     expect(runtimeLog).toContain('token=[REDACTED]')
   })
 

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { afterEach, describe, expect, it } from 'vitest'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -95,6 +95,39 @@ describe('createDshPluginCommand', () => {
     ])
     expect(captured?.env?.DSH_HOME).toBe('/data/harness')
     expect(captured?.env?.PATH?.startsWith(`${process.cwd()}/node_modules/.bin`)).toBe(true)
+  })
+
+  it('records the selected vendored Runtime version instead of the npm fallback', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-plugin-runtime-version-'))
+    logRoots.push(root)
+    const runtimeRoot = join(root, 'out', 'dsh-runtime')
+    const runtimeEntryPath = join(runtimeRoot, 'lib', 'bin.js')
+    await mkdir(join(runtimeRoot, 'lib'), { recursive: true })
+    await writeFile(join(runtimeRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.3-alpha.1' }))
+    await mkdir(join(root, 'node_modules', 'pnpm'), { recursive: true })
+    await writeFile(join(root, 'node_modules', 'pnpm', 'package.json'), JSON.stringify({ name: 'pnpm', version: '11.7.0' }))
+    await mkdir(join(root, 'node_modules', '.bin'), { recursive: true })
+    await writeFile(join(root, 'node_modules', '.bin', 'pnpm'), '')
+
+    const command = createDshPluginCommand({
+      appPath: root,
+      dshHome: join(root, 'harness'),
+      launchRoot: root,
+      logsDir: join(root, 'logs'),
+      runtimeEntryPath,
+      command: '/runtime/node',
+      spawnProcess: (_spawnCommand, _args, _options) => {
+        const child = fakeChild()
+        queueMicrotask(() => child.emit('exit', 0, null))
+        return child
+      }
+    })
+
+    await command('web', ['list'])
+
+    const files = await readdir(join(root, 'logs', 'plugins'))
+    const log = await readFile(join(root, 'logs', 'plugins', files[0] as string), 'utf8')
+    expect(log).toContain('dshVersion=0.1.3-alpha.1')
   })
 
   it('rejects a non-zero DSH command and includes captured output', async () => {

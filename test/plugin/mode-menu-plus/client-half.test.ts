@@ -33,7 +33,7 @@ function makeRequire(): (id: string) => unknown {
   return (id: string) => {
     if (id === 'react') return { useState: () => [false, () => {}], useEffect: () => {} }
     if (id === 'react/jsx-runtime') return { jsx: () => null, jsxs: () => null, Fragment: 'div' }
-    if (id === '@deepseek-ai/dsh-client-runtime/client') {
+    if (id === '@deepseek-ai/dsh-client-store') {
       return {
         createSnapshotStore: (initial: Record<string, unknown>) => {
           let snapshot = initial

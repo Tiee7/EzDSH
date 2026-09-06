@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { PluginRecoveryCoordinator } from '../../src/main/recovery/plugin-recovery-coordinator'
 
 describe('PluginRecoveryCoordinator', () => {
-  it('preserves the plugin snapshot and starts Safe Mode when normal health fails', async () => {
+  it('preserves the plugin snapshot without automatically starting Safe Mode when normal health fails', async () => {
     const calls: string[] = []
     const runtime = {
       snapshot: () => ({ phase: 'ready', mode: 'normal' }),
@@ -31,11 +31,11 @@ describe('PluginRecoveryCoordinator', () => {
       return 'installed'
     }, async () => undefined)).rejects.toThrow('plugin boot failure')
 
-    expect(calls).toEqual(['stop', 'mutate', 'start:normal', 'stop', 'start:safe'])
+    expect(calls).toEqual(['stop', 'mutate', 'start:normal'])
     expect(recovery.preparePluginChange).toHaveBeenCalledWith(expect.objectContaining({ entryId: 'agent-teams', action: 'install' }))
     expect(recovery.markBootFailure).toHaveBeenCalledWith('plugin boot failure')
     expect(recovery.abortPendingTransaction).not.toHaveBeenCalled()
-    expect(safeMode.enable).toHaveBeenCalledWith('plugin-recovery')
+    expect(safeMode.enable).not.toHaveBeenCalled()
   })
 
   it('clears a transaction when the installer command itself fails', async () => {
@@ -94,7 +94,7 @@ describe('PluginRecoveryCoordinator', () => {
     expect(persist).toHaveBeenCalledWith('installed')
   })
 
-  it('coalesces concurrent Safe Mode start requests after the same boot failure', async () => {
+  it('coalesces concurrent explicit Safe Mode start requests', async () => {
     let releaseEnable: (() => void) | undefined
     const enableGate = new Promise<void>((resolve) => { releaseEnable = resolve })
     const runtime = {

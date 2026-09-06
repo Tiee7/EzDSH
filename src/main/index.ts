@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, safeStorage, shell, WebContentsView } from 'electron'
 import { existsSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -29,11 +29,11 @@ import { findDeepLinkInArgs, parseDeepLink, type DeepLinkInstall, type DeepLinkS
 import { ensureUserDataLayout, getUserDataLayout } from './state/user-data.js'
 import type { UserDataLayout, WorkspaceOperationState, WorkspaceSnapshot } from '../shared/state.js'
 import {
-  getWorkspaceConfigPath,
   isDirectoryEmpty,
   isWorkspaceTargetInsideSource,
   moveWorkspaceContents,
   readWorkspaceRoot,
+  resolveWorkspaceStorage,
   writeWorkspaceRoot,
 } from './state/workspace-service.js'
 import { readDeveloperMode, writeDeveloperMode } from './state/developer-mode.js'
@@ -43,7 +43,7 @@ import { StoreService } from './store/store-service.js'
 import { StoreClient } from './store/store-client.js'
 import { createDemoFetch } from './store/demo-catalog.js'
 import { DshPluginInstaller } from './store/dsh-plugin-installer.js'
-import { repairInstalledDshPlugin } from './store/dsh-plugin-compatibility.js'
+import { repairInstalledDshPlugin, repairLegacyModeMenuPlus } from './store/dsh-plugin-compatibility.js'
 import { importCodexAuth } from './store/codex-auth-importer.js'
 import {
   applyDshPluginCompatibilityWorkaround,
@@ -58,6 +58,9 @@ import {
   resolveRuntimeEntryPath
 } from './runtime/runtime-manager.js'
 import { SafeModeController } from './runtime/safe-mode-home.js'
+import { repairProfileModuleDrift } from './runtime/profile-module-repair.js'
+import { RuntimeViewController, type RuntimeViewLike } from './runtime/runtime-view-controller.js'
+import type { RuntimeViewBounds } from '../shared/runtime-view.js'
 import {
   createRuntimeOwnershipStore,
   DshRuntimeProcessManager,
@@ -131,6 +134,7 @@ import type { ProxyProfileInput, ProxySettingsSnapshot } from '../shared/proxy.j
 import type { ProxyTestResult } from '../shared/proxy.js'
 
 let mainWindow: BrowserWindow | undefined
+let runtimeViewController: RuntimeViewController | undefined
 let runtimeManager: RuntimeManager | undefined
 let runtimeProcessManager: DshRuntimeProcessManager | undefined
 let runtimeOwnershipStore: RuntimeOwnershipStore | undefined
@@ -297,8 +301,8 @@ async function runDshCliMode(dshArgs: readonly string[]): Promise<void> {
   try {
     app.setName(APP_NAME)
     await app.whenReady()
-    const workspaceConfigPath = getWorkspaceConfigPath(app.getPath('appData'))
-    const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, app.getPath('userData'))
+    const workspaceConfigPath = initialWorkspaceStorage.configPath
+    const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, initialWorkspaceStorage.defaultRoot)
     const layout = getUserDataLayout(workspaceRoot)
     await ensureUserDataLayout(layout)
 
@@ -315,7 +319,7 @@ async function runDshCliMode(dshArgs: readonly string[]): Promise<void> {
       isPackaged: app.isPackaged,
       arch: process.arch
     })
-    const versions = await readBundledVersions(appPath)
+    const versions = await readBundledVersions(appPath, runtimeEntryPath)
     const profile = dshProfileFromArgs(dshArgs)
     const profileHasWorkspaceFile = profile !== undefined
       && existsSync(join(layout.harness, 'profiles', profile, 'pnpm-workspace.yaml'))
@@ -371,10 +375,20 @@ function emitWorkspaceState(state: WorkspaceOperationState | undefined): void {
 async function handleRuntimeBootFailure(snapshot: RuntimeSnapshot): Promise<void> {
   const recovery = recoveryManager
   if (recovery === undefined) return
-  const state = await recovery.markBootFailure(snapshot.message ?? 'DSH Runtime failed to start')
-  if (state.phase !== 'recovery-required' || state.pendingTransaction === undefined) return
-  const reason = state.pendingTransaction.kind === 'update' ? 'update-recovery' : 'plugin-recovery'
-  await pluginRecoveryCoordinator?.startSafeMode(reason)
+  const message = snapshot.message ?? 'DSH Runtime failed to start'
+  if (await recovery.hasPendingTransaction()) {
+    // Recovery must remain a user decision point. Do not enter Safe Mode as a
+    // side effect of recording a failed normal Runtime boot.
+    await recovery.markBootFailure(message)
+    return
+  }
+  let plugins: Awaited<ReturnType<StoreService['listRuntimePlugins']>> = []
+  try {
+    plugins = await storeService?.listRuntimePlugins() ?? []
+  } catch (error) {
+    console.error('[recovery] failed to list active Runtime plugins:', error)
+  }
+  await recovery.markRuntimeFailure(message, plugins, snapshot.logPath)
 }
 
 async function assertWorkspaceTarget(root: string): Promise<string> {
@@ -402,6 +416,7 @@ function bindWorkspaceServiceListeners(): void {
         console.error('[external-services] failed to start auto services:', message)
       })
     } else {
+      runtimeViewController?.hide()
       syncRuntimeNotifications(snapshot)
     }
     if (snapshot.phase === 'ready' && snapshot.mode === 'normal') {
@@ -482,7 +497,12 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   })
   await recoveryManager.initialize()
   stopRecoveryListener = recoveryManager.onChange(emitRecoveryState)
-  runtimeOwnershipStore ??= createRuntimeOwnershipStore(join(app.getPath('appData'), 'ezdsh-runtime-ownership'))
+  runtimeOwnershipStore ??= createRuntimeOwnershipStore(join(
+    app.getPath('appData'),
+    initialWorkspaceStorage.isolatedDevelopment
+      ? 'ezdsh-runtime-ownership-development'
+      : 'ezdsh-runtime-ownership',
+  ))
   runtimeProcessManager ??= new DshRuntimeProcessManager({
     getCurrentPid: () => runtimeManager?.snapshot().pid,
     stopCurrent: () => runtimeManager?.stop() ?? Promise.resolve(),
@@ -493,8 +513,37 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     layout,
     runtimeEntryPath,
     command: runtimeCommandPath,
+    appVersion: app.getVersion(),
+    runtimeVersion: dshRuntimeVersion,
     runtimeOwnership: runtimeOwnershipStore,
     getEnvironment: () => proxyService?.getRuntimeEnvironment() ?? { ...process.env },
+    beforeStart: async () => {
+      try {
+        const repairedModules = await repairProfileModuleDrift({
+          dshHome: layout.harness,
+          profile: 'web',
+          runtimeEntryPath,
+        })
+        if (repairedModules.moved.length > 0) {
+          console.warn(`[dsh-profile] quarantined stale core modules: ${repairedModules.moved.join(', ')}`)
+        }
+      } catch (error) {
+        // Profile cleanup must never prevent the recovery UI from opening;
+        // Runtime boot/recovery will surface the original failure.
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('[dsh-profile] failed to quarantine stale core modules:', message)
+      }
+      try {
+        if (await repairLegacyModeMenuPlus(layout.harness, app.getAppPath())) {
+          console.warn('[dsh-plugin] migrated legacy mode-menu-plus to the alpha1 client module table')
+        }
+      } catch (error) {
+        // A compatibility migration must never prevent the recovery UI from
+        // opening; Runtime boot/recovery will surface the original failure.
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('[dsh-plugin] failed to migrate legacy mode-menu-plus:', message)
+      }
+    },
   })
   mobileRemoteService = new MobileRemoteService({
     statePath: join(layout.state, 'mobile-remote.json'),
@@ -1020,6 +1069,7 @@ function failure<T>(error: unknown): IpcResult<T> {
 }
 
 async function stopApplicationComponents(): Promise<void> {
+  runtimeViewController?.hide()
   notificationRuntimeUrl = undefined
   runtimeNotificationService?.stop()
   await notificationSettingsWriteChain.catch(() => undefined)
@@ -1138,6 +1188,41 @@ function registerIpcHandlers(): void {
       if (runtimeManager === undefined) throw new Error('Runtime manager is not ready')
       const errorMessage = await shell.openPath(runtimeManager.snapshot().logPath)
       if (errorMessage !== '') throw new Error(errorMessage)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('runtime-view:show', async (
+    _event,
+    url: string,
+    bounds: RuntimeViewBounds,
+  ): Promise<IpcResult<void>> => {
+    try {
+      if (runtimeViewController === undefined || runtimeManager === undefined) {
+        throw new Error('Runtime view is not ready')
+      }
+      const snapshot = runtimeManager.snapshot()
+      if (snapshot.phase !== 'ready' || snapshot.url === undefined || snapshot.url !== url) {
+        throw new Error('Runtime view URL does not match the active Runtime')
+      }
+      await runtimeViewController.show(url, bounds)
+      return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('runtime-view:hide', (): IpcResult<void> => {
+    runtimeViewController?.hide()
+    return success(undefined)
+  })
+  ipcMain.handle('runtime-view:open-session', async (_event, sessionId: string): Promise<IpcResult<void>> => {
+    try {
+      if (runtimeViewController === undefined || runtimeManager?.snapshot().phase !== 'ready') {
+        throw new Error('Runtime view is not ready')
+      }
+      if (typeof sessionId !== 'string' || sessionId.trim() === '') throw new Error('Runtime session id is required')
+      await runtimeViewController.openSession(sessionId)
       return success(undefined)
     } catch (error) {
       return failure(error)
@@ -1290,6 +1375,15 @@ function registerIpcHandlers(): void {
     try {
       if (storeService === undefined) throw new Error('Store service is not ready')
       return success(await storeService.uninstall(kind, id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('store:set-enabled', async (_event, kind: StoreKind, id: string, enabled: boolean): Promise<IpcResult<Awaited<ReturnType<StoreService['setPluginEnabled']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      if (typeof enabled !== 'boolean') throw new Error('Invalid plugin enabled state')
+      return success(await storeService.setPluginEnabled(kind, id, enabled))
     } catch (error) {
       return failure(error)
     }
@@ -2071,6 +2165,22 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('recovery:disable-plugin', async (_event, packageName: string, profile: string): Promise<IpcResult<RuntimeSnapshot>> => {
+    try {
+      if (storeService === undefined || safeModeController === undefined || runtimeManager === undefined || recoveryManager === undefined) {
+        throw new Error('Plugin recovery is not ready')
+      }
+      if (typeof packageName !== 'string' || typeof profile !== 'string') throw new Error('Invalid plugin recovery input')
+      await runtimeManager.stop()
+      await storeService.disablePluginForRecovery(packageName, profile)
+      await safeModeController.disable()
+      const runtime = await runtimeManager.start({ mode: 'normal' })
+      await recoveryManager.resolveRecovery()
+      return success(runtime)
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('recovery:resolve', async (): Promise<IpcResult<void>> => {
     try {
       if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
@@ -2272,6 +2382,56 @@ function loadRenderer(window: BrowserWindow): Promise<void> {
     : window.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
+function bindNavigationShortcuts(contents: Electron.WebContents): void {
+  contents.on('before-input-event', (event, input) => {
+    const config = navigationService?.getConfig()
+    if (config === undefined) return
+    const target = getNavigationTargetForInput(input, config, process.platform, developerMode)
+    if (target === undefined) return
+    event.preventDefault()
+    navigateToTab(target)
+  })
+}
+
+function createRuntimeViewController(window: BrowserWindow): RuntimeViewController {
+  return new RuntimeViewController({
+    onBootFailure: (message) => {
+      const runtime = runtimeManager?.snapshot()
+      if (runtime === undefined || runtime.phase !== 'ready') return
+      void handleRuntimeBootFailure({
+        ...runtime,
+        message: `DSH Web boot failed:\n${message}`,
+      }).catch((error: unknown) => {
+        console.error('[recovery] failed to handle DSH Web boot failure:', error)
+      })
+    },
+    createView: () => {
+      const view = new WebContentsView({
+        webPreferences: {
+          contextIsolation: true,
+          sandbox: true,
+          nodeIntegration: false,
+          webSecurity: true,
+        },
+      })
+      bindNavigationShortcuts(view.webContents)
+      view.webContents.setWindowOpenHandler(({ url }) => {
+        let protocol = ''
+        try { protocol = new URL(url).protocol } catch { protocol = '' }
+        if (protocol === 'http:' || protocol === 'https:') void shell.openExternal(url).catch(() => {})
+        return { action: 'deny' }
+      })
+      return view
+    },
+    attach: (view: RuntimeViewLike) => {
+      if (!window.isDestroyed()) window.contentView.addChildView(view as WebContentsView)
+    },
+    detach: (view: RuntimeViewLike) => {
+      if (!window.isDestroyed()) window.contentView.removeChildView(view as WebContentsView)
+    },
+  })
+}
+
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
@@ -2315,15 +2475,11 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
-  window.webContents.on('before-input-event', (event, input) => {
-    const config = navigationService?.getConfig()
-    if (config === undefined) return
-    const target = getNavigationTargetForInput(input, config, process.platform, developerMode)
-    if (target === undefined) return
-    // Keep navigation reliable when an embedded page would otherwise consume the key.
-    event.preventDefault()
-    navigateToTab(target)
-  })
+  bindNavigationShortcuts(window.webContents)
+
+  runtimeViewController?.destroy()
+  const windowRuntimeViewController = createRuntimeViewController(window)
+  runtimeViewController = windowRuntimeViewController
 
   window.webContents.on('did-finish-load', () => {
     const link = consumePendingDeepLinkInstall()
@@ -2335,6 +2491,8 @@ function createWindow(): BrowserWindow {
   })
 
   bindWindowClosedCleanup(window, externalServiceWatchers, () => {
+    windowRuntimeViewController.destroy()
+    if (runtimeViewController === windowRuntimeViewController) runtimeViewController = undefined
     if (mainWindow === window) {
       mainWindow = undefined
     }
@@ -2350,6 +2508,19 @@ function createWindow(): BrowserWindow {
 }
 
 app.setName(APP_NAME)
+
+const initialWorkspaceStorage = resolveWorkspaceStorage(
+  app.getPath('appData'),
+  app.getPath('userData'),
+  {
+    isPackaged: app.isPackaged,
+    useProductionData: process.env.EZDSH_USE_PRODUCTION_DATA?.trim() === '1',
+  },
+)
+if (initialWorkspaceStorage.isolatedDevelopment) {
+  app.setPath('userData', initialWorkspaceStorage.defaultRoot)
+  console.info(`[workspace] development isolation active at ${initialWorkspaceStorage.defaultRoot}`)
+}
 
 const cliInvocation = parseDshCliInvocation(process.argv)
 
@@ -2373,8 +2544,8 @@ if (cliInvocation !== undefined) {
     app.whenReady().then(async () => {
       app.setName(APP_NAME)
       nativeTheme.on('updated', syncWindowBackgroundColor)
-      workspaceConfigPath = getWorkspaceConfigPath(app.getPath('appData'))
-      const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, app.getPath('userData'))
+      workspaceConfigPath = initialWorkspaceStorage.configPath
+      const workspaceRoot = await readWorkspaceRoot(workspaceConfigPath, initialWorkspaceStorage.defaultRoot)
       const layout = getUserDataLayout(workspaceRoot)
       await ensureUserDataLayout(layout)
       await initializeWorkspaceServices(layout)

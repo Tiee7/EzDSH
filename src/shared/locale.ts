@@ -1,3 +1,5 @@
+import type { InstallDiagnosticCode } from './store.js'
+
 export const APP_LOCALES = ['zh', 'en'] as const
 export type AppLocale = (typeof APP_LOCALES)[number]
 
@@ -28,6 +30,28 @@ export interface AppCopy {
   starting: string
   preparing: string
   retryStart: string
+  runtimeShowFailureDetails: string
+  runtimeHideFailureDetails: string
+  runtimeFailureReason: string
+  runtimeFailureUnknown: string
+  runtimeLogPath: string
+  runtimeLogPathUnavailable: string
+  runtimeOpeningLog: string
+  runtimeOpenLogFailed: string
+  runtimeEnterSafeMode: string
+  runtimeEnteringSafeMode: string
+  safeModeBadge: string
+  safeModeTitle: string
+  safeModeDescription: string
+  safeModeExit: string
+  safeModeExiting: string
+  safeModeExitFailed: string
+  safeModeOpenRecovery: string
+  runtimeOpenRecoverySettings: string
+  runtimeReturnToFailure: string
+  runtimeRescueTitle: string
+  runtimeRescueDetail: string
+  runtimeSafeModeFailed: string
   appTitle: string
   appSubtitle: string
   menuAbout: string
@@ -56,6 +80,12 @@ export interface AppCopy {
   recoveryOpenBackups: string
   recoveryRestoring: string
   recoveryRestoreFailed: string
+  recoveryRuntimeFailureDetail: string
+  recoverySnapshotChoice: (name: string, createdAt: string, reason: string) => string
+  recoveryPluginChoiceTitle: string
+  recoveryNoPluginChoices: string
+  recoveryDisablePlugin: (name: string) => string
+  recoveryDisablingPlugin: string
   recoveryDoctor: string
   recoveryDoctorRunning: string
   recoveryDoctorDone: (issues: number, repaired: number) => string
@@ -490,13 +520,35 @@ export interface AppCopy {
   menuOpenHarnessDir: string
   storeSearchPlaceholder: string
   storeAllCategories: string
+  storeManageInstalled: string
   storeInstalledSection: string
   storeAvailableSection: string
+  storeInstalledHint: string
+  storeInstalledPlugins: string
+  storeInstalledSkills: string
+  storeInstalledSkillType: string
+  storeInstalledProfile: (profile: string) => string
+  storeInstalledExternal: string
+  storeInstalledEmpty: string
+  storeBackToCatalog: string
   storeInstall: string
   storeInstalled: string
   storeUninstall: string
   storeUpdate: string
+  storeEnablePlugin: string
+  storeDisablePlugin: string
+  storePluginEnabled: string
+  storePluginDisabled: string
+  storeDisabledBadge: string
+  storeEnablingPlugin: string
+  storeDisablingPlugin: string
+  storeUninstalling: string
+  storePhaseInstalling: string
   storeInstallFailed: string
+  storeInstallCause: (code: InstallDiagnosticCode) => string
+  storeInstallAction: (code: InstallDiagnosticCode) => string
+  storeInstallPackage: (packageSpec: string) => string
+  storeInstallTechnicalDetails: string
   storeInstallLogPath: (path: string) => string
   storeLoadFailed: string
   storeRetry: string
@@ -504,6 +556,7 @@ export interface AppCopy {
   storeRefresh: string
   storeRefreshing: string
   storeRefreshFailed: string
+  storeRefreshSkipped: (count: number) => string
   storeLastUpdated: (time: string) => string
   storeNeverRefreshed: string
   storeEmpty: string
@@ -839,6 +892,28 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     starting: '正在启动 DSH Runtime，首次启动可能需要更多时间…',
     preparing: 'Runtime 准备中，请稍候…',
     retryStart: '重试启动',
+    runtimeShowFailureDetails: '查看启动失败原因',
+    runtimeHideFailureDetails: '收起启动失败原因',
+    runtimeFailureReason: '失败原因',
+    runtimeFailureUnknown: '未获取到详细错误，请打开错误日志查看。',
+    runtimeLogPath: '错误日志位置',
+    runtimeLogPathUnavailable: '暂未获取到日志路径',
+    runtimeOpeningLog: '正在打开日志…',
+    runtimeOpenLogFailed: '打开日志失败',
+    runtimeEnterSafeMode: '以安全模式启动',
+    runtimeEnteringSafeMode: '正在启动安全模式…',
+    safeModeBadge: '安全模式',
+    safeModeTitle: '安全模式运行中',
+    safeModeDescription: '安全模式仅用于临时恢复和排查设置：它使用独立的临时 DSH_HOME，不加载正常工作区的插件、技能、会话和凭据。问题处理完成后请退出，不建议长期使用。',
+    safeModeExit: '退出安全模式并正常启动',
+    safeModeExiting: '正在退出安全模式并重启 Runtime…',
+    safeModeExitFailed: '退出安全模式失败',
+    safeModeOpenRecovery: '打开恢复选项',
+    runtimeOpenRecoverySettings: '打开恢复设置',
+    runtimeReturnToFailure: '返回启动失败页',
+    runtimeRescueTitle: 'EzDSH 启动修复',
+    runtimeRescueDetail: 'Runtime 当前不可用。你可以检查恢复快照和会话日志，再决定是否恢复环境或重试启动。',
+    runtimeSafeModeFailed: '安全模式启动失败',
     appTitle: '你的本地 AI 工作台',
     appSubtitle: 'Easy Way to the DeepSeek‑Harness',
     menuAbout: '关于 EzDSH',
@@ -863,10 +938,16 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryDetail: '上次升级后 DSH Runtime 未能正常启动。你的升级前快照仍然保留，可以恢复上一份用户环境后重试。',
     recoveryLastError: '失败原因',
     recoveryRestorePrevious: '恢复上一份环境',
-    recoveryRetryRuntime: '重试 Runtime',
+    recoveryRetryRuntime: '重启内核环境',
     recoveryOpenBackups: '打开备份目录',
     recoveryRestoring: '正在恢复上一份环境…',
     recoveryRestoreFailed: '恢复失败，请查看备份目录或重试。',
+    recoveryRuntimeFailureDetail: 'DSH Runtime 启动失败。你可以先停用导致问题的插件后继续，也可以恢复最近一次环境快照。',
+    recoverySnapshotChoice: (name, createdAt, reason) => `恢复目标：${name}（创建于 ${createdAt}，${reason}）`,
+    recoveryPluginChoiceTitle: '可尝试停用插件：',
+    recoveryNoPluginChoices: '未能从当前 profile 识别出可管理的第三方插件；你仍可以恢复最近快照或进入安全模式。',
+    recoveryDisablePlugin: (name) => `停用「${name}」并继续启动`,
+    recoveryDisablingPlugin: '正在停用插件并重新启动 Runtime…',
     recoveryDoctor: '检查会话日志',
     recoveryDoctorRunning: '正在检查会话日志…',
     recoveryDoctorDone: (issues, repaired) => `检查完成：${issues} 个问题，修复 ${repaired} 个尾记录`,
@@ -1301,13 +1382,61 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     menuOpenHarnessDir: '打开 Harness 数据目录…',
     storeSearchPlaceholder: '搜索…',
     storeAllCategories: '全部分类',
+    storeManageInstalled: '管理已安装',
     storeInstalledSection: '已安装',
     storeAvailableSection: '可安装',
+    storeInstalledHint: '这里显示 EzDSH 已登记和 DSH profile 中实际安装的插件、Skill 能力。插件和 Skill 分开列出。',
+    storeInstalledPlugins: '插件',
+    storeInstalledSkills: 'Skill 能力',
+    storeInstalledSkillType: 'Skill 能力',
+    storeInstalledProfile: (profile) => `profile: ${profile}`,
+    storeInstalledExternal: '来自 DSH profile，未登记在 EzDSH 商店',
+    storeInstalledEmpty: '暂未发现已安装的插件或 Skill 能力。',
+    storeBackToCatalog: '返回商店',
     storeInstall: '安装',
     storeInstalled: '已安装',
     storeUninstall: '卸载',
     storeUpdate: '更新',
+    storeEnablePlugin: '启用插件',
+    storeDisablePlugin: '停用插件',
+    storePluginEnabled: '插件已启用',
+    storePluginDisabled: '插件已停用（仍保留安装）',
+    storeDisabledBadge: 'Disabled',
+    storeEnablingPlugin: '正在启用插件…',
+    storeDisablingPlugin: '正在停用插件…',
+    storeUninstalling: '正在卸载…',
+    storePhaseInstalling: '正在处理…',
     storeInstallFailed: '插件安装失败',
+    storeInstallCause: (code) => ({
+      'catalog-entry-invalid': '目录条目本身无效',
+      'invalid-dependency-name': '依赖名称或别名无效',
+      'build-script-blocked': '依赖需要执行构建脚本，但当前策略未批准',
+      'build-failed': '依赖的构建脚本执行失败',
+      'package-not-found': '找不到请求的包、版本或 Git 引用',
+      network: '无法连接到包来源',
+      auth: '包来源需要用户没有的权限',
+      'lockfile-policy': '依赖未通过完整性或供应链策略',
+      permission: '无法写入 DSH profile',
+      'runtime-prerequisite': 'EzDSH 的包管理器前置依赖不可用',
+      postcondition: '命令结束了，但包没有写入目标 profile',
+      unknown: '无法将包管理器输出归类为已知原因'
+    }[code]),
+    storeInstallAction: (code) => ({
+      'catalog-entry-invalid': '应从目录中移除该条目，或先修正来源元数据。',
+      'invalid-dependency-name': '应修正目录条目或上游包的名称/别名；这不是构建权限问题。',
+      'build-script-blocked': '应由目录维护者验证精确的构建依赖，或重新发布不需要该脚本的包。',
+      'build-failed': '应由目录维护者修复或重新发布与当前 Runtime 兼容的包。',
+      'package-not-found': '应修正目录来源，并固定到存在的版本或提交。',
+      network: '请检查网络或代理后重试；如果持续发生，应下架或修正目录来源。',
+      auth: '应发布公开可访问的来源，或从目录中移除该条目。',
+      'lockfile-policy': '应重新发布或重新验证精确的依赖后再收录。',
+      permission: '请检查 profile 目录权限后重试。',
+      'runtime-prerequisite': '请更新或重新构建 EzDSH 后再安装插件。',
+      postcondition: '应检查目录来源和 Runtime 集成，而不是让用户重复修改配置。',
+      unknown: '请打开详细日志，并连同目录来源一起报告。'
+    }[code]),
+    storeInstallPackage: (packageSpec) => `相关依赖：${packageSpec}`,
+    storeInstallTechnicalDetails: '技术细节',
     storeInstallLogPath: (path) => `详细安装日志：${path}`,
     storeLoadFailed: '加载商店失败',
     storeRetry: '重试',
@@ -1315,6 +1444,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeRefresh: '更新目录',
     storeRefreshing: '更新中…',
     storeRefreshFailed: '更新失败',
+    storeRefreshSkipped: (count) => `目录已更新，跳过 ${count} 个配置无效的条目`,
     storeLastUpdated: (time) => `更新于 ${time}`,
     storeNeverRefreshed: '内置目录，未更新',
     storeEmpty: '这里还没有内容',
@@ -1649,6 +1779,28 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     starting: 'Starting DSH Runtime; first launch may take longer…',
     preparing: 'Preparing Runtime, please wait…',
     retryStart: 'Retry startup',
+    runtimeShowFailureDetails: 'Show startup failure details',
+    runtimeHideFailureDetails: 'Hide startup failure details',
+    runtimeFailureReason: 'Failure reason',
+    runtimeFailureUnknown: 'No detailed error was received. Open the Runtime log to inspect it.',
+    runtimeLogPath: 'Error log location',
+    runtimeLogPathUnavailable: 'Log path is not available yet',
+    runtimeOpeningLog: 'Opening log…',
+    runtimeOpenLogFailed: 'Could not open log',
+    runtimeEnterSafeMode: 'Start in Safe Mode',
+    runtimeEnteringSafeMode: 'Starting Safe Mode…',
+    safeModeBadge: 'Safe Mode',
+    safeModeTitle: 'Safe Mode is active',
+    safeModeDescription: 'Safe Mode is for temporary recovery and troubleshooting: it uses an isolated temporary DSH_HOME and does not load your normal workspace plugins, skills, sessions, or credentials. Exit after fixing the issue; do not use it as a long-term mode.',
+    safeModeExit: 'Exit Safe Mode and start normally',
+    safeModeExiting: 'Exiting Safe Mode and restarting Runtime…',
+    safeModeExitFailed: 'Could not exit Safe Mode',
+    safeModeOpenRecovery: 'Open recovery options',
+    runtimeOpenRecoverySettings: 'Open recovery settings',
+    runtimeReturnToFailure: 'Back to startup failure',
+    runtimeRescueTitle: 'EzDSH startup recovery',
+    runtimeRescueDetail: 'Runtime is currently unavailable. Inspect recovery snapshots and Session Logs before restoring the environment or retrying startup.',
+    runtimeSafeModeFailed: 'Safe Mode could not start',
     appTitle: 'Your local AI workspace',
     appSubtitle: 'Easy Way to the DeepSeek‑Harness',
     menuAbout: 'About EzDSH',
@@ -1677,6 +1829,12 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryOpenBackups: 'Open backup folder',
     recoveryRestoring: 'Restoring previous environment…',
     recoveryRestoreFailed: 'Restore failed. Open the backup folder or try again.',
+    recoveryRuntimeFailureDetail: 'DSH Runtime failed to start. Disable the plugin causing the failure and continue, or restore the latest environment snapshot.',
+    recoverySnapshotChoice: (name, createdAt, reason) => `Restore target: ${name} (created ${createdAt}; ${reason})`,
+    recoveryPluginChoiceTitle: 'Plugins you can try disabling:',
+    recoveryNoPluginChoices: 'No manageable third-party plugin was identified in the current profile. You can still restore the latest snapshot or enter Safe Mode.',
+    recoveryDisablePlugin: (name) => `Disable “${name}” and continue startup`,
+    recoveryDisablingPlugin: 'Disabling the plugin and restarting Runtime…',
     recoveryDoctor: 'Check Session Logs',
     recoveryDoctorRunning: 'Checking Session Logs…',
     recoveryDoctorDone: (issues, repaired) => `Check complete: ${issues} issue(s), repaired ${repaired} tail record(s)`,
@@ -2111,13 +2269,61 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     menuOpenHarnessDir: 'Open Harness Data Directory…',
     storeSearchPlaceholder: 'Search…',
     storeAllCategories: 'All categories',
+    storeManageInstalled: 'Manage installed',
     storeInstalledSection: 'Installed',
     storeAvailableSection: 'Available',
+    storeInstalledHint: 'Shows entries registered by EzDSH and plugins actually installed in DSH profiles.',
+    storeInstalledPlugins: 'Plugins',
+    storeInstalledSkills: 'Skill capabilities',
+    storeInstalledSkillType: 'Skill capability',
+    storeInstalledProfile: (profile) => `profile: ${profile}`,
+    storeInstalledExternal: 'Installed in DSH profile; not registered in the EzDSH store',
+    storeInstalledEmpty: 'No installed plugins or Skill capabilities were found.',
+    storeBackToCatalog: 'Back to store',
     storeInstall: 'Install',
     storeInstalled: 'Installed',
     storeUninstall: 'Uninstall',
     storeUpdate: 'Update',
+    storeEnablePlugin: 'Enable plugin',
+    storeDisablePlugin: 'Disable plugin',
+    storePluginEnabled: 'Plugin enabled',
+    storePluginDisabled: 'Plugin disabled (installation kept)',
+    storeDisabledBadge: 'Disabled',
+    storeEnablingPlugin: 'Enabling plugin…',
+    storeDisablingPlugin: 'Disabling plugin…',
+    storeUninstalling: 'Uninstalling…',
+    storePhaseInstalling: 'Working…',
     storeInstallFailed: 'Plugin installation failed',
+    storeInstallCause: (code) => ({
+      'catalog-entry-invalid': 'The catalog entry is invalid',
+      'invalid-dependency-name': 'The dependency name or alias is invalid',
+      'build-script-blocked': 'A dependency needs a build script that policy did not approve',
+      'build-failed': 'A dependency build script failed',
+      'package-not-found': 'The requested package, version, or Git ref was not found',
+      network: 'The package source could not be reached',
+      auth: 'The package source requires unavailable user access',
+      'lockfile-policy': 'The dependency failed integrity or supply-chain policy',
+      permission: 'The DSH profile could not be written',
+      'runtime-prerequisite': 'EzDSH package-manager prerequisites are unavailable',
+      postcondition: 'The command ended but did not write the package to the profile',
+      unknown: 'The package-manager output did not match a known cause'
+    }[code]),
+    storeInstallAction: (code) => ({
+      'catalog-entry-invalid': 'Remove the entry or correct its source metadata before publishing it.',
+      'invalid-dependency-name': 'Correct the catalog entry or upstream package name/alias; this is not a build-permission problem.',
+      'build-script-blocked': 'The catalog maintainer must verify the exact build dependency or republish without that script.',
+      'build-failed': 'The catalog maintainer must fix or republish the package for this Runtime.',
+      'package-not-found': 'Correct the catalog source and pin an existing version or commit.',
+      network: 'Check network or proxy settings; if it reproduces, fix or remove the catalog source.',
+      auth: 'Publish a public source or remove this catalog entry.',
+      'lockfile-policy': 'Re-publish or re-verify the exact dependency before catalog admission.',
+      permission: 'Check profile directory permissions and retry.',
+      'runtime-prerequisite': 'Update or rebuild EzDSH before installing plugins.',
+      postcondition: 'Investigate the catalog source and Runtime integration instead of changing user settings.',
+      unknown: 'Open the detailed log and report it with the catalog source.'
+    }[code]),
+    storeInstallPackage: (packageSpec) => `Related dependency: ${packageSpec}`,
+    storeInstallTechnicalDetails: 'Technical details',
     storeInstallLogPath: (path) => `Detailed install log: ${path}`,
     storeLoadFailed: 'Failed to load the store',
     storeRetry: 'Retry',
@@ -2125,6 +2331,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeRefresh: 'Refresh',
     storeRefreshing: 'Refreshing…',
     storeRefreshFailed: 'Refresh failed',
+    storeRefreshSkipped: (count) => `Catalog updated; skipped ${count} entries with invalid configuration`,
     storeLastUpdated: (time) => `Updated ${time}`,
     storeNeverRefreshed: 'Bundled catalog, never refreshed',
     storeEmpty: 'Nothing here yet',

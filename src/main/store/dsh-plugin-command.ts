@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import type { PluginCommandRunner } from './dsh-plugin-installer.js'
 
 export interface DshPluginCommandOptions {
@@ -32,7 +32,7 @@ const KNOWN_WORKSPACE_ROOT_BUG_DSH_VERSION = '0.1.1-rc.2'
  * directory is placed at the front of PATH without consulting user tooling.
  */
 export function createDshPluginCommand(options: DshPluginCommandOptions): PluginCommandRunner {
-  const bundledVersions = readBundledVersions(options.appPath)
+  const bundledVersions = readBundledVersions(options.appPath, options.runtimeEntryPath)
   const runCommand: PluginCommandRunner = async (profile, pluginArgs) => {
     const command = options.command ?? process.execPath
     const isElectronNode = command === process.execPath
@@ -193,9 +193,13 @@ interface BundledVersions {
   readonly pnpmVersion?: string
 }
 
-export async function readBundledVersions(appPath: string): Promise<BundledVersions> {
+export async function readBundledVersions(appPath: string, runtimeEntryPath?: string): Promise<BundledVersions> {
+  const publishedDshManifestPath = join(appPath, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+  const selectedRuntimeManifestPath = runtimeEntryPath === undefined
+    ? publishedDshManifestPath
+    : join(resolve(runtimeEntryPath, '..', '..'), 'package.json')
   const [dshVersion, pnpmVersion] = await Promise.all([
-    readPackageVersion(join(appPath, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')),
+    readPackageVersion(selectedRuntimeManifestPath).then((version) => version ?? readPackageVersion(publishedDshManifestPath)),
     readPackageVersion(join(appPath, 'node_modules', 'pnpm', 'package.json'))
   ])
   return { dshVersion, pnpmVersion }

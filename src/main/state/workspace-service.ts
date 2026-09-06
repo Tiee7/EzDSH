@@ -1,13 +1,46 @@
 import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 interface WorkspaceConfig {
   root: string
 }
 
+export interface WorkspaceStorageOptions {
+  isPackaged: boolean
+  useProductionData?: boolean
+}
+
+export interface WorkspaceStoragePaths {
+  configPath: string
+  defaultRoot: string
+  isolatedDevelopment: boolean
+}
+
 /** Keep the pointer outside the movable default userData directory. */
 export function getWorkspaceConfigPath(appDataPath: string): string {
   return join(resolve(appDataPath), '.ezdsh-workspace.json')
+}
+
+/** Keep source development from mutating data owned by an installed EzDSH build. */
+export function resolveWorkspaceStorage(
+  appDataPath: string,
+  userDataPath: string,
+  options: WorkspaceStorageOptions,
+): WorkspaceStoragePaths {
+  const production = options.isPackaged || options.useProductionData === true
+  if (production) {
+    return {
+      configPath: getWorkspaceConfigPath(appDataPath),
+      defaultRoot: resolve(userDataPath),
+      isolatedDevelopment: false,
+    }
+  }
+  const defaultRoot = resolve(userDataPath)
+  return {
+    configPath: join(resolve(appDataPath), '.ezdsh-workspace.development.json'),
+    defaultRoot: join(dirname(defaultRoot), `${basename(defaultRoot)}-development`),
+    isolatedDevelopment: true,
+  }
 }
 
 function isInside(parent: string, candidate: string): boolean {

@@ -15,7 +15,7 @@ afterEach(async () => {
 })
 
 describe('managed plugin recovery lifecycle', () => {
-  it('recovers an original profile after a failed plugin boot through Safe Mode', async () => {
+  it('keeps recovery available after a failed plugin boot until Safe Mode is explicitly selected', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-plugin-lifecycle-'))
     roots.push(root)
     const layout = getUserDataLayout(root)
@@ -60,10 +60,13 @@ describe('managed plugin recovery lifecycle', () => {
       await writeFile(profileManifest, '{"dependencies":{"working-plugin":"1.0.0","broken-plugin":"9.9.9"}}\n')
     }, async () => undefined)).rejects.toThrow('broken plugin boot')
 
-    expect(runtime.snapshot()).toEqual({ phase: 'ready', mode: 'safe' })
+    expect(runtime.snapshot()).toEqual({ phase: 'failed', mode: 'normal' })
     await expect(readFile(join(safeMode.homePath(), 'profiles', 'web', 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     const pending = recovery.snapshot().pendingTransaction
     expect(pending).toMatchObject({ kind: 'plugin-change', phase: 'failed' })
+
+    await coordinator.startSafeMode('manual')
+    expect(runtime.snapshot()).toEqual({ phase: 'ready', mode: 'safe' })
 
     await runtime.stop()
     await recovery.restore(pending!.snapshotName, false)

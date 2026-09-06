@@ -170,6 +170,131 @@ h1 {
   cursor: pointer;
 }
 
+.runtime-failure-notice {
+  width: 100%;
+  margin-top: 16px;
+  text-align: left;
+}
+
+.runtime-failure-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #aeb8ca;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.runtime-failure-toggle:hover {
+  color: #dce7ff;
+}
+
+.runtime-failure-toggle span {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid #596274;
+  border-radius: 4px;
+  color: #dce7ff;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.runtime-failure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.runtime-failure-action {
+  border: 1px solid #596274;
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: transparent;
+  color: #dce7ff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.runtime-failure-action:hover {
+  border-color: #8ea8e7;
+  background: rgba(142, 168, 231, 0.08);
+}
+
+.runtime-failure-action:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.runtime-failure-action-primary {
+  border-color: #7598eb;
+  background: rgba(117, 152, 235, 0.14);
+}
+
+.runtime-failure-details {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(226, 105, 94, 0.35);
+  border-radius: 10px;
+  background: rgba(226, 105, 94, 0.08);
+  color: #d5d9e0;
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-app-region: no-drag;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.runtime-failure-label {
+  margin: 0 0 4px;
+  color: #aeb8ca;
+  font-weight: 700;
+}
+
+.runtime-failure-message {
+  max-height: 160px;
+  margin: 0 0 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: #f0c2bd;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.runtime-failure-log-path {
+  display: block;
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+  color: #dce7ff;
+  font-size: 11px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.runtime-failure-open-error {
+  margin: 8px 0 0;
+  color: #f09a91;
+  overflow-wrap: anywhere;
+}
+
+.runtime-recovery-settings-shell {
+  min-height: 100vh;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 32px;
+}
+
+.runtime-recovery-settings-shell .settings-page {
+  margin: 0 auto;
+}
+
 .loading-spinner {
   width: 28px;
   height: 28px;
@@ -394,6 +519,49 @@ h1 {
   line-height: 1.5;
 }
 
+.safe-mode-corner-overlay {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+.safe-mode-corner-label {
+  position: absolute;
+  padding: 3px 6px;
+  border: 1px solid rgba(140, 171, 255, 0.3);
+  border-radius: 5px;
+  background: rgba(72, 94, 155, 0.24);
+  color: rgba(220, 231, 255, 0.62);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.safe-mode-corner-top-left {
+  top: 7px;
+  left: 8px;
+}
+
+.safe-mode-corner-top-right {
+  top: 7px;
+  right: 8px;
+}
+
+.safe-mode-corner-bottom-left {
+  bottom: 7px;
+  left: 8px;
+}
+
+.safe-mode-corner-bottom-right {
+  right: 8px;
+  bottom: 7px;
+}
+
 .workspace-pane {
   position: absolute;
   inset: 0;
@@ -409,6 +577,12 @@ h1 {
   height: 100%;
   display: block;
   border: 0;
+}
+
+.runtime-view-host {
+  width: 100%;
+  height: 100%;
+  -webkit-app-region: no-drag;
 }
 
 .workspace-pane-page {

@@ -6,6 +6,7 @@ import {
   isWorkspaceTargetInsideSource,
   moveWorkspaceContents,
   readWorkspaceRoot,
+  resolveWorkspaceStorage,
   writeWorkspaceRoot,
 } from '../../src/main/state/workspace-service'
 
@@ -23,6 +24,42 @@ async function makeTempRoot(): Promise<string> {
 }
 
 describe('workspace root persistence', () => {
+  it('isolates development workspace data from the installed application by default', () => {
+    expect(resolveWorkspaceStorage(
+      '/Users/test/Library/Application Support',
+      '/Users/test/Library/Application Support/ezdsh',
+      { isPackaged: false },
+    )).toEqual({
+      configPath: '/Users/test/Library/Application Support/.ezdsh-workspace.development.json',
+      defaultRoot: '/Users/test/Library/Application Support/ezdsh-development',
+      isolatedDevelopment: true,
+    })
+  })
+
+  it('keeps packaged applications on the production workspace paths', () => {
+    expect(resolveWorkspaceStorage(
+      '/Users/test/Library/Application Support',
+      '/Users/test/Library/Application Support/ezdsh',
+      { isPackaged: true },
+    )).toEqual({
+      configPath: '/Users/test/Library/Application Support/.ezdsh-workspace.json',
+      defaultRoot: '/Users/test/Library/Application Support/ezdsh',
+      isolatedDevelopment: false,
+    })
+  })
+
+  it('requires an explicit opt-in before development can use production data', () => {
+    expect(resolveWorkspaceStorage(
+      '/Users/test/Library/Application Support',
+      '/Users/test/Library/Application Support/ezdsh',
+      { isPackaged: false, useProductionData: true },
+    )).toEqual({
+      configPath: '/Users/test/Library/Application Support/.ezdsh-workspace.json',
+      defaultRoot: '/Users/test/Library/Application Support/ezdsh',
+      isolatedDevelopment: false,
+    })
+  })
+
   it('falls back to the Electron default when no workspace file exists', async () => {
     const root = await makeTempRoot()
 

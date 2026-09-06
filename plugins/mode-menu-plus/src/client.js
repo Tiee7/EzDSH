@@ -7,7 +7,7 @@ window.__ModuleLoader__.load({
 
     const { jsx, jsxs } = require('react/jsx-runtime')
     const { useState, useEffect } = require('react')
-    const { createSnapshotStore } = require('@deepseek-ai/dsh-client-runtime/client')
+    const { createSnapshotStore } = require('@deepseek-ai/dsh-client-store')
     const {
       Menu,
       IconAgentPresetOutline16,

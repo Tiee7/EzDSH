@@ -12,14 +12,14 @@ afterEach(async () => {
 })
 
 describe('SafeModeController', () => {
-  it('creates a credential-only DSH home without profiles, patches, or sessions', async () => {
+  it('creates a credential-free DSH home so malformed normal credentials cannot block recovery', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-safe-mode-'))
     roots.push(root)
     const layout = getUserDataLayout(root)
     await mkdir(join(layout.harness, 'profiles', 'web'), { recursive: true })
     await mkdir(join(layout.harness, 'sessions'), { recursive: true })
     await mkdir(layout.state, { recursive: true })
-    await writeFile(join(layout.harness, '.credentials.yaml'), 'providers: {}\n', { mode: 0o600 })
+    await writeFile(join(layout.harness, '.credentials.yaml'), 'version: 1\nrefs:\n  BROKEN: 123\n', { mode: 0o600 })
     await writeFile(join(layout.harness, 'cordis.patch.yml'), 'plugins: broken\n')
     await writeFile(join(layout.harness, 'profiles', 'web', 'package.json'), '{"dependencies":{"broken":"1.0.0"}}\n')
     await writeFile(join(layout.harness, 'sessions', 'broken.jsonl'), 'bad session\n')
@@ -31,8 +31,7 @@ describe('SafeModeController', () => {
 
     const enabled = await controller.enable('manual')
 
-    await expect(readFile(join(enabled.dshHome, '.credentials.yaml'), 'utf8')).resolves.toBe('providers: {}\n')
-    expect((await stat(join(enabled.dshHome, '.credentials.yaml'))).mode & 0o777).toBe(0o600)
+    await expect(stat(join(enabled.dshHome, '.credentials.yaml'))).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(stat(join(enabled.dshHome, 'profiles'))).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(stat(join(enabled.dshHome, 'cordis.patch.yml'))).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(stat(join(enabled.dshHome, 'sessions'))).rejects.toMatchObject({ code: 'ENOENT' })

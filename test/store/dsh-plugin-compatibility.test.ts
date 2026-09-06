@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { repairInstalledDshPlugin } from '../../src/main/store/dsh-plugin-compatibility'
+import { repairInstalledDshPlugin, repairLegacyModeMenuPlus } from '../../src/main/store/dsh-plugin-compatibility'
 
 const workdirs: string[] = []
 
@@ -84,5 +84,41 @@ describe('dsh plugin compatibility repairs', () => {
     await expect(repairInstalledDshPlugin(dshHome, 'web', 'other-plugin')).resolves.toBe(false)
     await expect(repairInstalledDshPlugin(dshHome, 'web', 'dsh-codex')).resolves.toBe(true)
     await expect(repairInstalledDshPlugin(dshHome, 'web', 'dsh-codex')).resolves.toBe(false)
+  })
+
+  it('replaces only the known legacy mode-menu-plus artifact with the bundled alpha1 plugin', async () => {
+    const dshHome = await mkdtemp(join(tmpdir(), 'ezdsh-mode-menu-'))
+    const appPath = await mkdtemp(join(tmpdir(), 'ezdsh-app-'))
+    workdirs.push(dshHome, appPath)
+    const bundled = join(appPath, 'plugins', 'mode-menu-plus')
+    const installed = join(dshHome, 'profiles', 'node_modules', 'mode-menu-plus')
+    await mkdir(join(bundled, 'src'), { recursive: true })
+    await mkdir(join(installed, 'src'), { recursive: true })
+    await writeFile(join(bundled, 'package.json'), JSON.stringify({ name: 'mode-menu-plus', version: '0.1.1' }))
+    await writeFile(join(bundled, 'src', 'client.js'), 'require("@deepseek-ai/dsh-client-store")')
+    await writeFile(join(installed, 'package.json'), JSON.stringify({ name: 'mode-menu-plus', version: '0.1.0' }))
+    await writeFile(join(installed, 'src', 'client.js'), 'require("@deepseek-ai/dsh-client-runtime/client")')
+
+    await expect(repairLegacyModeMenuPlus(dshHome, appPath)).resolves.toBe(true)
+
+    expect(await readFile(join(installed, 'src', 'client.js'), 'utf8')).toContain('@deepseek-ai/dsh-client-store')
+    expect(await readFile(join(installed, 'src', 'client.js'), 'utf8')).not.toContain('@deepseek-ai/dsh-client-runtime/client')
+  })
+
+  it('does not overwrite a current mode-menu-plus package', async () => {
+    const dshHome = await mkdtemp(join(tmpdir(), 'ezdsh-mode-menu-'))
+    const appPath = await mkdtemp(join(tmpdir(), 'ezdsh-app-'))
+    workdirs.push(dshHome, appPath)
+    const bundled = join(appPath, 'plugins', 'mode-menu-plus')
+    const installed = join(dshHome, 'profiles', 'node_modules', 'mode-menu-plus')
+    await mkdir(join(bundled, 'src'), { recursive: true })
+    await mkdir(join(installed, 'src'), { recursive: true })
+    await writeFile(join(bundled, 'package.json'), JSON.stringify({ name: 'mode-menu-plus', version: '0.1.1' }))
+    await writeFile(join(bundled, 'src', 'client.js'), 'current bundled')
+    await writeFile(join(installed, 'package.json'), JSON.stringify({ name: 'mode-menu-plus', version: '0.1.1' }))
+    await writeFile(join(installed, 'src', 'client.js'), 'current installed')
+
+    await expect(repairLegacyModeMenuPlus(dshHome, appPath)).resolves.toBe(false)
+    expect(await readFile(join(installed, 'src', 'client.js'), 'utf8')).toBe('current installed')
   })
 })

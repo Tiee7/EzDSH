@@ -15,7 +15,15 @@ export interface HealthCheckOptions {
   fetchImpl?: typeof fetch
 }
 
-/** Poll a local Runtime URL until it returns a successful HTTP response. */
+/**
+ * Poll a local Runtime URL until it returns a successful HTTP response.
+ *
+ * DSH's printed browser URL is an authentication entry point. Never probe that
+ * URL from the main process: its redirect and cookie belong to a different
+ * client context from the renderer iframe, which can leave the iframe with an
+ * authentication error on Runtime versions that treat the launch token as a
+ * one-shot browser handoff.
+ */
 export async function waitForRuntimeHealthy(
   url: string,
   options: HealthCheckOptions = {}
@@ -24,24 +32,14 @@ export async function waitForRuntimeHealthy(
   const intervalMs = options.intervalMs ?? 150
   const fetchImpl = options.fetchImpl ?? fetch
   const deadline = Date.now() + timeoutMs
+  const healthUrl = runtimeHealthUrl(url)
 
   while (Date.now() < deadline) {
     const remainingMs = Math.max(1, deadline - Date.now())
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), remainingMs)
     try {
-      const response = await fetchImpl(url, { method: 'GET', redirect: 'manual', signal: controller.signal })
-      // DSH 0.1.2 exchanges the launch token for an auth cookie with a redirect.
-      // A legacy Runtime still responds directly with 200.
-      if (hasRuntimeToken(url)) {
-        if (response.status !== 303) {
-          throw new RuntimeHealthError(`Runtime token exchange expected 303, got ${String(response.status)}`)
-        }
-        if (!hasDshAuthCookie(response.headers.get('set-cookie'))) {
-          throw new RuntimeHealthError('Runtime token exchange returned 303 without a dsh-auth-* Set-Cookie header')
-        }
-        return
-      }
+      const response = await fetchImpl(healthUrl, { method: 'GET', redirect: 'manual', signal: controller.signal })
       if (response.ok) return
     } catch (error) {
       if (error instanceof RuntimeHealthError) throw error
@@ -56,14 +54,16 @@ export async function waitForRuntimeHealthy(
   throw new RuntimeHealthError(`Runtime did not become healthy within ${String(timeoutMs)}ms`)
 }
 
-function hasRuntimeToken(url: string): boolean {
+/** Use a public static asset so the browser launch token remains renderer-owned. */
+export function runtimeHealthUrl(url: string): string {
   try {
-    return new URL(url).searchParams.has('token')
+    const parsed = new URL(url)
+    if (!parsed.searchParams.has('token')) return url
+    parsed.pathname = '/manifest.webmanifest'
+    parsed.search = ''
+    parsed.hash = ''
+    return parsed.href
   } catch {
-    return false
+    return url
   }
-}
-
-function hasDshAuthCookie(setCookie: string | null): boolean {
-  return setCookie !== null && /(?:^|,\s*)dsh-auth-[^=;]+=/iu.test(setCookie)
 }

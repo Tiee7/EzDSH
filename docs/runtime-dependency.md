@@ -9,14 +9,16 @@ EzDSH 不依赖用户电脑上预先安装的 DSH，也不把用户本机的安�
 当前发布链路锁定以下 DSH 包状态：
 
 ```text
-Runtime package:    @deepseek-ai/dsh
-Runtime version:    0.1.2-rc.1
-Checked at:         2026-08-22
+Runtime package:        @deepseek-ai/dsh
+Runtime version:        0.1.3-alpha.1
+Source commit:          d347e703908d0406b7a7ef80e3a0e594d86b2215
+Published npm fallback: 0.1.2-rc.1
+Checked at:              2026-09-04
 ```
 
-`0.1.2-rc.1` 是发布硬门禁：打包前会核验根项目 `node_modules/@deepseek-ai/dsh`，暂存和最终安装包校验会从实际选中的 Runtime 入口向上找到所属 `@deepseek-ai/dsh/package.json` 并再次核验。任何其他版本（包括旧的 `0.1.1-rc.2` 和 `0.1.0-rc.8`）都会在 Runtime 启动前阻断发布。已有的 `1.8.1528` 安装包仍是旧产物，不会因为仓库升级而被追溯更新；需要重新构建并发布新安装包。
+`0.1.3-alpha.1` 是当前实际交付的 Runtime 版本：源码来自 `vendor/deepseek-harness`，并由 source pin、暂存目录和最终安装包的健康检查共同设为硬门禁。该版本目前尚未发布到 npm，因此根项目的 `@deepseek-ai/dsh` 及其 companion 依赖仍保留可安装的 `0.1.2-rc.1` 作为开发/构建依赖；它不是正式安装包的权威 Runtime。已有安装包不会因为仓库升级而被追溯更新，需要重新构建并发布新安装包。
 
-项目依赖最终以 `package.json` 和 lockfile 中的精确版本为准。EzDSH 默认直接消费已经发布的 DSH 包，不再在 `postinstall` 或正式打包前安装完整 upstream workspace。生产入口为 `node_modules/@deepseek-ai/dsh/lib/bin.js`，electron-builder 会把生产依赖随 `node_modules/**/*` 放入安装包。
+项目依赖最终以 `package.json` 和 lockfile 中的精确版本为准。普通开发会优先使用已构建的 `vendor/deepseek-harness/apps/cli/lib/bin.js`；正式打包会将 source-built Runtime 暂存为 `out/dsh-runtime`，生产入口为 `out/dsh-runtime/lib/bin.js`，electron-builder 会把它随 `out/**/*` 放入安装包。若源码 Runtime 缺失，开发模式才回退到已发布 npm 包；正式验证会拒绝选中错误版本。
 
 根项目通过 npm 精确锁定 `node-bin-darwin-arm64@24.18.0` 和 `pnpm@11.7.0`。二者安装在被 Git 忽略的 `node_modules` 中；Node 平台包及其完整性哈希直接记录在根 `package-lock.json`，不经过隐藏的二次安装。打包时仅把 Node 可执行文件和许可证复制到同样被忽略的 `out/node-runtime`，最终进入安装包。正式运行时，EzDSH 从 `Contents/Resources/app/out/node-runtime/bin/node` 启动 DSH，不读取系统 PATH，也不要求用户安装 Node、npm 或 pnpm。
 
@@ -44,7 +46,7 @@ EzDSH 安装包
 
 ## 2. 项目如何包含 DSH Runtime
 
-默认发布链路不需要 DSH 源码子模块。源码子模块只用于需要修改 DSH 本身时的显式联调。该联调入口包含：
+当前发布链路使用 DSH 源码子模块构建尚未发布的 `0.1.3-alpha.1`。该入口包含：
 
 - `vendor/deepseek-harness` Git 子模块；
 - 子模块指向的完整 upstream commit；
@@ -59,14 +61,14 @@ EzDSH 安装包
 
 ### 3.1 普通开发模式
 
-普通开发模式使用根项目中锁定的已发布 DSH npm 包，不使用本机全局安装的 DSH。这样可以保证：
+普通开发模式优先使用仓库中已构建的 vendored DSH Runtime，不使用本机全局安装的 DSH。源码 checkout 必须同时满足 `0.1.3-alpha.1` 版本和 `d347e703908d0406b7a7ef80e3a0e594d86b2215` commit 两个硬门禁；缺少源码构建产物时才回退到根项目中锁定的已发布 npm 包。这样可以保证：
 
 - 每位开发者使用同一个 Runtime 包版本；
 - CI 使用同一个 Runtime 版本；
 - 测试结果可复现；
 - 打包结果不会因为本机环境不同而变化。
 
-在这种模式下，不需要提供本机 DSH 的安装路径。开始开发前只需要确认目标 Runtime 的包名、版本和上游 commit 即可。
+在这种模式下，不需要提供本机 DSH 的安装路径。`npm run dev` 默认使用独立的开发数据目录和 Workspace 指针，不会读取或修改已安装正式版的 Runtime 数据。只有显式设置 `EZDSH_USE_PRODUCTION_DATA=1` 才会让开发版使用正式数据；该选项只用于有备份的兼容性排查。
 
 ### 3.2 本地源码联调模式
 
@@ -103,15 +105,15 @@ EzDSH 版本和 DSH Runtime 版本分开记录，但发布时建立明确映射�
 
 ```text
 EzDSH 0.1.0
-└── DSH Runtime（由 lockfile 锁定）
+└── DSH Runtime（由子模块 commit 与 Runtime 版本共同锁定）
 
 EzDSH 0.2.0
-└── DSH Runtime（由 lockfile 锁定，可能包含兼容补丁）
+└── DSH Runtime（由子模块 commit 与 Runtime 版本共同锁定，可能包含兼容补丁）
 ```
 
 每次升级 Runtime 都必须：
 
-1. 更新 `package.json` 和 lockfile；
+1. 更新 vendored 子模块 gitlink、Runtime 版本 pin；若 npm fallback 也升级，再更新 `package.json` 和 lockfile；
 2. 检查 Settings、Credentials、Provider 和启动入口的兼容性；
 3. 重新生成或确认补丁；
 4. 执行空供应商配置流程测试；
@@ -150,7 +152,7 @@ API Key 不应直接保存在 EzDSH 安装目录或普通状态 JSON 中。EzDSH
 3. 是否需要本地源码联调；
 4. 如果需要联调，再提供源码目录和 commit。
 
-默认开发路径采用“已发布 DSH npm 包 + npm 根项目 + 打包内置 Runtime”。如果需要修改 DSH 源码，才使用 `dsh:source:install`、`dsh:source:build` 和 `EZDSH_DSH_SOURCE` 进入显式源码联调模式；源码 workspace 不参与默认安装和正式打包。
+默认开发路径会在 `vendor/deepseek-harness` 存在并已构建时使用 `0.1.3-alpha.1` 源码 Runtime；如果需要显式指定源码目录，仍可使用 `EZDSH_DSH_SOURCE`。`dsh:source:install`、`dsh:source:build` 和 `stage:dsh:source-runtime` 是正式打包所需的源码 Runtime 流程。
 
 本项目使用 NVM 切换 Node 版本，仓库根目录的 `.nvmrc` 固定为 Node `24.18.0`；当前上游构建要求 Node `^22.19.0 || >=24.0.0`。进入项目后应先执行 `nvm use`，并确认当前终端的 `node -v` 实际为 `v24.18.0`。
 
@@ -167,7 +169,7 @@ npm ci
 CI=true ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm run package:mac
 ```
 
-`prepare:package` 会校验已发布 DSH 包、构建 EzDSH、暂存目标平台 Node Runtime，并执行真实健康检查。健康检查会用暂存的 Node 启动 `node_modules/@deepseek-ai/dsh/lib/bin.js`，并在无供应商配置的临时用户目录中请求 Web 页面；未通过时不会继续生成安装包。electron-builder 会把已安装的生产依赖随应用一起交付。
+`prepare:package` 会校验 npm fallback、安装并构建 vendored `0.1.3-alpha.1`、构建 EzDSH、暂存目标平台 Node Runtime，并执行真实健康检查。健康检查会用暂存的 Node 启动 `out/dsh-runtime/lib/bin.js`，并在无供应商配置的临时用户目录中请求 Web 页面；未通过时不会继续生成安装包。electron-builder 会把 source-built Runtime 随应用一起交付。
 
 当前发布目标支持 macOS arm64 和 Windows x64。构建脚本会根据原生主机平台选择对应的内置 Node Runtime，并拒绝在其他平台上错误地混入原生依赖。Windows 打包必须在 Windows x64 runner 上执行；macOS arm64 打包必须在 macOS arm64 runner 上执行。Windows 原生打包流程已准备，但需要在对应 Windows 环境中完成首次构建验证后再作为正式发布链路使用。
 
@@ -191,7 +193,7 @@ npm run package:mac:release
 
 ## 8. 增量打包（避免重复下载）
 
-首次准备完成后，如果只是想重新出包，不需要每次都重新安装 DSH 依赖。`prepare:package` 只会校验已安装的发布包、构建 EzDSH、暂存 Node Runtime 并执行健康检查；Electron 下载仍可能产生网络开销。
+首次准备完成后，如果只是想重新出包，pnpm 通常会复用已有 store，但 `prepare:package` 仍会执行 vendored DSH 的锁文件安装检查和源码构建，再暂存 Runtime 并执行健康检查。Electron 下载仍可能产生网络开销。
 
 实际上这些东西都是缓存的：
 
@@ -219,9 +221,11 @@ npm run dsh:source:build
 EZDSH_DSH_SOURCE="$PWD/vendor/deepseek-harness/apps/cli" npm run dev
 ```
 
-源码联调只影响本地开发，不会改变正式安装包。要让源码修改进入发布包，应先发布新的 DSH npm 版本，再更新 EzDSH 的 `package.json` 和 lockfile。
+源码联调使用的就是当前正式打包来源；要让源码修改进入发布包，必须更新子模块 gitlink，并重新执行 source build、Runtime staging 和健康检查。无需把尚未发布的 alpha 版本伪装成 npm 依赖。
 
 `stage:dsh:source-runtime` 也会读取 `vendor/deepseek-harness/apps/cli/package.json` 并执行同一 pin 校验。因此，旧 vendor checkout（例如仍声明 `0.1.0-rc.8`）会在暂存前被拒绝，不能作为发布 Runtime 的回退来源。
+
+Runtime 的浏览器认证边界可单独复核：`npm run verify:runtime:web-auth` 使用真实 Electron `WebContentsView` 打开一次性认证 URL；`npm run diagnose:runtime:iframe-auth` 保留旧的跨站 iframe 复现路径，预期会以 authentication-required 失败，用于防止将问题误判为 Runtime 无法启动。
 
 ### 8.3 验证产物
 

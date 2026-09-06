@@ -14,4 +14,16 @@ describe('StorePage surfaces', () => {
     expect(plugins).toBeGreaterThan(skills)
     expect(mcp).toBeGreaterThan(plugins)
   })
+
+  it('exposes an installed view alongside the store surfaces', () => {
+    const markup = renderToStaticMarkup(<StorePage copy={getAppCopy('zh')} locale="zh" />)
+
+    const installed = markup.indexOf('>管理已安装<')
+    const skills = markup.indexOf('>技能<')
+
+    expect(installed).toBeGreaterThanOrEqual(0)
+    expect(installed).toBeLessThan(skills)
+    expect(markup).toContain('surface-tab-installed')
+    expect(markup).toContain('data-icon="installed"')
+  })
 })

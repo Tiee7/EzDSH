@@ -210,6 +210,34 @@ describe('explicit catalog refresh', () => {
     expect(list.fetchedAt).toBeDefined()
     expect(list.entries.some((entry) => entry.id === 'brainstorming')).toBe(true)
   })
+
+  it('keeps third-party plugins without Hub-side preverification in the catalog', async () => {
+    const service = new StoreService({
+      client: {
+        list: async (kind) => kind === 'skill'
+          ? {
+              entries: [
+                remoteEntry(),
+                remoteEntry({
+                  id: 'unverified-plugin',
+                  name: 'Unverified plugin',
+                  category: 'plugin',
+                  plugin: { source: 'npm:unverified-plugin@1.0.0', packageName: 'unverified-plugin' }
+                })
+              ],
+              page: 1,
+              pageCount: 1
+            }
+          : { entries: [], page: 1, pageCount: 1 },
+        categories: async () => []
+      }
+    })
+
+    const result = await service.refresh('skill')
+    expect(result.counts.skill).toBe(2)
+    expect(result.rejected).toEqual([])
+    expect((await service.list('skill')).entries.some((entry) => entry.id === 'unverified-plugin')).toBe(true)
+  })
 })
 
 describe('StoreService misc', () => {

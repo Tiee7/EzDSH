@@ -160,6 +160,44 @@ describe('DshPluginInstaller', () => {
     expect(calls).toEqual([['add', 'npm:@nanmicoder/dsh-agent-teams@0.1.13']])
   })
 
+  it('reuses the exact build exception recorded by catalog verification', async () => {
+    const profile = await makeProfile()
+    const ignoredBuild = 'nihaixia@https://codeload.github.com/jangviktor-web/nihaixia/tar.gz/v2.3.1'
+    const calls: string[][] = []
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async (_profile, args) => {
+        calls.push([...args])
+        if (calls.length === 1) throw new Error(`Ignored build scripts: ${ignoredBuild}`)
+        await writeFile(profile.packagePath, JSON.stringify({
+          name: 'web',
+          dependencies: { nihaixia: 'github:jangviktor-web/nihaixia#v2.3.1' }
+        }))
+      }
+    })
+
+    await installer.install(pluginEntry({
+      plugin: {
+        source: 'github:jangviktor-web/nihaixia#v2.3.1',
+        packageName: 'nihaixia',
+        verification: {
+          status: 'passed',
+          checkedAt: '2026-09-05T00:00:00.000Z',
+          source: 'github:jangviktor-web/nihaixia#v2.3.1',
+          dshVersion: '0.1.2-rc.1',
+          pnpmVersion: '11.7.0',
+          packageName: 'nihaixia',
+          allowBuilds: [ignoredBuild]
+        }
+      }
+    }))
+
+    expect(calls).toEqual([
+      ['add', 'github:jangviktor-web/nihaixia#v2.3.1'],
+      ['add', `--allow-build=${ignoredBuild}`, 'github:jangviktor-web/nihaixia#v2.3.1']
+    ])
+  })
+
   it('does not auto-approve an unverified version of a known dependency', async () => {
     const profile = await makeProfile()
     const calls: string[][] = []
@@ -212,6 +250,149 @@ describe('DshPluginInstaller', () => {
     await installer.uninstall(record, pluginEntry())
 
     expect(calls).toEqual([['remove', '@nanmicoder/dsh-agent-teams']])
+  })
+
+  it('disables a plugin without uninstalling its package and can enable it again', async () => {
+    const profile = await makeProfile()
+    await writeFile(profile.packagePath, JSON.stringify({
+      name: 'web',
+      dependencies: { 'mode-menu-plus': '1.0.0' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'mode-menu-plus'] } },
+    }))
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async () => { throw new Error('Disabling must not call pnpm') },
+    })
+    const record: InstalledRecord = {
+      kind: 'skill',
+      id: 'mode-menu-plus',
+      version: '1.0.0',
+      sha256: '0'.repeat(64),
+      installedAt: new Date().toISOString(),
+      name: 'Mode Menu Plus',
+      pluginPackageName: 'mode-menu-plus',
+      pluginProfile: 'web',
+    }
+
+    await installer.setEnabled(record, undefined, false)
+    let manifest = JSON.parse(await readFile(profile.packagePath, 'utf8')) as {
+      dependencies: Record<string, string>
+      dsh: { profile: { bundles: string[] } }
+    }
+    expect(manifest.dependencies['mode-menu-plus']).toBe('1.0.0')
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base'])
+
+    await installer.setEnabled(record, undefined, true)
+    manifest = JSON.parse(await readFile(profile.packagePath, 'utf8')) as typeof manifest
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'mode-menu-plus'])
+  })
+
+  it('lists active third-party profile bundles for startup recovery choices', async () => {
+    const profile = await makeProfile()
+    await writeFile(profile.packagePath, JSON.stringify({
+      name: 'web',
+      dependencies: { 'mode-menu-plus': '1.0.0' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'mode-menu-plus'] } },
+    }))
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async () => undefined,
+    })
+
+    await expect(installer.listActivePlugins()).resolves.toEqual([
+      { packageName: 'mode-menu-plus', profile: 'web' },
+    ])
+  })
+
+  it('lists installed third-party profile packages with their disabled state', async () => {
+    const profile = await makeProfile()
+    await writeFile(profile.packagePath, JSON.stringify({
+      name: 'web',
+      dependencies: {
+        'dsh-codex': 'github:ddll8023/dsh-codex',
+        'dsh-skill-hub': 'github:hskelp9527-pixel/dsh-skill-hub',
+      },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'], disabledBundles: ['dsh-codex'] } },
+    }))
+    await mkdir(join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-codex'), { recursive: true })
+    await writeFile(join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-codex', 'package.json'), JSON.stringify({ name: 'dsh-codex', version: '0.1.0', dsh: { bundle: {} } }))
+    await mkdir(join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-skill-hub'), { recursive: true })
+    await writeFile(join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-skill-hub', 'package.json'), JSON.stringify({ name: 'dsh-skill-hub', version: '1.1.0', dsh: { bundle: {} } }))
+
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async () => undefined,
+    })
+
+    await expect(installer.listInstalledPlugins()).resolves.toEqual([
+      { packageName: 'dsh-codex', profile: 'web', version: '0.1.0', enabled: false },
+      { packageName: 'dsh-skill-hub', profile: 'web', version: '1.1.0', enabled: true },
+    ])
+  })
+
+  it('toggles a plugin that is referenced directly by the profile patch', async () => {
+    const profile = await makeProfile()
+    const packageDirectory = join(profile.dshHome, 'profiles', 'node_modules', 'mode-menu-plus')
+    await mkdir(packageDirectory, { recursive: true })
+    await writeFile(join(packageDirectory, 'package.json'), JSON.stringify({
+      name: 'mode-menu-plus',
+      version: '0.1.1',
+      dsh: { client: { platform: 'web' } },
+    }))
+    await writeFile(join(profile.dshHome, 'profiles', 'web', 'cordis.patch.yml'), [
+      '- insert:',
+      '    - id: mode-menu-plus',
+      '      name: mode-menu-plus',
+      '',
+    ].join('\n'))
+
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async () => { throw new Error('Patch toggles must not call pnpm') },
+    })
+
+    await installer.setPackageEnabled('web', 'mode-menu-plus', false)
+    expect(await readFile(join(profile.dshHome, 'profiles', 'web', 'cordis.patch.yml'), 'utf8')).toContain('disabled: true')
+    await installer.setPackageEnabled('web', 'mode-menu-plus', true)
+    expect(await readFile(join(profile.dshHome, 'profiles', 'web', 'cordis.patch.yml'), 'utf8')).not.toContain('disabled: true')
+  })
+
+  it('keeps a disabled plugin out of the layer list after another plugin command reconciles bundles', async () => {
+    const profile = await makeProfile()
+    await writeFile(profile.packagePath, JSON.stringify({
+      name: 'web',
+      dependencies: { 'mode-menu-plus': '1.0.0' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'mode-menu-plus'] } },
+    }))
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async (_profile, args) => {
+        if (args[0] !== 'add') throw new Error('unexpected command')
+        await writeFile(profile.packagePath, JSON.stringify({
+          name: 'web',
+          dependencies: {
+            'mode-menu-plus': '1.0.0',
+            '@nanmicoder/dsh-agent-teams': '0.1.13',
+          },
+          dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'mode-menu-plus', '@nanmicoder/dsh-agent-teams'], disabledBundles: ['mode-menu-plus'] } },
+        }))
+      },
+    })
+    const record: InstalledRecord = {
+      kind: 'skill',
+      id: 'mode-menu-plus',
+      version: '1.0.0',
+      sha256: '0'.repeat(64),
+      installedAt: new Date().toISOString(),
+      name: 'Mode Menu Plus',
+      pluginPackageName: 'mode-menu-plus',
+      pluginProfile: 'web',
+    }
+    await installer.setEnabled(record, undefined, false)
+
+    await installer.install(pluginEntry())
+    const manifest = JSON.parse(await readFile(profile.packagePath, 'utf8')) as { dsh: { profile: { bundles: string[] } } }
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', '@nanmicoder/dsh-agent-teams'])
   })
 
   it('rejects untrusted plugin sources before invoking the package manager', async () => {

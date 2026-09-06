@@ -1,5 +1,5 @@
 import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { appendFile, mkdir } from 'node:fs/promises'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
@@ -27,9 +27,11 @@ const runtimePackageByTarget: Record<string, string> = {
   'win32-x64': 'node-win-x64'
 }
 
-/** Resolve the published or explicitly selected source Runtime without consulting user PATH. */
+/** Resolve the packaged source Runtime or an explicit/local published Runtime without consulting user PATH. */
 export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
   if (options.isPackaged) {
+    const stagedSourceEntry = join(options.appPath, 'out', 'dsh-runtime', 'lib', 'bin.js')
+    if (existsSync(stagedSourceEntry)) return stagedSourceEntry
     return join(options.appPath, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
   }
 
@@ -40,6 +42,9 @@ export function resolveRuntimeEntryPath(options: RuntimePathOptions): string {
     }
     return sourceEntry
   }
+
+  const vendoredSourceEntry = join(options.appPath, 'vendor', 'deepseek-harness', 'apps', 'cli', 'lib', 'bin.js')
+  if (existsSync(vendoredSourceEntry)) return vendoredSourceEntry
 
   const publishedEntry = join(options.appPath, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
   if (existsSync(publishedEntry)) return publishedEntry
@@ -70,6 +75,8 @@ export interface RuntimeManagerOptions {
   layout: UserDataLayout
   runtimeEntryPath: string
   command?: string
+  appVersion?: string
+  runtimeVersion?: string
   startupTimeoutMs?: number
   stopTimeoutMs?: number
   portRetryCount?: number
@@ -80,6 +87,8 @@ export interface RuntimeManagerOptions {
   allocatePort?: () => Promise<number>
   runtimeOwnership?: RuntimeOwnershipStore
   getEnvironment?: () => NodeJS.ProcessEnv
+  /** Run app-level compatibility repairs before spawning the DSH child. */
+  beforeStart?: () => Promise<void>
 }
 
 export interface RuntimeLaunchContext {
@@ -213,25 +222,31 @@ export class RuntimeManager {
   }
 
   private async startInternal(): Promise<RuntimeSnapshot> {
-    await ensureUserDataLayout(this.config.layout)
-    if (this.stopRequested) return this.markStopped()
-    const firstPort = await (this.config.allocatePort ?? allocateLoopbackPort)()
-    if (this.stopRequested) return this.markStopped()
     const logPath = join(this.config.layout.logs, 'harness.log')
-    for (let retry = 0; retry <= this.options.portRetryCount; retry += 1) {
+    try {
+      await ensureUserDataLayout(this.config.layout)
       if (this.stopRequested) return this.markStopped()
-      const port = firstPort + retry
-      try {
-        return await this.startOnPort(port, logPath)
-      } catch (error) {
+      await this.config.beforeStart?.()
+      if (this.stopRequested) return this.markStopped()
+      const firstPort = await (this.config.allocatePort ?? allocateLoopbackPort)()
+      if (this.stopRequested) return this.markStopped()
+      for (let retry = 0; retry <= this.options.portRetryCount; retry += 1) {
         if (this.stopRequested) return this.markStopped()
-        if (!(error instanceof RuntimePortOccupiedError) || retry === this.options.portRetryCount) {
-          this.fail(error)
+        const port = firstPort + retry
+        try {
+          return await this.startOnPort(port, logPath)
+        } catch (error) {
+          if (this.stopRequested) return this.markStopped()
+          if (error instanceof RuntimePortOccupiedError && retry < this.options.portRetryCount) continue
           throw error
         }
       }
+      throw new Error('DSH Runtime port retry limit reached')
+    } catch (error) {
+      if (this.stopRequested) return this.markStopped()
+      await this.fail(error, logPath)
+      throw error
     }
-    throw new Error('DSH Runtime port retry limit reached')
   }
 
   private async startOnPort(port: number, logPath: string): Promise<RuntimeSnapshot> {
@@ -252,7 +267,20 @@ export class RuntimeManager {
     await mkdir(dirname(logPath), { recursive: true, mode: 0o700 })
     this.logStream = createWriteStream(logPath, { flags: 'a', mode: 0o600 })
     const processLogStream = this.logStream
+    await waitForLogStream(processLogStream)
     const command = this.config.command ?? process.execPath
+    this.writeLog([
+      '',
+      '[EzDSH Runtime launch]',
+      `timestamp=${new Date().toISOString()}`,
+      `appVersion=${this.config.appVersion ?? 'unknown'}`,
+      `runtimeVersion=${this.config.runtimeVersion ?? 'unknown'}`,
+      `runtimeEntryPath=${this.config.runtimeEntryPath}`,
+      `runtimeCommand=${command}`,
+      `mode=${this.launchContext.mode}`,
+      `DSH_HOME=${this.launchContext.dshHome}`,
+      '',
+    ].join('\n'), processLogStream)
     const args = command === process.execPath
       ? ['--expose-internals', this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
       : [this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
@@ -316,11 +344,14 @@ export class RuntimeManager {
       this.child = undefined
       const error = portOccupied
         ? new RuntimePortOccupiedError(port)
-        : new Error(`Runtime exited before shutdown (code=${String(code)}, signal=${String(signal)})`)
+        : new Error(withRuntimeOutput(
+          `Runtime exited before shutdown (code=${String(code)}, signal=${String(signal)})`,
+          outputBuffer,
+        ))
       if (this.stopping) {
         this.setSnapshot({ phase: 'stopped', pid: undefined, port: undefined, url: undefined, message: 'Runtime 已停止' })
       } else if (this.current.phase === 'ready') {
-        this.fail(error)
+        void this.fail(error, logPath)
       } else {
         rejectChildExit(error)
       }
@@ -403,9 +434,20 @@ export class RuntimeManager {
     child.kill(signal)
   }
 
-  private fail(error: unknown): void {
+  private async fail(error: unknown, logPath: string): Promise<void> {
     const message = error instanceof Error ? error.message : String(error)
     this.setSnapshot({ phase: 'failed', message })
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    try {
+      await mkdir(dirname(logPath), { recursive: true, mode: 0o700 })
+      await appendFile(
+        logPath,
+        `\n[EzDSH Runtime startup failure]\n${redactRuntimeLog(detail)}\n`,
+        { encoding: 'utf8', mode: 0o600 },
+      )
+    } catch {
+      // Diagnostics must never hide the original Runtime startup failure.
+    }
   }
 
   private markStopped(): RuntimeSnapshot {
@@ -431,6 +473,26 @@ export class RuntimeManager {
 /** Runtime launch URLs remain in the live snapshot, but never in persisted logs. */
 function redactRuntimeLog(chunk: Buffer | string): string {
   return String(chunk).replace(/([?&]token=)[^&#\s]+/giu, '$1[REDACTED]')
+}
+
+function withRuntimeOutput(message: string, output: string): string {
+  const detail = redactRuntimeLog(output).trim()
+  return detail === '' ? message : `${message}\n\nRuntime output:\n${detail}`
+}
+
+async function waitForLogStream(stream: WriteStream): Promise<void> {
+  await new Promise<void>((resolveReady, rejectReady) => {
+    const onOpen = (): void => {
+      stream.removeListener('error', onError)
+      resolveReady()
+    }
+    const onError = (error: Error): void => {
+      stream.removeListener('open', onOpen)
+      rejectReady(error)
+    }
+    stream.once('open', onOpen)
+    stream.once('error', onError)
+  })
 }
 
 function readRuntimeWebUrl(output: string): string | undefined {

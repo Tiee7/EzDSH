@@ -16,7 +16,14 @@ describe('mode-menu-plus node half', () => {
     expect(pkg.dsh.client.inject).toEqual([
       '@deepseek-ai/dsh-client-connection',
       '@deepseek-ai/dsh-client-locale',
-      '@deepseek-ai/dsh-client-runtime',
     ])
+    expect(pkg.peerDependencies['@deepseek-ai/dsh-client-store']).toBe('^0.1.3-alpha.1')
+    expect(pkg.peerDependencies['@deepseek-ai/dsh-client-runtime']).toBeUndefined()
+  })
+
+  it('uses the alpha1 store module-table seed instead of the removed runtime package', () => {
+    const source = readFileSync(new URL('../../../plugins/mode-menu-plus/src/client.js', import.meta.url), 'utf8')
+    expect(source).toContain("@deepseek-ai/dsh-client-store")
+    expect(source).not.toContain("@deepseek-ai/dsh-client-runtime/client")
   })
 })

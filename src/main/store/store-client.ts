@@ -2,8 +2,8 @@
  * Remote curation API client. Fetches catalog lists, entry details, and
  * categories over HTTPS from the configured store origin, with a short-lived
  * per-query cache and a hard request timeout. The client never interprets
- * entry content; validation beyond URL shape and response status lives in the
- * audit engine.
+ * entry content; catalog admission is enforced by StoreService and payload
+ * safety is checked by the audit engine.
  *
  * @module store-client
  */

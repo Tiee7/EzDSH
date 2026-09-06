@@ -4,6 +4,7 @@ import type {
   AuditReport,
   InstalledRecord,
   InstallState,
+  StoreCatalogRejection,
   StoreCategory,
   StoreEntry,
   StoreKind
@@ -104,17 +105,35 @@ export function AuditOverrideActions({ copy, disabled, onInstallAnyway }: {
 }
 
 export function InstallFailureNotice({ copy, state }: { copy: AppCopy; state: InstallState }): JSX.Element {
+  const diagnostic = state.diagnostic
   return (
     <div className="install-failure" role="alert">
       <p className="install-failure-title">{copy.storeInstallFailed}</p>
-      {state.message !== undefined ? <pre className="install-failure-message">{state.message}</pre> : null}
+      {diagnostic !== undefined
+        ? (
+          <>
+            <p className="install-failure-cause">{copy.storeInstallCause(diagnostic.code)}</p>
+            {diagnostic.packageSpec !== undefined ? <p className="install-failure-package"><code>{copy.storeInstallPackage(diagnostic.packageSpec)}</code></p> : null}
+            <p className="install-failure-detail">{diagnostic.detail}</p>
+            <p className="install-failure-action">{copy.storeInstallAction(diagnostic.code)}</p>
+            {state.message !== undefined
+              ? (
+                <details className="install-failure-technical">
+                  <summary>{copy.storeInstallTechnicalDetails}</summary>
+                  <pre className="install-failure-message">{state.message}</pre>
+                </details>
+                )
+              : null}
+          </>
+          )
+        : state.message !== undefined ? <pre className="install-failure-message">{state.message}</pre> : null}
       {state.logPath !== undefined ? <p className="install-failure-log">{copy.storeInstallLogPath(state.logPath)}</p> : null}
     </div>
   )
 }
 
 /** One selectable entry card. */
-function EntryCard({ entry, installed, copy, selected, onSelect }: {
+export function EntryCard({ entry, installed, copy, selected, onSelect }: {
   entry: StoreEntry
   installed: InstalledRecord | undefined
   copy: AppCopy
@@ -124,7 +143,9 @@ function EntryCard({ entry, installed, copy, selected, onSelect }: {
   return (
     <button className={`entry-card ${selected ? 'entry-card-selected' : ''}`} onClick={onSelect}>
       {installed !== undefined
-        ? <span className="entry-installed">{updateAvailable(installed, entry) ? copy.storeUpdate : copy.storeInstalled}</span>
+        ? <span className={`entry-installed ${installed.enabled === false ? 'entry-disabled' : ''}`}>
+            {installed.enabled === false ? copy.storeDisabledBadge : updateAvailable(installed, entry) ? copy.storeUpdate : copy.storeInstalled}
+          </span>
         : null}
       <div className="entry-card-head">
         <span className="entry-name">{entry.name}</span>
@@ -185,6 +206,8 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
   const [fetchedAt, setFetchedAt] = useState<string | undefined>()
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState(false)
+  const [refreshErrorMessage, setRefreshErrorMessage] = useState<string | undefined>()
+  const [refreshRejected, setRefreshRejected] = useState<readonly StoreCatalogRejection[]>([])
   const [runtimeRestartDeferred, setRuntimeRestartDeferred] = useState(false)
   const [runtimeRestarting, setRuntimeRestarting] = useState(false)
   const [runtimeRestartError, setRuntimeRestartError] = useState<string | undefined>()
@@ -238,11 +261,15 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
     if (refreshing) return
     setRefreshing(true)
     setRefreshError(false)
+    setRefreshErrorMessage(undefined)
+    setRefreshRejected([])
     try {
-      await window.EzDSH.store.refresh(kind)
+      const result = await window.EzDSH.store.refresh(kind)
+      setRefreshRejected(result.rejected)
       await reload()
-    } catch {
+    } catch (reason) {
       setRefreshError(true)
+      setRefreshErrorMessage(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setRefreshing(false)
     }
@@ -351,9 +378,25 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
     }
   }, [kind, copy, refreshInstalled])
 
+  const setPluginEnabled = useCallback(async (entry: StoreEntry, enabled: boolean): Promise<void> => {
+    setRuntimeRestartDeferred(false)
+    setRuntimeRestartError(undefined)
+    try {
+      setInstallState({ kind, id: entry.id, phase: 'installing', message: enabled ? copy.storeEnablingPlugin : copy.storeDisablingPlugin })
+      const state = await window.EzDSH.store.setEnabled(kind, entry.id, enabled)
+      setInstallState(state)
+      if (state.phase === 'done') void refreshInstalled()
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setInstallState({ kind, id: entry.id, phase: 'failed', message })
+    }
+  }, [kind, copy, refreshInstalled])
+
   const busy = installState !== undefined
     && installState.id === selected?.id
     && (installState.phase === 'downloading' || installState.phase === 'auditing' || installState.phase === 'installing' || runtimeRestarting)
+
+  const selectedInstalled = selected === undefined ? undefined : installedById.get(selected.id)
 
   return (
     <div className="store-layout">
@@ -406,6 +449,23 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
           {refreshError ? <span className="store-error" role="alert">{copy.storeRefreshFailed}</span> : null}
           {error ? <span className="store-error" role="alert">{copy.storeLoadFailed}</span> : null}
         </form>
+        {refreshRejected.length > 0
+          ? (
+            <details className="store-refresh-warning" open>
+              <summary>{copy.storeRefreshSkipped(refreshRejected.length)}</summary>
+              <ul>
+                {refreshRejected.map((rejection) => (
+                  <li key={rejection.id}>
+                    <strong>{rejection.name}</strong> <code>{rejection.id}</code>：{rejection.reasons.join(' ')}
+                  </li>
+                ))}
+              </ul>
+            </details>
+            )
+          : null}
+        {refreshErrorMessage !== undefined
+          ? <pre className="store-refresh-error-detail" role="alert">{refreshErrorMessage}</pre>
+          : null}
         {loading ? <p className="store-status">{copy.storeLoading}</p> : null}
         {!loading && entries.length === 0 && !error ? <p className="store-status">{copy.storeEmpty}</p> : null}
         {error && !loading
@@ -468,6 +528,11 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
               <div className="detail-files">
                 <p>{copy.storeDetailPlugin}</p>
                 <pre>{selected.plugin.source}</pre>
+                {selectedInstalled?.enabled === false
+                  ? <p className="plugin-disabled-status">{copy.storePluginDisabled}</p>
+                  : selectedInstalled !== undefined
+                    ? <p className="plugin-enabled-status">{copy.storePluginEnabled}</p>
+                    : null}
               </div>
               )
             : null}
@@ -529,7 +594,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
               )
             : null}
           <div className="detail-actions">
-            {installedById.get(selected.id) === undefined
+            {selectedInstalled === undefined
               ? (
                 <button
                   className="detail-install"
@@ -541,10 +606,21 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
                 )
               : (
                 <>
-                  {updateAvailable(installedById.get(selected.id), selected)
+                  {updateAvailable(selectedInstalled, selected)
                     ? (
                       <button className="detail-install" disabled={busy || runtimeRestarting} onClick={() => { void update(selected) }}>
                         {copy.storeUpdate}
+                      </button>
+                      )
+                    : null}
+                  {selected.plugin !== undefined && selectedInstalled.pluginPackageName !== undefined
+                    ? (
+                      <button
+                        className="detail-toggle-plugin"
+                        disabled={busy || runtimeRestarting}
+                        onClick={() => { void setPluginEnabled(selected, selectedInstalled.enabled === false) }}
+                      >
+                        {selectedInstalled.enabled === false ? copy.storeEnablePlugin : copy.storeDisablePlugin}
                       </button>
                       )
                     : null}

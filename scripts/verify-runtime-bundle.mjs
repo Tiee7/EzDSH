@@ -23,13 +23,16 @@ let nodeExecutable = nodeCandidates.find((candidate) => {
 })
 
 const runtimeCandidates = [
+  // The packaged source Runtime is authoritative when present. The npm
+  // package remains in the app only as a development/helper dependency while
+  // upstream 0.1.3-alpha.1 is not published to the registry.
+  join(bundleRoot, 'dsh-runtime', 'lib', 'bin.js'),
+  join(bundleRoot, 'app', 'out', 'dsh-runtime', 'lib', 'bin.js'),
   join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
   join(bundleRoot, 'app', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
   ...(isPrePackageVerification
     ? [join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')]
     : []),
-  join(bundleRoot, 'dsh-runtime', 'lib', 'bin.js'),
-  join(bundleRoot, 'app', 'out', 'dsh-runtime', 'lib', 'bin.js')
 ]
 let runtimeEntry = runtimeCandidates.find((candidate) => {
   return existsSync(candidate)

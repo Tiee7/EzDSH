@@ -22,12 +22,12 @@ node -v
 npm ci
 ```
 
-当前项目要求 Node.js `24.18.0`（上游构建兼容 `^22.19.0 || >=24.0.0`）。`npm ci` 会执行项目的 `postinstall`，其中包括依赖检查和 DSH 上游依赖安装。
+当前项目要求 Node.js `24.18.0`（上游构建兼容 `^22.19.0 || >=24.0.0`）。`npm ci` 会执行项目的 `postinstall`，其中包括依赖检查；尚未发布到 npm 的 DSH `0.1.3-alpha.1` 由后续 source install/build 步骤从 `vendor/deepseek-harness` 构建。
 
 确认以下内容已经准备好：
 
 - 当前分支包含要发布的代码和 `vendor/deepseek-harness` 子模块提交；
-- `@deepseek-ai/dsh` 必须精确为 `0.1.2-rc.1`；这是发布硬门禁，旧 `1.8.1528` 安装包仍是旧产物，不能作为本次 Runtime 已升级的证据；
+- `vendor/deepseek-harness` 必须指向 `d347e703908d0406b7a7ef80e3a0e594d86b2215`，其 CLI manifest 必须为 `@deepseek-ai/dsh@0.1.3-alpha.1`；根项目中的 `@deepseek-ai/dsh@0.1.2-rc.1` 只是目前可从 npm 安装的 fallback，不是正式包的 Runtime；
 - 当前平台与发布目标匹配：macOS arm64 或 Windows x64；
 - 签名、公证所需的证书和 CI Secret 已通过环境变量注入；
 - 自动更新源和安装包上传位置可用；
@@ -81,16 +81,22 @@ git diff -- package.json package-lock.json src/shared/app-identity.ts
 ```bash
 npm run check:runtime
 npm run check:published-dsh
+npm run dsh:source:install
+npm run dsh:source:build
+npm run build
 npm test
 npm run typecheck
-npm run build
+npm run stage:runtime
+npm run stage:dsh:source-runtime
+npm run stage:pnpm
+npm run verify:runtime
 ```
 
 重点确认：
 
 - 应用展示版本从 `package.json` 正确读取；
 - Runtime 依赖没有重复的 `@deepseek-ai/dsh-tools` 模块；
-- DSH Runtime 的实际所属 manifest 为 `@deepseek-ai/dsh@0.1.2-rc.1`，且能启动、健康检查能通过；
+- DSH Runtime 的实际所属 manifest 为 `@deepseek-ai/dsh@0.1.3-alpha.1`，且能启动、健康检查能通过；
 - Session、Workspace、Plugin 和用户数据目录没有被构建流程写入或删除；
 - 开发模式仍可正常运行：
 
@@ -108,7 +114,7 @@ npm run dev
 npm run package:mac
 ```
 
-该命令会先校验已发布的 `@deepseek-ai/dsh@0.1.2-rc.1`，再构建 EzDSH、暂存 Runtime、执行 Runtime 健康检查和 Electron 打包，并验证最终 `.app` 内实际选中的 Runtime manifest。源码 Runtime 暂存是显式操作；若 vendor checkout 仍为旧 pin（例如 `0.1.0-rc.8`），会在暂存前被拒绝。
+该命令会先校验可安装的 npm fallback，再安装/构建 vendored `@deepseek-ai/dsh@0.1.3-alpha.1`，暂存 source-built Runtime、执行健康检查和 Electron 打包，并验证最终 `.app` 内实际选中的 Runtime manifest。若 vendor checkout 仍为旧 pin（例如 `0.1.0-rc.8`），会在暂存前被拒绝。
 
 ### 6.2 macOS 正式包
 
@@ -188,7 +194,7 @@ npm run verify:package:mac
 - macOS `.dmg`、`.zip` 和 `latest-mac.yml` 来自同一次构建；
 - Windows 安装包和 `latest.yml` 来自同一次构建；
 - 版本号与本次发布版本一致；
-- 安装包包含 `out/node-runtime` 和已发布的 `node_modules/@deepseek-ai/dsh` Runtime；
+- 安装包包含 `out/node-runtime` 和 source-built 的 `out/dsh-runtime` Runtime；
 - 最终 `.app` 或 Windows 解包目录通过 Runtime 校验：
 
 ```bash
@@ -250,7 +256,7 @@ EZDSH_UPDATE_FEED_URL=https://your-project.vercel.app/updates/ npm run dev
 4. 确认应用进入 Safe Mode，且 Safe Mode 能运行但未加载测试插件；
 5. 在 Recovery Panel 选择“回滚此插件变更”，确认原 profile 和安装清单被恢复，Runtime 能以 normal mode 启动；
 6. 对一个未声明版本范围的测试插件确认 UI 显示兼容性警告；对一个明确不兼容的范围确认安装被拦截；
-7. 确认 Safe Mode 目录只包含必要 credentials，不包含原 `profiles/`、`cordis.patch.yml` 或 `sessions/`。
+7. 确认 Safe Mode 使用独立、无凭据的 DSH_HOME，不包含原 `profiles/`、`cordis.patch.yml`、`sessions/` 或 `.credentials.yaml`。
 
 ## 10. 发布检查清单
 

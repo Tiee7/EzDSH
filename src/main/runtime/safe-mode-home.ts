@@ -1,4 +1,4 @@
-import { chmod, copyFile, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import type { UserDataLayout } from '../../shared/state.js'
 
@@ -17,8 +17,9 @@ export interface SafeModeControllerOptions {
 }
 
 /**
- * Creates a disposable DSH_HOME which intentionally has no profile or session
- * state. The user's normal Harness directory is read only for credentials.
+ * Creates a disposable DSH_HOME which intentionally has no profile, session,
+ * or credential state. Recovery must remain usable when the normal credential
+ * file belongs to another Runtime version or is malformed.
  */
 export class SafeModeController {
   private readonly safeRoot: string
@@ -50,7 +51,6 @@ export class SafeModeController {
   async enable(reason: SafeModeReason): Promise<{ status: SafeModeStatus; dshHome: string }> {
     await rm(this.safeHome, { recursive: true, force: true })
     await mkdir(this.safeHome, { recursive: true, mode: 0o700 })
-    await this.copyCredentials()
     this.current = {
       active: true,
       reason,
@@ -66,20 +66,6 @@ export class SafeModeController {
     await rm(this.statusPath, { force: true })
     this.current = { active: false, excludedPluginCount: 0 }
     return this.status()
-  }
-
-  private async copyCredentials(): Promise<void> {
-    const source = join(this.options.layout.harness, '.credentials.yaml')
-    try {
-      const entry = await lstat(source)
-      if (!entry.isFile()) throw new Error('DSH credential file is not a regular file')
-    } catch (error) {
-      if (isErrno(error, 'ENOENT')) return
-      throw error
-    }
-    const target = join(this.safeHome, '.credentials.yaml')
-    await copyFile(source, target)
-    await chmod(target, 0o600)
   }
 
   private async countManagedPlugins(): Promise<number> {
@@ -110,10 +96,6 @@ function isSafeModeStatus(value: unknown): value is SafeModeStatus {
     && typeof status.excludedPluginCount === 'number'
     && (status.reason === undefined || status.reason === 'manual' || status.reason === 'plugin-recovery' || status.reason === 'update-recovery' || status.reason === 'runtime-recovery')
     && (status.activatedAt === undefined || typeof status.activatedAt === 'string')
-}
-
-function isErrno(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return typeof error === 'object' && error !== null && (error as NodeJS.ErrnoException).code === code
 }
 
 async function writeAtomic(path: string, content: string): Promise<void> {

@@ -66,6 +66,21 @@ export interface PluginCompatibilityRequirements {
   readonly maxDshVersion?: string
 }
 
+/** Evidence produced by the catalog admission install test. */
+export interface StorePluginVerification {
+  readonly status: 'passed' | 'failed'
+  readonly checkedAt: string
+  /** Exact catalog source string used for the isolated install. */
+  readonly source: string
+  readonly dshVersion: string
+  readonly pnpmVersion: string
+  /** Package name read from the installed package manifest. */
+  readonly packageName: string
+  /** Exact lifecycle build specs explicitly allowed during verification. */
+  readonly allowBuilds?: readonly string[]
+  readonly reason?: string
+}
+
 /** Compatibility evidence captured at install and snapshot time. */
 export interface PluginCompatibilityAssessment {
   readonly status: 'compatible' | 'incompatible' | 'unknown'
@@ -83,6 +98,8 @@ export interface StorePluginConfig {
   readonly profile?: string
   /** DSH Runtime versions the plugin has declared support for. */
   readonly compatibility?: PluginCompatibilityRequirements
+  /** Mandatory catalog-side evidence that this exact source was installed successfully. */
+  readonly verification?: StorePluginVerification
 }
 
 /** One catalog entry served by the remote curation API. */
@@ -139,12 +156,21 @@ export interface StoreListResult {
   readonly fetchedAt?: string
 }
 
+/** One remote catalog entry skipped because it cannot be admitted for installation. */
+export interface StoreCatalogRejection {
+  readonly id: string
+  readonly name: string
+  readonly reasons: readonly string[]
+}
+
 /** Outcome of one explicit remote catalog refresh. */
 export interface StoreRefreshResult {
   /** ISO timestamp of the fetch. */
   readonly fetchedAt: string
   /** Entry counts per kind in the remote snapshot after the refresh. */
   readonly counts: Readonly<Record<StoreKind, number>>
+  /** Entries returned by the source but deliberately excluded from the local catalog. */
+  readonly rejected: readonly StoreCatalogRejection[]
 }
 
 /** Verdict of the client-side static audit. */
@@ -185,6 +211,33 @@ export type InstallFailureReason =
   | 'install'
   | 'conflict'
   | 'incompatible'
+  | 'catalog-rejected'
+
+/** Stable diagnosis codes for package-manager and catalog failures. */
+export type InstallDiagnosticCode =
+  | 'catalog-entry-invalid'
+  | 'invalid-dependency-name'
+  | 'build-script-blocked'
+  | 'build-failed'
+  | 'package-not-found'
+  | 'network'
+  | 'auth'
+  | 'lockfile-policy'
+  | 'permission'
+  | 'runtime-prerequisite'
+  | 'postcondition'
+  | 'unknown'
+
+/** Structured explanation attached to a failed installation. */
+export interface InstallDiagnostic {
+  readonly code: InstallDiagnosticCode
+  /** The package/ref as printed by pnpm, when one can be extracted safely. */
+  readonly packageSpec?: string
+  /** Relevant package-manager output with generic wrapper advice removed. */
+  readonly detail: string
+  /** English fallback for callers that do not have the renderer locale. */
+  readonly suggestedAction: string
+}
 
 /** State snapshot of one install/uninstall operation. */
 export interface InstallState {
@@ -201,6 +254,7 @@ export interface InstallState {
   /** Present for DSH profile plugin operations, including an unknown warning. */
   readonly compatibility?: PluginCompatibilityAssessment
   readonly failureReason?: InstallFailureReason
+  readonly diagnostic?: InstallDiagnostic
   /** Local DSH/pnpm command log for a failed managed plugin operation. */
   readonly logPath?: string
   /** Present during `confirm-wait` and `failed` phases after an audit ran. */
@@ -227,6 +281,8 @@ export interface InstalledRecord {
   readonly pluginCompatibilityRequirements?: PluginCompatibilityRequirements
   /** Compatibility assessment against the Runtime present during installation. */
   readonly pluginCompatibility?: PluginCompatibilityAssessment
+  /** Whether a DSH plugin is loaded into its profile; old records default to enabled. */
+  readonly enabled?: boolean
 }
 
 /** Result of listing installed entries. */

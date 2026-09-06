@@ -2,10 +2,11 @@ import { access, cp, lstat, mkdir, readFile, readdir, realpath, rm, symlink } fr
 import { execFileSync } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pruneRuntimeFiles } from './prune-runtime-files.mjs'
-import { assertPinnedDshRuntimeVersion } from './dsh-runtime-version.mjs'
+import { assertPinnedDshRuntimeVersion, assertPinnedDshSourceCheckout } from './dsh-runtime-version.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const runtimeSource = join(projectRoot, 'vendor', 'deepseek-harness')
+assertPinnedDshSourceCheckout(runtimeSource)
 const sourceManifest = JSON.parse(await readFile(join(runtimeSource, 'apps', 'cli', 'package.json'), 'utf8'))
 assertPinnedDshRuntimeVersion('source Runtime @deepseek-ai/dsh', sourceManifest.version)
 const destination = join(projectRoot, 'out', 'dsh-runtime')
@@ -28,6 +29,26 @@ execFileSync(process.execPath, [
   destination
 ], {
   cwd: projectRoot,
+  env: { ...process.env, CI: 'true' },
+  stdio: 'inherit'
+})
+
+// `pnpm deploy --ignore-scripts` is intentional: it prevents arbitrary
+// workspace lifecycle scripts from running while assembling the release
+// bundle. `fs-ext` is a required native dependency of DSH's session
+// persistence plugin, so build its addon explicitly after deployment.
+const stagedPnpmDirectory = join(destination, 'node_modules', '.pnpm')
+const fsExtEntry = (await readdir(stagedPnpmDirectory, { withFileTypes: true }))
+  .find((entry) => entry.isDirectory() && entry.name.startsWith('fs-ext@'))
+if (fsExtEntry === undefined) {
+  throw new Error('Unable to locate staged fs-ext package required by DSH Runtime')
+}
+const fsExtRoot = join(stagedPnpmDirectory, fsExtEntry.name, 'node_modules', 'fs-ext')
+const nodeGypEntry = join(projectRoot, 'node_modules', 'pnpm', 'dist', 'node_modules', 'node-gyp', 'bin', 'node-gyp.js')
+await access(join(fsExtRoot, 'binding.gyp'))
+await access(nodeGypEntry)
+execFileSync(process.execPath, [nodeGypEntry, 'configure', 'build'], {
+  cwd: fsExtRoot,
   env: { ...process.env, CI: 'true' },
   stdio: 'inherit'
 })

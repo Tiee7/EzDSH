@@ -23,3 +23,7 @@ Task 6: complete (documentation and verification; product requirements updated a
 Task 1: complete (commits 8b82cbf..c75f6d3, review clean; end-to-end release, approval, connector, redaction, supersede, and rollback acceptance fixture)
 Task 2: complete (commit c362005, review clean; repeatable P0 workflow verification command and packaged macOS runtime verification)
 Task 2 fix wave: complete (commit d2e1782, re-review clean; expanded cancellation/compensation/contracts/Renderer coverage, persisted redaction assertions, and explicit P0/P0.5 scope boundary)
+
+## DSH Runtime release version pin
+
+Task 1: complete (commit fbd760e, review clean; shared `0.1.1-rc.2` pin, package/lock/installed checks, and fail-closed source staging; minor follow-up: no isolated sentinel test for staging side effects)

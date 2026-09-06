@@ -14,6 +14,7 @@ import { RecoverySection } from './RecoverySection.js'
 import { ArchivedSessionsSection } from './ArchivedSessionsSection.js'
 import { ProxySection } from './ProxySection.js'
 import { MobileRemoteSection } from './MobileRemoteSection.js'
+import { SafeModeSettingsBanner } from './SafeModeSettingsBanner.js'
 import { SETTINGS_TAB_IDS, type SettingsTab } from './settings-navigation.js'
 import './settings.css'
 
@@ -22,11 +23,15 @@ interface SettingsPageProps {
   locale: AppLocale
   runtime: RuntimeSnapshot | undefined
   onOpenSession?: (sessionId: string) => void
+  /** Render the Runtime-independent recovery surface for a failed startup. */
+  rescueOnly?: boolean
+  onExitRescue?: () => void
+  onOpenRecoveryOptions?: () => void
 }
 
 /** Settings page with a left-hand navigation sidebar. */
-export function SettingsPage({ copy, locale, runtime, onOpenSession }: SettingsPageProps): JSX.Element {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
+export function SettingsPage({ copy, locale, runtime, onOpenSession, rescueOnly = false, onExitRescue, onOpenRecoveryOptions }: SettingsPageProps): JSX.Element {
+  const [activeTab, setActiveTab] = useState<SettingsTab>(rescueOnly ? 'recovery' : 'general')
   const [busy, setBusy] = useState(false)
   const [languageTagVisible, setLanguageTagVisible] = useState(true)
   const [languageTagBusy, setLanguageTagBusy] = useState(false)
@@ -180,10 +185,10 @@ export function SettingsPage({ copy, locale, runtime, onOpenSession }: SettingsP
     navigation: copy.settingsTabNavigation,
     'external-services': copy.settingsExternalServices,
   }
-  const tabs = SETTINGS_TAB_IDS.map((id) => ({ id, label: tabLabels[id] }))
+  const tabs = (rescueOnly ? ['recovery'] : SETTINGS_TAB_IDS).map((id) => ({ id, label: tabLabels[id] }))
 
   return (
-    <div className="settings-page">
+    <div className={`settings-page ${rescueOnly ? 'settings-page-rescue' : ''}`}>
       <aside className="settings-nav" aria-label={copy.tabSettings}>
         <p className="settings-nav-title">{copy.tabSettings}</p>
         <div className="settings-nav-list" role="tablist" aria-label={copy.tabSettings}>
@@ -202,6 +207,25 @@ export function SettingsPage({ copy, locale, runtime, onOpenSession }: SettingsP
       </aside>
 
       <div className="settings-content">
+        <SafeModeSettingsBanner
+          copy={copy}
+          runtime={runtime}
+          onExit={() => window.EzDSH.recovery.exitSafeMode().then(() => undefined)}
+          onOpenRecoveryOptions={onOpenRecoveryOptions}
+        />
+        {rescueOnly ? (
+          <div className="settings-rescue-header">
+            <div>
+              <p className="settings-rescue-title">{copy.runtimeRescueTitle}</p>
+              <p className="settings-hint settings-rescue-detail">{copy.runtimeRescueDetail}</p>
+            </div>
+            {onExitRescue !== undefined ? (
+              <button className="settings-action" type="button" onClick={onExitRescue}>
+                {copy.runtimeReturnToFailure}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {activeTab === 'general' ? (
           <>
             <ProviderSection copy={copy} />

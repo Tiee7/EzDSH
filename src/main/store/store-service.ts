@@ -21,7 +21,8 @@ import type {
   StoreListResult,
   StoreMcpConfig,
   PluginCompatibilityAssessment,
-  StoreRefreshResult
+  StoreRefreshResult,
+  StoreCatalogRejection
 } from '../../shared/store.js'
 import { STORE_KINDS } from '../../shared/store.js'
 import { auditBundle, auditMcpConfig, auditPluginSource } from './audit.js'
@@ -35,14 +36,20 @@ import { installSkillBundle, SkillConflictError, uninstallSkill } from './skill-
 import { installPresetBundle, PresetConflictError, uninstallPreset } from './preset-installer.js'
 import { installMcpEntry, uninstallMcpEntry } from './mcp-installer.js'
 import { InstallErrorReporter, type InstallErrorReport } from './install-reporter.js'
-import type { PreparePluginChangeInput } from '../recovery/recovery-manager.js'
+import { diagnoseInstallFailure } from './install-diagnostics.js'
+import type { PreparePluginChangeInput, RuntimeFailurePlugin } from '../recovery/recovery-manager.js'
 import type { PluginRecoveryRunOptions } from '../recovery/plugin-recovery-coordinator.js'
 import { assessPluginCompatibility } from './compatibility.js'
+import { assertCatalogAdmission, catalogAdmission } from './catalog-admission.js'
 
 /** Client-side adapter for installing a Skill entry backed by a DSH plugin package. */
 export interface StorePluginInstaller {
   install(entry: StoreEntry): Promise<{ packageName: string; profile: string; runtimeRestartRequired?: boolean }>
   uninstall(record: InstalledRecord, entry?: StoreEntry): Promise<{ runtimeRestartRequired?: boolean } | void>
+  setEnabled?(record: InstalledRecord, entry: StoreEntry | undefined, enabled: boolean): Promise<{ runtimeRestartRequired?: boolean } | void>
+  setPackageEnabled?(profile: string, packageName: string, enabled: boolean): Promise<void>
+  listActivePlugins?(): Promise<readonly { packageName: string; profile: string }[]>
+  listInstalledPlugins?(): Promise<readonly { packageName: string; profile: string; version: string; enabled: boolean }[]>
 }
 
 /** Transaction boundary for Store-managed DSH profile plugin changes. */
@@ -132,6 +139,13 @@ export class StoreService {
         if (this.catalogCachePath === undefined) return
         try {
           this.remoteCatalog = await readCatalogCache(this.catalogCachePath)
+          if (this.remoteCatalog !== undefined) {
+            const byKind = { ...this.remoteCatalog.byKind }
+            for (const catalogKind of STORE_KINDS) {
+              byKind[catalogKind] = byKind[catalogKind].filter((entry) => catalogAdmission(entry).ok)
+            }
+            this.remoteCatalog = { ...this.remoteCatalog, byKind }
+          }
         } catch {
           this.remoteCatalog = undefined
         }
@@ -174,8 +188,15 @@ export class StoreService {
   async entry(kind: StoreKind, id: string): Promise<StoreEntry> {
     await this.ensureCatalog()
     const found = this.mergedEntries(kind).find((entry) => entry.id === id)
-    if (found !== undefined) return found
-    if (this.client.entry !== undefined) return this.client.entry(kind, id)
+    if (found !== undefined) {
+      assertCatalogAdmission(found)
+      return found
+    }
+    if (this.client.entry !== undefined) {
+      const remote = await this.client.entry(kind, id)
+      assertCatalogAdmission(remote)
+      return remote
+    }
     throw new Error(`No catalog entry for ${kind}/${id}`)
   }
 
@@ -216,12 +237,22 @@ export class StoreService {
       this.fetchAllRemoteEntries(kind),
       this.client.categories({ force: true })
     ])
+    const admittedEntries: StoreEntry[] = []
+    const rejected: StoreCatalogRejection[] = []
+    for (const entry of entries) {
+      const admission = catalogAdmission(entry)
+      if (admission.ok) {
+        admittedEntries.push(entry)
+      } else {
+        rejected.push({ id: entry.id, name: entry.name, reasons: admission.reasons })
+      }
+    }
     const byKind: Record<StoreKind, readonly StoreEntry[]> = {
       skill: this.remoteCatalog?.byKind.skill ?? [],
       preset: this.remoteCatalog?.byKind.preset ?? [],
       mcp: this.remoteCatalog?.byKind.mcp ?? []
     }
-    byKind[kind] = entries
+    byKind[kind] = admittedEntries
     const catalog: CachedCatalog = {
       fetchedAt: new Date().toISOString(),
       categories,
@@ -235,13 +266,60 @@ export class StoreService {
         skill: catalog.byKind.skill.length,
         preset: catalog.byKind.preset.length,
         mcp: catalog.byKind.mcp.length,
-      }
+      },
+      rejected
     }
   }
 
   /** Installed entries. */
   async listInstalled(): Promise<InstalledListResult> {
-    return { records: await this.ensureRegistry().list() }
+    const records = await this.ensureRegistry().list()
+    const profilePlugins = await this.pluginInstaller?.listInstalledPlugins?.() ?? []
+    const merged = [...records]
+    for (const plugin of profilePlugins) {
+      const existingIndex = merged.findIndex((record) => record.kind === 'skill'
+        && record.pluginPackageName === plugin.packageName
+        && (record.pluginProfile ?? 'web') === plugin.profile)
+      if (existingIndex >= 0) {
+        const existing = merged[existingIndex]
+        if (existing !== undefined) merged[existingIndex] = { ...existing, enabled: plugin.enabled }
+        continue
+      }
+      merged.push(discoveredPluginRecord(plugin))
+    }
+    return { records: merged }
+  }
+
+  /** Active third-party DSH profile layers shown as choices after a Runtime boot failure. */
+  async listRuntimePlugins(): Promise<RuntimeFailurePlugin[]> {
+    const active = await this.pluginInstaller?.listActivePlugins?.() ?? []
+    let records: InstalledRecord[] = []
+    if (this.registryPath !== undefined) records = await this.ensureRegistry().list()
+    return active.map((plugin) => {
+      const record = records.find((candidate) => candidate.kind === 'skill'
+        && candidate.pluginPackageName === plugin.packageName
+        && (candidate.pluginProfile ?? 'web') === plugin.profile)
+      return {
+        packageName: plugin.packageName,
+        profile: plugin.profile,
+        ...(record === undefined ? {} : { entryId: record.id, name: record.name }),
+      }
+    })
+  }
+
+  /** Disable a profile layer from the recovery screen, including unmanaged plugins. */
+  async disablePluginForRecovery(packageName: string, profile: string): Promise<void> {
+    if (this.dshHome === undefined || this.registryPath === undefined) throw new Error('Plugin recovery is not available in this build')
+    const setPackageEnabled = this.pluginInstaller?.setPackageEnabled
+    if (setPackageEnabled === undefined) throw new Error('DSH plugin disable is not available in this build')
+    await setPackageEnabled.call(this.pluginInstaller, profile, packageName, false)
+    const registry = this.ensureRegistry()
+    const records = await registry.list()
+    for (const record of records) {
+      if (record.kind === 'skill' && record.pluginPackageName === packageName && (record.pluginProfile ?? 'web') === profile) {
+        await registry.upsert({ ...record, enabled: false })
+      }
+    }
   }
 
   /**
@@ -307,8 +385,16 @@ export class StoreService {
         entry = await this.entry(kind, id)
       } catch (error) {
         const message = describe(error)
-        this.reportInstallError(kind, id, 'fetch_entry_failed', message, { stage: 'entry' })
-        return this.finish({ kind, id, phase: 'failed', failureReason: 'download', message })
+        const catalogRejected = /^Catalog entry rejected:/i.test(message)
+        this.reportInstallError(kind, id, catalogRejected ? 'catalog_rejected' : 'fetch_entry_failed', message, { stage: 'entry' })
+        return this.finish({
+          kind,
+          id,
+          phase: 'failed',
+          failureReason: catalogRejected ? 'catalog-rejected' : 'download',
+          message,
+          ...(catalogRejected ? { diagnostic: diagnoseInstallFailure(error) } : {})
+        })
       }
 
       const compatibility = entry.plugin === undefined
@@ -392,7 +478,7 @@ export class StoreService {
       throw new Error('Store update is not available in this build')
     }
     const registry = this.ensureRegistry()
-    const record = await registry.find(kind, id)
+    const record = await this.findInstalledRecord(kind, id)
     if (record === undefined) {
       return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: `${id} is not installed` })
     }
@@ -420,12 +506,12 @@ export class StoreService {
       let recoveryTransactionId: string | undefined
       if (this.pluginRecovery === undefined) {
         pluginInstall = await this.pluginInstaller.install(entry)
-        await registry.upsert(installedRecord(entry, undefined, pluginInstall, compatibility))
+          await registry.upsert(preservePluginEnabled(installedRecord(entry, undefined, pluginInstall, compatibility), record))
       } else {
         const outcome = await this.pluginRecovery.run(
           pluginChangeInput(entry, 'update', record),
           () => this.pluginInstaller?.install(entry) ?? Promise.reject(new Error('DSH plugin installer is not available in this build')),
-          async (result) => registry.upsert(installedRecord(entry, undefined, result, compatibility)),
+          async (result) => registry.upsert(preservePluginEnabled(installedRecord(entry, undefined, result, compatibility), record)),
         )
         pluginInstall = outcome.value
         recoveryTransactionId = outcome.transactionId
@@ -441,7 +527,7 @@ export class StoreService {
       })
     } catch (error) {
       this.reportInstallError(kind, id, 'write_failed', describe(error), { stage: 'update', failureReason: 'install' })
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', audit, compatibility, message: describe(error), ...logPathFromError(error) })
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', audit, compatibility, message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
     }
   }
 
@@ -456,7 +542,7 @@ export class StoreService {
       throw new Error('Store uninstall is not available in this build')
     }
     const registry = this.ensureRegistry()
-    const record = await registry.find(kind, id)
+    const record = await this.findInstalledRecord(kind, id)
     if (record === undefined) {
       return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: `${id} is not installed` })
     }
@@ -488,7 +574,7 @@ export class StoreService {
       else await uninstallMcpEntry(webProfilePatchFile(this.dshHome), id)
       if (recoveryTransactionId === undefined) await registry.remove(kind, id)
     } catch (error) {
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error), ...logPathFromError(error) })
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
     }
     return this.finish({
       kind,
@@ -497,6 +583,54 @@ export class StoreService {
       ...(recoveryTransactionId === undefined ? {} : { recoveryTransactionId }),
       ...(pluginUninstall?.runtimeRestartRequired === true ? { runtimeRestartRequired: true } : {})
     })
+  }
+
+  /** Enable or disable one installed DSH plugin without uninstalling its package. */
+  async setPluginEnabled(kind: StoreKind, id: string, enabled: boolean): Promise<InstallState> {
+    if (this.dshHome === undefined || this.registryPath === undefined) {
+      throw new Error('Plugin enable/disable is not available in this build')
+    }
+    const registry = this.ensureRegistry()
+    const record = await this.findInstalledRecord(kind, id)
+    if (record === undefined) return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: `${id} is not installed` })
+    if (kind !== 'skill' || record.pluginPackageName === undefined || this.pluginInstaller?.setEnabled === undefined) {
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: 'Only Store-managed DSH plugins can be enabled or disabled' })
+    }
+    let entry: StoreEntry | undefined
+    try {
+      entry = await this.entry(kind, id)
+    } catch {
+      // The registry keeps enough package metadata to toggle a plugin offline.
+    }
+    const action = enabled ? 'enable' : 'disable'
+    this.publish({ kind, id, phase: 'installing', message: enabled ? 'Enabling…' : 'Disabling…' })
+    try {
+      let result: { runtimeRestartRequired?: boolean } | void
+      let recoveryTransactionId: string | undefined
+      const setEnabled = this.pluginInstaller.setEnabled
+      if (this.pluginRecovery === undefined) {
+        result = await setEnabled.call(this.pluginInstaller, record, entry, enabled)
+        await registry.upsert({ ...record, enabled })
+      } else {
+        const outcome = await this.pluginRecovery.run(
+          pluginChangeInput(entry, action, record),
+          () => setEnabled.call(this.pluginInstaller, record, entry, enabled),
+          async () => registry.upsert({ ...record, enabled }),
+        )
+        result = outcome.value
+        recoveryTransactionId = outcome.transactionId
+      }
+      return this.finish({
+        kind,
+        id,
+        phase: 'done',
+        ...(recoveryTransactionId === undefined ? {} : { recoveryTransactionId }),
+        ...(result?.runtimeRestartRequired === true ? { runtimeRestartRequired: true } : {}),
+      })
+    } catch (error) {
+      this.reportInstallError(kind, id, 'write_failed', describe(error), { stage: action, failureReason: 'install' })
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
+    }
   }
 
   /** Emit an install state event to renderer windows. */
@@ -539,7 +673,7 @@ export class StoreService {
       if (reason !== 'conflict') {
         this.reportInstallError(entry.kind, entry.id, 'write_failed', describe(error), { stage: 'install', failureReason: reason })
       }
-      return this.finish({ kind, id, phase: 'failed', failureReason: reason, audit, message: describe(error), ...logPathFromError(error) })
+      return this.finish({ kind, id, phase: 'failed', failureReason: reason, audit, message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
     }
     return this.finish({
       kind,
@@ -555,6 +689,15 @@ export class StoreService {
   private finish(state: InstallState): InstallState {
     this.publish(state)
     return state
+  }
+
+  private async findInstalledRecord(kind: StoreKind, id: string): Promise<InstalledRecord | undefined> {
+    const registry = this.ensureRegistry()
+    const registered = await registry.find(kind, id)
+    if (registered !== undefined || kind !== 'skill') return registered
+    const plugin = (await this.pluginInstaller?.listInstalledPlugins?.() ?? [])
+      .find((candidate) => candidate.packageName === id)
+    return plugin === undefined ? undefined : discoveredPluginRecord(plugin)
   }
 
   private reportInstallError(kind: StoreKind, entryId: string, errorCode: string, errorMessage: string, detail?: Readonly<Record<string, unknown>>): void {
@@ -580,7 +723,7 @@ function requireMcp(entry: StoreEntry): StoreMcpConfig {
   return entry.mcp
 }
 
-function pluginChangeInput(entry: StoreEntry | undefined, action: 'install' | 'update' | 'uninstall', record?: InstalledRecord): PreparePluginChangeInput {
+function pluginChangeInput(entry: StoreEntry | undefined, action: 'install' | 'update' | 'uninstall' | 'enable' | 'disable', record?: InstalledRecord): PreparePluginChangeInput {
   const plugin = entry?.plugin
   const packageName = record?.pluginPackageName ?? plugin?.packageName ?? plugin?.source
   const entryId = entry?.id ?? record?.id
@@ -592,6 +735,10 @@ function pluginChangeInput(entry: StoreEntry | undefined, action: 'install' | 'u
     packageName,
     profile: record?.pluginProfile ?? plugin?.profile ?? 'web',
   }
+}
+
+function preservePluginEnabled(next: InstalledRecord, previous: InstalledRecord): InstalledRecord {
+  return previous.enabled === undefined ? next : { ...next, enabled: previous.enabled }
 }
 
 function installedRecord(
@@ -614,6 +761,20 @@ function installedRecord(
       ...(entry.plugin?.compatibility === undefined ? {} : { pluginCompatibilityRequirements: entry.plugin.compatibility }),
       ...(compatibility === undefined ? {} : { pluginCompatibility: compatibility }),
     }),
+  }
+}
+
+function discoveredPluginRecord(plugin: { packageName: string; profile: string; version: string; enabled: boolean }): InstalledRecord {
+  return {
+    kind: 'skill',
+    id: plugin.packageName,
+    version: plugin.version,
+    sha256: '',
+    installedAt: new Date(0).toISOString(),
+    name: plugin.packageName,
+    pluginPackageName: plugin.packageName,
+    pluginProfile: plugin.profile,
+    enabled: plugin.enabled,
   }
 }
 

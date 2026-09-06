@@ -8,6 +8,7 @@ import type { NavConfig } from '../shared/navigation.js'
 import type { MobileRemoteSnapshot } from '../shared/mobile-remote.js'
 import type { NotificationSettings } from '../shared/notifications.js'
 import type { ProxyProfileInput, ProxySettingsSnapshot, ProxyTestResult } from '../shared/proxy.js'
+import type { RuntimeSnapshot } from '../main/runtime/runtime-types.js'
 import type {
   RecoveryDryRun,
   RecoveryDoctorResult,
@@ -88,6 +89,11 @@ const bridge: EzDSHBridge = {
       return () => ipcRenderer.removeListener('runtime:state-change', handler)
     }
   },
+  runtimeView: {
+    show: (url, bounds) => invoke('runtime-view:show', url, bounds),
+    hide: () => invoke('runtime-view:hide'),
+    openSession: (sessionId) => invoke('runtime-view:open-session', sessionId),
+  },
   ui: {
     onNavigate: (listener: (tab: NavigationTarget) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, tab: NavigationTarget) => listener(tab)
@@ -114,6 +120,7 @@ const bridge: EzDSHBridge = {
     confirmInstall: (kind, id, accepted) => invoke('store:confirm-install', kind, id, accepted),
     update: (kind, id) => invoke('store:update', kind, id),
     uninstall: (kind, id) => invoke('store:uninstall', kind, id),
+    setEnabled: (kind, id, enabled) => invoke('store:set-enabled', kind, id, enabled),
     listInstalled: () => invoke('store:list-installed'),
     refresh: (kind) => invoke('store:refresh', kind),
     onStateChange: (listener) => {
@@ -314,6 +321,7 @@ const bridge: EzDSHBridge = {
     enterSafeMode: () => invoke('recovery:enter-safe-mode'),
     exitSafeMode: () => invoke('recovery:exit-safe-mode'),
     rollbackPendingPlugin: () => invoke<RecoveryRestoreResult>('recovery:rollback-pending-plugin'),
+    disablePlugin: (packageName: string, profile: string) => invoke<RuntimeSnapshot>('recovery:disable-plugin', packageName, profile),
     resolve: () => invoke<void>('recovery:resolve'),
     openDirectory: () => invoke<void>('recovery:open-directory'),
     onStateChange: (listener: (state: RecoveryState) => void) => {

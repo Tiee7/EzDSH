@@ -82,14 +82,9 @@ export class PluginRecoveryCoordinator {
       if (!mutationCompleted) {
         await this.options.recovery.abortPendingTransaction()
       } else {
-        const state = await this.options.recovery.markBootFailure(describe(error))
-        if (state.phase === 'recovery-required') {
-          try {
-            await this.startSafeMode('plugin-recovery')
-          } catch (safeModeError) {
-            console.error('[recovery] failed to start plugin Safe Mode:', describe(safeModeError))
-          }
-        }
+        // Keep the failed transaction visible in Recovery; Safe Mode is always
+        // an explicit user choice and must never be entered as a side effect.
+        await this.options.recovery.markBootFailure(describe(error))
       }
       throw error
     }

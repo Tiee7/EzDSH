@@ -2,7 +2,7 @@
 
 ## 1. 总体结构
 
-EzDSH 默认使用固定版本的已发布 `@deepseek-ai/dsh` npm 包和其生产依赖闭包。运行时从 EzDSH 自身安装目录的 `node_modules` 启动，不从用户系统 PATH 或不确定的本机安装目录寻找 DSH。只有需要修改 DSH 本身时，才通过 `vendor/deepseek-harness` 源码 workspace 联调；该路径必须由显式开发环境变量提供，并且不得进入生产配置。
+EzDSH 默认使用固定版本的 vendored `@deepseek-ai/dsh@0.1.3-alpha.1` 源码 Runtime。开发模式从 `vendor/deepseek-harness/apps/cli/lib/bin.js` 启动，正式安装包从 `out/dsh-runtime/lib/bin.js` 启动；不从用户系统 PATH 或不确定的本机安装目录寻找 DSH。由于该 alpha 版本尚未发布到 npm，根项目保留 `0.1.2-rc.1` 作为可安装 fallback，但它不作为正式安装包的权威 Runtime。
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -104,7 +104,7 @@ Renderer 不负责：
 - 调用任意外部 URL；
 - 决定凭据存储方式。
 
-首次启动时，Renderer 让 Main 启动 DSH Runtime，并在健康检查通过后将本地 URL 放入受限 iframe。Runtime 页面中的模型设置和供应商配置由 Harness Web UI 提供，EzDSH 负责应用级的启动、退出、日志和更新边界。
+首次启动时，Renderer 让 Main 启动 DSH Runtime；健康检查通过后，Main 使用受限 `WebContentsView` 在第一方浏览上下文中加载一次性认证 URL。Renderer 只提供位置锚点，不接触认证 token。这里不能使用跨站 iframe：DSH 的认证 Cookie 为 `SameSite=Strict`，跨站 iframe 完成 token 交换后仍不会携带该 Cookie。Runtime 页面中的模型设置和供应商配置由 Harness Web UI 提供，EzDSH 负责应用级的启动、退出、日志和更新边界。
 
 工作流发布、客户环境和观测也遵循同样的边界：Renderer 只能看到发布摘要、环境摘要和脱敏后的健康/观测记录；不可变的 release snapshot、工作流定义副本、运行载荷、凭据明文和原始响应始终保留在 Main Process 的本机存储中。
 
@@ -154,6 +154,8 @@ interface RuntimeSnapshot {
 10. 通过事件通知 Renderer；
 11. 健康检查成功后加载 `http://127.0.0.1:<port>`；
 12. 进程退出时更新状态并触发错误恢复。
+
+开发模式默认将 Workspace 指针、Electron `userData`、Runtime 数据和进程 ownership 文件隔离到 development 名称空间，避免 `npm run dev` 与已安装正式版互相覆盖配置或争用 Runtime。只有显式设置 `EZDSH_USE_PRODUCTION_DATA=1` 才使用正式数据路径。
 
 ### 3.3 停止规则
 
@@ -270,7 +272,7 @@ Credential 明文默认不进入 Archive。受限文件（当前包括 `harness/
 
 EzDSH Store 对 DSH profile 插件执行的 install、update 和 uninstall 是同一个事务：先停止正在运行的 Runtime，再创建 `pre-plugin-change` 快照，然后修改 profile 与 `state/installed.json`，最后启动正常 Runtime 并等待健康检查。健康检查成功才清除事务；命令在修改前失败时清除未使用的事务；命令成功但正常 Runtime 失败时保留事务并自动进入 Safe Mode。
 
-Safe Mode 在 `state/safe-mode/harness` 使用新的 DSH_HOME。它只复制 `harness/.credentials.yaml`（权限 `0600`），不复制 `profiles/`、`cordis.patch.yml`、`sessions/` 或第三方依赖。因此它不会改写原 `harness/`，并能在所有第三方插件都被排除时提供恢复入口。Recovery Panel 可以手动进入或退出 Safe Mode，并且在受管插件事务失败时显示插件名和“回滚此插件变更”；回滚会恢复该事务对应的快照后再尝试正常启动。
+Safe Mode 在 `state/safe-mode/harness` 使用新的、完全隔离的 DSH_HOME，不复制凭据、`profiles/`、`cordis.patch.yml`、`sessions/` 或第三方依赖。因此格式错误或由其他 Runtime 版本生成的凭据不会阻塞恢复；原 `harness/` 也不会被改写，并能在所有第三方插件都被排除时提供恢复入口。Recovery Panel 可以手动进入或退出 Safe Mode，并且在受管插件事务失败时显示插件名和“回滚此插件变更”；回滚会恢复该事务对应的快照后再尝试正常启动。
 
 插件目录可声明 `minDshVersion` 和 `maxDshVersion`。已知不兼容的版本范围在安装前阻止；未声明范围会以警告继续。注册表和 manifest 保存 package source、版本约束、当前 DSH Runtime 评估以及目标更新 Runtime（若 resolver 声明），因此恢复记录可以解释风险。即使有这些证据，EzDSH 仍不承诺回滚应用二进制；它只回滚用户数据和可管理的 DSH 环境。
 

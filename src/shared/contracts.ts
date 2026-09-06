@@ -1,4 +1,5 @@
 import type { DshRuntimeProcess, RuntimeSnapshot } from '../main/runtime/runtime-types.js'
+import type { RuntimeViewBounds } from './runtime-view.js'
 import type { EzDSHError, IpcResult } from './errors.js'
 import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
@@ -108,6 +109,11 @@ export interface EzDSHBridge {
     openLog(): Promise<void>
     onStateChange(listener: (snapshot: RuntimeSnapshot) => void): () => void
   }
+  runtimeView: {
+    show(url: string, bounds: RuntimeViewBounds): Promise<void>
+    hide(): Promise<void>
+    openSession(sessionId: string): Promise<void>
+  }
   ui: {
     onNavigate(listener: (tab: NavigationTarget) => void): () => void
     /** Fired when the app is awakened by an `ezdsh://install/...` link. */
@@ -127,6 +133,7 @@ export interface EzDSHBridge {
     confirmInstall(kind: StoreKind, id: string, accepted: boolean): Promise<InstallState>
     update(kind: StoreKind, id: string): Promise<InstallState>
     uninstall(kind: StoreKind, id: string): Promise<InstallState>
+    setEnabled(kind: StoreKind, id: string, enabled: boolean): Promise<InstallState>
     listInstalled(): Promise<InstalledListResult>
     /** Explicitly refresh the catalog from the remote source; resolves with the fetch timestamp. */
     refresh(kind: StoreKind): Promise<StoreRefreshResult>
@@ -269,6 +276,7 @@ export interface EzDSHBridge {
     enterSafeMode(): Promise<RuntimeSnapshot>
     exitSafeMode(): Promise<RuntimeSnapshot>
     rollbackPendingPlugin(): Promise<RecoveryRestoreResult>
+    disablePlugin(packageName: string, profile: string): Promise<RuntimeSnapshot>
     resolve(): Promise<void>
     openDirectory(): Promise<void>
     onStateChange(listener: (state: RecoveryState) => void): () => void

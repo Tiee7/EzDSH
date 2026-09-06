@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -37,6 +37,21 @@ function skillEntry(overrides: Partial<StoreEntry> = {}): StoreEntry {
     version: '1.0.0',
     files: [{ path: 'demo/SKILL.md', url: 'https://hub.ezdsh.com/files/demo/SKILL.md', sha256: sha256(SKILL_MD), kind: 'text' }],
     ...overrides
+  }
+}
+
+function verifiedPlugin(source: string, packageName: string): NonNullable<StoreEntry['plugin']> {
+  return {
+    source,
+    packageName,
+    verification: {
+      status: 'passed',
+      checkedAt: '2026-09-05T00:00:00.000Z',
+      source,
+      dshVersion: '0.1.2-rc.1',
+      pnpmVersion: '11.7.0',
+      packageName
+    }
   }
 }
 
@@ -92,7 +107,7 @@ describe('install state machine', () => {
       category: 'plugin',
       version: '0.1.13',
       files: undefined,
-      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13', packageName: '@nanmicoder/dsh-agent-teams' }
+      plugin: verifiedPlugin('npm:@nanmicoder/dsh-agent-teams@0.1.13', '@nanmicoder/dsh-agent-teams')
     })
     const service = makeService([plugin], root, events, {}, undefined, {
       install: async () => {
@@ -120,6 +135,64 @@ describe('install state machine', () => {
     expect(calls).toEqual(['install', 'uninstall'])
   })
 
+  it('returns a structured package diagnosis instead of only the generic DSH failure hint', async () => {
+    const root = await tempRoot()
+    const plugin = skillEntry({
+      id: 'nihaixia',
+      name: 'Nihaixia',
+      category: 'plugin',
+      files: undefined,
+      plugin: verifiedPlugin('github:jangviktor-web/nihaixia#v2.3.1', 'nihaixia')
+    })
+    const service = makeService([plugin], root, [], {}, undefined, {
+      install: async () => {
+        throw new Error([
+          'DSH plugin command failed (code=1, signal=null): [ERR_PNPM_INVALID_DEPENDENCY_NAME]',
+          'Refusing to place a dependency under /profile/node_modules with the invalid alias "nihaixia#v2.3.1"',
+          'dsh: pnpm failed in profile directory /profile',
+          'dsh: git-hosted plugins build on install via their prepare script, which pnpm blocks until allowed'
+        ].join('\n'))
+      },
+      uninstall: async () => ({ runtimeRestartRequired: false })
+    })
+
+    await service.install('skill', 'nihaixia')
+    const failed = await service.confirmInstall('skill', 'nihaixia', true)
+
+    expect(failed).toMatchObject({
+      phase: 'failed',
+      failureReason: 'install',
+      diagnostic: {
+        code: 'invalid-dependency-name',
+        packageSpec: 'nihaixia#v2.3.1'
+      }
+    })
+    expect(failed.diagnostic?.detail).not.toMatch(/git-hosted plugins build/i)
+  })
+
+  it('allows an unverified plugin to reach the normal install confirmation', async () => {
+    const root = await tempRoot()
+    const install = vi.fn(async () => ({ packageName: 'unverified', profile: 'web', runtimeRestartRequired: false }))
+    const plugin = skillEntry({
+      id: 'unverified',
+      category: 'plugin',
+      files: undefined,
+      plugin: { source: 'npm:unverified@1.0.0', packageName: 'unverified' }
+    })
+    const service = makeService([plugin], root, [], {}, undefined, {
+      install,
+      uninstall: async () => ({ runtimeRestartRequired: false })
+    })
+
+    const pending = await service.install('skill', 'unverified')
+    expect(pending.phase).toBe('confirm-wait')
+
+    const outcome = await service.confirmInstall('skill', 'unverified', true)
+
+    expect(outcome.phase).toBe('done')
+    expect(install).toHaveBeenCalledOnce()
+  })
+
   it('runs a Store-managed DSH plugin install inside the recovery transaction', async () => {
     const root = await tempRoot()
     const events: InstallState[] = []
@@ -127,7 +200,7 @@ describe('install state machine', () => {
       id: 'agent-teams',
       category: 'plugin',
       files: undefined,
-      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13', packageName: '@nanmicoder/dsh-agent-teams' },
+      plugin: verifiedPlugin('npm:@nanmicoder/dsh-agent-teams@0.1.13', '@nanmicoder/dsh-agent-teams'),
     })
     const run = vi.fn(async <T>(_input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => {
       const value = await mutate()
@@ -159,7 +232,7 @@ describe('install state machine', () => {
       id: 'agent-teams',
       category: 'plugin',
       files: undefined,
-      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13', packageName: '@nanmicoder/dsh-agent-teams' },
+      plugin: verifiedPlugin('npm:@nanmicoder/dsh-agent-teams@0.1.13', '@nanmicoder/dsh-agent-teams'),
     })
     let transaction = 0
     const run = vi.fn(async <T>(_input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => {
@@ -186,6 +259,64 @@ describe('install state machine', () => {
     expect((await service.listInstalled()).records).toEqual([])
   })
 
+  it('disables a managed DSH plugin while keeping its install record', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const plugin = skillEntry({
+      id: 'agent-teams',
+      category: 'plugin',
+      files: undefined,
+      plugin: verifiedPlugin('npm:@nanmicoder/dsh-agent-teams@0.1.13', '@nanmicoder/dsh-agent-teams'),
+    })
+    await mkdir(join(root.registryPath, '..'), { recursive: true })
+    await writeFile(root.registryPath, JSON.stringify([{
+      kind: 'skill',
+      id: 'agent-teams',
+      version: '0.1.13',
+      sha256: '0'.repeat(64),
+      installedAt: '2026-08-27T00:00:00.000Z',
+      name: 'Agent Teams',
+      pluginPackageName: '@nanmicoder/dsh-agent-teams',
+      pluginProfile: 'web',
+      enabled: true,
+    }]))
+    const enabled: boolean[] = []
+    const service = makeService([plugin], root, events, {}, undefined, {
+      install: async () => ({ packageName: '@nanmicoder/dsh-agent-teams', profile: 'web', runtimeRestartRequired: false }),
+      uninstall: async () => ({ runtimeRestartRequired: false }),
+      setEnabled: async (_record, _entry, value) => { enabled.push(value); return { runtimeRestartRequired: false } },
+    })
+
+    const done = await service.setPluginEnabled('skill', 'agent-teams', false)
+
+    expect(done).toMatchObject({ phase: 'done', id: 'agent-teams' })
+    expect(enabled).toEqual([false])
+    expect((await service.listInstalled()).records[0]).toMatchObject({
+      id: 'agent-teams',
+      enabled: false,
+    })
+  })
+
+  it('includes DSH profile plugins that were installed outside the EzDSH registry', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const service = makeService([], root, events, {}, undefined, {
+      listInstalledPlugins: async () => [{ packageName: 'mode-menu-plus', profile: 'web', version: '0.1.1', enabled: true }],
+    })
+
+    const installed = await service.listInstalled()
+
+    expect(installed.records).toContainEqual(expect.objectContaining({
+      kind: 'skill',
+      id: 'mode-menu-plus',
+      name: 'mode-menu-plus',
+      version: '0.1.1',
+      pluginPackageName: 'mode-menu-plus',
+      pluginProfile: 'web',
+      enabled: true,
+    }))
+  })
+
   it('blocks a plugin whose declared DSH runtime minimum is not met', async () => {
     const root = await tempRoot()
     const events: InstallState[] = []
@@ -195,8 +326,7 @@ describe('install state machine', () => {
       category: 'plugin',
       files: undefined,
       plugin: {
-        source: 'npm:@nanmicoder/dsh-agent-teams@0.1.13',
-        packageName: '@nanmicoder/dsh-agent-teams',
+        ...verifiedPlugin('npm:@nanmicoder/dsh-agent-teams@0.1.13', '@nanmicoder/dsh-agent-teams'),
         compatibility: { minDshVersion: '0.2.0' },
       },
     })
@@ -220,7 +350,7 @@ describe('install state machine', () => {
       category: 'plugin',
       version: '0.1.14',
       files: undefined,
-      plugin: { source: 'npm:@nanmicoder/dsh-agent-teams@0.1.14', packageName: '@nanmicoder/dsh-agent-teams' },
+      plugin: verifiedPlugin('npm:@nanmicoder/dsh-agent-teams@0.1.14', '@nanmicoder/dsh-agent-teams'),
     })
     const actions: string[] = []
     const run = vi.fn(async <T>(input: { action: string }, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => {

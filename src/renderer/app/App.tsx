@@ -19,8 +19,8 @@ import {
   DEFAULT_NOTIFICATION_SETTINGS,
   type NotificationSettings,
 } from '../../shared/notifications.js'
-import { RUNTIME_IFRAME_ALLOW, RUNTIME_IFRAME_SANDBOX } from './runtime-frame.js'
 import { WebPane } from './WebPane.js'
+import { RuntimePane } from './RuntimePane.js'
 import { StorePage } from '../store/StorePage.js'
 import { PresetPage } from '../store/PresetPage.js'
 import { EMPLOYEES_REFRESH_EVENT, EmployeesPage } from '../employees/EmployeesPage.js'
@@ -30,6 +30,8 @@ import { SettingsPage } from '../settings/SettingsPage.js'
 import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import { shouldKeepTabMounted } from './page-lifecycle.js'
 import { RecoveryPanel } from '../recovery/RecoveryPanel.js'
+import { RuntimeStartupFailureNotice } from './RuntimeStartupFailureNotice.js'
+import { isSafeModeActive, SafeModeCornerOverlay } from './SafeModeOverlay.js'
 import logoUrl from '../../../assets/logo.png'
 import { ensureAudio, playNotificationSound } from '../notifications/audio.js'
 import './app.css'
@@ -167,14 +169,16 @@ export function App() {
   const [employeesRefreshKey, setEmployeesRefreshKey] = useState(0)
   const [workflowWorkspaceMode, setWorkflowWorkspaceMode] = useState(false)
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
+  const [runtimeError, setRuntimeError] = useState<string>()
   const [deepLinkTarget, setDeepLinkTarget] = useState<DeepLinkInstallTarget | undefined>()
   const [deepLinkSession, setDeepLinkSession] = useState<DeepLinkSessionTarget | undefined>()
+  const [showRecoverySettings, setShowRecoverySettings] = useState(false)
+  const [showRecoveryOptions, setShowRecoveryOptions] = useState(false)
   const [workspaceOperation, setWorkspaceOperation] = useState<WorkspaceOperationState | undefined>()
   const [recovery, setRecovery] = useState<RecoveryState>({ phase: 'idle' })
   const [recoveryLoaded, setRecoveryLoaded] = useState(false)
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ ...DEFAULT_NOTIFICATION_SETTINGS })
   const notificationSettingsRef = useRef(notificationSettings)
-  const harnessFrameRef = useRef<HTMLIFrameElement>(null)
   const isMac = window.EzDSH.app.platform === 'darwin'
 
   useEffect(() => {
@@ -197,9 +201,11 @@ export function App() {
 
   const ensureRuntime = useCallback(async (): Promise<void> => {
     setErrorKey(undefined)
+    setRuntimeError(undefined)
     try {
       setRuntime(await window.EzDSH.runtime.start())
     } catch (reason) {
+      setRuntimeError(reason instanceof Error ? reason.message : String(reason))
       setErrorKey('runtime-start')
     }
   }, [])
@@ -207,7 +213,9 @@ export function App() {
   useEffect(() => {
     let active = true
     const unsubscribe = window.EzDSH.runtime.onStateChange((snapshot) => {
-      if (active) setRuntime(snapshot)
+      if (!active) return
+      setRuntime(snapshot)
+      if (snapshot.phase === 'failed' && snapshot.message !== undefined) setRuntimeError(snapshot.message)
     })
     const unsubscribeNavigate = window.EzDSH.ui.onNavigate((tab) => {
       if (active) setActiveTab(tab)
@@ -258,6 +266,13 @@ export function App() {
         if (!active) return
         setErrorKey('config-read')
         setLoading(false)
+      })
+    void window.EzDSH.runtime.getStatus()
+      .then((snapshot) => {
+        if (active) setRuntime((current) => current ?? snapshot)
+      })
+      .catch(() => {
+        // The startup attempt below still reports its own failure and details.
       })
     void window.EzDSH.settings.getLanguageTagVisible()
       .then((visible) => {
@@ -333,19 +348,13 @@ export function App() {
     setDeepLinkSession({ sessionId })
   }, [])
 
-  const sendSessionToRuntime = useCallback(() => {
-    const frame = harnessFrameRef.current
-    const runtimeUrl = runtime?.url
-    const sessionId = deepLinkSession?.sessionId
-    if (frame === null || runtimeUrl === undefined || sessionId === undefined) return
-    let origin = '*'
-    try { origin = new URL(runtimeUrl).origin } catch { /* Runtime URL is already validated by the manager. */ }
-    frame.contentWindow?.postMessage({ type: 'ezdsh:open-session', sessionId }, origin)
-  }, [deepLinkSession, runtime?.url])
-
-  useEffect(() => {
-    if (activeTab === 'harness') sendSessionToRuntime()
-  }, [activeTab, sendSessionToRuntime])
+  const enterSafeModeFromFailure = useCallback(async (): Promise<void> => {
+    const safeModeRuntime = await window.EzDSH.recovery.enterSafeMode()
+    setRuntime(safeModeRuntime)
+    setShowRecoverySettings(false)
+    setShowRecoveryOptions(false)
+    setActiveTab('settings')
+  }, [])
 
   useEffect(() => {
     if (!recoveryLoaded || recovery.phase === 'recovery-required') return
@@ -382,8 +391,20 @@ export function App() {
     </div>
   )
 
-  if (recovery.phase === 'recovery-required') {
-    return <RecoveryPanel copy={copy} state={recovery} />
+  const safeModeActive = isSafeModeActive(runtime)
+
+  if (recovery.phase === 'recovery-required' && (!safeModeActive || showRecoveryOptions)) {
+    return (
+      <RecoveryPanel
+        copy={copy}
+        state={recovery}
+        runtime={runtime}
+        onSafeModeStarted={(nextRuntime) => {
+          setRuntime(nextRuntime)
+          setShowRecoveryOptions(false)
+        }}
+      />
+    )
   }
 
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {
@@ -399,15 +420,10 @@ export function App() {
               case 'harness':
                 return (
                   <div key="harness" className={`workspace-pane ${activeTab === 'harness' ? 'workspace-pane-active' : ''}`}>
-                    <iframe
-                      ref={harnessFrameRef}
-                      title="EzDSH Runtime"
-                      src={runtime.url}
-                      allow={RUNTIME_IFRAME_ALLOW}
-                      sandbox={RUNTIME_IFRAME_SANDBOX}
-                      onLoad={sendSessionToRuntime}
-                      onPointerDown={ensureAudio}
-                      onKeyDown={ensureAudio}
+                    <RuntimePane
+                      url={runtime.url}
+                      active={activeTab === 'harness' && workspaceOperation === undefined}
+                      sessionId={deepLinkSession?.sessionId}
                     />
                   </div>
                 )
@@ -435,13 +451,14 @@ export function App() {
                 )
               case 'settings':
                 return activeTab === 'settings'
-                  ? <section key="settings" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} onOpenSession={openSessionFromSettings} /></section>
+                  ? <section key="settings" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} onOpenSession={openSessionFromSettings} onOpenRecoveryOptions={recovery.phase === 'recovery-required' ? () => { setShowRecoveryOptions(true) } : undefined} /></section>
                   : null
             }
           })}
         </div>
         {update ? <UpdateCenter state={update} copy={copy} /> : null}
         {workspaceLock}
+        {safeModeActive ? <SafeModeCornerOverlay label={copy.safeModeBadge} /> : null}
       </main>
     )
   }
@@ -463,6 +480,22 @@ export function App() {
                 : copy.preparing
 
   const isBusy = loading || runtime?.phase === 'starting' || runtime?.phase === 'preparing'
+  const runtimeFailed = errorKey === 'runtime-start' || runtime?.phase === 'failed'
+  const runtimeFailureMessage = runtime?.phase === 'failed' ? runtime.message ?? runtimeError : runtimeError
+
+  if (runtimeFailed && showRecoverySettings) {
+    return (
+      <main className="runtime-recovery-settings-shell">
+        <SettingsPage
+          copy={copy}
+          locale={locale}
+          runtime={runtime}
+          rescueOnly
+          onExitRescue={() => { setShowRecoverySettings(false) }}
+        />
+      </main>
+    )
+  }
 
   return (
     <main className="app-shell">
@@ -479,6 +512,16 @@ export function App() {
           <span>{statusMessage}</span>
         </div>
         {runtime?.phase === 'failed' ? <button className="retry-button" onClick={() => void ensureRuntime()}>{copy.retryStart}</button> : null}
+        {runtimeFailed ? (
+          <RuntimeStartupFailureNotice
+            copy={copy}
+            message={runtimeFailureMessage}
+            logPath={runtime?.logPath}
+            onOpenLog={() => window.EzDSH.runtime.openLog()}
+            onEnterSafeMode={enterSafeModeFromFailure}
+            onOpenRecoverySettings={() => { setShowRecoverySettings(true) }}
+          />
+        ) : null}
       </section>
       {workspaceLock}
     </main>

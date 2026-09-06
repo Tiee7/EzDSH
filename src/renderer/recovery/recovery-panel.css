@@ -1,5 +1,24 @@
+.recovery-shell {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px 20px 40px;
+}
+
+.recovery-scroll-region {
+  -webkit-app-region: no-drag;
+}
+
 .recovery-card {
   width: min(560px, 100%);
+  margin: 0 auto;
   padding: 42px 44px;
   border: 1px solid rgba(226, 105, 94, 0.3);
   border-radius: 24px;
@@ -37,6 +56,27 @@
   overflow-wrap: anywhere;
 }
 
+.recovery-error-message {
+  white-space: pre-wrap;
+  text-align: left;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.recovery-log-path {
+  margin: 8px auto;
+  max-width: 440px;
+  color: #c6cad2;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.recovery-log-path code {
+  color: #dce7ff;
+  user-select: text;
+}
+
 .recovery-doctor-result {
   margin: 16px auto 0;
   padding: 10px 12px;
@@ -57,6 +97,44 @@
   line-height: 1.6;
 }
 
+.recovery-runtime-incident {
+  margin: 16px auto 0;
+  padding: 12px;
+  border: 1px solid rgba(140, 171, 255, 0.36);
+  border-radius: 10px;
+  background: rgba(72, 94, 155, 0.18);
+  color: #dce7ff;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+}
+
+.recovery-runtime-incident p {
+  margin: 6px 0 0;
+}
+
+.recovery-plugin-choices {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.recovery-disable-plugin {
+  border: 1px solid rgba(140, 171, 255, 0.55);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(140, 171, 255, 0.12);
+  color: #edf3ff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recovery-disable-plugin:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .recovery-doctor-result p {
   margin: 0 0 8px;
 }
@@ -72,9 +150,17 @@
   overflow-wrap: anywhere;
 }
 
+.recovery-snapshot-detail {
+  margin: -10px 0 18px;
+  color: #aeb9ce;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .recovery-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 220px));
   justify-content: center;
   gap: 10px;
   margin-top: 24px;
@@ -87,6 +173,30 @@
   padding: 9px 14px;
   cursor: pointer;
   font: inherit;
+}
+
+.recovery-action-button {
+  box-sizing: border-box;
+  width: 220px;
+  max-width: 100%;
+  flex: 0 1 220px;
+  height: 56px;
+  min-height: 56px;
+  margin: 0;
+  padding: 8px 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* app.css gives the shared retry button a standalone top margin. In the
+   recovery grid it is a normal grid item and must share the row baseline. */
+.recovery-actions .recovery-action-button {
+  margin-top: 0;
 }
 
 .recovery-primary {
@@ -115,4 +225,10 @@
 .retry-button:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+@media (max-width: 520px) {
+  .recovery-actions {
+    grid-template-columns: minmax(0, 220px);
+  }
 }

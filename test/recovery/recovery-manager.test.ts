@@ -233,6 +233,29 @@ describe('RecoveryManager', () => {
     expect(manager.snapshot().phase).toBe('idle')
   })
 
+  it('enters recovery for a normal Runtime boot failure and exposes plugin disable choices', async () => {
+    const layout = await createFixture()
+    const manager = createManager(layout)
+    await manager.initialize()
+    await manager.createSnapshot({ kind: 'manual', reason: 'restore test' })
+
+    await expect(manager.markRuntimeFailure('failed to import loader entry (mode-menu-plus)', [
+      { packageName: 'mode-menu-plus', profile: 'web', entryId: 'mode-menu-plus', name: 'Mode Menu Plus' },
+    ], '/tmp/harness.log')).resolves.toMatchObject({
+      phase: 'recovery-required',
+      lastError: 'failed to import loader entry (mode-menu-plus)',
+      runtimeFailure: {
+        logPath: '/tmp/harness.log',
+        latestSnapshot: { archiveName: expect.stringMatching(/^ezdsh-manual-/), reason: 'restore test', createdAt: '2026-08-27T01:02:03.004Z' },
+        plugins: [{ packageName: 'mode-menu-plus', profile: 'web', entryId: 'mode-menu-plus' }],
+      },
+    })
+    expect(manager.snapshot().pendingTransaction).toBeUndefined()
+
+    await manager.completePendingTransaction()
+    expect(manager.snapshot()).toEqual({ phase: 'idle' })
+  })
+
   it('copies the dependency-free rescue channel and launcher into backups', async () => {
     const layout = await createFixture()
     const manager = createManager(layout, { rescueScriptPath: resolve('recovery/rescue.mjs') })

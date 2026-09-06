@@ -8,10 +8,14 @@
 
 .store-surfaces {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .surface-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 1px solid var(--ezdsh-panel-border);
   border-radius: 8px;
   padding: 6px 14px;
@@ -27,6 +31,23 @@
   background: var(--ezdsh-active-background);
 }
 
+.surface-tab-installed {
+  color: var(--ezdsh-accent-green);
+  border-color: var(--ezdsh-accent-green);
+}
+
+.surface-tab-installed.surface-tab-active {
+  color: var(--ezdsh-accent-green);
+  border-color: var(--ezdsh-accent-green);
+  background: color-mix(in srgb, var(--ezdsh-accent-green) 12%, transparent);
+}
+
+.surface-tab-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+}
+
 .store-layout {
   display: grid;
   grid-template-columns: 180px 1fr 340px;
@@ -34,6 +55,162 @@
   flex: 1 1 auto;
   height: 100%;
   min-height: 0;
+}
+
+.installed-store {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.installed-store-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 12px;
+  background: var(--ezdsh-panel-background);
+}
+
+.installed-store-header h2,
+.installed-store-header p {
+  margin: 0;
+}
+
+.installed-store-header h2 {
+  color: var(--ezdsh-text-heading);
+  font-size: 17px;
+}
+
+.installed-store-header p {
+  max-width: 720px;
+  margin-top: 6px;
+  color: var(--ezdsh-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.installed-store-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.installed-store-group h3 {
+  margin: 0;
+  color: var(--ezdsh-text-heading);
+  font-size: 14px;
+}
+
+.installed-store-group h3 span {
+  color: var(--ezdsh-text-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.installed-store-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 10px;
+}
+
+.installed-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 12px;
+  background: var(--ezdsh-panel-background);
+}
+
+.installed-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.installed-card-header h4,
+.installed-card-type {
+  margin: 0;
+}
+
+.installed-card-header h4 {
+  color: var(--ezdsh-text-heading);
+  font-size: 14px;
+}
+
+.installed-card-type {
+  margin-top: 4px;
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+}
+
+.installed-card-status {
+  flex: none;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(46, 160, 103, 0.14);
+  color: var(--ezdsh-accent-green);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.installed-card-status-disabled {
+  background: rgba(191, 119, 31, 0.14);
+  color: var(--ezdsh-accent-orange);
+}
+
+.installed-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+}
+
+.installed-card-meta code {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--ezdsh-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.installed-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.installed-card-progress,
+.installed-card-error {
+  margin: 0;
+  font-size: 12px;
+}
+
+.installed-card-progress {
+  color: var(--ezdsh-text-muted);
+}
+
+.installed-card-error,
+.installed-store-error {
+  color: var(--ezdsh-accent-red);
+}
+
+.installed-store-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
 }
 
 .store-sidebar {
@@ -97,6 +274,46 @@
 .store-error {
   color: var(--ezdsh-accent-red);
   font-size: 12px;
+}
+
+.store-refresh-warning {
+  border: 1px solid var(--ezdsh-accent-orange);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--ezdsh-accent-orange) 8%, transparent);
+  color: var(--ezdsh-accent-orange);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.store-refresh-warning summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.store-refresh-warning ul {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.store-refresh-warning code,
+.store-refresh-error-detail {
+  color: var(--ezdsh-text-body);
+  word-break: break-word;
+}
+
+.store-refresh-error-detail {
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--ezdsh-accent-red);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--ezdsh-accent-red) 6%, transparent);
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
 }
 
 .store-demo-badge {
@@ -282,6 +499,10 @@
   letter-spacing: 0.04em;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   pointer-events: none;
+}
+
+.entry-disabled {
+  background: var(--ezdsh-accent-orange);
 }
 
 .badge {
@@ -625,6 +846,38 @@
   font-size: 12px;
 }
 
+.install-failure-cause,
+.install-failure-package,
+.install-failure-detail,
+.install-failure-action {
+  margin: 0;
+  font-size: 12px;
+}
+
+.install-failure-cause {
+  color: var(--ezdsh-text-heading);
+  font-weight: 650;
+}
+
+.install-failure-package code,
+.install-failure-detail {
+  color: var(--ezdsh-text-body);
+  word-break: break-word;
+}
+
+.install-failure-action {
+  color: var(--ezdsh-text-body);
+}
+
+.install-failure-technical {
+  color: var(--ezdsh-text-faint);
+  font-size: 11px;
+}
+
+.install-failure-technical summary {
+  cursor: pointer;
+}
+
 .install-failure-message {
   max-height: 180px;
   margin: 0;
@@ -723,6 +976,41 @@
 .detail-uninstall:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.detail-toggle-plugin {
+  border: 1px solid var(--ezdsh-active-border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-button-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.detail-toggle-plugin:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.plugin-enabled-status,
+.plugin-disabled-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.plugin-enabled-status {
+  color: var(--ezdsh-accent-green);
+}
+
+.plugin-disabled-status {
+  color: var(--ezdsh-accent-orange);
 }
 
 .compatibility-warning,

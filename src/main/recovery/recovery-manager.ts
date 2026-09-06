@@ -57,6 +57,12 @@ export interface RecoverySnapshot {
   manifest: RecoveryManifest
 }
 
+export interface RecoverySnapshotSummary {
+  archiveName: string
+  createdAt: string
+  reason: string
+}
+
 export interface RecoveryVerifyResult {
   ok: boolean
   snapshotName: string
@@ -107,7 +113,7 @@ export interface RecoveryDoctorResult {
   issues: readonly RecoveryDoctorIssue[]
 }
 
-export type PluginChangeAction = 'install' | 'update' | 'uninstall'
+export type PluginChangeAction = 'install' | 'update' | 'uninstall' | 'enable' | 'disable'
 
 export interface AffectedPlugin {
   action: PluginChangeAction
@@ -129,6 +135,20 @@ export interface RecoveryTransaction {
   error?: string
 }
 
+/** A currently active third-party profile layer that can be disabled after a boot failure. */
+export interface RuntimeFailurePlugin {
+  packageName: string
+  profile: string
+  entryId?: string
+  name?: string
+}
+
+export interface RuntimeFailure {
+  plugins: readonly RuntimeFailurePlugin[]
+  logPath?: string
+  latestSnapshot?: RecoverySnapshotSummary
+}
+
 /** @deprecated Use RecoveryTransaction; retained for updater compatibility. */
 export interface PendingUpdate extends RecoveryTransaction {
   kind: 'update'
@@ -144,6 +164,8 @@ export interface RecoveryState {
   /** @deprecated Use pendingTransaction. It is populated only for update transactions. */
   pendingUpdate?: PendingUpdate
   lastError?: string
+  /** Present when a normal Runtime boot failed without an existing mutation transaction. */
+  runtimeFailure?: RuntimeFailure
 }
 
 export interface RecoveryCommandOptions {
@@ -501,9 +523,40 @@ export class RecoveryManager {
     return this.snapshot()
   }
 
+  /** Record a normal Runtime boot failure and expose active plugins as user choices. */
+  async markRuntimeFailure(error: string, plugins: readonly RuntimeFailurePlugin[] = [], logPath?: string): Promise<RecoveryState> {
+    if (this.current.pendingTransaction !== undefined) return this.markBootFailure(error)
+    const unique = new Map<string, RuntimeFailurePlugin>()
+    for (const plugin of plugins) {
+      const key = `${plugin.profile}:${plugin.packageName}`
+      if (!unique.has(key)) unique.set(key, { ...plugin })
+    }
+    let latestSnapshot: RecoverySnapshotSummary | undefined
+    try {
+      const latest = (await this.listSnapshots())[0]
+      if (latest !== undefined) latestSnapshot = {
+        archiveName: latest.archiveName,
+        createdAt: latest.manifest.createdAt,
+        reason: latest.manifest.reason,
+      }
+    } catch {
+      // A missing or unreadable backup must not hide the Runtime's real failure.
+    }
+    this.publish({
+      phase: 'recovery-required',
+      lastError: error,
+      runtimeFailure: {
+        plugins: [...unique.values()],
+        ...(logPath === undefined ? {} : { logPath }),
+        ...(latestSnapshot === undefined ? {} : { latestSnapshot }),
+      },
+    })
+    return this.snapshot()
+  }
+
   async completePendingTransaction(): Promise<void> {
-    if (this.current.pendingTransaction === undefined) return
-    await this.clearPendingTransaction()
+    if (this.current.pendingTransaction === undefined && this.current.runtimeFailure === undefined) return
+    if (this.current.pendingTransaction !== undefined) await this.clearPendingTransaction()
     this.publish({ phase: 'idle' })
   }
 
@@ -797,10 +850,16 @@ function stateForPendingTransaction(transaction: RecoveryTransaction): RecoveryS
 
 function stateWithLegacyUpdate(next: RecoveryState): RecoveryState {
   const pendingTransaction = next.pendingTransaction === undefined ? undefined : { ...next.pendingTransaction, ...(next.pendingTransaction.affectedPlugin === undefined ? {} : { affectedPlugin: { ...next.pendingTransaction.affectedPlugin } }) }
+  const runtimeFailure = next.runtimeFailure === undefined ? undefined : {
+    plugins: next.runtimeFailure.plugins.map((plugin) => ({ ...plugin })),
+    ...(next.runtimeFailure.logPath === undefined ? {} : { logPath: next.runtimeFailure.logPath }),
+    ...(next.runtimeFailure.latestSnapshot === undefined ? {} : { latestSnapshot: { ...next.runtimeFailure.latestSnapshot } }),
+  }
   return {
     ...next,
     ...(pendingTransaction === undefined ? {} : { pendingTransaction }),
     ...(pendingTransaction?.kind === 'update' ? { pendingUpdate: pendingTransaction as PendingUpdate } : {}),
+    ...(runtimeFailure === undefined ? {} : { runtimeFailure }),
   }
 }
 

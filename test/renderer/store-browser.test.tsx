@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { getAppCopy } from '../../src/shared/locale'
-import { AuditOverrideActions, EntryBadges, InstallFailureNotice, StoreBrowser } from '../../src/renderer/store/StoreBrowser'
+import { AuditOverrideActions, EntryBadges, EntryCard, InstallFailureNotice, StoreBrowser } from '../../src/renderer/store/StoreBrowser'
 import type { StoreEntry } from '../../src/shared/store'
 
 const pluginEntry: StoreEntry = {
@@ -71,9 +71,58 @@ describe('StoreBrowser install failure notice', () => {
     expect(markup).toContain('ERR_PNPM_IGNORED_BUILDS')
     expect(markup).toContain('/tmp/ezdsh/logs/plugins/dsh-codex.log')
   })
+
+  it('shows the classified cause and corrective owner for an invalid dependency name', () => {
+    const markup = renderToStaticMarkup(
+      <InstallFailureNotice
+        copy={getAppCopy('zh')}
+        state={{
+          kind: 'skill',
+          id: 'nihaixia',
+          phase: 'failed',
+          failureReason: 'install',
+          message: '[ERR_PNPM_INVALID_DEPENDENCY_NAME] invalid alias "nihaixia#v2.3.1"',
+          diagnostic: {
+            code: 'invalid-dependency-name',
+            packageSpec: 'nihaixia#v2.3.1',
+            detail: '[ERR_PNPM_INVALID_DEPENDENCY_NAME] invalid alias "nihaixia#v2.3.1"',
+            suggestedAction: 'Changing build permissions will not fix it.'
+          }
+        }}
+      />
+    )
+
+    expect(markup).toContain('依赖名称或别名无效')
+    expect(markup).toContain('应修正目录条目或上游包')
+    expect(markup).toContain('nihaixia#v2.3.1')
+    expect(markup).not.toContain('修改 allowBuilds')
+  })
 })
 
 describe('StoreBrowser entry type badges', () => {
+  it('uses the compact Disabled label on a disabled entry card', () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard
+        entry={pluginEntry}
+        installed={{
+          kind: 'skill',
+          id: pluginEntry.id,
+          version: pluginEntry.version,
+          sha256: '0'.repeat(64),
+          installedAt: '2026-09-05T00:00:00.000Z',
+          name: pluginEntry.name,
+          enabled: false,
+        }}
+        copy={getAppCopy('en')}
+        selected={false}
+        onSelect={() => {}}
+      />,
+    )
+
+    expect(markup).toContain('>Disabled<')
+    expect(markup).not.toContain('Plugin disabled (installation kept)')
+  })
+
   it('keeps the type badge on a normal cursor instead of showing a help question mark', () => {
     const badgeTypeStyles = storeStylesheet.match(/\.badge-type \{([\s\S]*?)\n\}/)?.[1] ?? ''
 
