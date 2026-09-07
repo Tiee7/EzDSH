@@ -61,4 +61,44 @@ describe('DSH Runtime identity links', () => {
     await expect(readFile(join(publicPackage, 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(join(nestedCopy, 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
+
+  it('can materialize importer packages alongside shared identity packages', async () => {
+    const root = await tempRoot()
+    const pnpmRoot = join(root, 'node_modules', '.pnpm')
+    const publicNodeModules = join(pnpmRoot, 'node_modules')
+    const rootNodeModules = join(root, 'node_modules')
+    const packageNames = [
+      '@deepseek-ai/dsh-tools',
+      '@deepseek-ai/dsh-agent-loop'
+    ]
+
+    for (const packageName of packageNames) {
+      const packageSegments = packageName.split('/')
+      const packageId = packageName === '@deepseek-ai/dsh-tools'
+        ? '@deepseek-ai+dsh-tools@file+packages+tools'
+        : '@deepseek-ai+dsh-agent-loop@file+packages+core+agent-loop'
+      const canonical = join(pnpmRoot, packageId, 'node_modules', ...packageSegments)
+      const publicPackage = join(publicNodeModules, ...packageSegments)
+      await mkdir(canonical, { recursive: true })
+      await mkdir(publicPackage, { recursive: true })
+      await writeFile(join(canonical, 'package.json'), JSON.stringify({ name: packageName }))
+      await writeFile(join(publicPackage, 'package.json'), JSON.stringify({ name: packageName }))
+    }
+
+    const result = await materializeIdentityPackages(
+      pnpmRoot,
+      publicNodeModules,
+      rootNodeModules,
+      packageNames
+    )
+
+    expect(result).toEqual({ materializedCount: 2, nestedRemovedCount: 2 })
+    for (const packageName of packageNames) {
+      const packageSegments = packageName.split('/')
+      await expect(readFile(join(rootNodeModules, ...packageSegments, 'package.json'), 'utf8'))
+        .resolves.toContain(packageName)
+      await expect(readFile(join(publicNodeModules, ...packageSegments, 'package.json'), 'utf8'))
+        .rejects.toMatchObject({ code: 'ENOENT' })
+    }
+  })
 })

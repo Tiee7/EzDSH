@@ -2,9 +2,10 @@ import { cp, lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 
 /**
- * Remove nested copies of packages whose module identity is part of the DSH
- * runtime contract. The public pnpm link and the canonical package directory
- * remain available for Node's normal upward module resolution.
+ * Remove nested copies of packages whose module identity or importer topology
+ * is part of the DSH runtime contract. The canonical package directory
+ * remains available while the runtime-root copy is used by Node's normal
+ * upward module resolution.
  */
 export async function removeNestedIdentityLinks(pnpmRoot, packageNames, canonicalPaths = []) {
   const canonicalPathSet = new Set(canonicalPaths)
@@ -37,10 +38,10 @@ export async function removeNestedIdentityLinks(pnpmRoot, packageNames, canonica
 }
 
 /**
- * Materialize identity packages at the Runtime root so electron-builder
- * cannot preserve a Windows junction back into the source checkout. Removing
- * the public and nested links makes every importer fall back to this one root
- * package through Node's normal upward lookup.
+ * Materialize identity packages and their importer packages at the Runtime
+ * root so electron-builder cannot preserve a Windows junction back into the
+ * source checkout. Removing the public and nested links makes every importer
+ * resolve from the packaged runtime instead of the build workspace.
  */
 export async function materializeIdentityPackages(pnpmRoot, publicNodeModules, rootNodeModules, packageNames) {
   const canonicalPaths = []

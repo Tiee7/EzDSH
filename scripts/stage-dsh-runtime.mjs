@@ -273,7 +273,13 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
 
 const identityPackageNames = [
   '@deepseek-ai/dsh-scope',
-  '@deepseek-ai/dsh-tools'
+  '@deepseek-ai/dsh-tools',
+  // These packages import the identity-bearing modules. Materialize them too
+  // so Windows electron-builder cannot preserve their public pnpm junctions
+  // back into the source checkout.
+  '@deepseek-ai/dsh-agent-loop',
+  '@deepseek-ai/dsh-agent-presets',
+  '@deepseek-ai/dsh-tool-subagent'
 ]
 const identityNormalization = await materializeIdentityPackages(
   join(destination, 'node_modules', '.pnpm'),
