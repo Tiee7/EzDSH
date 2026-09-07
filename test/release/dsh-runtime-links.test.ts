@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { removeNestedIdentityLinks } from '../../scripts/normalize-dsh-runtime-links.mjs'
+import { materializeIdentityPackages } from '../../scripts/normalize-dsh-runtime-links.mjs'
 
 const roots: string[] = []
 
@@ -17,7 +17,7 @@ afterEach(async () => {
 })
 
 describe('DSH Runtime identity links', () => {
-  it('removes nested identity-package copies while keeping the canonical package', async () => {
+  it('materializes identity packages at the runtime root and removes nested copies', async () => {
     const root = await tempRoot()
     const pnpmRoot = join(root, 'node_modules', '.pnpm')
     const canonical = join(
@@ -28,6 +28,7 @@ describe('DSH Runtime identity links', () => {
       'dsh-scope'
     )
     const publicPackage = join(pnpmRoot, 'node_modules', '@deepseek-ai', 'dsh-scope')
+    const rootPackage = join(root, 'node_modules', '@deepseek-ai', 'dsh-scope')
     const nestedCopy = join(
       pnpmRoot,
       '@deepseek-ai+dsh-agent-presets@file+packages+preset+agent-presets',
@@ -39,19 +40,25 @@ describe('DSH Runtime identity links', () => {
     await Promise.all([
       mkdir(canonical, { recursive: true }),
       mkdir(publicPackage, { recursive: true }),
+      mkdir(rootPackage, { recursive: true }),
       mkdir(nestedCopy, { recursive: true })
     ])
     await writeFile(join(canonical, 'package.json'), '{"name":"@deepseek-ai/dsh-scope"}')
     await writeFile(join(publicPackage, 'package.json'), '{"name":"@deepseek-ai/dsh-scope"}')
+    await writeFile(join(rootPackage, 'package.json'), '{"name":"old-copy"}')
     await writeFile(join(nestedCopy, 'package.json'), '{"name":"@deepseek-ai/dsh-scope"}')
 
-    const removed = await removeNestedIdentityLinks(pnpmRoot, [
-      '@deepseek-ai/dsh-scope'
-    ], [canonical])
+    const result = await materializeIdentityPackages(
+      pnpmRoot,
+      join(pnpmRoot, 'node_modules'),
+      join(root, 'node_modules'),
+      ['@deepseek-ai/dsh-scope']
+    )
 
-    expect(removed).toBe(1)
-    await expect(readFile(join(canonical, 'package.json'), 'utf8')).resolves.toContain('dsh-scope')
-    await expect(readFile(join(publicPackage, 'package.json'), 'utf8')).resolves.toContain('dsh-scope')
+    expect(result).toEqual({ materializedCount: 1, nestedRemovedCount: 2 })
+    await expect(readFile(join(canonical, 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(rootPackage, 'package.json'), 'utf8')).resolves.toContain('dsh-scope')
+    await expect(readFile(join(publicPackage, 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(join(nestedCopy, 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

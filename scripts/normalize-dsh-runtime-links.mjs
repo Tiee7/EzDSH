@@ -1,4 +1,4 @@
-import { lstat, readdir, rm } from 'node:fs/promises'
+import { cp, lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 
 /**
@@ -34,4 +34,38 @@ export async function removeNestedIdentityLinks(pnpmRoot, packageNames, canonica
   }
 
   return removedCount
+}
+
+/**
+ * Materialize identity packages at the Runtime root so electron-builder
+ * cannot preserve a Windows junction back into the source checkout. Removing
+ * the public and nested links makes every importer fall back to this one root
+ * package through Node's normal upward lookup.
+ */
+export async function materializeIdentityPackages(pnpmRoot, publicNodeModules, rootNodeModules, packageNames) {
+  const canonicalPaths = []
+  let materializedCount = 0
+
+  for (const packageName of packageNames) {
+    const packageSegments = packageName.split('/')
+    const publicPackage = join(publicNodeModules, ...packageSegments)
+    const publicPackageIsLink = (await lstat(publicPackage)).isSymbolicLink()
+    const canonicalPath = await realpath(publicPackage)
+    const rootPackage = join(rootNodeModules, ...packageSegments)
+    await mkdir(join(rootNodeModules, ...packageSegments.slice(0, -1)), { recursive: true })
+    await rm(rootPackage, { recursive: true, force: true })
+    await cp(canonicalPath, rootPackage, { recursive: true, force: true })
+    await rm(publicPackage, { recursive: true, force: true })
+    // A normal pnpm deployment exposes this package through a link, so its
+    // realpath is a separate canonical directory. If a package manager has
+    // already copied it into the public location, that location is removed
+    // below and must not be preserved as a second canonical path.
+    if (publicPackageIsLink) canonicalPaths.push(canonicalPath)
+    materializedCount += 1
+  }
+
+  return {
+    materializedCount,
+    nestedRemovedCount: await removeNestedIdentityLinks(pnpmRoot, packageNames, canonicalPaths)
+  }
 }
