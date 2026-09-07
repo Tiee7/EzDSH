@@ -113,7 +113,9 @@ assertSharedRuntimeModule('@deepseek-ai/dsh-tools', ['@deepseek-ai/dsh-agent-loo
 assertSharedRuntimeModule('@deepseek-ai/dsh-scope', [
   '@deepseek-ai/dsh-agent',
   '@deepseek-ai/dsh-agent-presets',
-  '@deepseek-ai/dsh-tool-subagent'
+  '@deepseek-ai/dsh-tool-subagent',
+  '@deepseek-ai/dsh-system-prompt',
+  '@deepseek-ai/dsh-persona'
 ])
 const testRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-verification-'))
 

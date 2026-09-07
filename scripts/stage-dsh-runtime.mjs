@@ -280,7 +280,9 @@ const identityPackageNames = [
   '@deepseek-ai/dsh-agent',
   '@deepseek-ai/dsh-agent-loop',
   '@deepseek-ai/dsh-agent-presets',
-  '@deepseek-ai/dsh-tool-subagent'
+  '@deepseek-ai/dsh-tool-subagent',
+  '@deepseek-ai/dsh-system-prompt',
+  '@deepseek-ai/dsh-persona'
 ]
 const identityNormalization = await materializeIdentityPackages(
   join(destination, 'node_modules', '.pnpm'),
