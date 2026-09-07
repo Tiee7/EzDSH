@@ -1,11 +1,12 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { assertPinnedDshRuntimeVersion } from './dsh-runtime-version.mjs'
+import { removeWithRetry } from './retry-remove.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const isPrePackageVerification = process.argv[2] === undefined
@@ -295,6 +296,6 @@ try {
     await waitForExit(5_000)
   }
   if (childExit === undefined) throw new Error('Bundled DSH Runtime process did not exit')
-  await rm(testRoot, { recursive: true, force: true })
-  await rm(temporaryRoot, { recursive: true, force: true })
+  await removeWithRetry(testRoot)
+  await removeWithRetry(temporaryRoot)
 }
