@@ -277,6 +277,7 @@ const identityPackageNames = [
   // These packages import the identity-bearing modules. Materialize them too
   // so Windows electron-builder cannot preserve their public pnpm junctions
   // back into the source checkout.
+  '@deepseek-ai/dsh-agent',
   '@deepseek-ai/dsh-agent-loop',
   '@deepseek-ai/dsh-agent-presets',
   '@deepseek-ai/dsh-tool-subagent'
