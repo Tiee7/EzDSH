@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pruneRuntimeFiles } from './prune-runtime-files.mjs'
 import { assertPinnedDshRuntimeVersion, assertPinnedDshSourceCheckout } from './dsh-runtime-version.mjs'
+import { removeNestedIdentityLinks } from './normalize-dsh-runtime-links.mjs'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const runtimeSource = join(projectRoot, 'vendor', 'deepseek-harness')
@@ -270,4 +271,18 @@ for (const scopeEntry of await readdir(publicNodeModules, { withFileTypes: true 
   rootDependencyLinkCount += 1
 }
 
-console.log(`Staged direct DSH Runtime at ${destination} (${String(materializedCount)} external links materialized, ${String(peerPackageCount)} peer packages added, ${String(rootDependencyLinkCount)} root dependency links added)`)
+const identityPackageNames = [
+  '@deepseek-ai/dsh-scope',
+  '@deepseek-ai/dsh-tools'
+]
+const identityCanonicalPaths = []
+for (const packageName of identityPackageNames) {
+  identityCanonicalPaths.push(await realpath(join(publicNodeModules, ...packageName.split('/'))))
+}
+const nestedIdentityLinkCount = await removeNestedIdentityLinks(
+  join(destination, 'node_modules', '.pnpm'),
+  identityPackageNames,
+  identityCanonicalPaths
+)
+
+console.log(`Staged direct DSH Runtime at ${destination} (${String(materializedCount)} external links materialized, ${String(peerPackageCount)} peer packages added, ${String(rootDependencyLinkCount)} root dependency links added, ${String(nestedIdentityLinkCount)} nested identity-package links removed)`)

@@ -89,18 +89,31 @@ if (!pnpmCandidates.some((candidate) => existsSync(candidate))) {
 
 // Several runtime seams are keyed by Symbols exported from shared packages.
 // A copied root dependency and pnpm's canonical dependency can therefore look
-// identical while being different JavaScript modules. Verify that the tool
-// scheduler imported by dsh-agent-loop is the same physical module exposed at
-// the runtime root; otherwise every model tool call fails at `.prepare`.
+// identical while being different JavaScript modules. Verify that every
+// importer uses the same physical module exposed at the runtime root; otherwise
+// model tool calls or preset composition fail after packaging.
 const runtimeRoot = resolve(runtimeEntry, '..', '..')
 const runtimeRequire = createRequire(join(runtimeRoot, 'package.json'))
-const agentLoopEntry = runtimeRequire.resolve('@deepseek-ai/dsh-agent-loop')
-const agentLoopRequire = createRequire(agentLoopEntry)
-const rootToolsEntry = runtimeRequire.resolve('@deepseek-ai/dsh-tools')
-const agentLoopToolsEntry = agentLoopRequire.resolve('@deepseek-ai/dsh-tools')
-if (realpathSync(rootToolsEntry) !== realpathSync(agentLoopToolsEntry)) {
-  throw new Error(`Bundled DSH Runtime has duplicate @deepseek-ai/dsh-tools modules:\nroot: ${rootToolsEntry}\nagent-loop: ${agentLoopToolsEntry}`)
+function assertSharedRuntimeModule(packageName, importerNames) {
+  const rootEntry = runtimeRequire.resolve(packageName)
+  const rootRealpath = realpathSync(rootEntry)
+  for (const importerName of importerNames) {
+    const importerEntry = runtimeRequire.resolve(importerName)
+    const importerRequire = createRequire(importerEntry)
+    const importerEntryPath = importerRequire.resolve(packageName)
+    if (realpathSync(importerEntryPath) !== rootRealpath) {
+      throw new Error(
+        `Bundled DSH Runtime has duplicate ${packageName} modules for ${importerName}:\n`
+        + `root: ${rootEntry}\nimporter: ${importerEntryPath}`
+      )
+    }
+  }
 }
+assertSharedRuntimeModule('@deepseek-ai/dsh-tools', ['@deepseek-ai/dsh-agent-loop'])
+assertSharedRuntimeModule('@deepseek-ai/dsh-scope', [
+  '@deepseek-ai/dsh-agent-presets',
+  '@deepseek-ai/dsh-tool-subagent'
+])
 const testRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-verification-'))
 
 const runtimeIdentity = JSON.parse(execFileSync(nodeExecutable, [
