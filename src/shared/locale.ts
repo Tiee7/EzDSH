@@ -555,6 +555,10 @@ export interface AppCopy {
   storeDemoBadge: string
   storeRefresh: string
   storeRefreshing: string
+  storeCheckUpdates: string
+  storeCheckingUpdates: string
+  storeUpdatesAvailable: (count: number) => string
+  storeNoUpdates: string
   storeRefreshFailed: string
   storeRefreshSkipped: (count: number) => string
   storeLastUpdated: (time: string) => string
@@ -1442,6 +1446,10 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeRetry: '重试',
     storeDemoBadge: '演示目录',
     storeRefresh: '更新目录',
+     storeCheckUpdates: '检查更新',
+     storeCheckingUpdates: '检查更新中…',
+     storeUpdatesAvailable: (count) => `发现 ${count} 个可更新 skill`,
+     storeNoUpdates: '所有 skill 都是最新版本',
     storeRefreshing: '更新中…',
     storeRefreshFailed: '更新失败',
     storeRefreshSkipped: (count) => `目录已更新，跳过 ${count} 个配置无效的条目`,
@@ -2329,6 +2337,10 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeRetry: 'Retry',
     storeDemoBadge: 'Demo catalog',
     storeRefresh: 'Refresh',
+     storeCheckUpdates: 'Check for skill updates',
+     storeCheckingUpdates: 'Checking for updates…',
+     storeUpdatesAvailable: (count) => `${count} skill update${count === 1 ? '' : 's'} available`,
+     storeNoUpdates: 'All skills are up to date',
     storeRefreshing: 'Refreshing…',
     storeRefreshFailed: 'Refresh failed',
     storeRefreshSkipped: (count) => `Catalog updated; skipped ${count} entries with invalid configuration`,

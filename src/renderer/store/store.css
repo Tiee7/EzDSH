@@ -104,6 +104,12 @@
   background: var(--ezdsh-panel-background);
 }
 
+.installed-store-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .installed-store-header h2,
 .installed-store-header p {
   margin: 0;

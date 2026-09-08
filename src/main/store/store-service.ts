@@ -488,8 +488,28 @@ export class StoreService {
     } catch (error) {
       return this.finish({ kind, id, phase: 'failed', failureReason: 'download', message: describe(error) })
     }
+    if (entry.plugin === undefined && (kind === 'skill' || kind === 'preset')) {
+      let bundle: DownloadedBundle
+      try {
+        bundle = await downloadBundle(entry.files ?? [], { fetchImpl: this.fetchImpl })
+        const audit = auditBundle(entry, bundle)
+        if (audit.verdict === 'block') return this.finish({ kind, id, phase: 'failed', failureReason: 'audit-blocked', audit, message: 'The audit blocked this entry' })
+        this.publish({ kind, id, phase: 'installing', message: 'Updating…', audit })
+        if (kind === 'skill') {
+          await uninstallSkill(this.dshHome, id)
+          await installSkillBundle(this.dshHome, entry, bundle)
+        } else {
+          await uninstallPreset(this.dshHome, id)
+          await installPresetBundle(this.dshHome, entry, bundle)
+        }
+        await registry.upsert(installedRecord(entry, bundle, undefined, undefined))
+        return this.finish({ kind, id, phase: 'done', audit })
+      } catch (error) {
+        return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
+      }
+    }
     if (kind !== 'skill' || entry.plugin === undefined || record.pluginPackageName === undefined || this.pluginInstaller === undefined) {
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: 'Only Store-managed DSH plugins support in-place updates' })
+      return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: 'Only installed catalog entries support updates' })
     }
     const compatibility = assessPluginCompatibility(this.dshRuntimeVersion(), entry.plugin.compatibility)
     if (compatibility.status === 'incompatible') {

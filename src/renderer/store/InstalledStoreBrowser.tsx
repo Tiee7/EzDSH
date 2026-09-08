@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
-import type { InstalledRecord, InstallState } from '../../shared/store.js'
+import type { InstalledRecord, InstallState, StoreEntry } from '../../shared/store.js'
+import { updateAvailable } from './display.js'
 import './store.css'
 
 interface InstalledStoreBrowserProps {
@@ -27,17 +28,22 @@ function InstalledCard({
   operation,
   onToggle,
   onUninstall,
+  onUpdate,
+  entry,
 }: {
   readonly record: InstalledRecord
   readonly copy: AppCopy
   readonly operation?: InstalledOperation
+  readonly entry?: StoreEntry
   readonly onToggle: (record: InstalledRecord) => void
   readonly onUninstall: (record: InstalledRecord) => void
+  readonly onUpdate: (record: InstalledRecord) => void
 }): JSX.Element {
   const plugin = isPlugin(record)
   const key = recordKey(record)
   const busy = operation?.key === key && operation.state.phase === 'installing'
   const failed = operation?.key === key && operation.state.phase === 'failed'
+  const updateReady = entry !== undefined && updateAvailable(record, entry)
   return (
     <article className="installed-card">
       <div className="installed-card-header">
@@ -66,6 +72,9 @@ function InstalledCard({
         ? <p className="installed-card-progress" role="status">{operation.state.message ?? copy.storePhaseInstalling}</p>
         : null}
       <div className="installed-card-actions">
+         <button type="button" className="detail-update" disabled={busy || !updateReady} onClick={() => { onUpdate(record) }}>
+           {copy.storeUpdate}{updateReady ? ` · v${entry?.version}` : ''}
+         </button>
         {plugin
           ? (
             <button type="button" className="detail-toggle-plugin" disabled={busy} onClick={() => { onToggle(record) }}>
@@ -89,6 +98,9 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
   const [operation, setOperation] = useState<InstalledOperation | undefined>()
   const [runtimeRestarting, setRuntimeRestarting] = useState(false)
   const [runtimeRestartError, setRuntimeRestartError] = useState<string | undefined>()
+  const [catalogEntries, setCatalogEntries] = useState<readonly StoreEntry[]>([])
+  const [checkingUpdates, setCheckingUpdates] = useState(false)
+  const [updateMessage, setUpdateMessage] = useState<string | undefined>()
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -106,6 +118,29 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
     void load()
   }, [load])
 
+  const entriesById = useMemo(() => new Map(catalogEntries.map((entry) => [entry.id, entry])), [catalogEntries])
+
+  const checkUpdates = useCallback(async (): Promise<void> => {
+    setCheckingUpdates(true)
+    setUpdateMessage(undefined)
+    try {
+      await window.EzDSH.store.refresh('skill')
+      const first = await window.EzDSH.store.list('skill', { page: 1 })
+      const pages = await Promise.all(Array.from({ length: Math.max(0, first.pageCount - 1) }, (_, index) => window.EzDSH.store.list('skill', { page: index + 2 })))
+      const nextEntries = [first.entries, ...pages.map((page) => page.entries)].flat()
+      setCatalogEntries(nextEntries)
+      const count = records.filter((record) => {
+        const entry = nextEntries.find((candidate) => candidate.id === record.id)
+        return entry !== undefined && updateAvailable(record, entry)
+      }).length
+      setUpdateMessage(count > 0 ? copy.storeUpdatesAvailable(count) : copy.storeNoUpdates)
+    } catch (reason) {
+      setUpdateMessage(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCheckingUpdates(false)
+    }
+  }, [copy, records])
+
   const plugins = useMemo(
     () => records.filter(isPlugin),
     [records],
@@ -115,7 +150,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
     [records],
   )
 
-  const operate = useCallback(async (record: InstalledRecord, action: 'toggle' | 'uninstall'): Promise<void> => {
+  const operate = useCallback(async (record: InstalledRecord, action: 'toggle' | 'uninstall' | 'update'): Promise<void> => {
     const key = recordKey(record)
     setRuntimeRestartError(undefined)
     setOperation({
@@ -126,13 +161,16 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
         phase: 'installing',
         message: action === 'uninstall'
           ? copy.storeUninstalling
+          : action === 'update' ? copy.storeUpdate
           : record.enabled === false ? copy.storeEnablingPlugin : copy.storeDisablingPlugin,
       },
     })
     try {
       const state = action === 'uninstall'
         ? await window.EzDSH.store.uninstall(record.kind, record.id)
-        : await window.EzDSH.store.setEnabled(record.kind, record.id, record.enabled === false)
+        : action === 'update'
+          ? await window.EzDSH.store.update(record.kind, record.id)
+          : await window.EzDSH.store.setEnabled(record.kind, record.id, record.enabled === false)
       setOperation({ key, state })
       if (state.phase === 'done') await load()
     } catch (reason) {
@@ -168,9 +206,15 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
           <h2>{copy.storeInstalledSection}</h2>
           <p>{copy.storeInstalledHint}</p>
         </div>
-        <button type="button" className="store-retry" onClick={onBack}>{copy.storeBackToCatalog}</button>
+        <div className="installed-store-header-actions">
+          <button type="button" className="store-retry" disabled={checkingUpdates} onClick={() => { void checkUpdates }}>
+            {checkingUpdates ? copy.storeCheckingUpdates : copy.storeCheckUpdates}
+          </button>
+          <button type="button" className="store-retry" onClick={onBack}>{copy.storeBackToCatalog}</button>
+        </div>
       </header>
       {loading ? <p className="store-status">{copy.storeLoading}</p> : null}
+      {updateMessage !== undefined ? <p className="store-status" role="status">{updateMessage}</p> : null}
       {error && !loading
         ? <div className="installed-store-error" role="alert"><span>{copy.storeLoadFailed}</span><button type="button" className="store-retry" onClick={() => { void load() }}>{copy.storeRetry}</button></div>
         : null}
@@ -188,7 +232,9 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
                   record={record}
                   copy={copy}
                   operation={operation}
-                  onToggle={(item) => { void operate(item, 'toggle') }}
+                  entry={entriesById.get(record.id)}
+                   onToggle={(item) => { void operate(item, 'toggle') }}
+                   onUpdate={(item) => { void operate(item, 'update') }}
                   onUninstall={(item) => { void operate(item, 'uninstall') }}
                 />
               ))}
@@ -207,7 +253,9 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
                   record={record}
                   copy={copy}
                   operation={operation}
-                  onToggle={(item) => { void operate(item, 'toggle') }}
+                  entry={entriesById.get(record.id)}
+                   onToggle={(item) => { void operate(item, 'toggle') }}
+                   onUpdate={(item) => { void operate(item, 'update') }}
                   onUninstall={(item) => { void operate(item, 'uninstall') }}
                 />
               ))}
