@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process'
 
 // The runtime shipped by EzDSH is built from the vendored upstream workspace.
-// 0.1.3-alpha.1 is currently available from upstream master but is not yet
-// published to npm, so it must not be used as a registry dependency.
-export const PINNED_DSH_RUNTIME_VERSION = '0.1.3-alpha.1'
-export const PINNED_DSH_SOURCE_COMMIT = 'd347e703908d0406b7a7ef80e3a0e594d86b2215'
-export const PUBLISHED_DSH_PACKAGE_VERSION = '0.1.2-rc.1'
+// The packaged Runtime is built from the vendored upstream workspace. The
+// same release is also pinned in the root npm dependencies for development
+// and source-build prerequisites.
+export const PINNED_DSH_RUNTIME_VERSION = '0.1.3-alpha.2'
+export const PINNED_DSH_SOURCE_COMMIT = '82a5fd61a7cf5c293cec4bdff68f455398d685e9'
+export const PUBLISHED_DSH_PACKAGE_VERSION = '0.1.3-alpha.2'
 
 export function assertPinnedDshRuntimeVersion(label, actualVersion) {
   if (actualVersion !== PINNED_DSH_RUNTIME_VERSION) {

@@ -481,6 +481,22 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     isPackaged: app.isPackaged,
     arch: process.arch
   })
+  dshPluginCommandRunner = createDshPluginCommand({
+    appPath: app.getAppPath(),
+    dshHome: layout.harness,
+    launchRoot: layout.launchRoot,
+    logsDir: layout.logs,
+    runtimeEntryPath,
+    command: runtimeCommandPath,
+  })
+  const pluginInstaller = new DshPluginInstaller({
+    dshHome: layout.harness,
+    runCommand: dshPluginCommandRunner,
+    isRuntimeActive: () => {
+      const phase = runtimeManager?.snapshot().phase
+      return phase === 'ready' || phase === 'starting'
+    },
+  })
   const dshRuntimeVersion = await readDshRuntimeVersion(runtimeEntryPath)
   proxyService = new ProxyService({
     configPath: join(layout.state, 'proxy.json'),
@@ -496,6 +512,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     dshRuntimeVersion,
     dataSchemaVersion: CURRENT_DATA_SCHEMA_VERSION,
     rescueScriptPath: join(app.getAppPath(), 'recovery', 'rescue.mjs'),
+    trustedSymlinkRoots: [app.getAppPath(), process.resourcesPath],
   })
   await recoveryManager.initialize()
   stopRecoveryListener = recoveryManager.onChange(emitRecoveryState)
@@ -536,8 +553,19 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
         console.error('[dsh-profile] failed to quarantine stale core modules:', message)
       }
       try {
+        const repairedPlugins = await pluginInstaller.repairIncompatiblePlugins('web', runtimeEntryPath)
+        for (const plugin of repairedPlugins) {
+          console.warn(`[dsh-plugin] isolated incompatible plugin ${plugin.packageName}: ${plugin.reason}`)
+        }
+      } catch (error) {
+        // Compatibility repair must never hide the original Runtime failure;
+        // recovery will still expose the active plugin choices if it cannot run.
+        const message = error instanceof Error ? error.message : String(error)
+        console.error('[dsh-plugin] failed to repair incompatible plugins:', message)
+      }
+      try {
         if (await repairLegacyModeMenuPlus(layout.harness, app.getAppPath())) {
-          console.warn('[dsh-plugin] migrated legacy mode-menu-plus to the alpha1 client module table')
+          console.warn('[dsh-plugin] migrated legacy mode-menu-plus to the alpha2 client module table')
         }
       } catch (error) {
         // A compatibility migration must never prevent the recovery UI from
@@ -575,23 +603,6 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
     onReview: (sessionId) => handleDeepLinkSession({ action: 'session', sessionId }),
   })
-  dshPluginCommandRunner = createDshPluginCommand({
-    appPath: app.getAppPath(),
-    dshHome: layout.harness,
-    launchRoot: layout.launchRoot,
-    logsDir: layout.logs,
-    runtimeEntryPath,
-    command: runtimeCommandPath
-  })
-  const pluginInstaller = new DshPluginInstaller({
-    dshHome: layout.harness,
-    runCommand: dshPluginCommandRunner,
-    isRuntimeActive: () => {
-      const phase = runtimeManager?.snapshot().phase
-      return phase === 'ready' || phase === 'starting'
-    }
-  })
-
   externalServiceManager = new ExternalServiceManager({
     configPath: join(layout.state, 'external-services.json'),
     logsDir: join(layout.logs, 'external-services'),

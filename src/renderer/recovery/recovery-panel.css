@@ -199,6 +199,89 @@
   margin-top: 0;
 }
 
+.recovery-snapshot-picker {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid rgba(140, 171, 255, 0.36);
+  border-radius: 12px;
+  background: rgba(16, 17, 22, 0.5);
+  text-align: left;
+}
+
+.recovery-snapshot-picker h2 {
+  margin: 0;
+  color: #edf3ff;
+  font-size: 16px;
+}
+
+.recovery-snapshot-picker-hint,
+.recovery-snapshot-picker-status {
+  margin: 8px 0 12px;
+  color: #aeb9ce;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.recovery-snapshot-choices {
+  display: grid;
+  max-height: 240px;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.recovery-snapshot-choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid rgba(174, 185, 206, 0.24);
+  border-radius: 9px;
+  color: #dce7ff;
+  cursor: pointer;
+}
+
+.recovery-snapshot-choice-selected {
+  border-color: #8cabff;
+  background: rgba(111, 149, 255, 0.14);
+}
+
+.recovery-snapshot-choice input {
+  margin-top: 3px;
+  accent-color: #8cabff;
+}
+
+.recovery-snapshot-choice-text {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.recovery-snapshot-choice-text strong {
+  color: #f3f6ff;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.recovery-snapshot-choice-text code {
+  overflow-wrap: anywhere;
+}
+
+.recovery-snapshot-choice-text span {
+  color: #aeb9ce;
+  overflow-wrap: anywhere;
+}
+
+.recovery-snapshot-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+
 .recovery-primary {
   border: 1px solid #e2695e;
   background: #e2695e;
@@ -225,6 +308,11 @@
 .retry-button:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+.recovery-snapshot-picker-actions .recovery-action-button {
+  width: 180px;
+  flex-basis: 180px;
 }
 
 @media (max-width: 520px) {

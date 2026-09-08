@@ -7,10 +7,12 @@
  */
 
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { basename, dirname, join } from 'node:path'
 import { Document, parseDocument, type YAMLMap, type YAMLSeq } from 'yaml'
 import type { InstalledRecord, StoreEntry, StorePluginConfig } from '../../shared/store.js'
 import { repairInstalledDshPlugin } from './dsh-plugin-compatibility.js'
+import { compareDshVersions } from './compatibility.js'
 
 export interface PluginCommandRunner {
   (profile: string, args: readonly string[]): Promise<void>
@@ -49,6 +51,11 @@ export interface DshInstalledPlugin {
   readonly profile: string
   readonly version: string
   readonly enabled: boolean
+}
+
+export interface DshIncompatiblePlugin {
+  readonly packageName: string
+  readonly reason: string
 }
 
 const PROFILE_NAME = /^[a-z][a-z0-9-]*$/
@@ -175,6 +182,26 @@ export class DshPluginInstaller {
     await writeProfileManifest(path, withProfileState(manifest, nextBundles, nextDisabledBundles))
   }
 
+  /** Disable third-party bundles whose DSH peer API range excludes the selected Runtime. */
+  async repairIncompatiblePlugins(profile: string, runtimeEntryPath: string): Promise<readonly DshIncompatiblePlugin[]> {
+    if (!PROFILE_NAME.test(profile)) throw new Error(`Invalid DSH plugin profile: ${profile}`)
+    const manifest = await readProfileManifest(this.options.dshHome, profile)
+    const profileRoot = join(this.options.dshHome, 'profiles', profile)
+    const runtimeRequire = createRequire(runtimeEntryPath)
+    const repaired: DshIncompatiblePlugin[] = []
+    for (const packageName of profileBundles(manifest)) {
+      if (isCoreDshBundle(packageName) || profileDisabledBundles(manifest).includes(packageName)) continue
+      const packageManifest = await readPackageManifest(join(profileRoot, 'node_modules', packageName, 'package.json'))
+        ?? await readPackageManifest(join(this.options.dshHome, 'profiles', 'node_modules', packageName, 'package.json'))
+      if (packageManifest === undefined) continue
+      const reason = await incompatiblePeerReason(packageManifest, runtimeRequire)
+      if (reason === undefined) continue
+      await this.setPackageEnabled(profile, packageName, false)
+      repaired.push({ packageName, reason })
+    }
+    return repaired
+  }
+
   /** List third-party packages present in every DSH profile, including packages not installed by EzDSH. */
   async listInstalledPlugins(): Promise<DshInstalledPlugin[]> {
     const profilesRoot = join(this.options.dshHome, 'profiles')
@@ -292,6 +319,7 @@ interface PackageManifest {
   readonly name?: string
   readonly version?: string
   readonly dsh?: unknown
+  readonly peerDependencies?: Readonly<Record<string, unknown>>
 }
 
 async function readProfileManifest(dshHome: string, profile: string): Promise<ProfileManifest> {
@@ -373,15 +401,109 @@ async function readPackageManifest(path: string): Promise<PackageManifest | unde
   try {
     const parsed: unknown = JSON.parse(await readFile(path, 'utf8'))
     if (typeof parsed !== 'object' || parsed === null) return undefined
-    const value = parsed as { name?: unknown; version?: unknown; dsh?: unknown }
+    const value = parsed as { name?: unknown; version?: unknown; dsh?: unknown; peerDependencies?: unknown }
     return {
       ...(typeof value.name === 'string' ? { name: value.name } : {}),
       ...(typeof value.version === 'string' ? { version: value.version } : {}),
       ...(value.dsh === undefined ? {} : { dsh: value.dsh }),
+      ...(typeof value.peerDependencies === 'object' && value.peerDependencies !== null && !Array.isArray(value.peerDependencies)
+        ? { peerDependencies: value.peerDependencies as Readonly<Record<string, unknown>> }
+        : {}),
     }
   } catch {
     return undefined
   }
+}
+
+async function incompatiblePeerReason(manifest: PackageManifest, runtimeRequire: NodeRequire): Promise<string | undefined> {
+  for (const [peerName, peerRangeValue] of Object.entries(manifest.peerDependencies ?? {})) {
+    if (!peerName.startsWith('@deepseek-ai/dsh-') || typeof peerRangeValue !== 'string') continue
+    const peerRange = peerRangeValue.trim()
+    const runtimeManifestPath = resolveRuntimePackageManifest(runtimeRequire, peerName)
+    if (runtimeManifestPath === undefined) {
+      return `${peerName} ${peerRange} is required, but the selected Runtime does not provide this package`
+    }
+    const runtimeManifest = await readPackageManifest(runtimeManifestPath)
+    if (runtimeManifest?.version === undefined) {
+      return `${peerName} ${peerRange} is required, but the selected Runtime package has no version`
+    }
+    const compatible = versionSatisfiesRange(runtimeManifest.version, peerRange)
+    if (compatible === false) {
+      return `${peerName} ${peerRange} is required, but the selected Runtime provides ${runtimeManifest.version}`
+    }
+  }
+  return undefined
+}
+
+function resolveRuntimePackageManifest(runtimeRequire: NodeRequire, packageName: string): string | undefined {
+  try {
+    return runtimeRequire.resolve(`${packageName}/package.json`)
+  } catch {
+    return undefined
+  }
+}
+
+function versionSatisfiesRange(version: string, range: string): boolean | undefined {
+  const candidate = parseVersion(version)
+  if (candidate === undefined) return undefined
+  let understood = false
+  for (const arm of range.split(/\s*\|\|\s*/u)) {
+    const normalized = arm.trim()
+    if (normalized === '' || normalized === '*') return true
+    const operatorMatch = /^(\^|~|>=|<=|>|<|=)?\s*/u.exec(normalized)
+    const operator = operatorMatch?.[1] ?? '='
+    const minimum = parseVersion(normalized.slice(operatorMatch?.[0].length ?? 0).trim())
+    if (minimum === undefined) continue
+    understood = true
+    if (candidate.prerelease !== undefined && (minimum.prerelease === undefined || !sameNumericVersion(candidate, minimum))) continue
+    const minimumComparison = compareDshVersions(version, formatVersion(minimum))
+    if (operator === '=' && minimumComparison === 0) return true
+    if (operator === '>' && minimumComparison > 0) return true
+    if (operator === '>=' && minimumComparison >= 0) return true
+    if (operator === '<' && minimumComparison < 0) return true
+    if (operator === '<=' && minimumComparison <= 0) return true
+    if (operator === '^' || operator === '~') {
+      const upper = operator === '^' ? caretUpperBound(minimum) : tildeUpperBound(minimum)
+      if (minimumComparison >= 0 && compareDshVersions(version, formatVersion(upper)) < 0) return true
+    }
+  }
+  return understood ? false : undefined
+}
+
+interface ParsedVersion {
+  readonly major: number
+  readonly minor: number
+  readonly patch: number
+  readonly prerelease?: string
+}
+
+function parseVersion(value: string): ParsedVersion | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u.exec(value.trim())
+  if (match === null) return undefined
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    ...(match[4] === undefined ? {} : { prerelease: match[4] }),
+  }
+}
+
+function sameNumericVersion(left: ParsedVersion, right: ParsedVersion): boolean {
+  return left.major === right.major && left.minor === right.minor && left.patch === right.patch
+}
+
+function caretUpperBound(version: ParsedVersion): ParsedVersion {
+  if (version.major > 0) return { major: version.major + 1, minor: 0, patch: 0 }
+  if (version.minor > 0) return { major: 0, minor: version.minor + 1, patch: 0 }
+  return { major: 0, minor: 0, patch: version.patch + 1 }
+}
+
+function tildeUpperBound(version: ParsedVersion): ParsedVersion {
+  return { major: version.major, minor: version.minor + 1, patch: 0 }
+}
+
+function formatVersion(version: ParsedVersion): string {
+  return `${version.major}.${version.minor}.${version.patch}${version.prerelease === undefined ? '' : `-${version.prerelease}`}`
 }
 
 async function packageNamesInNodeModules(nodeModulesRoot: string): Promise<string[]> {

@@ -2,7 +2,7 @@
 
 ## 1. 总体结构
 
-EzDSH 默认使用固定版本的 vendored `@deepseek-ai/dsh@0.1.3-alpha.1` 源码 Runtime。开发模式从 `vendor/deepseek-harness/apps/cli/lib/bin.js` 启动，正式安装包从 `out/dsh-runtime/lib/bin.js` 启动；不从用户系统 PATH 或不确定的本机安装目录寻找 DSH。由于该 alpha 版本尚未发布到 npm，根项目保留 `0.1.2-rc.1` 作为可安装 fallback，但它不作为正式安装包的权威 Runtime。
+EzDSH 默认使用固定版本的 vendored `@deepseek-ai/dsh@0.1.3-alpha.2` 源码 Runtime。开发模式从 `vendor/deepseek-harness/apps/cli/lib/bin.js` 启动，正式安装包从 `out/dsh-runtime/lib/bin.js` 启动；不从用户系统 PATH 或不确定的本机安装目录寻找 DSH。根项目同时锁定已发布的 `0.1.3-alpha.2` 依赖作为开发和构建依赖，但它不替代正式安装包中的 source-built Runtime。
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -267,6 +267,8 @@ Credential 明文默认不进入 Archive。受限文件（当前包括 `harness/
 真实恢复先校验并解包到 staging，再以目录 rename 方式替换 `harness/` 和 `state/`；失败会回滚到恢复前目录。Session Log doctor 默认只读扫描 `harness/sessions`，只允许显式修复最后一条未完成 JSONL 记录，中间已提交损坏不会自动改写。应用完成升级后会清除升级事务；升级启动失败则保留事务并展示“恢复上一份环境”。
 
 每次成功创建快照还会把零依赖的 `rescue.mjs` 和平台 launcher 写入 `backups/`。它可以在 EzDSH 或 DSH Runtime 无法启动时通过 `list`、`verify`、`doctor`、`restore --yes` 或 loopback Web UI 工作。应用二进制本身仍由 electron-updater 管理；当前 rollback 保障的是用户数据与 Runtime 配置，不伪装成应用安装包的二进制回滚。
+
+Recovery 校验会自动保留归档内部的相对符号链接，以及指向当前 EzDSH/Runtime 受信任目录或完整 `@deepseek-ai/dsh` Runtime 包的 pnpm 依赖链接；目标越界到未知路径的链接仍会被拒绝，避免把依赖链接问题误报成需要用户手工修复的恢复失败。独立 rescue 通道还会动态补充当前应用的 Resources 根目录，因此应用更新后不会被旧的绝对路径配置卡住。
 
 ### 6.1 Plugin Safe Mode 与受管插件恢复
 

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
-import type { RecoveryDoctorResult, RecoveryState, RuntimeFailurePlugin } from '../../main/recovery/recovery-manager.js'
+import type { RecoveryDoctorResult, RecoverySnapshot, RecoveryState, RuntimeFailurePlugin } from '../../main/recovery/recovery-manager.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 import './recovery-panel.css'
 
@@ -11,13 +11,20 @@ interface RecoveryPanelProps {
   onSafeModeStarted?: (runtime: RuntimeSnapshot) => void
 }
 
-type RecoveryBusyAction = 'retry' | 'restore' | 'safe-mode' | 'exit-safe-mode' | 'rollback-plugin' | 'disable-plugin' | 'doctor'
+type RecoveryBusyAction = 'retry' | 'restore' | 'restore-snapshot' | 'list-snapshots' | 'safe-mode' | 'exit-safe-mode' | 'rollback-plugin' | 'disable-plugin' | 'doctor'
+
+export function sortRecoverySnapshotsByDate(snapshots: readonly RecoverySnapshot[]): RecoverySnapshot[] {
+  return [...snapshots].sort((left, right) => right.manifest.createdAt.localeCompare(left.manifest.createdAt))
+}
 
 /** Recovery UI that remains usable while the DSH child process is unavailable. */
 export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: RecoveryPanelProps): JSX.Element {
   const [busyAction, setBusyAction] = useState<RecoveryBusyAction>()
   const [error, setError] = useState<string>()
   const [doctor, setDoctor] = useState<RecoveryDoctorResult>()
+  const [snapshotPickerOpen, setSnapshotPickerOpen] = useState(false)
+  const [availableSnapshots, setAvailableSnapshots] = useState<RecoverySnapshot[]>([])
+  const [selectedSnapshotName, setSelectedSnapshotName] = useState<string>()
   const busy = busyAction !== undefined
   const pendingTransaction = state.pendingTransaction
   const pendingPlugin = pendingTransaction?.kind === 'plugin-change' ? pendingTransaction.affectedPlugin : undefined
@@ -38,18 +45,44 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
     }
   }
 
-  const restore = async (): Promise<void> => {
+  const restore = async (selector: string, action: 'restore' | 'restore-snapshot' = 'restore', closePicker = false): Promise<void> => {
     if (busy) return
-    setBusyAction('restore')
+    setBusyAction(action)
     setError(undefined)
     try {
-      await window.EzDSH.recovery.restore(snapshotName, false)
+      await window.EzDSH.recovery.restore(selector, false)
       await window.EzDSH.runtime.start()
+      if (closePicker) {
+        setSnapshotPickerOpen(false)
+        setSelectedSnapshotName(undefined)
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.recoveryRestoreFailed)
     } finally {
       setBusyAction(undefined)
     }
+  }
+
+  const openSnapshotPicker = async (): Promise<void> => {
+    if (busy) return
+    setSnapshotPickerOpen(true)
+    setSelectedSnapshotName(undefined)
+    setAvailableSnapshots([])
+    setBusyAction('list-snapshots')
+    setError(undefined)
+    try {
+      setAvailableSnapshots(sortRecoverySnapshotsByDate(await window.EzDSH.recovery.listSnapshots()))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.recoverySnapshotsEmpty)
+    } finally {
+      setBusyAction(undefined)
+    }
+  }
+
+  const closeSnapshotPicker = (): void => {
+    if (busy) return
+    setSnapshotPickerOpen(false)
+    setSelectedSnapshotName(undefined)
   }
 
   const enterSafeMode = async (): Promise<void> => {
@@ -180,6 +213,50 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
             ) : null}
           </div>
         ) : null}
+        {snapshotPickerOpen ? (
+          <section className="recovery-snapshot-picker" role="dialog" aria-modal="true" aria-labelledby="recovery-snapshot-picker-title">
+            <h2 id="recovery-snapshot-picker-title">{copy.recoverySelectSnapshotTitle}</h2>
+            <p className="recovery-snapshot-picker-hint">{copy.recoverySelectSnapshotHint}</p>
+            {busyAction === 'list-snapshots' ? <p className="recovery-snapshot-picker-status">{copy.recoverySnapshotsLoading}</p> : null}
+            {busyAction !== 'list-snapshots' && availableSnapshots.length === 0 ? <p className="recovery-snapshot-picker-status">{copy.recoverySnapshotsEmpty}</p> : null}
+            {availableSnapshots.length > 0 ? (
+              <div className="recovery-snapshot-choices" role="radiogroup" aria-label={copy.recoverySelectSnapshotTitle}>
+                {availableSnapshots.map((snapshot) => (
+                  <label key={snapshot.archiveName} className={`recovery-snapshot-choice${selectedSnapshotName === snapshot.archiveName ? ' recovery-snapshot-choice-selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="recovery-snapshot"
+                      value={snapshot.archiveName}
+                      checked={selectedSnapshotName === snapshot.archiveName}
+                      disabled={busy}
+                      onChange={() => setSelectedSnapshotName(snapshot.archiveName)}
+                    />
+                    <span className="recovery-snapshot-choice-text">
+                      <strong>{snapshot.manifest.createdAt}</strong>
+                      <code>{snapshot.archiveName}</code>
+                      <span>{snapshot.manifest.kind} · {snapshot.manifest.reason}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            ) : null}
+            <div className="recovery-snapshot-picker-actions">
+              <button type="button" className="recovery-link recovery-action-button" disabled={busy} onClick={closeSnapshotPicker}>
+                {copy.recoverySelectSnapshotCancel}
+              </button>
+              <button
+                type="button"
+                className="recovery-primary recovery-action-button"
+                disabled={busy || selectedSnapshotName === undefined}
+                onClick={() => {
+                  if (selectedSnapshotName !== undefined) void restore(selectedSnapshotName, 'restore-snapshot', true)
+                }}
+              >
+                {busyAction === 'restore-snapshot' ? copy.recoveryRestoring : copy.recoverySelectSnapshotConfirm}
+              </button>
+            </div>
+          </section>
+        ) : null}
         <div className="recovery-actions">
           {pendingPlugin ? (
             <button type="button" className="recovery-primary recovery-action-button" disabled={busy} onClick={() => { void rollbackPlugin() }}>
@@ -187,10 +264,13 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
             </button>
           ) : null}
           {canRestore ? (
-            <button type="button" className="recovery-primary recovery-action-button" disabled={busy} onClick={() => { void restore() }}>
+            <button type="button" className="recovery-primary recovery-action-button" disabled={busy} onClick={() => { void restore(snapshotName) }}>
               {busyAction === 'restore' ? copy.recoveryRestoring : copy.recoveryRestorePrevious}
             </button>
           ) : null}
+          <button type="button" className="recovery-link recovery-action-button" disabled={busy} onClick={() => { void openSnapshotPicker() }}>
+            {copy.recoverySelectSnapshot}
+          </button>
           <button type="button" className="recovery-safe-mode recovery-action-button" disabled={busy} onClick={() => { void enterSafeMode() }}>
             {copy.runtimeEnterSafeMode}
           </button>

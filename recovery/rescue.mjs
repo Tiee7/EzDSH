@@ -20,13 +20,15 @@ import {
   mkdir,
   readdir,
   readFile,
+  readlink,
   rename,
+  realpath,
   rm,
   stat,
   writeFile,
 } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 const COMPONENTS = ['harness', 'state', 'workflow']
 const SNAPSHOT_PATTERN = /^ezdsh-(manual|pre-update|pre-restore)-[^/]+\.tar\.gz$/u
@@ -200,7 +202,7 @@ async function restore(snapshot, preview) {
   await mkdir(staging, { recursive: true, mode: 0o700 })
   try {
     await run('tar', ['-xzf', snapshot.archivePath, '-C', staging], backupsRoot)
-    await validateTree(staging, staging)
+    await validateTree(staging, staging, await loadTrustedSymlinkRoots())
     for (const component of components) {
       if (!(await isDirectory(join(staging, component)))) {
         throw new Error(`archive is missing component ${component}`)
@@ -417,15 +419,100 @@ function safeRelative(value) {
   return normalized
 }
 
-async function validateTree(directory, archiveRoot) {
+async function loadTrustedSymlinkRoots() {
+  const configuredRoots = []
+  try {
+    const value = JSON.parse(await readFile(join(backupsRoot, 'rescue-config.json'), 'utf8'))
+    if (Array.isArray(value?.trustedSymlinkRoots)) {
+      configuredRoots.push(...value.trustedSymlinkRoots.filter((item) => typeof item === 'string'))
+    }
+  } catch {
+    // The rescue channel must still work when its optional persisted config is missing or stale.
+  }
+
+  const runtimeRoots = []
+  if (typeof process.resourcesPath === 'string' && process.resourcesPath !== '') {
+    runtimeRoots.push(process.resourcesPath)
+  }
+  if (typeof process.execPath === 'string' && process.execPath !== '') {
+    const executableDirectory = dirname(process.execPath)
+    runtimeRoots.push(
+      join(executableDirectory, '..', 'Resources'),
+      join(executableDirectory, 'resources'),
+      join(executableDirectory, '..', 'resources'),
+    )
+  }
+
+  return [...new Set([...configuredRoots, ...runtimeRoots].map((root) => resolve(root)))]
+}
+
+async function validateTree(directory, archiveRoot, trustedSymlinkRoots = []) {
+  const canonicalArchiveRoot = await realpath(archiveRoot)
+  const canonicalTrustedRoots = await Promise.all(trustedSymlinkRoots.map(async (trustedRoot) => {
+    try { return await realpath(trustedRoot) } catch { return resolve(trustedRoot) }
+  }))
+  await validateTreeNode(directory, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
+}
+
+async function validateTreeNode(directory, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const candidate = join(directory, entry.name)
     const relativePath = relative(archiveRoot, candidate).split(sep).join('/')
     validateArchiveEntry(relativePath)
-    if (entry.isSymbolicLink()) throw new Error(`Symbolic links are not allowed: ${relativePath}`)
-    if (entry.isDirectory()) await validateTree(candidate, archiveRoot)
+    if (entry.isSymbolicLink()) {
+      await validateSymlink(candidate, relativePath, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
+      continue
+    }
+    if (entry.isDirectory()) await validateTreeNode(candidate, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
     else if (!entry.isFile()) throw new Error(`Unsupported archive entry: ${relativePath}`)
   }
+}
+
+async function validateSymlink(candidate, relativePath, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots) {
+  const linkTarget = await readlink(candidate, 'utf8')
+  const resolvedTarget = resolve(dirname(candidate), linkTarget)
+  let resolvedRealPath
+  try {
+    resolvedRealPath = await realpath(candidate)
+  } catch (error) {
+    throw new Error(`Broken symbolic link in recovery archive: ${relativePath} -> ${linkTarget}`, { cause: error })
+  }
+  const targetIsInsideArchive = isPathInside(archiveRoot, resolvedTarget)
+    && isPathInside(canonicalArchiveRoot, resolvedRealPath)
+  const bundledRuntimeRoot = isAbsolute(linkTarget) ? await findBundledDshRuntimeRoot(resolvedRealPath) : undefined
+  const targetIsTrusted = isAbsolute(linkTarget) && (
+    canonicalTrustedRoots.some((root) => isPathInside(root, resolvedRealPath))
+    || bundledRuntimeRoot !== undefined
+  )
+  if (!targetIsInsideArchive && !targetIsTrusted) {
+    throw new Error(`Symbolic link target is outside the recovery boundary: ${relativePath} -> ${linkTarget}`)
+  }
+}
+
+async function findBundledDshRuntimeRoot(target) {
+  let current = resolve(target)
+  for (let depth = 0; depth < 16; depth += 1) {
+    try {
+      const packageJson = JSON.parse(await readFile(join(current, 'package.json'), 'utf8'))
+      if (packageJson
+        && typeof packageJson === 'object'
+        && packageJson.name === '@deepseek-ai/dsh'
+        && await isFile(join(current, 'lib', 'bin.js'))) {
+        return current
+      }
+    } catch {
+      // Walk up through pnpm's nested package layout until the Runtime package is found.
+    }
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return undefined
+}
+
+function isPathInside(root, candidate) {
+  const relativePath = relative(resolve(root), resolve(candidate))
+  return relativePath === '' || (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
 }
 
 async function serve(port) {

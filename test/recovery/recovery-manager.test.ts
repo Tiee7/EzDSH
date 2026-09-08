@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { zstdCompressSync } from 'node:zlib'
 import { tmpdir } from 'node:os'
@@ -175,6 +175,74 @@ describe('RecoveryManager', () => {
     expect(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')).toContain('preference: zh')
   })
 
+  it('preserves a selected pre-restore snapshot while creating the restore safety snapshot', async () => {
+    const layout = await createFixture()
+    let now = new Date('2026-08-27T01:02:03.004Z')
+    const manager = createManager(layout, { now: () => now })
+    const snapshot = await manager.createSnapshot({ kind: 'pre-restore', reason: 'selected recovery point' })
+    await writeFile(join(layout.harness, 'settings.yaml'), 'broken: true\n', { mode: 0o600 })
+    now = new Date('2026-08-27T01:03:03.004Z')
+
+    await expect(manager.restore(snapshot.archiveName, false)).resolves.toMatchObject({
+      snapshotName: snapshot.archiveName,
+    })
+    await expect(access(snapshot.archivePath)).resolves.toBeUndefined()
+    expect(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')).toContain('preference: zh')
+  })
+
+  it('restores a trusted absolute dependency symlink automatically', async () => {
+    const layout = await createFixture()
+    const trustedRoot = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-'))
+    temporaryRoots.push(trustedRoot)
+    const dependencyTarget = join(trustedRoot, 'node_modules', '@agentclientprotocol', 'sdk')
+    const dependencyLink = join(layout.harness, 'profiles', 'node_modules', '@agentclientprotocol', 'sdk')
+    await mkdir(dependencyTarget, { recursive: true })
+    await writeFile(join(dependencyTarget, 'package.json'), '{"name":"@agentclientprotocol/sdk"}\n', { mode: 0o600 })
+    await mkdir(join(dependencyLink, '..'), { recursive: true })
+    await symlink(dependencyTarget, dependencyLink)
+    const manager = createManager(layout, { trustedSymlinkRoots: [trustedRoot] })
+    const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'trusted dependency link' })
+    await rm(dependencyLink, { force: true })
+
+    await expect(manager.restore(snapshot.archiveName, false)).resolves.toMatchObject({ snapshotName: snapshot.archiveName })
+    await expect(lstat(dependencyLink)).resolves.toSatisfy((entry) => entry.isSymbolicLink())
+  })
+
+  it('restores an absolute dependency symlink into a bundled DSH Runtime without a saved root', async () => {
+    const layout = await createFixture()
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'ezdsh-bundled-runtime-'))
+    temporaryRoots.push(runtimeRoot)
+    await mkdir(join(runtimeRoot, 'lib'), { recursive: true })
+    await writeFile(join(runtimeRoot, 'package.json'), '{"name":"@deepseek-ai/dsh","version":"0.1.3"}\n', { mode: 0o600 })
+    await writeFile(join(runtimeRoot, 'lib', 'bin.js'), '#!/usr/bin/env node\n', { mode: 0o700 })
+    const dependencyTarget = join(runtimeRoot, 'node_modules', '@aws-crypto', 'crc32')
+    const dependencyLink = join(layout.harness, 'profiles', 'node_modules', '@aws-crypto', 'crc32')
+    await mkdir(dependencyTarget, { recursive: true })
+    await writeFile(join(dependencyTarget, 'package.json'), '{"name":"@aws-crypto/crc32"}\n', { mode: 0o600 })
+    await mkdir(join(dependencyLink, '..'), { recursive: true })
+    await symlink(dependencyTarget, dependencyLink)
+    const manager = createManager(layout)
+    const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'bundled runtime dependency link' })
+    await rm(dependencyLink, { force: true })
+
+    await expect(manager.restore(snapshot.archiveName, false)).resolves.toMatchObject({ snapshotName: snapshot.archiveName })
+    await expect(lstat(dependencyLink)).resolves.toSatisfy((entry) => entry.isSymbolicLink())
+  })
+
+  it('rejects a symbolic link that escapes both the archive and trusted application roots', async () => {
+    const layout = await createFixture()
+    const untrustedRoot = await mkdtemp(join(tmpdir(), 'ezdsh-untrusted-'))
+    temporaryRoots.push(untrustedRoot)
+    const dependencyLink = join(layout.harness, 'profiles', 'node_modules', 'outside')
+    await writeFile(join(untrustedRoot, 'outside'), 'untrusted\n', { mode: 0o600 })
+    await mkdir(join(dependencyLink, '..'), { recursive: true })
+    await symlink(join(untrustedRoot, 'outside'), dependencyLink)
+    const manager = createManager(layout)
+    const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'untrusted dependency link' })
+
+    await expect(manager.restore(snapshot.archiveName, false)).rejects.toThrow('Symbolic link target is outside the recovery boundary')
+  })
+
   it('persists an upgrade transaction and enters recovery-required after boot failure', async () => {
     const layout = await createFixture()
     const manager = createManager(layout)
@@ -303,6 +371,54 @@ describe('RecoveryManager', () => {
 
     await execFileAsync(process.execPath, [resolve('recovery/rescue.mjs'), 'restore', snapshot.archiveName, '--yes', '--root', layout.root])
     expect(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')).toContain('preference: zh')
+  })
+
+  it('lets the standalone rescue script restore trusted dependency symlinks', async () => {
+    const layout = await createFixture()
+    const trustedRoot = await mkdtemp(join(tmpdir(), 'ezdsh-rescue-runtime-'))
+    temporaryRoots.push(trustedRoot)
+    const dependencyTarget = join(trustedRoot, 'node_modules', '@agentclientprotocol', 'sdk')
+    const dependencyLink = join(layout.harness, 'profiles', 'node_modules', '@agentclientprotocol', 'sdk')
+    await mkdir(dependencyTarget, { recursive: true })
+    await writeFile(join(dependencyTarget, 'package.json'), '{"name":"@agentclientprotocol/sdk"}\n', { mode: 0o600 })
+    await mkdir(join(dependencyLink, '..'), { recursive: true })
+    await symlink(dependencyTarget, dependencyLink)
+    const manager = createManager(layout, {
+      rescueScriptPath: resolve('recovery/rescue.mjs'),
+      trustedSymlinkRoots: [trustedRoot],
+    })
+    const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'standalone trusted dependency link' })
+    await rm(dependencyLink, { force: true })
+
+    await execFileAsync(process.execPath, [resolve('recovery/rescue.mjs'), 'restore', snapshot.archiveName, '--yes', '--root', layout.root])
+    await expect(lstat(dependencyLink)).resolves.toSatisfy((entry) => entry.isSymbolicLink())
+  })
+
+  it('lets standalone rescue trust the current Electron Resources path when its saved config is stale', async () => {
+    const layout = await createFixture()
+    const trustedRoot = await mkdtemp(join(tmpdir(), 'ezdsh-rescue-current-runtime-'))
+    const staleRoot = await mkdtemp(join(tmpdir(), 'ezdsh-rescue-stale-runtime-'))
+    temporaryRoots.push(trustedRoot, staleRoot)
+    const dependencyTarget = join(trustedRoot, 'node_modules', '@aws-crypto', 'crc32')
+    const dependencyLink = join(layout.harness, 'profiles', 'node_modules', '@aws-crypto', 'crc32')
+    await mkdir(dependencyTarget, { recursive: true })
+    await writeFile(join(dependencyTarget, 'package.json'), '{"name":"@aws-crypto/crc32"}\n', { mode: 0o600 })
+    await mkdir(join(dependencyLink, '..'), { recursive: true })
+    await symlink(dependencyTarget, dependencyLink)
+    const manager = createManager(layout, {
+      rescueScriptPath: resolve('recovery/rescue.mjs'),
+      trustedSymlinkRoots: [staleRoot],
+    })
+    const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'stale rescue config' })
+    await rm(dependencyLink, { force: true })
+    const preload = join(layout.backups, 'set-electron-resources-path.mjs')
+    await writeFile(preload, `Object.defineProperty(process, 'resourcesPath', { value: ${JSON.stringify(trustedRoot)} })\n`, { mode: 0o600 })
+
+    await execFileAsync(process.execPath, [
+      '--import', preload,
+      resolve('recovery/rescue.mjs'), 'restore', snapshot.archiveName, '--yes', '--root', layout.root,
+    ])
+    await expect(lstat(dependencyLink)).resolves.toSatisfy((entry) => entry.isSymbolicLink())
   })
 
   it('rotates snapshots by kind while retaining the newest recovery points', async () => {

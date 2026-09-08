@@ -9,7 +9,9 @@ import {
   mkdir,
   readdir,
   readFile,
+  readlink,
   rename,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -194,6 +196,8 @@ export interface RecoveryManagerOptions {
   sensitivePaths?: readonly string[]
   maxSnapshots?: number
   rescueScriptPath?: string
+  /** Application/runtime roots where pnpm-managed absolute links may resolve. */
+  trustedSymlinkRoots?: readonly string[]
   pluginInventory?: () => Promise<readonly string[]>
   compatibilityInventory?: () => Promise<readonly RecoveryCompatibilityInventoryItem[]>
 }
@@ -203,6 +207,8 @@ export interface CreateSnapshotInput {
   reason: string
   pluginInventory?: readonly string[]
   compatibilityInventory?: readonly RecoveryCompatibilityInventoryItem[]
+  /** Keep a selected recovery point while rotating same-kind safety snapshots. */
+  preserveArchiveName?: string
 }
 
 export interface PrepareUpdateInput {
@@ -232,6 +238,7 @@ export class RecoveryManager {
   private readonly options: Required<Pick<RecoveryManagerOptions, 'dataSchemaVersion' | 'now' | 'tarCommand' | 'maxSnapshots'>>
   private readonly runCommand: RecoveryCommandRunner
   private readonly sensitivePaths: readonly string[]
+  private readonly trustedSymlinkRoots: readonly string[]
   private readonly listeners = new Set<RecoveryListener>()
   private current: RecoveryState = { phase: 'idle' }
 
@@ -244,6 +251,7 @@ export class RecoveryManager {
     }
     this.runCommand = config.runCommand ?? runSystemCommand
     this.sensitivePaths = [...(config.sensitivePaths ?? DEFAULT_SENSITIVE_PATHS)].map(normalizeRelativePath)
+    this.trustedSymlinkRoots = [...(config.trustedSymlinkRoots ?? [])].map((root) => resolve(root))
   }
 
   snapshot(): RecoveryState {
@@ -309,7 +317,7 @@ export class RecoveryManager {
       await writeAtomic(checksumPath, `${sha256}  ${archiveName}\n`, 0o600)
       await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600)
       await this.writeRescueAssets()
-      await this.rotate(input.kind)
+      await this.rotate(input.kind, input.preserveArchiveName)
       return { archiveName, archivePath, checksumPath, manifestPath, manifest }
     } catch (error) {
       await Promise.allSettled([
@@ -403,13 +411,17 @@ export class RecoveryManager {
       ...(this.current.pendingTransaction === undefined ? {} : { pendingTransaction: this.current.pendingTransaction }),
     })
     try {
-      const preRestore = await this.createSnapshot({ kind: 'pre-restore', reason: `Before restoring ${snapshot.archiveName}` })
+      const preRestore = await this.createSnapshot({
+        kind: 'pre-restore',
+        reason: `Before restoring ${snapshot.archiveName}`,
+        preserveArchiveName: snapshot.archiveName,
+      })
       const staging = join(this.config.layout.backups, `.ezdsh-restore-${randomUUID()}`)
       const aside = join(this.config.layout.root, `.ezdsh-pre-restore-${formatTimestamp(this.options.now().toISOString())}`)
       await mkdir(staging, { recursive: true, mode: 0o700 })
       try {
         await this.runCommand(this.options.tarCommand, ['-xzf', snapshot.archivePath, '-C', staging], { cwd: this.config.layout.backups })
-        await validateExtractedTree(staging)
+        await validateExtractedTree(staging, staging, this.trustedSymlinkRoots)
         for (const component of snapshot.manifest.components) {
           if (!(await isDirectory(join(staging, component)))) {
             throw new Error(`archive is missing component ${component}`)
@@ -647,6 +659,11 @@ export class RecoveryManager {
     const target = join(this.config.layout.backups, 'rescue.mjs')
     await copyFile(source, target)
     await chmod(target, 0o700).catch(() => undefined)
+    await writeAtomic(
+      join(this.config.layout.backups, 'rescue-config.json'),
+      `${JSON.stringify({ trustedSymlinkRoots: this.trustedSymlinkRoots }, null, 2)}\n`,
+      0o600,
+    )
     const nodeCommand = process.execPath
     if (process.platform === 'win32') {
       const launcher = `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${nodeCommand.replaceAll('"', '""')}" "%~dp0rescue.mjs" serve\r\n pause\r\n`
@@ -660,11 +677,11 @@ export class RecoveryManager {
     }
   }
 
-  private async rotate(kind: RecoverySnapshotKind): Promise<void> {
+  private async rotate(kind: RecoverySnapshotKind, preserveArchiveName?: string): Promise<void> {
     const snapshots = await this.listSnapshots()
     const keep = kind === 'pre-update' ? 2 : kind === 'pre-restore' ? 1 : this.options.maxSnapshots
     const sameKind = snapshots.filter((snapshot) => snapshot.manifest.kind === kind)
-    for (const snapshot of sameKind.slice(keep)) {
+    for (const snapshot of sameKind.slice(keep).filter((candidate) => candidate.archiveName !== preserveArchiveName)) {
       await Promise.all([
         rm(snapshot.archivePath, { force: true }),
         rm(snapshot.checksumPath, { force: true }),
@@ -922,15 +939,92 @@ async function restoreCredentials(
   }
 }
 
-async function validateExtractedTree(root: string, archiveRoot = root): Promise<void> {
+async function validateExtractedTree(root: string, archiveRoot = root, trustedSymlinkRoots: readonly string[] = []): Promise<void> {
+  const canonicalArchiveRoot = await realpath(archiveRoot)
+  const canonicalTrustedRoots = await Promise.all(trustedSymlinkRoots.map(async (trustedRoot) => {
+    try {
+      return await realpath(trustedRoot)
+    } catch {
+      return resolve(trustedRoot)
+    }
+  }))
+  await validateExtractedTreeNode(root, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
+}
+
+async function validateExtractedTreeNode(
+  root: string,
+  archiveRoot: string,
+  canonicalArchiveRoot: string,
+  canonicalTrustedRoots: readonly string[],
+): Promise<void> {
   const entries = await readdir(root, { withFileTypes: true })
   for (const entry of entries) {
     const candidate = join(root, entry.name)
     const relativePath = relative(archiveRoot, candidate).split(sep).join('/')
     validateArchiveEntry(relativePath)
-    if (entry.isSymbolicLink()) throw new Error(`Symbolic links are not allowed in recovery archives: ${relativePath}`)
-    if (entry.isDirectory()) await validateExtractedTree(candidate, archiveRoot)
+    if (entry.isSymbolicLink()) {
+      await validateExtractedSymlink(candidate, relativePath, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
+      continue
+    }
+    if (entry.isDirectory()) await validateExtractedTreeNode(candidate, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
+    else if (!entry.isFile()) throw new Error(`Unsupported recovery archive entry: ${relativePath}`)
   }
+}
+
+async function validateExtractedSymlink(
+  candidate: string,
+  relativePath: string,
+  archiveRoot: string,
+  canonicalArchiveRoot: string,
+  canonicalTrustedRoots: readonly string[],
+): Promise<void> {
+  const linkTarget = await readlink(candidate, 'utf8')
+  const resolvedTarget = resolve(dirname(candidate), linkTarget)
+  let resolvedRealPath: string
+  try {
+    resolvedRealPath = await realpath(candidate)
+  } catch (error) {
+    throw new Error(`Broken symbolic link in recovery archive: ${relativePath} -> ${linkTarget}`, { cause: error })
+  }
+  const targetIsInsideArchive = isPathInside(archiveRoot, resolvedTarget)
+    && isPathInside(canonicalArchiveRoot, resolvedRealPath)
+  const bundledRuntimeRoot = isAbsolute(linkTarget) ? await findBundledDshRuntimeRoot(resolvedRealPath) : undefined
+  const targetIsTrusted = isAbsolute(linkTarget) && (
+    canonicalTrustedRoots.some((root) => isPathInside(root, resolvedRealPath))
+    || bundledRuntimeRoot !== undefined
+  )
+  if (!targetIsInsideArchive && !targetIsTrusted) {
+    throw new Error(`Symbolic link target is outside the recovery boundary: ${relativePath} -> ${linkTarget}`)
+  }
+}
+
+async function findBundledDshRuntimeRoot(target: string): Promise<string | undefined> {
+  let current = resolve(target)
+  for (let depth = 0; depth < 16; depth += 1) {
+    try {
+      const packageJson: unknown = JSON.parse(await readFile(join(current, 'package.json'), 'utf8'))
+      if (
+        typeof packageJson === 'object'
+        && packageJson !== null
+        && 'name' in packageJson
+        && packageJson.name === '@deepseek-ai/dsh'
+        && await isFile(join(current, 'lib', 'bin.js'))
+      ) {
+        return current
+      }
+    } catch {
+      // Walk up through pnpm's nested package layout until the Runtime package is found.
+    }
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return undefined
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const relativePath = relative(resolve(root), resolve(candidate))
+  return relativePath === '' || (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
 }
 
 interface ZstdFrameRange {

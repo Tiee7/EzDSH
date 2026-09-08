@@ -20,7 +20,7 @@ EzDSH 是 DeepSeek Harness 的桌面发行版，也是一套以工作流为核�
 ### 2.0 Runtime 交付原则
 
 - EzDSH 默认交付固定版本的 vendored DSH Runtime；
-- 当前锁定 `@deepseek-ai/dsh@0.1.3-alpha.1`，源码子模块提交和构建结果必须可追溯；
+- 当前锁定 `@deepseek-ai/dsh@0.1.3-alpha.2`，源码子模块提交和构建结果必须可追溯；
 - 发布安装包包含对应版本的 DSH Runtime；
 - 用户不需要预先安装 DSH、Node.js 或 pnpm；
 - 普通开发不读取本机全局 DSH；
@@ -240,7 +240,7 @@ API Key 必须由 Harness Credentials 能力或操作系统安全存储处理。
 
 ```text
 EzDSHVersion: 0.8.1505
-dshRuntimeVersion: 0.1.3-alpha.1
+dshRuntimeVersion: 0.1.3-alpha.2
 dataSchemaVersion: 1
 ```
 

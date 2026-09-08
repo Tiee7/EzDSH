@@ -2,11 +2,30 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { RecoveryPanel } from '../../src/renderer/recovery/RecoveryPanel'
+import { RecoveryPanel, sortRecoverySnapshotsByDate } from '../../src/renderer/recovery/RecoveryPanel'
+import type { RecoverySnapshot } from '../../src/main/recovery/recovery-manager'
 import type { RuntimeSnapshot } from '../../src/main/runtime/runtime-types'
 import { getAppCopy } from '../../src/shared/locale'
 
 describe('RecoveryPanel Safe Mode controls', () => {
+  it('sorts the specified-backup choices newest first', () => {
+    const older = { archiveName: 'older', manifest: { createdAt: '2026-09-07T10:00:00.000Z' } } as RecoverySnapshot
+    const newer = { archiveName: 'newer', manifest: { createdAt: '2026-09-08T10:00:00.000Z' } } as RecoverySnapshot
+
+    expect(sortRecoverySnapshotsByDate([older, newer]).map((snapshot) => snapshot.archiveName)).toEqual(['newer', 'older'])
+  })
+
+  it('offers a specified-backup recovery entry point', () => {
+    const markup = renderToStaticMarkup(
+      <RecoveryPanel
+        copy={getAppCopy('zh')}
+        state={{ phase: 'recovery-required', lastError: 'plugin failed' }}
+      />,
+    )
+
+    expect(markup).toContain('恢复指定备份')
+  })
+
   it('gives the primary recovery actions a shared button size', () => {
     const css = readFileSync(fileURLToPath(new URL('../../src/renderer/recovery/recovery-panel.css', import.meta.url)), 'utf8')
     expect(css).toMatch(/\.recovery-action-button\s*\{[^}]*width:\s*220px[^}]*min-height:\s*56px/s)

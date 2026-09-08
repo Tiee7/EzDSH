@@ -287,6 +287,48 @@ describe('DshPluginInstaller', () => {
     expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'mode-menu-plus'])
   })
 
+  it('isolates a plugin whose DSH peer range excludes the selected Runtime', async () => {
+    const profile = await makeProfile()
+    const runtimeEntryPath = join(profile.dshHome, 'runtime', 'lib', 'bin.js')
+    await mkdir(join(profile.dshHome, 'runtime', 'node_modules', '@deepseek-ai', 'dsh-llm'), { recursive: true })
+    await mkdir(join(profile.dshHome, 'runtime', 'lib'), { recursive: true })
+    await writeFile(runtimeEntryPath, '')
+    await writeFile(join(profile.dshHome, 'runtime', 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      version: '0.1.3-alpha.2',
+      exports: { './package.json': './package.json', '.': './lib/index.js' },
+    }))
+    const pluginDirectory = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-agy-provider')
+    await mkdir(pluginDirectory, { recursive: true })
+    await writeFile(join(pluginDirectory, 'package.json'), JSON.stringify({
+      name: 'dsh-agy-provider',
+      version: '0.10.0',
+      peerDependencies: {
+        '@deepseek-ai/dsh-llm': '^0.1.0-rc.7 || ^0.1.0-rc.8',
+      },
+    }))
+    await writeFile(profile.packagePath, JSON.stringify({
+      name: 'web',
+      dependencies: { 'dsh-agy-provider': '0.10.0' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-agy-provider'] } },
+    }))
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome,
+      runCommand: async () => { throw new Error('Compatibility isolation must not call pnpm') },
+    })
+
+    await expect(installer.repairIncompatiblePlugins('web', runtimeEntryPath)).resolves.toEqual([{
+      packageName: 'dsh-agy-provider',
+      reason: expect.stringContaining('@deepseek-ai/dsh-llm'),
+    }])
+    const manifest = JSON.parse(await readFile(profile.packagePath, 'utf8')) as {
+      dsh: { profile: { bundles: string[]; disabledBundles: string[] } }
+    }
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base'])
+    expect(manifest.dsh.profile.disabledBundles).toEqual(['dsh-agy-provider'])
+    await expect(readFile(join(pluginDirectory, 'package.json'), 'utf8')).resolves.toContain('0.10.0')
+  })
+
   it('lists active third-party profile bundles for startup recovery choices', async () => {
     const profile = await makeProfile()
     await writeFile(profile.packagePath, JSON.stringify({

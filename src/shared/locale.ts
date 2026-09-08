@@ -76,6 +76,13 @@ export interface AppCopy {
   recoveryDetail: string
   recoveryLastError: string
   recoveryRestorePrevious: string
+  recoverySelectSnapshot: string
+  recoverySelectSnapshotTitle: string
+  recoverySelectSnapshotHint: string
+  recoverySelectSnapshotConfirm: string
+  recoverySelectSnapshotCancel: string
+  recoverySnapshotsLoading: string
+  recoverySnapshotsEmpty: string
   recoveryRetryRuntime: string
   recoveryOpenBackups: string
   recoveryRestoring: string
@@ -942,6 +949,13 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryDetail: '上次升级后 DSH Runtime 未能正常启动。你的升级前快照仍然保留，可以恢复上一份用户环境后重试。',
     recoveryLastError: '失败原因',
     recoveryRestorePrevious: '恢复上一份环境',
+    recoverySelectSnapshot: '恢复指定备份',
+    recoverySelectSnapshotTitle: '选择要恢复的备份',
+    recoverySelectSnapshotHint: '备份按创建时间从新到旧排列。选择一个版本后点击确定恢复。',
+    recoverySelectSnapshotConfirm: '确定恢复',
+    recoverySelectSnapshotCancel: '取消',
+    recoverySnapshotsLoading: '正在加载备份…',
+    recoverySnapshotsEmpty: '没有可用的恢复备份',
     recoveryRetryRuntime: '重启内核环境',
     recoveryOpenBackups: '打开备份目录',
     recoveryRestoring: '正在恢复上一份环境…',
@@ -1833,6 +1847,13 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryDetail: 'DSH Runtime did not start after the last update. Your pre-update snapshot is still available; restore the previous user environment and try again.',
     recoveryLastError: 'Failure reason',
     recoveryRestorePrevious: 'Restore previous environment',
+    recoverySelectSnapshot: 'Restore a specific backup',
+    recoverySelectSnapshotTitle: 'Choose a backup to restore',
+    recoverySelectSnapshotHint: 'Backups are listed from newest to oldest. Select a version, then confirm the restore.',
+    recoverySelectSnapshotConfirm: 'Confirm restore',
+    recoverySelectSnapshotCancel: 'Cancel',
+    recoverySnapshotsLoading: 'Loading backups…',
+    recoverySnapshotsEmpty: 'No recovery backups available',
     recoveryRetryRuntime: 'Retry Runtime',
     recoveryOpenBackups: 'Open backup folder',
     recoveryRestoring: 'Restoring previous environment…',

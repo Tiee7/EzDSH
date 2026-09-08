@@ -212,7 +212,7 @@ export class DshApiError extends Error {
   }
 }
 
-/** A public EzDSH operation with no unary equivalent in DSH 0.1.2-rc.1. */
+/** A public EzDSH operation with no unary equivalent in DSH 0.1.3-alpha.2. */
 export class DshRuntimeCompatibilityError extends Error {
   constructor(message: string) {
     super(message)
