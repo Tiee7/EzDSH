@@ -100,6 +100,9 @@ export interface EzDSHBridge {
     version: string
     platform: AppPlatform
   }
+  dsh: {
+    run(command: string): Promise<{ command: string; exitCode: number; output: string; logPath?: string }>
+  }
   runtime: {
     getStatus(): Promise<RuntimeSnapshot>
     start(): Promise<RuntimeSnapshot>

@@ -71,6 +71,9 @@ async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 const bridge: EzDSHBridge = {
+  dsh: {
+    run: (command: string) => invoke<{ command: string; exitCode: number; output: string; logPath?: string }>('dsh:run', command)
+  },
   app: {
     name: APP_NAME,
     version: APP_VERSION,

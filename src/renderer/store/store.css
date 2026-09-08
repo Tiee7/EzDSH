@@ -1,3 +1,30 @@
+.dsh-command-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 900px;
+  padding: 20px;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 12px;
+  background: var(--ezdsh-panel-background);
+}
+
+.dsh-command-header h2, .dsh-command-header p { margin: 0; }
+.dsh-command-header p { margin-top: 6px; color: var(--ezdsh-text-muted); font-size: 12px; }
+.dsh-command-label { color: var(--ezdsh-text-heading); font-size: 13px; font-weight: 600; }
+.dsh-command-input {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 88px;
+  padding: 12px; border: 1px solid var(--ezdsh-panel-border); border-radius: 8px;
+  background: var(--ezdsh-background); color: var(--ezdsh-text-heading);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.dsh-command-actions { display: flex; justify-content: flex-end; }
+.dsh-command-output {
+  max-height: 360px; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap;
+  border-radius: 8px; background: #090b10; color: #cbd5e1; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.dsh-command-error { color: #fca5a5; }
+
 .store-page {
   display: flex;
   flex-direction: column;

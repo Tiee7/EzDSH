@@ -68,11 +68,13 @@ export function createDshPluginCommand(options: DshPluginCommandOptions): Plugin
       else delete environment.ELECTRON_RUN_AS_NODE
 
       childAttempted = true
-      await runChild(options.spawnProcess ?? spawn, command, args, {
+      const output = await runChild(options.spawnProcess ?? spawn, command, args, {
         cwd: options.launchRoot,
         env: environment,
         stdio: ['ignore', 'pipe', 'pipe']
       }, logPath)
+      runCommand.lastOutput = output
+      runCommand.lastLogPath = logPath
     } catch (error) {
       if (!childAttempted) await finishPluginLog(logPath, `status=failed\nerror=${logValue(error)}\n`)
       throw withPluginLogPath(error, logPath)
@@ -81,6 +83,25 @@ export function createDshPluginCommand(options: DshPluginCommandOptions): Plugin
 
   runCommand.assertAvailable = () => {
     resolveBundledPnpm(options.appPath)
+  }
+  runCommand.runRaw = async (rawArgs) => {
+    const command = options.command ?? process.execPath
+    const isElectronNode = command === process.execPath
+    const pnpmBin = dirname(resolveBundledPnpm(options.appPath))
+    const environment: NodeJS.ProcessEnv = {
+      ...process.env,
+      DSH_HOME: options.dshHome,
+      PATH: [pnpmBin, dirname(command), process.env.PATH ?? ''].filter(Boolean).join(delimiter)
+    }
+    if (isElectronNode) environment.ELECTRON_RUN_AS_NODE = '1'
+    else delete environment.ELECTRON_RUN_AS_NODE
+    const args = isElectronNode ? ['--expose-internals', options.runtimeEntryPath, ...rawArgs] : [options.runtimeEntryPath, ...rawArgs]
+    const output = await runChild(options.spawnProcess ?? spawn, command, args, {
+      cwd: options.launchRoot,
+      env: environment,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    return { output }
   }
   return runCommand
 }
@@ -243,8 +264,8 @@ function runChild(
   args: readonly string[],
   options: SpawnOptions,
   logPath?: string
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
     let output = ''
     let settled = false
     let logWrites = Promise.resolve()
@@ -280,7 +301,7 @@ function runChild(
       if (settled) return
       settled = true
       if (code === 0) {
-        void finish(`status=success\nexitCode=0\nsignal=${String(signal)}\n`).then(() => resolve())
+        void finish(`status=success\nexitCode=0\nsignal=${String(signal)}\n`).then(() => resolve(output))
         return
       }
       const detail = output.trim()

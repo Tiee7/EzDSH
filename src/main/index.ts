@@ -42,7 +42,8 @@ import type { StoreKind } from '../shared/store.js'
 import { StoreService } from './store/store-service.js'
 import { StoreClient } from './store/store-client.js'
 import { createDemoFetch } from './store/demo-catalog.js'
-import { DshPluginInstaller } from './store/dsh-plugin-installer.js'
+import { DshPluginInstaller, type PluginCommandRunner } from './store/dsh-plugin-installer.js'
+import { parseDshCommand } from '../shared/dsh-command.js'
 import { repairInstalledDshPlugin, repairLegacyModeMenuPlus } from './store/dsh-plugin-compatibility.js'
 import { importCodexAuth } from './store/codex-auth-importer.js'
 import {
@@ -158,6 +159,7 @@ let runtimeNotificationService: RuntimeNotificationService | undefined
 let nativeNotificationService: NativeNotificationService | undefined
 let notificationRuntimeUrl: string | undefined
 let storeService: StoreService | undefined
+let dshPluginCommandRunner: PluginCommandRunner | undefined
 let channelBridgeService: ChannelBridgeService | undefined
 let navigationService: NavigationService | undefined
 let externalApiService: ExternalApiService | undefined
@@ -573,16 +575,17 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
     onReview: (sessionId) => handleDeepLinkSession({ action: 'session', sessionId }),
   })
+  dshPluginCommandRunner = createDshPluginCommand({
+    appPath: app.getAppPath(),
+    dshHome: layout.harness,
+    launchRoot: layout.launchRoot,
+    logsDir: layout.logs,
+    runtimeEntryPath,
+    command: runtimeCommandPath
+  })
   const pluginInstaller = new DshPluginInstaller({
     dshHome: layout.harness,
-    runCommand: createDshPluginCommand({
-      appPath: app.getAppPath(),
-      dshHome: layout.harness,
-      launchRoot: layout.launchRoot,
-      logsDir: layout.logs,
-      runtimeEntryPath,
-      command: runtimeCommandPath
-    }),
+    runCommand: dshPluginCommandRunner,
     isRuntimeActive: () => {
       const phase = runtimeManager?.snapshot().phase
       return phase === 'ready' || phase === 'starting'
@@ -1311,6 +1314,18 @@ function registerIpcHandlers(): void {
       notificationSettings = next
       emitNotificationSettings()
       return success(notificationSettings)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('dsh:run', async (_event, input: string): Promise<IpcResult<{ command: string; exitCode: number; output: string; logPath?: string }>> => {
+    try {
+      if (typeof input !== 'string') throw new Error('Invalid DSH command')
+      const tokens = parseDshCommand(input)
+      const runner = dshPluginCommandRunner
+      if (runner?.runRaw === undefined) throw new Error('DSH command runner is not ready')
+      const result = await runner.runRaw(tokens.slice(1))
+      return success({ command: input.trim(), exitCode: 0, ...result })
     } catch (error) {
       return failure(error)
     }

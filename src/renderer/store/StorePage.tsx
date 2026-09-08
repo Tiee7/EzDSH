@@ -4,8 +4,9 @@ import type { DeepLinkInstallTarget } from '../../shared/contracts.js'
 import type { StoreKind } from '../../shared/store.js'
 import { InstalledStoreBrowser } from './InstalledStoreBrowser.js'
 import { StoreBrowser } from './StoreBrowser.js'
+import { DshCommandPanel } from './DshCommandPanel.js'
 
-type StoreSurface = 'skill' | 'plugin' | 'mcp' | 'installed'
+type StoreSurface = 'skill' | 'plugin' | 'mcp' | 'installed' | 'command'
 
 interface StorePageProps {
   copy: AppCopy
@@ -21,7 +22,7 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
       setSurface(deepLinkTarget.kind === 'mcp' ? 'mcp' : 'skill')
     }
   }, [deepLinkTarget])
-  const kind: StoreKind = surface === 'plugin' ? 'skill' : surface === 'installed' ? 'skill' : surface
+  const kind: StoreKind = surface === 'plugin' ? 'skill' : surface === 'installed' || surface === 'command' ? 'skill' : surface
   const fixedCategory = surface === 'plugin' ? 'plugin' : undefined
   return (
     <div className="store-page">
@@ -57,6 +58,9 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
         >
           {copy.storeSurfacePlugins}
         </button>
+        <button type="button" role="tab" aria-selected={surface === 'command'} className={`surface-tab ${surface === 'command' ? 'surface-tab-active' : ''}`} onClick={() => { setSurface('command') }}>
+          {locale === 'zh' ? '运行 DSH 命令' : 'Run DSH command'}
+        </button>
         <button
           type="button"
           role="tab"
@@ -69,7 +73,9 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
       </div>
       {surface === 'installed'
         ? <InstalledStoreBrowser copy={copy} onBack={() => { setSurface('skill') }} />
-        : <StoreBrowser key={surface} kind={kind} fixedCategory={fixedCategory} copy={copy} locale={locale} deepLinkTarget={deepLinkTarget} />}
+        : surface === 'command'
+          ? <DshCommandPanel locale={locale} />
+          : <StoreBrowser key={surface} kind={kind} fixedCategory={fixedCategory} copy={copy} locale={locale} deepLinkTarget={deepLinkTarget} />}
     </div>
   )
 }

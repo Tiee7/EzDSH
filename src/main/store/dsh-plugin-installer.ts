@@ -16,6 +16,10 @@ export interface PluginCommandRunner {
   (profile: string, args: readonly string[]): Promise<void>
   /** Fail before any Runtime reload when the packaged command prerequisites are absent. */
   assertAvailable?: () => void
+  /** Output and log path from the most recent command, for the command console. */
+  lastOutput?: string
+  lastLogPath?: string
+  runRaw?: (args: readonly string[]) => Promise<{ output: string; logPath?: string }>
 }
 
 export interface DshPluginInstallerOptions {
