@@ -4,6 +4,7 @@ EzDSH 是 DeepSeek Harness 的桌面发行版；它是一个 AI 工作团队，�
 
 ## 文档导航
 
+- [功能特性总览](./features.md)：当前版本的用户功能、技术能力和明确边界
 - [产品需求](./product-requirements.md)：产品目标、用户流程、功能范围和验收标准
 - [AI 工作流生成规范](./ai-workflow-generation.md)：Workflow v2、变量绑定、连线依赖、分支汇聚、员工模型和安全边界
 - [图标设计规范](./iconography.md)：图标来源、AI 动作的 `wand-magic-sparkles` 统一约束和评审清单
