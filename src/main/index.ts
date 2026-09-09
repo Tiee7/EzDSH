@@ -606,6 +606,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   externalServiceManager = new ExternalServiceManager({
     configPath: join(layout.state, 'external-services.json'),
     logsDir: join(layout.logs, 'external-services'),
+    isPackaged: app.isPackaged,
   })
   await externalServiceManager.initialize().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)

@@ -1,6 +1,6 @@
-import { createWriteStream, type WriteStream } from 'node:fs'
+import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { normalizeCommandLine } from '../../shared/command-line.js'
@@ -29,6 +29,8 @@ export type SpawnProcess = (
 export interface ExternalServiceManagerOptions {
   configPath: string
   logsDir: string
+  /** Packaged GUI apps need to reconstruct the user's shell PATH. */
+  isPackaged?: boolean
   spawnProcess?: SpawnProcess
   stopTimeoutMs?: number
 }
@@ -148,15 +150,21 @@ export class ExternalServiceManager {
 
     this.setRuntime(id, { state: 'starting', error: undefined, exitCode: undefined, signal: undefined })
     let child: ChildProcess
+    const environment = { ...process.env, ...definition.env }
+    const command = this.options.isPackaged === true
+      ? resolveExternalServiceCommand(definition.command, environment)
+      : definition.command
+    const spawnOptions: SpawnOptions = {
+      cwd: definition.cwd,
+      env: environment,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
     try {
-      child = this.spawnProcess(definition.command, definition.args, {
-        cwd: definition.cwd,
-        env: { ...process.env, ...definition.env },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+      child = this.spawnProcess(command, definition.args, spawnOptions)
     } catch (error) {
-      this.setRuntime(id, { state: 'failed', error: messageOf(error) })
-      throw error
+      const reason = formatSpawnError(error, command, definition.args, definition.cwd, environment)
+      this.setRuntime(id, { state: 'failed', error: reason })
+      throw new Error(reason, { cause: error })
     }
 
     let resolveExit!: () => void
@@ -273,8 +281,9 @@ export class ExternalServiceManager {
       || (!managed.stopping && exitCode !== undefined && exitCode !== null && exitCode !== 0)
       || (!managed.stopping && signal !== undefined)
     if (failed) {
+      const definition = this.requireDefinition(id)
       const reason = error !== undefined
-        ? messageOf(error)
+        ? formatSpawnError(error, definition.command, definition.args, definition.cwd, { ...process.env, ...definition.env })
         : signal !== undefined
           ? `External service terminated by ${signal}`
           : `External service exited with code ${String(exitCode)}`
@@ -314,6 +323,79 @@ export class ExternalServiceManager {
     await writeFile(tempPath, `${JSON.stringify([...this.definitions.values()], null, 2)}\n`, { mode: 0o600 })
     await rename(tempPath, this.options.configPath)
   }
+}
+
+function resolveExternalServiceCommand(command: string, environment: NodeJS.ProcessEnv): string {
+  if (command.includes('/') || command.includes('\\')) return command
+  const path = environment.PATH ?? ''
+  const direct = findOnPath(command, path)
+  if (direct !== undefined) return direct
+
+  // GUI-launched macOS apps do not inherit the user's shell PATH. Ask the
+  // login shell for it only when the inherited PATH cannot resolve the command.
+  const shellPath = process.platform === 'darwin' ? readLoginShellPath() : undefined
+  const fromShell = shellPath === undefined ? undefined : findOnPath(command, shellPath)
+  if (fromShell !== undefined) {
+    environment.PATH = [shellPath, path].filter(Boolean).join(':')
+    return fromShell
+  }
+
+  // Windows package managers are .cmd shims and cannot be spawned by their
+  // extensionless name when shell execution is disabled.
+  if (process.platform === 'win32') {
+    const windowsCommand = findOnPath(`${command}.cmd`, path)
+    if (windowsCommand !== undefined) return windowsCommand
+  }
+  return command
+}
+
+function findOnPath(command: string, path: string): string | undefined {
+  const delimiter = process.platform === 'win32' ? ';' : ':'
+  const extensions = process.platform === 'win32' && !/[.]\w+$/u.test(command)
+    ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';')
+    : ['']
+  for (const directory of path.split(delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const candidate = join(directory, `${command}${extension}`)
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return undefined
+}
+
+function readLoginShellPath(): string | undefined {
+  try {
+    const shell = process.env.SHELL || '/bin/zsh'
+    const output = execFileSync(shell, ['-ilc', 'printf %s "$PATH"'], {
+      encoding: 'utf8',
+      timeout: 2_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const path = output.trim()
+    return path === '' ? undefined : path
+  } catch {
+    return undefined
+  }
+}
+
+function formatSpawnError(
+  error: unknown,
+  command: string,
+  args: readonly string[],
+  cwd: string | undefined,
+  environment: NodeJS.ProcessEnv,
+): string {
+  const code = errorObjectCode(error)
+  const executable = command.includes('/') || command.includes('\\') ? command : `"${command}"`
+  const context = [`command: ${[command, ...args].join(' ')}`, `cwd: ${cwd ?? process.cwd()}`, `PATH: ${environment.PATH ?? '(empty)'}`].join('\n')
+  if (code === 'ENOENT') {
+    return `Unable to start external service: executable ${executable} was not found.\n${context}\nInstall the executable or use its absolute path.`
+  }
+  return `Unable to start external service (${code ?? messageOf(error)}).\n${context}`
+}
+
+function errorObjectCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === 'string' ? error.code : undefined
 }
 
 function normalizeDefinition(value: unknown): ExternalServiceDefinition {
