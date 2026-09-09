@@ -295,7 +295,7 @@ describe('DshPluginInstaller', () => {
     await writeFile(runtimeEntryPath, '')
     await writeFile(join(profile.dshHome, 'runtime', 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json'), JSON.stringify({
       name: '@deepseek-ai/dsh-llm',
-      version: '0.1.3-alpha.2',
+      version: '0.1.5-alpha.1',
       exports: { './package.json': './package.json', '.': './lib/index.js' },
     }))
     const pluginDirectory = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-agy-provider')

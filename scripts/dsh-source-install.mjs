@@ -28,23 +28,24 @@ if (result.status !== 0) {
 }
 
 // The source install intentionally ignores lifecycle scripts so upstream
-// repository hooks cannot mutate the host Git worktree. Restore the two
-// runtime prerequisites that those scripts normally provide.
+// repository hooks cannot mutate the host Git worktree. Older DSH releases
+// required fs-ext here; newer releases use node-addon-system instead.
 const sourcePnpmDirectory = join(sourceRoot, 'node_modules', '.pnpm')
 const fsExtEntry = (await readdir(sourcePnpmDirectory, { withFileTypes: true }))
   .find((entry) => entry.isDirectory() && entry.name.startsWith('fs-ext@'))
-if (fsExtEntry === undefined) {
-  throw new Error('Unable to locate fs-ext in the installed DSH source workspace')
+if (fsExtEntry !== undefined) {
+  const fsExtRoot = join(sourcePnpmDirectory, fsExtEntry.name, 'node_modules', 'fs-ext')
+  const nodeGypEntry = join(projectRoot, 'node_modules', 'pnpm', 'dist', 'node_modules', 'node-gyp', 'bin', 'node-gyp.js')
+  await access(join(fsExtRoot, 'binding.gyp'))
+  await access(nodeGypEntry)
+  execFileSync(process.execPath, [nodeGypEntry, 'configure', 'build'], {
+    cwd: fsExtRoot,
+    env: { ...process.env, CI: 'true' },
+    stdio: 'inherit'
+  })
+} else {
+  console.log('DSH source workspace uses node-addon-system; skipping legacy fs-ext build')
 }
-const fsExtRoot = join(sourcePnpmDirectory, fsExtEntry.name, 'node_modules', 'fs-ext')
-const nodeGypEntry = join(projectRoot, 'node_modules', 'pnpm', 'dist', 'node_modules', 'node-gyp', 'bin', 'node-gyp.js')
-await access(join(fsExtRoot, 'binding.gyp'))
-await access(nodeGypEntry)
-execFileSync(process.execPath, [nodeGypEntry, 'configure', 'build'], {
-  cwd: fsExtRoot,
-  env: { ...process.env, CI: 'true' },
-  stdio: 'inherit'
-})
 
 const subprocessRoot = join(sourceRoot, 'packages', 'subprocess', 'subprocess-local')
 execFileSync(process.execPath, ['scripts/ensure-spawn-helper.mjs'], {

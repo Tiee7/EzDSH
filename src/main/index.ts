@@ -565,7 +565,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
       }
       try {
         if (await repairLegacyModeMenuPlus(layout.harness, app.getAppPath())) {
-          console.warn('[dsh-plugin] migrated legacy mode-menu-plus to the alpha2 client module table')
+          console.warn('[dsh-plugin] migrated legacy mode-menu-plus to the alpha1 client module table')
         }
       } catch (error) {
         // A compatibility migration must never prevent the recovery UI from

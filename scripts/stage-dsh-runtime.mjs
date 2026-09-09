@@ -36,23 +36,24 @@ execFileSync(process.execPath, [
 
 // `pnpm deploy --ignore-scripts` is intentional: it prevents arbitrary
 // workspace lifecycle scripts from running while assembling the release
-// bundle. `fs-ext` is a required native dependency of DSH's session
-// persistence plugin, so build its addon explicitly after deployment.
+// bundle. Older DSH releases required a native fs-ext addon; newer releases
+// ship the equivalent node-addon-system package instead.
 const stagedPnpmDirectory = join(destination, 'node_modules', '.pnpm')
 const fsExtEntry = (await readdir(stagedPnpmDirectory, { withFileTypes: true }))
   .find((entry) => entry.isDirectory() && entry.name.startsWith('fs-ext@'))
-if (fsExtEntry === undefined) {
-  throw new Error('Unable to locate staged fs-ext package required by DSH Runtime')
+if (fsExtEntry !== undefined) {
+  const fsExtRoot = join(stagedPnpmDirectory, fsExtEntry.name, 'node_modules', 'fs-ext')
+  const nodeGypEntry = join(projectRoot, 'node_modules', 'pnpm', 'dist', 'node_modules', 'node-gyp', 'bin', 'node-gyp.js')
+  await access(join(fsExtRoot, 'binding.gyp'))
+  await access(nodeGypEntry)
+  execFileSync(process.execPath, [nodeGypEntry, 'configure', 'build'], {
+    cwd: fsExtRoot,
+    env: { ...process.env, CI: 'true' },
+    stdio: 'inherit'
+  })
+} else {
+  console.log('Staged DSH Runtime uses node-addon-system; skipping legacy fs-ext build')
 }
-const fsExtRoot = join(stagedPnpmDirectory, fsExtEntry.name, 'node_modules', 'fs-ext')
-const nodeGypEntry = join(projectRoot, 'node_modules', 'pnpm', 'dist', 'node_modules', 'node-gyp', 'bin', 'node-gyp.js')
-await access(join(fsExtRoot, 'binding.gyp'))
-await access(nodeGypEntry)
-execFileSync(process.execPath, [nodeGypEntry, 'configure', 'build'], {
-  cwd: fsExtRoot,
-  env: { ...process.env, CI: 'true' },
-  stdio: 'inherit'
-})
 await cp(join(runtimeSource, 'LICENSE'), join(destination, 'DEEPSEEK-HARNESS-LICENSE'))
 
 // `apps/web/dist` is a generated workspace artifact and therefore is not part

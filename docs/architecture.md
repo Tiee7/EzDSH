@@ -2,7 +2,7 @@
 
 ## 1. 总体结构
 
-EzDSH 默认使用固定版本的 vendored `@deepseek-ai/dsh@0.1.3-alpha.2` 源码 Runtime。开发模式从 `vendor/deepseek-harness/apps/cli/lib/bin.js` 启动，正式安装包从 `out/dsh-runtime/lib/bin.js` 启动；不从用户系统 PATH 或不确定的本机安装目录寻找 DSH。根项目同时锁定已发布的 `0.1.3-alpha.2` 依赖作为开发和构建依赖，但它不替代正式安装包中的 source-built Runtime。
+EzDSH 默认使用固定版本的 vendored `@deepseek-ai/dsh@0.1.5-alpha.1` 源码 Runtime。开发模式从 `vendor/deepseek-harness/apps/cli/lib/bin.js` 启动，正式安装包从 `out/dsh-runtime/lib/bin.js` 启动；不从用户系统 PATH 或不确定的本机安装目录寻找 DSH。根项目同时锁定已发布的 `0.1.5-alpha.1` 依赖作为开发和构建依赖，但它不替代正式安装包中的 source-built Runtime。
 
 ```text
 ┌─────────────────────────────────────────────┐

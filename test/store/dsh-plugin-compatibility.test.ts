@@ -86,7 +86,7 @@ describe('dsh plugin compatibility repairs', () => {
     await expect(repairInstalledDshPlugin(dshHome, 'web', 'dsh-codex')).resolves.toBe(false)
   })
 
-  it('replaces only the known legacy mode-menu-plus artifact with the bundled alpha2 plugin', async () => {
+  it('replaces only the known legacy mode-menu-plus artifact with the bundled alpha1 plugin', async () => {
     const dshHome = await mkdtemp(join(tmpdir(), 'ezdsh-mode-menu-'))
     const appPath = await mkdtemp(join(tmpdir(), 'ezdsh-app-'))
     workdirs.push(dshHome, appPath)
