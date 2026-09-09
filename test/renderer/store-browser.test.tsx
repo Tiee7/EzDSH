@@ -1,7 +1,11 @@
+import { createWindow } from '@mixmark-io/domino'
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { getAppCopy } from '../../src/shared/locale'
+import { InstalledStoreBrowser } from '../../src/renderer/store/InstalledStoreBrowser'
 import { AuditOverrideActions, EntryBadges, EntryCard, InstallFailureNotice, StoreBrowser } from '../../src/renderer/store/StoreBrowser'
 import type { StoreEntry } from '../../src/shared/store'
 
@@ -36,6 +40,83 @@ describe('StoreBrowser refresh control', () => {
     )
 
     expect(markup).toMatch(/<button type="button" class="store-refresh"/)
+  })
+})
+
+describe('InstalledStoreBrowser update controls', () => {
+  it('uses the primary action styling for installed-entry updates', () => {
+    expect(storeStylesheet).toContain('.detail-install,\n.detail-update {')
+    expect(storeStylesheet).toContain('.detail-install:hover:not(:disabled),\n.detail-update:hover:not(:disabled) {')
+    expect(storeStylesheet).toContain('.detail-install:disabled,\n.detail-update:disabled {')
+  })
+
+  it('refreshes the skill catalog when checking for updates', async () => {
+    const previousGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      navigator: globalThis.navigator,
+      HTMLElement: globalThis.HTMLElement,
+      Node: globalThis.Node,
+      Event: globalThis.Event,
+      MouseEvent: globalThis.MouseEvent,
+    }
+    const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+    const refresh = vi.fn(async () => ({
+      fetchedAt: '2026-09-09T00:00:00.000Z',
+      counts: { skill: 0, preset: 0, mcp: 0 },
+      rejected: [],
+    }))
+    const list = vi.fn(async () => ({ entries: [], page: 1, pageCount: 1 }))
+    ;(domWindow as unknown as { EzDSH: unknown }).EzDSH = {
+      store: {
+        listInstalled: vi.fn(async () => ({ records: [] })),
+        refresh,
+        list,
+      },
+    }
+    Object.assign(globalThis, {
+      window: domWindow,
+      document: domWindow.document,
+      HTMLElement: domWindow.HTMLElement,
+      Node: domWindow.Node,
+      Event: domWindow.Event,
+      MouseEvent: domWindow.MouseEvent,
+    })
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+
+    const root = createRoot(domWindow.document.getElementById('root')!)
+    try {
+      await act(async () => {
+        root.render(<InstalledStoreBrowser copy={getAppCopy('zh')} onBack={() => {}} />)
+        await Promise.resolve()
+      })
+      const button = Array.from(domWindow.document.querySelectorAll('button'))
+        .find((candidate) => candidate.textContent === '检查更新')
+      if (button === undefined) throw new Error('check-for-updates button should render')
+
+      await act(async () => {
+        button.click()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+
+      expect(refresh).toHaveBeenCalledWith('skill')
+      expect(list).toHaveBeenCalledWith('skill', { page: 1 })
+      expect(domWindow.document.body.textContent).toContain('所有 skill 都是最新版本')
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      const { navigator: previousNavigator, ...previousGlobalsWithoutNavigator } = previousGlobals
+      Object.assign(globalThis, previousGlobalsWithoutNavigator)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+      if (previousActEnvironment === undefined) {
+        delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+      } else {
+        ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
+      }
+    }
   })
 })
 

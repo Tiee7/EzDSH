@@ -971,7 +971,8 @@
 }
 
 .confirm-accept,
-.detail-install {
+.detail-install,
+.detail-update {
   border: 0;
   border-radius: 10px;
   padding: 8px 14px;
@@ -984,12 +985,14 @@
 }
 
 .confirm-accept:hover:not(:disabled),
-.detail-install:hover:not(:disabled) {
+.detail-install:hover:not(:disabled),
+.detail-update:hover:not(:disabled) {
   filter: brightness(1.08);
 }
 
 .confirm-accept:disabled,
-.detail-install:disabled {
+.detail-install:disabled,
+.detail-update:disabled {
   opacity: 0.5;
   cursor: default;
 }

@@ -207,7 +207,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
           <p>{copy.storeInstalledHint}</p>
         </div>
         <div className="installed-store-header-actions">
-          <button type="button" className="store-retry" disabled={checkingUpdates} onClick={() => { void checkUpdates }}>
+          <button type="button" className="store-retry" disabled={checkingUpdates} onClick={() => { void checkUpdates() }}>
             {checkingUpdates ? copy.storeCheckingUpdates : copy.storeCheckUpdates}
           </button>
           <button type="button" className="store-retry" onClick={onBack}>{copy.storeBackToCatalog}</button>
