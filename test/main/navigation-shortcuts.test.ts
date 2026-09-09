@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getDefaultNavConfig } from '../../src/shared/navigation'
-import { getNavigationTargetForInput } from '../../src/main/navigation/navigation-shortcuts'
+import { getNavigationTargetForInput, isWindowCloseShortcut } from '../../src/main/navigation/navigation-shortcuts'
 
 function input(overrides: Partial<Parameters<typeof getNavigationTargetForInput>[0]> = {}) {
   return {
@@ -18,6 +18,16 @@ function input(overrides: Partial<Parameters<typeof getNavigationTargetForInput>
 }
 
 describe('navigation shortcuts', () => {
+  it('blocks only the unmodified macOS Command-W close shortcut', () => {
+    const commandW = input({ key: 'w', code: 'KeyW' })
+    expect(isWindowCloseShortcut(commandW, 'darwin')).toBe(true)
+    expect(isWindowCloseShortcut(input({ key: 'W', code: 'KeyW' }), 'darwin')).toBe(true)
+    expect(isWindowCloseShortcut(input({ key: 'w', code: 'KeyW', shift: true }), 'darwin')).toBe(false)
+    expect(isWindowCloseShortcut(input({ key: 'w', code: 'KeyW', meta: false, control: true }), 'darwin')).toBe(false)
+    expect(isWindowCloseShortcut(commandW, 'win32')).toBe(false)
+    expect(isWindowCloseShortcut(input({ key: 'w', code: 'KeyW', type: 'keyUp' }), 'darwin')).toBe(false)
+  })
+
   it('maps macOS Command-number input to the visible page target', () => {
     expect(getNavigationTargetForInput(input(), getDefaultNavConfig(), 'darwin')).toBe('store')
     expect(getNavigationTargetForInput(input(), getDefaultNavConfig(), 'darwin', true)).toBe('workflow')

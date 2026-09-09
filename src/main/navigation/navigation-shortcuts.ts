@@ -14,6 +14,15 @@ export interface NavigationShortcutInput {
 
 export type NavigationShortcutPlatform = NodeJS.Platform
 
+export function isWindowCloseShortcut(
+  input: NavigationShortcutInput,
+  platform: NavigationShortcutPlatform
+): boolean {
+  if (platform !== 'darwin' || input.type !== 'keyDown' || input.isComposing) return false
+  return input.meta && !input.control && !input.alt && !input.shift
+    && (input.key.toLowerCase() === 'w' || input.code === 'KeyW')
+}
+
 export function getNavigationTargetForInput(
   input: NavigationShortcutInput,
   config: NavConfig,

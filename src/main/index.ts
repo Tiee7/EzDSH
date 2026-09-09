@@ -76,7 +76,7 @@ import { DshSessionClient } from './channel-bridge/dsh-session.js'
 import { deleteArchivedSessionFromStore } from './channel-bridge/archived-session-store.js'
 import { openDeepLinkedSession } from './session-deep-link.js'
 import { NavigationService } from './navigation/navigation-service.js'
-import { getNavigationTargetForInput } from './navigation/navigation-shortcuts.js'
+import { getNavigationTargetForInput, isWindowCloseShortcut } from './navigation/navigation-shortcuts.js'
 import { ExternalApiService } from './external-api/external-api-service.js'
 import { EXTERNAL_API_DEFAULT_PORT } from '../shared/external-api.js'
 import type { NavConfig } from '../shared/navigation.js'
@@ -2422,6 +2422,11 @@ function loadRenderer(window: BrowserWindow): Promise<void> {
 
 function bindNavigationShortcuts(contents: Electron.WebContents): void {
   contents.on('before-input-event', (event, input) => {
+    if (isWindowCloseShortcut(input, process.platform)) {
+      event.preventDefault()
+      return
+    }
+
     const config = navigationService?.getConfig()
     if (config === undefined) return
     const target = getNavigationTargetForInput(input, config, process.platform, developerMode)
