@@ -300,11 +300,10 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
-  it('fails clearly instead of calling RC1 endpoints that do not exist', async () => {
+  it('fails clearly for RC1 operations that still have no compatible endpoint', async () => {
     const client = new DshSessionClient({ baseUrl: 'http://127.0.0.1:4567/?token=runtime-token', timeoutMs: 1000 })
 
     await expect(client.unarchiveSession('session-1')).rejects.toThrow(/does not provide.*unarchive/i)
-    await expect(client.listWorkspaces()).rejects.toThrow(/does not provide.*workspace list/i)
     await expect(client.getSessionModels('session-1')).rejects.toThrow(/does not provide.*per-session model/i)
   })
 

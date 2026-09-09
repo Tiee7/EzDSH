@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import WebSocket, { type RawData } from 'ws'
 
 /**
  * Minimal DSH Runtime session client used by the channel bridge.
@@ -261,8 +262,9 @@ export class DshSessionClient {
   }
 
   async listWorkspaces(): Promise<DshWorkspaceSummary[]> {
-    if (this.modernRuntime) throw new DshRuntimeCompatibilityError('DSH RC1 does not provide a unary workspace list endpoint; use workspace/follow')
-    const response = await this.listWorkspaceResponse()
+    const response = this.modernRuntime
+      ? await this.followWorkspaceBaseline()
+      : await this.listWorkspaceResponse()
     const archived = new Set(response.archivedSessionIds)
     return response.items.map((workspace) => ({
       ...workspace,
@@ -552,6 +554,55 @@ export class DshSessionClient {
     return this.post<WorkspaceListResponse>('/api/workspace.list', {})
   }
 
+  /** Read the RC1 workspace baseline from its multiplexed follow stream. */
+  private async followWorkspaceBaseline(): Promise<WorkspaceListResponse> {
+    const cookie = await this.exchangeRuntimeToken()
+    const socket = new WebSocket(`${this.modernApiBaseUrl.replace(/^http/u, 'ws')}/api/remote.mux`, {
+      headers: { Cookie: cookie },
+    })
+    const streamId = `ezdsh-workspace-${randomUUID()}`
+
+    return new Promise<WorkspaceListResponse>((resolve, reject) => {
+      let settled = false
+      const timeout = setTimeout(() => finish(new Error('DSH workspace/follow timed out')), this.options.timeoutMs)
+      const finish = (error?: Error, value?: WorkspaceListResponse): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        socket.removeAllListeners()
+        socket.close()
+        if (error !== undefined) reject(error)
+        else if (value === undefined) reject(new Error('DSH workspace/follow did not provide a baseline'))
+        else resolve(value)
+      }
+
+      socket.once('open', () => {
+        socket.send(JSON.stringify({ type: 'open', streamId, endpoint: 'workspace/follow', payload: { args: {} } }))
+      })
+      socket.on('message', (data: RawData) => {
+        try {
+          const frame = JSON.parse(data.toString()) as unknown
+          if (!isRecord(frame) || frame.streamId !== streamId) return
+          if (frame.type === 'error') {
+            finish(new Error(`DSH workspace/follow failed: ${JSON.stringify(frame.error)}`))
+            return
+          }
+          if (frame.type !== 'item' || !isRecord(frame.value) || frame.value.type !== 'baseline' || !isRecord(frame.value.value)) return
+          const baseline = frame.value.value
+          if (!Array.isArray(baseline.items) || !Array.isArray(baseline.archivedSessionIds)) {
+            finish(new Error('DSH workspace/follow returned an invalid baseline'))
+            return
+          }
+          finish(undefined, { items: baseline.items as DshWorkspaceSummary[], archivedSessionIds: baseline.archivedSessionIds as string[] })
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)))
+        }
+      })
+      socket.once('error', (error: Error) => finish(error))
+      socket.once('close', () => finish(new Error('DSH workspace/follow closed before its baseline')))
+    })
+  }
+
   private modernCall(path: string, body: unknown): { endpoint: string; args: unknown } {
     switch (path) {
       case '/api/session.create':
@@ -588,6 +639,10 @@ export class DshSessionClient {
         throw new DshRuntimeCompatibilityError(`DSH RC1 does not provide a compatible unary endpoint for ${path}`)
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 function dshAuthCookie(setCookie: string | null): string | undefined {
