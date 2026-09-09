@@ -18,12 +18,15 @@ function input(overrides: Partial<Parameters<typeof getNavigationTargetForInput>
 }
 
 describe('navigation shortcuts', () => {
-  it('blocks only the unmodified macOS Command-W close shortcut', () => {
+  it('blocks the unmodified platform window-close shortcut', () => {
     const commandW = input({ key: 'w', code: 'KeyW' })
+    const controlW = input({ key: 'w', code: 'KeyW', meta: false, control: true })
     expect(isWindowCloseShortcut(commandW, 'darwin')).toBe(true)
     expect(isWindowCloseShortcut(input({ key: 'W', code: 'KeyW' }), 'darwin')).toBe(true)
+    expect(isWindowCloseShortcut(controlW, 'win32')).toBe(true)
+    expect(isWindowCloseShortcut(controlW, 'linux')).toBe(true)
     expect(isWindowCloseShortcut(input({ key: 'w', code: 'KeyW', shift: true }), 'darwin')).toBe(false)
-    expect(isWindowCloseShortcut(input({ key: 'w', code: 'KeyW', meta: false, control: true }), 'darwin')).toBe(false)
+    expect(isWindowCloseShortcut(controlW, 'darwin')).toBe(false)
     expect(isWindowCloseShortcut(commandW, 'win32')).toBe(false)
     expect(isWindowCloseShortcut(input({ key: 'w', code: 'KeyW', type: 'keyUp' }), 'darwin')).toBe(false)
   })

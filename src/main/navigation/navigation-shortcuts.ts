@@ -18,8 +18,12 @@ export function isWindowCloseShortcut(
   input: NavigationShortcutInput,
   platform: NavigationShortcutPlatform
 ): boolean {
-  if (platform !== 'darwin' || input.type !== 'keyDown' || input.isComposing) return false
-  return input.meta && !input.control && !input.alt && !input.shift
+  if (input.type !== 'keyDown' || input.isComposing || input.alt || input.shift) return false
+
+  const isMac = platform === 'darwin'
+  const modifierPressed = isMac ? input.meta : input.control
+  const unexpectedModifierPressed = isMac ? input.control : input.meta
+  return modifierPressed && !unexpectedModifierPressed
     && (input.key.toLowerCase() === 'w' || input.code === 'KeyW')
 }
 
