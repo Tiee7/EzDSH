@@ -30,6 +30,8 @@ export interface RecoveryManifest {
   formatVersion: typeof RECOVERY_FORMAT_VERSION
   kind: RecoverySnapshotKind
   reason: string
+  /** Optional user-provided context for why this snapshot was created. */
+  note?: string
   createdAt: string
   appVersion: string
   dshRuntimeVersion: string
@@ -205,6 +207,7 @@ export interface RecoveryManagerOptions {
 export interface CreateSnapshotInput {
   kind: RecoverySnapshotKind
   reason: string
+  note?: string
   pluginInventory?: readonly string[]
   compatibilityInventory?: readonly RecoveryCompatibilityInventoryItem[]
   /** Keep a selected recovery point while rotating same-kind safety snapshots. */
@@ -303,6 +306,7 @@ export class RecoveryManager {
         formatVersion: RECOVERY_FORMAT_VERSION,
         kind: input.kind,
         reason: input.reason,
+        ...(normalizeSnapshotNote(input.note) === undefined ? {} : { note: normalizeSnapshotNote(input.note) }),
         createdAt,
         appVersion: this.config.appVersion,
         dshRuntimeVersion: this.config.dshRuntimeVersion,
@@ -362,6 +366,18 @@ export class RecoveryManager {
       rm(snapshot.manifestPath, { force: true }),
       rm(join(this.config.layout.backups, 'vault', snapshot.archiveName), { recursive: true, force: true }),
     ])
+  }
+
+  async updateNote(selector: string, note: string): Promise<RecoverySnapshot> {
+    const snapshot = await this.resolveSnapshot(selector)
+    const normalizedNote = normalizeSnapshotNote(note)
+    const manifest: RecoveryManifest = {
+      ...snapshot.manifest,
+      ...(normalizedNote === undefined ? {} : { note: normalizedNote }),
+    }
+    if (normalizedNote === undefined) delete manifest.note
+    await writeAtomic(snapshot.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600)
+    return { ...snapshot, manifest }
   }
 
   async verify(selector: string): Promise<RecoveryVerifyResult> {
@@ -750,6 +766,7 @@ function parseManifest(value: unknown): RecoveryManifest {
     || value.formatVersion !== RECOVERY_FORMAT_VERSION
     || !isRecoveryKind(value.kind)
     || typeof value.reason !== 'string'
+    || (value.note !== undefined && typeof value.note !== 'string')
     || typeof value.createdAt !== 'string'
     || typeof value.appVersion !== 'string'
     || typeof value.dshRuntimeVersion !== 'string'
@@ -768,6 +785,7 @@ function parseManifest(value: unknown): RecoveryManifest {
     formatVersion: RECOVERY_FORMAT_VERSION,
     kind: value.kind,
     reason: value.reason,
+    ...(value.note === undefined ? {} : { note: value.note }),
     createdAt: value.createdAt,
     appVersion: value.appVersion,
     dshRuntimeVersion: value.dshRuntimeVersion,
@@ -816,6 +834,13 @@ function cloneCompatibilityInventoryItem(item: RecoveryCompatibilityInventoryIte
     ...(item.requirements === undefined ? {} : { requirements: { ...item.requirements } }),
     ...(item.assessment === undefined ? {} : { assessment: { ...item.assessment } }),
   }
+}
+
+function normalizeSnapshotNote(value: string | undefined): string | undefined {
+  const note = value?.trim()
+  if (note === undefined || note === '') return undefined
+  if (note.length > 500) throw new Error('Snapshot note must be 500 characters or fewer')
+  return note
 }
 
 function isRecoveryKind(value: unknown): value is RecoverySnapshotKind {

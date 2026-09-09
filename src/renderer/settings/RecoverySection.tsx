@@ -10,6 +10,10 @@ export function recoveryDeleteApiAvailable(value: unknown): value is (selector: 
   return typeof value === 'function'
 }
 
+export function recoveryUpdateNoteApiAvailable(value: unknown): value is (selector: string, note: string) => Promise<RecoverySnapshot> {
+  return typeof value === 'function'
+}
+
 export function recoveryVerificationLabel(
   copy: AppCopy,
   snapshotName: string,
@@ -43,7 +47,9 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
     setError(undefined)
     setMessage(undefined)
     try {
-      await window.EzDSH.recovery.createSnapshot()
+      const note = window.prompt(copy.settingsRecoveryNotePrompt, '')
+      if (note === null) return
+      await window.EzDSH.recovery.createSnapshot(note)
       await refresh()
       setMessage(copy.settingsRecoveryCreated)
     } catch (reason) {
@@ -94,6 +100,28 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
       await deleteApi(snapshot.archiveName)
       setSnapshots((current) => current.filter((item) => item.archiveName !== snapshot.archiveName))
       setMessage(copy.settingsRecoveryDeleted)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.settingsRecoveryEmpty)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const editNote = async (snapshot: RecoverySnapshot): Promise<void> => {
+    if (busy) return
+    const updateNoteApi: unknown = window.EzDSH.recovery.updateSnapshotNote
+    if (!recoveryUpdateNoteApiAvailable(updateNoteApi)) {
+      setError(copy.settingsRecoveryBridgeOutdated)
+      return
+    }
+    const note = window.prompt(copy.settingsRecoveryEditNotePrompt, snapshot.manifest.note ?? '')
+    if (note === null) return
+    setBusy(true)
+    setError(undefined)
+    try {
+      const updated = await updateNoteApi(snapshot.archiveName, note)
+      setSnapshots((current) => current.map((item) => item.archiveName === updated.archiveName ? updated : item))
+      setMessage(copy.settingsRecoveryNoteUpdated)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.settingsRecoveryEmpty)
     } finally {
@@ -153,10 +181,12 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
             <div className="settings-item-text">
               <code className="settings-value settings-recovery-name">{snapshot.archiveName}</code>
               <p className="settings-hint">{snapshot.manifest.kind} · {snapshot.manifest.createdAt} · EzDSH {snapshot.manifest.appVersion}</p>
+               <p className="settings-hint">{snapshot.manifest.note ?? copy.settingsRecoveryNoteEmpty}</p>
             </div>
             <div className="settings-actions">
               <button className="settings-action" type="button" disabled={busy} onClick={() => { void verify(snapshot.archiveName) }}>{recoveryVerificationLabel(copy, snapshot.archiveName, verification)}</button>
-              <button className="settings-action" type="button" disabled={busy} onClick={() => { void restore(snapshot) }}>{copy.settingsRecoveryRestore}</button>
+              <button className="settings-action" type="button" disabled={busy} onClick={() => { void editNote(snapshot) }}>{copy.settingsRecoveryEditNote}</button>
+               <button className="settings-action" type="button" disabled={busy} onClick={() => { void restore(snapshot) }}>{copy.settingsRecoveryRestore}</button>
               <button className="settings-action settings-action-danger" type="button" disabled={busy} onClick={() => { void deleteSnapshot(snapshot) }}>{copy.settingsRecoveryDelete}</button>
             </div>
           </div>

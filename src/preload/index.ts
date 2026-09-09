@@ -316,7 +316,8 @@ const bridge: EzDSHBridge = {
   recovery: {
     getStatus: () => invoke<RecoveryState>('recovery:get-status'),
     listSnapshots: () => invoke<RecoverySnapshot[]>('recovery:list'),
-    createSnapshot: () => invoke<RecoverySnapshot>('recovery:create-snapshot'),
+    createSnapshot: (note?: string) => invoke<RecoverySnapshot>('recovery:create-snapshot', note),
+    updateSnapshotNote: (selector: string, note: string) => invoke<RecoverySnapshot>('recovery:update-note', selector, note),
     deleteSnapshot: (selector: string) => invoke<void>('recovery:delete', selector),
     verify: (selector: string) => invoke<RecoveryVerifyResult>('recovery:verify', selector),
     doctor: (repair = false) => invoke<RecoveryDoctorResult>('recovery:doctor', repair),

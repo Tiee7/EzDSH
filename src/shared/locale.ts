@@ -101,6 +101,11 @@ export interface AppCopy {
   settingsRecoveryHint: string
   settingsRecoveryCreate: string
   settingsRecoveryCreating: string
+  settingsRecoveryNotePrompt: string
+  settingsRecoveryEditNotePrompt: string
+  settingsRecoveryNoteEmpty: string
+  settingsRecoveryNoteUpdated: string
+  settingsRecoveryEditNote: string
   settingsRecoveryCheckLogs: string
   settingsRecoveryOpen: string
   settingsRecoveryEmpty: string
@@ -974,6 +979,11 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRecoveryHint: '备份会话、设置、技能、插件、配置文件和状态。凭据明文保存在本机受限保险库，不进入归档；换机恢复时需要重新输入。',
     settingsRecoveryCreate: '立即备份',
     settingsRecoveryCreating: '正在备份…',
+    settingsRecoveryNotePrompt: '为这份备份添加备注（可选）：',
+    settingsRecoveryEditNotePrompt: '编辑备份备注（留空可删除）：',
+    settingsRecoveryNoteEmpty: '未填写备注',
+    settingsRecoveryNoteUpdated: '备份备注已更新',
+    settingsRecoveryEditNote: '编辑备注',
     settingsRecoveryCheckLogs: '检查会话日志',
     settingsRecoveryOpen: '打开备份目录',
     settingsRecoveryEmpty: '还没有可用的恢复快照',
@@ -1872,6 +1882,11 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRecoveryHint: 'Backs up sessions, settings, skills, plugins, profiles, and state. Plaintext Credentials stay in a restricted local vault and never enter the Archive; moving to a new machine requires re-entry.',
     settingsRecoveryCreate: 'Back up now',
     settingsRecoveryCreating: 'Backing up…',
+    settingsRecoveryNotePrompt: 'Add a note for this backup (optional):',
+    settingsRecoveryEditNotePrompt: 'Edit backup note (leave blank to remove):',
+    settingsRecoveryNoteEmpty: 'No note',
+    settingsRecoveryNoteUpdated: 'Backup note updated',
+    settingsRecoveryEditNote: 'Edit note',
     settingsRecoveryCheckLogs: 'Check Session Logs',
     settingsRecoveryOpen: 'Open backup folder',
     settingsRecoveryEmpty: 'No recovery snapshots yet',

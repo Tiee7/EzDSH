@@ -19,10 +19,12 @@ describe('StorePage surfaces', () => {
     const markup = renderToStaticMarkup(<StorePage copy={getAppCopy('zh')} locale="zh" />)
 
     const installed = markup.indexOf('>管理已安装<')
+    const command = markup.indexOf('>运行 DSH 命令<')
     const skills = markup.indexOf('>技能<')
 
     expect(installed).toBeGreaterThanOrEqual(0)
-    expect(installed).toBeLessThan(skills)
+    expect(command).toBeGreaterThan(installed)
+    expect(command).toBeLessThan(skills)
     expect(markup).toContain('surface-tab-installed')
     expect(markup).toContain('data-icon="installed"')
   })

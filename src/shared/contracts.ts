@@ -271,7 +271,8 @@ export interface EzDSHBridge {
   recovery: {
     getStatus(): Promise<RecoveryState>
     listSnapshots(): Promise<RecoverySnapshot[]>
-    createSnapshot(): Promise<RecoverySnapshot>
+    createSnapshot(note?: string): Promise<RecoverySnapshot>
+    updateSnapshotNote(selector: string, note: string): Promise<RecoverySnapshot>
     deleteSnapshot(selector: string): Promise<void>
     verify(selector: string): Promise<RecoveryVerifyResult>
     doctor(repair?: boolean): Promise<RecoveryDoctorResult>

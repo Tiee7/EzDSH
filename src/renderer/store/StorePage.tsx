@@ -40,6 +40,9 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
           </svg>
           <span>{copy.storeManageInstalled}</span>
         </button>
+        <button type="button" role="tab" aria-selected={surface === 'command'} className={`surface-tab ${surface === 'command' ? 'surface-tab-active' : ''}`} onClick={() => { setSurface('command') }}>
+          {locale === 'zh' ? '运行 DSH 命令' : 'Run DSH command'}
+        </button>
         <button
           type="button"
           role="tab"
@@ -57,9 +60,6 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
           onClick={() => { setSurface('plugin') }}
         >
           {copy.storeSurfacePlugins}
-        </button>
-        <button type="button" role="tab" aria-selected={surface === 'command'} className={`surface-tab ${surface === 'command' ? 'surface-tab-active' : ''}`} onClick={() => { setSurface('command') }}>
-          {locale === 'zh' ? '运行 DSH 命令' : 'Run DSH command'}
         </button>
         <button
           type="button"

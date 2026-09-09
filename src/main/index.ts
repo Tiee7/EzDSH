@@ -2108,13 +2108,24 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
-  ipcMain.handle('recovery:create-snapshot', async (): Promise<IpcResult<Awaited<ReturnType<RecoveryManager['createSnapshot']>>>> => {
+  ipcMain.handle('recovery:create-snapshot', async (_event, note?: string): Promise<IpcResult<Awaited<ReturnType<RecoveryManager['createSnapshot']>>>> => {
     try {
       if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      if (note !== undefined && typeof note !== 'string') throw new Error('Invalid recovery note input')
       return success(await recoveryManager.createSnapshot({
         kind: 'manual',
         reason: 'Manual backup requested from EzDSH settings',
+        note,
       }))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:update-note', async (_event, selector: string, note: string): Promise<IpcResult<Awaited<ReturnType<RecoveryManager['updateNote']>>>> => {
+    try {
+      if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
+      if (typeof selector !== 'string' || typeof note !== 'string') throw new Error('Invalid recovery note input')
+      return success(await recoveryManager.updateNote(selector, note))
     } catch (error) {
       return failure(error)
     }

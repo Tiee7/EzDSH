@@ -77,6 +77,23 @@ describe('RecoveryManager', () => {
       .toContain('do-not-archive')
   })
 
+  it('stores and edits a user-facing snapshot note without changing archive integrity', async () => {
+    const layout = await createFixture()
+    const manager = createManager(layout)
+
+    const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'user requested backup', note: 'Before installing a risky plugin' })
+    expect(snapshot.manifest.note).toBe('Before installing a risky plugin')
+    const archiveChecksum = snapshot.manifest.sha256
+
+    const updated = await manager.updateNote(snapshot.archiveName, 'After plugin installation')
+
+    expect(updated.manifest.note).toBe('After plugin installation')
+    expect(updated.manifest.sha256).toBe(archiveChecksum)
+    await expect(manager.listSnapshots()).resolves.toEqual([expect.objectContaining({ manifest: expect.objectContaining({ note: 'After plugin installation' }) })])
+    const cleared = await manager.updateNote(snapshot.archiveName, '   ')
+    expect(cleared.manifest.note).toBeUndefined()
+  })
+
   it('captures managed plugin compatibility evidence in a recovery snapshot', async () => {
     const layout = await createFixture()
     await writeFile(join(layout.state, 'installed.json'), JSON.stringify([{
