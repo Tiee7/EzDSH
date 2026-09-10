@@ -69,6 +69,24 @@
   background: color-mix(in srgb, var(--ezdsh-accent-green) 12%, transparent);
 }
 
+.surface-tab-primary {
+  color: var(--ezdsh-accent-green);
+  border-color: var(--ezdsh-accent-green);
+}
+
+.surface-tab-primary.surface-tab-active {
+  color: var(--ezdsh-accent-green);
+  border-color: var(--ezdsh-accent-green);
+  background: color-mix(in srgb, var(--ezdsh-accent-green) 12%, transparent);
+}
+
+.surface-tab-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 2px;
+  background: var(--ezdsh-panel-border-strong);
+}
+
 .surface-tab-icon {
   width: 15px;
   height: 15px;

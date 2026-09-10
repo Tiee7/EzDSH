@@ -533,6 +533,7 @@ export interface AppCopy {
   storeSearchPlaceholder: string
   storeAllCategories: string
   storeManageInstalled: string
+  storeExplore: string
   storeInstalledSection: string
   storeAvailableSection: string
   storeInstalledHint: string
@@ -1411,6 +1412,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeSearchPlaceholder: '搜索…',
     storeAllCategories: '全部分类',
     storeManageInstalled: '管理已安装',
+    storeExplore: '探索',
     storeInstalledSection: '已安装',
     storeAvailableSection: '可安装',
     storeInstalledHint: '这里显示 EzDSH 已登记和 DSH profile 中实际安装的插件、Skill 能力。插件和 Skill 分开列出。',
@@ -2314,6 +2316,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeSearchPlaceholder: 'Search…',
     storeAllCategories: 'All categories',
     storeManageInstalled: 'Manage installed',
+    storeExplore: 'Explore',
     storeInstalledSection: 'Installed',
     storeAvailableSection: 'Available',
     storeInstalledHint: 'Shows entries registered by EzDSH and plugins actually installed in DSH profiles.',

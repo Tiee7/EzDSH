@@ -31,7 +31,7 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
           type="button"
           role="tab"
           aria-selected={surface === 'installed'}
-          className={`surface-tab surface-tab-installed ${surface === 'installed' ? 'surface-tab-active' : ''}`}
+          className={`surface-tab surface-tab-primary surface-tab-installed ${surface === 'installed' ? 'surface-tab-active' : ''}`}
           onClick={() => { setSurface('installed') }}
         >
           <svg className="surface-tab-icon" viewBox="0 0 24 24" aria-hidden="true" data-icon="installed" focusable="false">
@@ -40,14 +40,18 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
           </svg>
           <span>{copy.storeManageInstalled}</span>
         </button>
-        <button type="button" role="tab" aria-selected={surface === 'command'} className={`surface-tab ${surface === 'command' ? 'surface-tab-active' : ''}`} onClick={() => { setSurface('command') }}>
+        <button type="button" role="tab" aria-selected={surface === 'command'} className={`surface-tab surface-tab-primary ${surface === 'command' ? 'surface-tab-active' : ''}`} onClick={() => { setSurface('command') }}>
           {locale === 'zh' ? '运行 DSH 命令' : 'Run DSH command'}
         </button>
+        <button type="button" role="tab" aria-selected={surface === 'skill' || surface === 'plugin' || surface === 'mcp'} className={`surface-tab surface-tab-primary ${surface === 'skill' || surface === 'plugin' || surface === 'mcp' ? 'surface-tab-active' : ''}`} onClick={() => { setSurface('skill') }}>
+          {copy.storeExplore}
+        </button>
+        <span className="surface-tab-divider" aria-hidden="true" />
         <button
           type="button"
           role="tab"
           aria-selected={surface === 'skill'}
-          className={`surface-tab ${surface === 'skill' ? 'surface-tab-active' : ''}`}
+          className={`surface-tab surface-tab-secondary ${surface === 'skill' ? 'surface-tab-active' : ''}`}
           onClick={() => { setSurface('skill') }}
         >
           {copy.storeSurfaceSkills}
@@ -56,7 +60,7 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
           type="button"
           role="tab"
           aria-selected={surface === 'plugin'}
-          className={`surface-tab ${surface === 'plugin' ? 'surface-tab-active' : ''}`}
+          className={`surface-tab surface-tab-secondary ${surface === 'plugin' ? 'surface-tab-active' : ''}`}
           onClick={() => { setSurface('plugin') }}
         >
           {copy.storeSurfacePlugins}
@@ -65,7 +69,7 @@ export function StorePage({ copy, locale, deepLinkTarget }: StorePageProps): JSX
           type="button"
           role="tab"
           aria-selected={surface === 'mcp'}
-          className={`surface-tab ${surface === 'mcp' ? 'surface-tab-active' : ''}`}
+          className={`surface-tab surface-tab-secondary ${surface === 'mcp' ? 'surface-tab-active' : ''}`}
           onClick={() => { setSurface('mcp') }}
         >
           {copy.storeSurfaceMcp}
