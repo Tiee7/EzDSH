@@ -28,6 +28,13 @@ export interface McpToolReference {
   toolName: string
 }
 
+export class WorkflowMcpToolError extends Error {
+  constructor(diagnostic: string) {
+    super(`MCP 工具调用失败：${diagnostic.slice(0, 2_000)}`)
+    this.name = 'WorkflowMcpToolError'
+  }
+}
+
 /** Calls an installed MCP server directly, without a DSH coding-session prompt. */
 export class WorkflowMcpClient {
   private readonly loadServers: () => Promise<WorkflowMcpServer[]>
@@ -60,11 +67,16 @@ export function parseMcpToolReference(value: string): McpToolReference {
 
 export function normalizeMcpToolResult(result: unknown): WorkflowValue {
   const record = asMap(result)
+  const texts = readMcpTextContent(record)
+  if (record?.isError === true) {
+    const diagnostic = texts.length > 0
+      ? texts.join('\n')
+      : isWorkflowValue(record.structuredContent)
+        ? JSON.stringify(record.structuredContent)
+        : 'MCP 工具返回失败结果。'
+    throw new WorkflowMcpToolError(diagnostic)
+  }
   if (record !== undefined && isWorkflowValue(record.structuredContent)) return record.structuredContent
-  const texts = (Array.isArray(record?.content) ? record.content : [])
-    .map((part) => asMap(part))
-    .filter((part): part is Record<string, unknown> => part !== undefined && part.type === 'text' && typeof part.text === 'string')
-    .map((part) => part.text as string)
   if (texts.length > 0) {
     const joined = texts.join('\n')
     try {
@@ -133,6 +145,13 @@ async function callConfiguredMcpTool(server: WorkflowMcpServer, toolName: string
 
 function asMap(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function readMcpTextContent(record: Record<string, unknown> | undefined): string[] {
+  return (Array.isArray(record?.content) ? record.content : [])
+    .map((part) => asMap(part))
+    .filter((part): part is Record<string, unknown> => part !== undefined && part.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text as string)
 }
 
 function readStringArray(value: unknown): string[] {

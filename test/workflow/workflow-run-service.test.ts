@@ -13,6 +13,7 @@ import { WorkflowConnectorService, type WorkflowConnectorResponse } from '../../
 import { computeWorkflowDefinitionSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
 import { WorkflowObservationStore } from '../../src/main/workflow/workflow-observation-store.js'
 import { WorkflowObservabilityService } from '../../src/main/workflow/workflow-observability-service.js'
+import { WorkflowMcpClient } from '../../src/main/workflow/workflow-mcp-client.js'
 import type { WorkflowCustomerEnvironment } from '../../src/shared/workflow-operations.js'
 import type { EmployeeCreateInput, EmployeeSnapshot } from '../../src/shared/employees.js'
 import { validateWorkflow, type WorkflowDefinition, type WorkflowNode, type WorkflowOutputMode, type WorkflowRunRecord, type WorkflowValue } from '../../src/shared/workflow.js'
@@ -516,6 +517,7 @@ async function createNodeService(options: {
   responses?: string[]
   resolveEmployee?: (id: string) => EmployeeSnapshot | undefined
   executeSubWorkflow?: (workflowId: string, input: any, waitForCompletion: boolean) => Promise<any>
+  mcpClient?: WorkflowRunServiceOptions['mcpClient']
 }): Promise<{
   service: WorkflowRunService
   workflowStore: WorkflowStore
@@ -560,7 +562,7 @@ async function createNodeService(options: {
     }),
     resolveEmployee: options.resolveEmployee ?? (() => undefined),
     lightweightClient: { complete },
-    mcpClient: { call: mcpCall },
+    mcpClient: options.mcpClient ?? { call: mcpCall },
     executeSubWorkflow: options.executeSubWorkflow,
   })
   return { service, workflowStore, workflowId: workflow.id, sendPrompt, createSession, complete, mcpCall, archiveSession, selectSessionModel }
@@ -1356,6 +1358,40 @@ describe('workflow run service', () => {
     expect(mcpCall).toHaveBeenCalledWith('calendar::create_event', { title: { topic: '发布' }, task: { topic: '发布' } })
     expect(createSession).not.toHaveBeenCalled()
     expect(sendPrompt).not.toHaveBeenCalled()
+  })
+
+  it('pauses a dispatched MCP error for reconciliation without completing the MCP or downstream node', async () => {
+    const callImpl = vi.fn(async () => ({
+      isError: true,
+      content: [{ type: 'text', text: 'permission denied' }],
+    }))
+    const mcpClient = new WorkflowMcpClient({
+      loadServers: async () => [{ serverName: 'calendar', transport: 'streamable-http', url: 'https://mcp.example' }],
+      callImpl,
+    })
+    const { service, workflowId } = await createNodeService({
+      node: {
+        id: 'mcp', type: 'mcp', label: '日历',
+        config: { tool: 'calendar::create_event', arguments: { title: '{{value}}' } },
+        position: { x: 200, y: 0 },
+      },
+      mcpClient,
+    })
+
+    const result = await eventually(service, (await service.start(workflowId, { topic: '发布' })).id)
+    const mcpState = result.nodeStates.find((candidate) => candidate.nodeId === 'mcp')
+    const outputState = result.nodeStates.find((candidate) => candidate.nodeId === 'output')
+
+    expect(result.status).toBe('paused')
+    expect(result.output).toBeUndefined()
+    expect(mcpState).toMatchObject({ status: 'pending', effectState: 'unknown', error: expect.stringContaining('permission denied') })
+    expect(mcpState?.completedAt).toEqual(expect.any(String))
+    expect(result.events.some((event) => event.nodeId === 'mcp' && event.type === 'node-effect-confirmed')).toBe(false)
+    expect(result.events.some((event) => event.nodeId === 'mcp' && event.type === 'node-completed')).toBe(false)
+    expect(outputState).toMatchObject({ status: 'pending' })
+    expect(result.events.some((event) => event.nodeId === 'output' && event.type === 'node-started')).toBe(false)
+    expect(callImpl).toHaveBeenCalledTimes(1)
+    await service.stop()
   })
 
   it('assigns longer retained history to failed and debug runs', async () => {
