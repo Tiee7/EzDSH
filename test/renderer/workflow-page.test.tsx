@@ -34,11 +34,17 @@ function workflowWithUnknownLoopEffect(): { workflow: WorkflowDefinition; run: W
   return { workflow, run, bodyNodeId: body.id }
 }
 
-async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffect: (runId: string, request: unknown) => Promise<WorkflowRunRecord>, reconcileCompensation?: (runId: string, request: unknown) => Promise<WorkflowRunRecord>, compensationMode = false): Promise<{ domWindow: ReturnType<typeof createWindow>; cleanup: () => Promise<void>; workflow: WorkflowDefinition; run: WorkflowRunRecord; bodyNodeId: string; compensate: ReturnType<typeof vi.fn> }> {
+async function mountWorkflowEffectReviewPage(
+  locale: 'zh' | 'en',
+  reconcileEffect: (runId: string, request: unknown) => Promise<WorkflowRunRecord>,
+  reconcileCompensation?: (runId: string, request: unknown) => Promise<WorkflowRunRecord>,
+  compensationMode = false,
+  options: { compensationStack?: WorkflowRunRecord['compensationStack']; compensate?: (runId: string) => Promise<WorkflowRunRecord> } = {},
+): Promise<{ domWindow: ReturnType<typeof createWindow>; cleanup: () => Promise<void>; workflow: WorkflowDefinition; run: WorkflowRunRecord; bodyNodeId: string; compensate: ReturnType<typeof vi.fn> }> {
   const { workflow, run, bodyNodeId } = workflowWithUnknownLoopEffect()
   if (compensationMode) {
     run.effectReconciliationTargets = []
-    run.compensationStack = [{ sourceNodeId: 'charge', action: { type: 'workflow', workflowId: 'refund' }, status: 'failed', effectState: 'unknown', occurrenceId: 'run-effect-acceptance:compensation:charge:ordinary' }]
+    run.compensationStack = options.compensationStack ?? [{ sourceNodeId: 'charge', action: { type: 'workflow', workflowId: 'refund' }, status: 'failed', effectState: 'unknown', occurrenceId: 'run-effect-acceptance:compensation:charge:ordinary' }]
   }
   const previousGlobals = {
     window: globalThis.window,
@@ -86,7 +92,7 @@ async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffec
   })
   Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
-  const compensate = vi.fn(async () => run)
+  const compensate = vi.fn(options.compensate ?? (async () => run))
   const bridge = {
     workflows: {
       list: vi.fn(async () => [workflow]),
@@ -1510,6 +1516,41 @@ describe('WorkflowPage regressions', () => {
       await act(async () => { confirm.click(); await Promise.resolve() })
       expect(page.compensate).toHaveBeenCalledWith(page.run.id)
     } finally { await page.cleanup() }
+  })
+
+  it('offers a durable continue-compensation action after automatic continuation fails and the run is reloaded', async () => {
+    const pendingStack: NonNullable<WorkflowRunRecord['compensationStack']> = [
+      { sourceNodeId: 'earlier', action: { type: 'workflow', workflowId: 'undo-earlier' }, status: 'pending', effectState: 'none', occurrenceId: 'earlier-occurrence' },
+      { sourceNodeId: 'charge', action: { type: 'workflow', workflowId: 'refund' }, status: 'completed', effectState: 'confirmed', occurrenceId: 'run-effect-acceptance:compensation:charge:ordinary' },
+    ]
+    const reconcileCompensation = vi.fn(async () => {
+      const { run } = workflowWithUnknownLoopEffect()
+      run.effectReconciliationTargets = []
+      run.compensationStack = pendingStack
+      return run
+    })
+    const automaticFailure = vi.fn(async (): Promise<WorkflowRunRecord> => { throw new Error('process interrupted before compensation restart') })
+    const first = await mountWorkflowEffectReviewPage('zh', vi.fn(), reconcileCompensation, true, { compensate: automaticFailure })
+    try {
+      const textarea = first.domWindow.document.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => { Simulate.change(textarea, { target: { value: 'provider receipt found' } }) })
+      const dispatched = Array.from(first.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '确认补偿已派发') as HTMLButtonElement
+      await act(async () => { dispatched.click() })
+      const confirm = Array.from(first.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '我确认已经发送，继续') as HTMLButtonElement
+      await act(async () => { confirm.click(); await Promise.resolve() })
+      expect(reconcileCompensation).toHaveBeenCalledOnce()
+      expect(automaticFailure).toHaveBeenCalledWith(first.run.id)
+    } finally { await first.cleanup() }
+
+    const continued = vi.fn(async (runId: string) => ({ ...workflowWithUnknownLoopEffect().run, id: runId, compensationStack: pendingStack }))
+    const reloaded = await mountWorkflowEffectReviewPage('zh', vi.fn(), undefined, true, { compensationStack: pendingStack, compensate: continued })
+    try {
+      const continueButton = Array.from(reloaded.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '继续补偿') as HTMLButtonElement | undefined
+      expect(continueButton).toBeDefined()
+      expect(Array.from(reloaded.domWindow.document.querySelectorAll('button')).some((button) => button.textContent === '恢复运行')).toBe(false)
+      await act(async () => { continueButton!.click(); await Promise.resolve() })
+      expect(continued).toHaveBeenCalledWith(reloaded.run.id)
+    } finally { await reloaded.cleanup() }
   })
 
   it('requires a note and a second confirmation before reconciling a dispatched effect', async () => {

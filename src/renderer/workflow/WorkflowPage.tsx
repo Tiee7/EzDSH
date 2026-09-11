@@ -2351,6 +2351,7 @@ interface WorkflowExecutionReviewProps {
   onApprove: () => void
   onReject: () => void
   onResume: () => void
+  onCompensate?: () => void
   onSelectNode?: (nodeId: string) => void
   onMarkUnread?: () => void
   onDelete?: () => void
@@ -2463,12 +2464,14 @@ export function WorkflowCompensationReconciliationPanel({ copy, targets, busy = 
 }
 
 /** Read-only run-history inspector. All launch configuration stays in WorkflowRunLaunchDialog. */
-export function WorkflowExecutionReview({ copy, workflow, run, nodeDetail, selectedNode, statusLabel, onCancel, onApprove, onReject, onResume, onSelectNode, onMarkUnread, onDelete, canMarkUnread = false, canDelete = false, onCopyOutput, onOpenOutputWindow, outputFontScale = 1, onIncreaseOutputFont, onDecreaseOutputFont, onReconcileEffect, onReconcileCompensation, reconciliationBusy = false }: WorkflowExecutionReviewProps): JSX.Element {
+export function WorkflowExecutionReview({ copy, workflow, run, nodeDetail, selectedNode, statusLabel, onCancel, onApprove, onReject, onResume, onCompensate, onSelectNode, onMarkUnread, onDelete, canMarkUnread = false, canDelete = false, onCopyOutput, onOpenOutputWindow, outputFontScale = 1, onIncreaseOutputFont, onDecreaseOutputFont, onReconcileEffect, onReconcileCompensation, reconciliationBusy = false }: WorkflowExecutionReviewProps): JSX.Element {
   const inspectedNode = nodeDetail?.node ?? selectedNode
   const inspectedState = nodeDetail?.state ?? (selectedNode === undefined ? undefined : { nodeId: selectedNode.id, status: 'pending' as const })
   const inspectedEvents = nodeDetail?.events ?? []
   const unknownEffectTargets = run === undefined ? [] : workflowUnknownEffectTargets(workflow, run)
   const unknownCompensationTargets = run === undefined ? [] : workflowCompensationUnknownTargets(run)
+  const compensationIncomplete = (run?.compensationStack ?? []).some((entry) => entry.status !== 'completed')
+  const compensationCanContinue = (run?.compensationStack ?? []).some((entry) => (entry.status === 'pending' || entry.status === 'failed') && entry.effectState !== 'unknown')
   const outputViewerProps = (key: string, title: string, value: WorkflowValue): WorkflowOutputViewerProps => ({
     copy,
     value,
@@ -2485,7 +2488,8 @@ export function WorkflowExecutionReview({ copy, workflow, run, nodeDetail, selec
       <div className="workflow-execution-actions">
         {run.status === 'running' || run.status === 'queued' || run.status === 'waiting-approval' ? <button type="button" className="workflow-danger-button" onClick={onCancel}>{copy.workflowCancel}</button> : null}
         {run.status === 'waiting-approval' ? <><button type="button" onClick={onApprove}>{copy.workflowApprove}</button><button type="button" className="workflow-danger-button" onClick={onReject}>{copy.workflowReject}</button></> : null}
-        {run.status === 'paused' || run.status === 'failed' ? <button type="button" onClick={onResume}>{copy.workflowResume}</button> : null}
+        {(run.status === 'paused' || run.status === 'failed') && !compensationIncomplete ? <button type="button" onClick={onResume}>{copy.workflowResume}</button> : null}
+        {compensationCanContinue && onCompensate !== undefined ? <button type="button" className="workflow-button-primary" disabled={reconciliationBusy} onClick={onCompensate}>{copy.workflowContinueCompensation}</button> : null}
       </div>
       <WorkflowEffectReconciliationPanel copy={copy} targets={unknownEffectTargets} busy={reconciliationBusy} onReconcile={onReconcileEffect} />
       <WorkflowCompensationReconciliationPanel copy={copy} targets={unknownCompensationTargets} busy={reconciliationBusy} onReconcile={onReconcileCompensation} />
@@ -3535,6 +3539,13 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     try { applyRunRecord(await window.EzDSH.workflows.resume(currentRun.id)) } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) }
   }
 
+  const continueCompensation = async (): Promise<void> => {
+    if (currentRun === undefined) return
+    setBusy(true)
+    setError('')
+    try { applyRunRecord(await window.EzDSH.workflows.compensate(currentRun.id)) } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) } finally { setBusy(false) }
+  }
+
   const reconcileEffect = async (request: WorkflowEffectReconcileRequest): Promise<boolean> => {
     if (currentRun === undefined) return false
     const submittedRunId = currentRun.id
@@ -3566,8 +3577,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const reconciled = await window.EzDSH.workflows.reconcileCompensation(submittedRunId, request)
       const shouldContinue = !(reconciled.compensationStack ?? []).some((entry) => entry.effectState === 'unknown')
         && (reconciled.compensationStack ?? []).some((entry) => entry.status === 'pending')
-      const record = shouldContinue ? await window.EzDSH.workflows.compensate(submittedRunId) : reconciled
-      applyRunRecord(record, currentRunRef.current?.id === submittedRunId)
+      applyRunRecord(reconciled, currentRunRef.current?.id === submittedRunId)
+      if (shouldContinue) applyRunRecord(await window.EzDSH.workflows.compensate(submittedRunId), currentRunRef.current?.id === submittedRunId)
       return true
     } catch {
       setError(workflowReconciliationErrorMessage(copy))
@@ -3812,7 +3823,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             }}>
               <div className="workflow-execution-canvas"><ReactFlow key={executionLayoutKey ?? selected.id} {...WORKFLOW_EXECUTION_CANVAS_INTERACTION_PROPS} nodes={executionCanvasNodes} edges={workflowExecutionEdges(selected, currentRun)} nodeTypes={nodeTypes} onNodesChange={onExecutionNodesChange} onNodeClick={(_event, node) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(node.id) }} onPaneClick={() => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(undefined) }} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
               <div className="workflow-execution-resize-handle" role="separator" aria-orientation="horizontal" aria-label={copy.workflowResizeExecutionPanel} onPointerDown={beginExecutionResize}><span /></div>
-              <WorkflowExecutionReview copy={copy} workflow={selected} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => { markRunViewedAfterInteraction(currentRun); void cancel() }} onApprove={() => { markRunViewedAfterInteraction(currentRun); void approve(true) }} onReject={() => { markRunViewedAfterInteraction(currentRun); void approve(false) }} onResume={() => { markRunViewedAfterInteraction(currentRun); void resume() }} onReconcileEffect={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileEffect(request) }} onReconcileCompensation={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileCompensation(request) }} reconciliationBusy={busy} onSelectNode={(nodeId) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(nodeId) }} onMarkUnread={currentRun === undefined ? undefined : () => markRunUnread(currentRun)} onDelete={currentRun === undefined ? undefined : () => void deleteRun(currentRun)} canMarkUnread={currentRun !== undefined && viewedRunIds.has(currentRun.id) && !busy} canDelete={currentRun !== undefined && workflowRunCanDelete(currentRun.status) && !busy} onCopyOutput={() => { markRunViewedAfterInteraction(currentRun); copyOutput() }} onOpenOutputWindow={(key, title, value) => { markRunViewedAfterInteraction(currentRun); openOutputWindow(key, title, value) }} outputFontScale={outputFontScale} onIncreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1)))) }} onDecreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1)))) }} />
+              <WorkflowExecutionReview copy={copy} workflow={selected} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => { markRunViewedAfterInteraction(currentRun); void cancel() }} onApprove={() => { markRunViewedAfterInteraction(currentRun); void approve(true) }} onReject={() => { markRunViewedAfterInteraction(currentRun); void approve(false) }} onResume={() => { markRunViewedAfterInteraction(currentRun); void resume() }} onCompensate={() => { markRunViewedAfterInteraction(currentRun); void continueCompensation() }} onReconcileEffect={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileEffect(request) }} onReconcileCompensation={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileCompensation(request) }} reconciliationBusy={busy} onSelectNode={(nodeId) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(nodeId) }} onMarkUnread={currentRun === undefined ? undefined : () => markRunUnread(currentRun)} onDelete={currentRun === undefined ? undefined : () => void deleteRun(currentRun)} canMarkUnread={currentRun !== undefined && viewedRunIds.has(currentRun.id) && !busy} canDelete={currentRun !== undefined && workflowRunCanDelete(currentRun.status) && !busy} onCopyOutput={() => { markRunViewedAfterInteraction(currentRun); copyOutput() }} onOpenOutputWindow={(key, title, value) => { markRunViewedAfterInteraction(currentRun); openOutputWindow(key, title, value) }} outputFontScale={outputFontScale} onIncreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1)))) }} onDecreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1)))) }} />
             </div>
           </section>}
         </div>

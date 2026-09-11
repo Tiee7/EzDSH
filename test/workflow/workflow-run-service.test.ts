@@ -38,6 +38,27 @@ function graph(): WorkflowDefinition {
   }
 }
 
+async function stoppedApprovalFixture(prefix: string) {
+  const dir = await mkdtemp(join(tmpdir(), `ezdsh-${prefix}-`))
+  const workflowStore = new WorkflowStore(dir)
+  const workflow = await workflowStore.create({
+    id: `${prefix}-workflow`, name: 'Approval mutation', description: '',
+    nodes: [
+      { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+      { id: 'approval', type: 'approval', label: 'Approval', config: { message: 'Confirm' }, position: { x: 200, y: 0 } },
+      { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+    ],
+    edges: [{ id: 'a', source: 'input', target: 'approval' }, { id: 'b', source: 'approval', target: 'output' }],
+  })
+  const runStore = new WorkflowRunStore(dir)
+  const service = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir,
+    createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+  })
+  await service.initialize()
+  await service.stop()
+  return { dir, workflow, workflowStore, runStore, service }
+}
+
 async function loopSafetyFixture(body: WorkflowNode, connectorService?: WorkflowRunServiceOptions['connectorService'], failureStrategy: 'stop' | 'continue' = 'stop') {
   const dir = await mkdtemp(join(tmpdir(), 'ezdsh-loop-safety-'))
   const workflowStore = new WorkflowStore(dir)
@@ -1799,6 +1820,91 @@ describe('workflow run service', () => {
     expect(runStore.get('run-active-workflow')).toBeDefined()
   })
 
+  it('serializes workflow definition deletion with a top-level start so no orphan run is enqueued', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-delete-start-race-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({ ...graph(), id: 'delete-start-race' })
+    const runStore = new WorkflowRunStore(dir)
+    const service = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    await service.initialize()
+    const originalRemove = workflowStore.remove.bind(workflowStore)
+    let allowDelete!: () => void
+    const deleteGate = new Promise<void>((resolve) => { allowDelete = resolve })
+    let deletionEntered!: () => void
+    const deleting = new Promise<void>((resolve) => { deletionEntered = resolve })
+    vi.spyOn(workflowStore, 'remove').mockImplementation(async (workflowId) => {
+      deletionEntered()
+      await deleteGate
+      return originalRemove(workflowId)
+    })
+    const deletion = service.removeWorkflow(workflow.id)
+    try {
+      await deleting
+      const starting = service.start(workflow.id, 'must not enqueue')
+      await Promise.resolve()
+      expect(runStore.list(workflow.id)).toHaveLength(0)
+      allowDelete()
+      await deletion
+      await expect(starting).rejects.toThrow(/not found|不存在|删除|清理/iu)
+      expect(workflowStore.get(workflow.id)).toBeUndefined()
+      expect(runStore.list(workflow.id)).toHaveLength(0)
+    } finally { allowDelete(); await deletion.catch(() => undefined); await service.stop() }
+  })
+
+  it('serializes workflow deletion with a live child start and prevents child dispatch during deletion', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-delete-child-race-'))
+    const workflowStore = new WorkflowStore(dir)
+    const child = await workflowStore.create({
+      id: 'delete-child-race-target', name: 'Child', description: '',
+      nodes: [graph().nodes[0]!, { id: 'write', type: 'mcp', label: 'Write', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } }, graph().nodes[4]!],
+      edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }],
+    })
+    const parent = await workflowStore.create({
+      id: 'delete-child-race-parent', name: 'Parent', description: '',
+      nodes: [graph().nodes[0]!, { id: 'gate', type: 'ai-task', label: 'Gate', config: { instruction: 'gate', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 0 } }, { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: child.id, waitForCompletion: false }, position: { x: 400, y: 0 } }, graph().nodes[4]!],
+      edges: [{ id: 'a', source: 'input', target: 'gate' }, { id: 'b', source: 'gate', target: 'child' }, { id: 'c', source: 'child', target: 'output' }],
+    })
+    const runStore = new WorkflowRunStore(dir)
+    let allowParent!: () => void
+    const parentGate = new Promise<void>((resolve) => { allowParent = resolve })
+    let parentEntered!: () => void
+    const parentRunning = new Promise<void>((resolve) => { parentEntered = resolve })
+    let childEffects = 0
+    const service = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      lightweightClient: { complete: async () => { parentEntered(); await parentGate; return 'ready' } },
+      mcpClient: { call: async () => { childEffects += 1; return 'written' } },
+    })
+    const parentRun = await service.start(parent.id, null)
+    await parentRunning
+    const originalRemove = workflowStore.remove.bind(workflowStore)
+    let allowDelete!: () => void
+    const deleteGate = new Promise<void>((resolve) => { allowDelete = resolve })
+    let deletionEntered!: () => void
+    const deleting = new Promise<void>((resolve) => { deletionEntered = resolve })
+    vi.spyOn(workflowStore, 'remove').mockImplementation(async (workflowId) => {
+      deletionEntered()
+      await deleteGate
+      return originalRemove(workflowId)
+    })
+    const deletion = service.removeWorkflow(child.id)
+    try {
+      await deleting
+      allowParent()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(runStore.list(child.id)).toHaveLength(0)
+      expect(childEffects).toBe(0)
+      allowDelete()
+      await deletion
+      const stopped = await eventually(service, parentRun.id)
+      expect(['failed', 'paused']).toContain(stopped.status)
+      expect(runStore.list(child.id)).toHaveLength(0)
+      expect(childEffects).toBe(0)
+    } finally { allowParent(); allowDelete(); await deletion.catch(() => undefined); await service.stop() }
+  })
+
   it('replaces text and interpolates bound variables in the transform node', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-transform-replace-'))
     const workflowStore = new WorkflowStore(dir)
@@ -2136,6 +2242,111 @@ describe('workflow run service', () => {
     const rejected = await service.approve(waiting.id, false)
 
     expect(rejected.events.at(-1)?.type).toBe('approval-rejected')
+  })
+
+  it('serializes resume with cancellation so cancellation cannot succeed against a stale paused snapshot', async () => {
+    const { workflow, runStore, service } = await stoppedApprovalFixture('resume-cancel-mutation')
+    const runId = 'resume-cancel-run'
+    await runStore.save({ id: runId, workflowId: workflow.id, workflowRevision: workflow.revision, status: 'paused', input: 'hello', allowShellFile: false, nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending' as const })), events: [] })
+    const originalSave = runStore.save.bind(runStore)
+    let allowResume!: () => void
+    const resumeGate = new Promise<void>((resolve) => { allowResume = resolve })
+    let resumeEntered!: () => void
+    const savingResume = new Promise<void>((resolve) => { resumeEntered = resolve })
+    vi.spyOn(runStore, 'save').mockImplementation(async (record) => {
+      if (record.id === runId && record.events.at(-1)?.type === 'run-created') {
+        resumeEntered()
+        await resumeGate
+      }
+      return originalSave(record)
+    })
+    const originalCancellation = runStore.requestCancellation.bind(runStore)
+    let cancellationPersistCalled = false
+    vi.spyOn(runStore, 'requestCancellation').mockImplementation(async (...args) => {
+      cancellationPersistCalled = true
+      return originalCancellation(...args)
+    })
+    const resuming = service.resume(runId)
+    try {
+      await savingResume
+      const cancelling = service.cancel(runId)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(cancellationPersistCalled).toBe(false)
+      allowResume()
+      expect((await resuming).status).toBe('queued')
+      expect((await cancelling).status).toBe('cancelled')
+      expect(service.get(runId)?.status).toBe('cancelled')
+    } finally { allowResume(); await resuming.catch(() => undefined) }
+  })
+
+  it('serializes approval with cancellation and applies cancellation to the newly queued state', async () => {
+    const { workflow, runStore, service } = await stoppedApprovalFixture('approve-cancel-mutation')
+    const runId = 'approve-cancel-run'
+    await runStore.save({ id: runId, workflowId: workflow.id, workflowRevision: workflow.revision, status: 'waiting-approval', waitingApprovalNodeId: 'approval', input: 'hello', allowShellFile: false,
+      nodeStates: [{ nodeId: 'input', status: 'completed', output: 'hello' }, { nodeId: 'approval', status: 'running' }, { nodeId: 'output', status: 'pending' }], events: [],
+    })
+    const originalSave = runStore.save.bind(runStore)
+    let allowApproval!: () => void
+    const approvalGate = new Promise<void>((resolve) => { allowApproval = resolve })
+    let approvalEntered!: () => void
+    const savingApproval = new Promise<void>((resolve) => { approvalEntered = resolve })
+    vi.spyOn(runStore, 'save').mockImplementation(async (record) => {
+      if (record.id === runId && record.events.at(-1)?.type === 'approval-approved') {
+        approvalEntered()
+        await approvalGate
+      }
+      return originalSave(record)
+    })
+    const originalCancellation = runStore.requestCancellation.bind(runStore)
+    let cancellationPersistCalled = false
+    vi.spyOn(runStore, 'requestCancellation').mockImplementation(async (...args) => {
+      cancellationPersistCalled = true
+      return originalCancellation(...args)
+    })
+    const approving = service.approve(runId, true)
+    try {
+      await savingApproval
+      const cancelling = service.cancel(runId)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(cancellationPersistCalled).toBe(false)
+      allowApproval()
+      expect((await approving).events.at(-1)?.type).toBe('approval-approved')
+      expect((await cancelling).status).toBe('cancelled')
+      expect(service.get(runId)?.status).toBe('cancelled')
+    } finally { allowApproval(); await approving.catch(() => undefined) }
+  })
+
+  it('allows exactly one conflicting approval decision and rejects the waiter against the latest state', async () => {
+    const { workflow, runStore, service } = await stoppedApprovalFixture('conflicting-approval-mutation')
+    const runId = 'conflicting-approval-run'
+    await runStore.save({ id: runId, workflowId: workflow.id, workflowRevision: workflow.revision, status: 'waiting-approval', waitingApprovalNodeId: 'approval', input: 'hello', allowShellFile: false,
+      nodeStates: [{ nodeId: 'input', status: 'completed', output: 'hello' }, { nodeId: 'approval', status: 'running' }, { nodeId: 'output', status: 'pending' }], events: [],
+    })
+    const originalSave = runStore.save.bind(runStore)
+    let allowFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => { allowFirst = resolve })
+    let firstEntered!: () => void
+    const savingFirst = new Promise<void>((resolve) => { firstEntered = resolve })
+    vi.spyOn(runStore, 'save').mockImplementation(async (record) => {
+      if (record.id === runId && record.events.at(-1)?.type === 'approval-approved') {
+        firstEntered()
+        await firstGate
+      }
+      return originalSave(record)
+    })
+    const first = service.approve(runId, true)
+    try {
+      await savingFirst
+      const conflicting = service.approve(runId, false)
+      let conflictingSettled = false
+      void conflicting.then(() => { conflictingSettled = true }, () => { conflictingSettled = true })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(conflictingSettled).toBe(false)
+      allowFirst()
+      await first
+      await expect(conflicting).rejects.toThrow(/没有等待中的审批/u)
+      expect(service.get(runId)?.events.filter((event) => event.type === 'approval-approved' || event.type === 'approval-rejected')).toHaveLength(1)
+    } finally { allowFirst(); await first.catch(() => undefined) }
   })
 
   it('runs explicit compensation actions in reverse order', async () => {

@@ -1763,10 +1763,7 @@ function registerIpcHandlers(): void {
     try {
       if (workflowStore === undefined || workflowRunService === undefined) throw new Error('Workflow service is not ready')
       if (typeof id !== 'string' || id.trim() === '') throw new Error('Invalid workflow ID')
-      await workflowRunService.initialize()
-      if (workflowStore.get(id) === undefined) throw new Error(`Workflow not found: ${id}`)
-      await workflowRunService.removeForWorkflow(id)
-      await workflowStore.remove(id)
+      await workflowRunService.removeWorkflow(id)
       return success(undefined)
     } catch (error) {
       return failure(error)

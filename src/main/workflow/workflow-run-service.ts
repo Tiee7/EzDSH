@@ -127,6 +127,9 @@ export class WorkflowRunService {
   private readonly compensationActive = new Set<string>()
   private readonly reconciliationActive = new Set<string>()
   private readonly administrativeActive = new Set<string>()
+  private readonly runMutationTails = new Map<string, Promise<void>>()
+  private readonly workflowMutationTails = new Map<string, Promise<void>>()
+  private readonly workflowAdministrativeActive = new Set<string>()
   private initialized = false
   private initializationPromise: Promise<void> | undefined
 
@@ -187,6 +190,8 @@ export class WorkflowRunService {
   async remove(runId: string): Promise<void> {
     await this.initialize()
     this.assertRunMutationAvailable(runId)
+    const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
+    try { this.assertRunMutationAvailable(runId) } catch (error) { releaseMutation(); throw error }
     this.administrativeActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -198,21 +203,84 @@ export class WorkflowRunService {
       if (!removed) throw new Error(`Workflow run not found: ${runId}`)
     } finally {
       this.administrativeActive.delete(runId)
+      releaseMutation()
     }
   }
 
   /** Remove every non-active run record for a workflow before deleting its definition. */
   async removeForWorkflow(workflowId: string): Promise<number> {
     await this.initialize()
-    const records = this.options.runStore.list(workflowId)
-    for (const record of records) this.assertRunMutationAvailable(record.id)
-    const active = records.find((record) => record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval')
-    if (active !== undefined) throw new Error('工作流仍有运行中的记录，请先取消运行后再删除工作流')
-    for (const record of records) this.administrativeActive.add(record.id)
+    return this.removeWorkflowAndRuns(workflowId, false)
+  }
+
+  /** Definition deletion and run cleanup share the same workflow critical section. */
+  async removeWorkflow(workflowId: string): Promise<void> {
+    await this.initialize()
+    if (typeof workflowId !== 'string' || workflowId.trim() === '') throw new Error('Invalid workflow ID')
+    await this.removeWorkflowAndRuns(workflowId, true)
+  }
+
+  private async removeWorkflowAndRuns(workflowId: string, removeDefinition: boolean): Promise<number> {
+    await this.beginWorkflowAdministration(workflowId)
+    const releases: Array<() => void> = []
+    let administrativeRecords: WorkflowRunRecord[] = []
     try {
-      return await this.options.runStore.removeForWorkflow(workflowId)
+      const initialRecords = this.options.runStore.list(workflowId)
+      for (const record of initialRecords) this.assertRunMutationAvailable(record.id)
+      for (const runId of initialRecords.map((record) => record.id).sort()) releases.push(await this.acquireKeyedMutex(this.runMutationTails, runId))
+      const releaseWorkflow = await this.acquireKeyedMutex(this.workflowMutationTails, workflowId)
+      try {
+        if (removeDefinition && this.options.workflowStore.get(workflowId) === undefined) throw new Error(`Workflow not found: ${workflowId}`)
+        administrativeRecords = this.options.runStore.list(workflowId)
+        for (const record of administrativeRecords) this.assertRunMutationAvailable(record.id)
+        const active = administrativeRecords.find((record) => record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval')
+        if (active !== undefined) throw new Error('工作流仍有运行中的记录，请先取消运行后再删除工作流')
+        for (const record of administrativeRecords) this.administrativeActive.add(record.id)
+        const removed = await this.options.runStore.removeForWorkflow(workflowId)
+        if (removeDefinition) await this.options.workflowStore.remove(workflowId)
+        return removed
+      } finally {
+        for (const record of administrativeRecords) this.administrativeActive.delete(record.id)
+        releaseWorkflow()
+      }
     } finally {
-      for (const record of records) this.administrativeActive.delete(record.id)
+      for (const release of releases.reverse()) release()
+      await this.endWorkflowAdministration(workflowId)
+    }
+  }
+
+  private async beginWorkflowAdministration(workflowId: string): Promise<void> {
+    const releaseWorkflow = await this.acquireKeyedMutex(this.workflowMutationTails, workflowId)
+    try {
+      if (this.workflowAdministrativeActive.has(workflowId)) throw new Error('该工作流的删除或运行清理正在进行。')
+      this.workflowAdministrativeActive.add(workflowId)
+    } finally {
+      releaseWorkflow()
+    }
+  }
+
+  private async endWorkflowAdministration(workflowId: string): Promise<void> {
+    const releaseWorkflow = await this.acquireKeyedMutex(this.workflowMutationTails, workflowId)
+    try {
+      this.workflowAdministrativeActive.delete(workflowId)
+    } finally {
+      releaseWorkflow()
+    }
+  }
+
+  private async acquireKeyedMutex(tails: Map<string, Promise<void>>, key: string): Promise<() => void> {
+    const previous = tails.get(key) ?? Promise.resolve()
+    let releaseCurrent!: () => void
+    const current = new Promise<void>((resolve) => { releaseCurrent = resolve })
+    const tail = previous.then(() => current)
+    tails.set(key, tail)
+    await previous
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      releaseCurrent()
+      if (tails.get(key) === tail) tails.delete(key)
     }
   }
 
@@ -244,13 +312,19 @@ export class WorkflowRunService {
   async start(workflowId: string, input: WorkflowValue, options: WorkflowRunOptions = {}): Promise<WorkflowRunRecord> {
     await this.initialize()
     if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
-    const workflow = options.workflowRevision === undefined ? this.options.workflowStore.get(workflowId) : this.options.workflowStore.getRevision(workflowId, options.workflowRevision)
-    if (workflow === undefined) throw new Error(`Workflow not found: ${workflowId}`)
-    assertValidWorkflow(workflow, '启动运行')
-    const record = this.createRecord(workflow, input, options)
-    const enqueued = await this.enqueue(record, '运行已排队')
-    this.worker.wake()
-    return cloneWorkflow(enqueued)
+    const releaseWorkflow = await this.acquireKeyedMutex(this.workflowMutationTails, workflowId)
+    try {
+      if (this.workflowAdministrativeActive.has(workflowId)) throw new Error('该工作流的删除或运行清理正在进行。')
+      const workflow = options.workflowRevision === undefined ? this.options.workflowStore.get(workflowId) : this.options.workflowStore.getRevision(workflowId, options.workflowRevision)
+      if (workflow === undefined) throw new Error(`Workflow not found: ${workflowId}`)
+      assertValidWorkflow(workflow, '启动运行')
+      const record = this.createRecord(workflow, input, options)
+      const enqueued = await this.enqueue(record, '运行已排队')
+      this.worker.wake()
+      return cloneWorkflow(enqueued)
+    } finally {
+      releaseWorkflow()
+    }
   }
 
   async startReleased(releaseId: string, input: WorkflowValue, options: WorkflowRunOptions = {}): Promise<WorkflowRunRecord> {
@@ -272,26 +346,42 @@ export class WorkflowRunService {
   ): Promise<WorkflowValue> {
     await this.initialize()
     if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
-    const parent = parentRunId === undefined ? undefined : this.options.runStore.get(parentRunId)
-    if (parentRunId !== undefined && parent === undefined) throw new Error(`父运行不存在：${parentRunId}`)
-    const lineage = parent === undefined ? [] : [...(parent.workflowAncestry ?? []), parent.workflowId]
-    if (lineage.includes(workflowId)) throw new WorkflowRecursiveCallError([...lineage, workflowId])
-    const workflow = this.options.workflowStore.get(workflowId)
-    if (workflow === undefined) throw new Error(`子工作流不存在：${workflowId}`)
-    if (typeof version === 'number' && workflow.revision !== version) throw new Error(`子工作流版本不匹配：需要 v${version}，当前为 v${workflow.revision}。`)
-    assertValidWorkflow(workflow, '启动子工作流')
-    const parentActive = parentRunId === undefined ? undefined : this.active.get(parentRunId)
-    throwIfAborted(parentActive?.abortController.signal)
-    const child = this.createRecord(workflow, input, options)
-    if (parent !== undefined) {
-      child.parentRunId = parent.id
-      child.workflowAncestry = [...lineage]
-      child.origin = { kind: 'child', parentRunId: parent.id }
+    const releaseWorkflow = await this.acquireKeyedMutex(this.workflowMutationTails, workflowId)
+    let parentActive: ActiveRun | undefined
+    let child!: WorkflowRunRecord
+    let enqueued: WorkflowRunRecord | undefined
+    try {
+      if (this.workflowAdministrativeActive.has(workflowId)) throw new Error('子工作流的删除或运行清理正在进行。')
+      const parent = parentRunId === undefined ? undefined : this.options.runStore.get(parentRunId)
+      if (parentRunId !== undefined && parent === undefined) throw new Error(`父运行不存在：${parentRunId}`)
+      const lineage = parent === undefined ? [] : [...(parent.workflowAncestry ?? []), parent.workflowId]
+      if (lineage.includes(workflowId)) throw new WorkflowRecursiveCallError([...lineage, workflowId])
+      const workflow = this.options.workflowStore.get(workflowId)
+      if (workflow === undefined) throw new Error(`子工作流不存在：${workflowId}`)
+      if (typeof version === 'number' && workflow.revision !== version) throw new Error(`子工作流版本不匹配：需要 v${version}，当前为 v${workflow.revision}。`)
+      assertValidWorkflow(workflow, '启动子工作流')
+      parentActive = parentRunId === undefined ? undefined : this.active.get(parentRunId)
+      throwIfAborted(parentActive?.abortController.signal)
+      child = this.createRecord(workflow, input, options)
+      if (parent !== undefined) {
+        child.parentRunId = parent.id
+        child.workflowAncestry = [...lineage]
+        child.origin = { kind: 'child', parentRunId: parent.id }
+      }
+      this.liveLineages.set(child.id, [...lineage, workflow.id])
+      if (!waitForCompletion || parentActive === undefined) {
+        enqueued = await this.enqueue(child, '子运行已排队')
+        if (enqueued.id !== child.id) this.liveLineages.delete(child.id)
+      } else {
+        // Persist as running so even an idle Worker's polling cannot claim this
+        // inline run while its caller is saving the creation event.
+        child.status = 'running'
+        await this.save(child, 'run-created', '同步子运行已创建')
+      }
+    } finally {
+      releaseWorkflow()
     }
-    this.liveLineages.set(child.id, [...lineage, workflow.id])
-    if (!waitForCompletion || parentActive === undefined) {
-      const enqueued = await this.enqueue(child, '子运行已排队')
-      if (enqueued.id !== child.id) this.liveLineages.delete(child.id)
+    if (enqueued !== undefined) {
       this.worker.wake()
       if (!waitForCompletion) return { runId: enqueued.id }
       // Compensation and other parentless calls have no occupied Worker
@@ -300,12 +390,10 @@ export class WorkflowRunService {
       if (settled.status !== 'completed') throw new Error(settled.error ?? '子工作流执行失败。')
       return settled.output ?? null
     }
-    // Persist as running so even an idle Worker's polling cannot claim this
-    // inline run while its caller is saving the creation event.
-    child.status = 'running'
-    await this.save(child, 'run-created', '同步子运行已创建')
+    const inlineParentActive = parentActive
+    if (inlineParentActive === undefined) throw new Error('同步子运行缺少父运行上下文。')
     for (;;) {
-      await this.execute(child.id, undefined, undefined, parentActive)
+      await this.execute(child.id, undefined, undefined, inlineParentActive)
       const settled = this.options.runStore.get(child.id)
       if (settled === undefined) throw new Error(`Workflow run not found: ${child.id}`)
       if (settled.status === 'completed') return settled.output ?? null
@@ -313,10 +401,10 @@ export class WorkflowRunService {
       // A retry yields the child, but the parent's Worker slot still belongs
       // to this call. Resume the same run when due instead of queueing behind it.
       try {
-        const current = await this.waitForChildRun(child.id, parentActive.abortController.signal, settled.queue?.availableAt)
+        const current = await this.waitForChildRun(child.id, inlineParentActive.abortController.signal, settled.queue?.availableAt)
         if (current.status !== 'queued') throw new Error(current.error ?? '子工作流执行失败。')
       } catch (error) {
-        if (parentActive.abortController.signal.aborted) await this.cancel(child.id)
+        if (inlineParentActive.abortController.signal.aborted) await this.cancel(child.id)
         throw error
       }
     }
@@ -356,6 +444,8 @@ export class WorkflowRunService {
   async resume(runId: string): Promise<WorkflowRunRecord> {
     await this.initialize()
     this.assertRunMutationAvailable(runId)
+    const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
+    try { this.assertRunMutationAvailable(runId) } catch (error) { releaseMutation(); throw error }
     this.administrativeActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -384,6 +474,7 @@ export class WorkflowRunService {
       return cloneWorkflow(record)
     } finally {
       this.administrativeActive.delete(runId)
+      releaseMutation()
     }
   }
 
@@ -392,6 +483,8 @@ export class WorkflowRunService {
     const request = validateWorkflowEffectReconcileRequest(input)
     await this.initialize()
     this.assertRunMutationAvailable(runId)
+    const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
+    try { this.assertRunMutationAvailable(runId) } catch (error) { releaseMutation(); throw error }
     this.reconciliationActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -461,6 +554,7 @@ export class WorkflowRunService {
       return this.options.runStore.get(runId) ?? cloneWorkflow(record)
     } finally {
       this.reconciliationActive.delete(runId)
+      releaseMutation()
     }
   }
 
@@ -469,6 +563,8 @@ export class WorkflowRunService {
     const request = validateWorkflowCompensationEffectReconcileRequest(input)
     await this.initialize()
     this.assertRunMutationAvailable(runId)
+    const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
+    try { this.assertRunMutationAvailable(runId) } catch (error) { releaseMutation(); throw error }
     this.reconciliationActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -500,6 +596,7 @@ export class WorkflowRunService {
       return this.options.runStore.get(runId) ?? cloneWorkflow(record)
     } finally {
       this.reconciliationActive.delete(runId)
+      releaseMutation()
     }
   }
 
@@ -521,59 +618,71 @@ export class WorkflowRunService {
 
   async approve(runId: string, approved: boolean): Promise<WorkflowRunRecord> {
     await this.initialize()
-    const record = this.options.runStore.get(runId)
-    if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-    if (record.status !== 'waiting-approval' || record.waitingApprovalNodeId === undefined) throw new Error('当前运行没有等待中的审批')
-    const workflow = this.workflowForRecord(record)
-    if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
-    const node = workflow.nodes.find((candidate) => candidate.id === record.waitingApprovalNodeId)
-    const state = record.nodeStates.find((candidate) => candidate.nodeId === record.waitingApprovalNodeId)
-    if ((node?.type !== 'approval' && node?.type !== 'wait-input') || state === undefined || (node.type === 'wait-input' && node.config.mode !== 'approval')) throw new Error('审批节点不存在')
-    if (!approved) {
-      state.status = 'failed'
-      state.error = '审批被拒绝'
+    const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
+    try {
+      const record = this.options.runStore.get(runId)
+      if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      if (record.status !== 'waiting-approval' || record.waitingApprovalNodeId === undefined) throw new Error('当前运行没有等待中的审批')
+      const workflow = this.workflowForRecord(record)
+      if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
+      const node = workflow.nodes.find((candidate) => candidate.id === record.waitingApprovalNodeId)
+      const state = record.nodeStates.find((candidate) => candidate.nodeId === record.waitingApprovalNodeId)
+      if ((node?.type !== 'approval' && node?.type !== 'wait-input') || state === undefined || (node.type === 'wait-input' && node.config.mode !== 'approval')) throw new Error('审批节点不存在')
+      if (!approved) {
+        state.status = 'failed'
+        state.error = '审批被拒绝'
+        state.completedAt = new Date().toISOString()
+        record.status = 'failed'
+        record.error = '审批被拒绝'
+        record.completedAt = new Date().toISOString()
+        record.waitingApprovalNodeId = undefined
+        await this.saveFailure(record, 'approval-rejected', '审批被拒绝', node.id)
+        return this.options.runStore.get(runId) ?? record
+      }
+      this.revalidateReleasedAccess(record)
+      const outputs = new Map(record.nodeStates.filter((candidate) => candidate.output !== undefined).map((candidate) => [candidate.nodeId, candidate.output as WorkflowValue]))
+      const incoming = workflow.edges.filter((edge) => edge.target === node.id)
+      const nodeMap = new Map(workflow.nodes.map((candidate) => [candidate.id, candidate]))
+      const stateMap = new Map(record.nodeStates.map((candidate) => [candidate.nodeId, candidate]))
+      state.status = 'completed'
+      state.output = this.previousValue(incoming.filter((edge) => this.isEdgeActive(edge, workflow.edges, nodeMap, stateMap, outputs)), outputs, record.input)
       state.completedAt = new Date().toISOString()
-      record.status = 'failed'
-      record.error = '审批被拒绝'
-      record.completedAt = new Date().toISOString()
+      state.elapsedMs = 0
+      state.error = undefined
+      record.status = 'queued'
+      record.error = undefined
       record.waitingApprovalNodeId = undefined
-      await this.saveFailure(record, 'approval-rejected', '审批被拒绝', node.id)
+      this.prepareQueuedRecord(record)
+      await this.save(record, 'approval-approved', '审批通过，继续运行', node.id)
+      this.worker.wake()
       return this.options.runStore.get(runId) ?? record
+    } finally {
+      releaseMutation()
     }
-    this.revalidateReleasedAccess(record)
-    const outputs = new Map(record.nodeStates.filter((candidate) => candidate.output !== undefined).map((candidate) => [candidate.nodeId, candidate.output as WorkflowValue]))
-    const incoming = workflow.edges.filter((edge) => edge.target === node.id)
-    const nodeMap = new Map(workflow.nodes.map((candidate) => [candidate.id, candidate]))
-    const stateMap = new Map(record.nodeStates.map((candidate) => [candidate.nodeId, candidate]))
-    state.status = 'completed'
-    state.output = this.previousValue(incoming.filter((edge) => this.isEdgeActive(edge, workflow.edges, nodeMap, stateMap, outputs)), outputs, record.input)
-    state.completedAt = new Date().toISOString()
-    state.elapsedMs = 0
-    state.error = undefined
-    record.status = 'queued'
-    record.error = undefined
-    record.waitingApprovalNodeId = undefined
-    this.prepareQueuedRecord(record)
-    await this.save(record, 'approval-approved', '审批通过，继续运行', node.id)
-    this.worker.wake()
-    return this.options.runStore.get(runId) ?? record
   }
 
   async cancel(runId: string): Promise<WorkflowRunRecord> {
     await this.initialize()
-    const record = this.options.runStore.get(runId)
-    if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     const active = this.active.get(runId)
+    let cancellingSessions: Promise<void> | undefined
     if (active !== undefined) {
       active.cancelled = true
       active.abortController.abort()
-      await this.cancelInternalSessions(active)
+      cancellingSessions = this.cancelInternalSessions(active)
     }
-    await this.options.runStore.requestCancellation(runId)
-    const cancelled = this.options.runStore.get(runId) ?? record
-    if (cancelled.status === 'cancelled') this.liveLineages.delete(runId)
-    for (const listener of this.listeners) listener(cloneWorkflow(cancelled))
-    return cancelled
+    const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
+    try {
+      await cancellingSessions
+      const record = this.options.runStore.get(runId)
+      if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      await this.options.runStore.requestCancellation(runId)
+      const cancelled = this.options.runStore.get(runId) ?? record
+      if (cancelled.status === 'cancelled') this.liveLineages.delete(runId)
+      for (const listener of this.listeners) listener(cloneWorkflow(cancelled))
+      return cancelled
+    } finally {
+      releaseMutation()
+    }
   }
 
   /**
@@ -585,10 +694,19 @@ export class WorkflowRunService {
   async compensate(runId: string): Promise<WorkflowRunRecord> {
     await this.initialize()
     this.assertRunMutationAvailable(runId)
-    const record = this.options.runStore.get(runId)
-    if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-    if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') throw new Error('运行尚未结束，不能执行补偿')
-    this.revalidateReleasedAccess(record)
+    const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
+    try { this.assertRunMutationAvailable(runId) } catch (error) { releaseMutation(); throw error }
+    let record: WorkflowRunRecord
+    try {
+      const current = this.options.runStore.get(runId)
+      if (current === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      if (current.status === 'queued' || current.status === 'running' || current.status === 'waiting-approval') throw new Error('运行尚未结束，不能执行补偿')
+      this.revalidateReleasedAccess(current)
+      record = current
+    } catch (error) {
+      releaseMutation()
+      throw error
+    }
     this.compensationActive.add(runId)
     try {
       const stack = record.compensationStack ?? []
@@ -639,6 +757,7 @@ export class WorkflowRunService {
       return this.options.runStore.get(runId) ?? record
     } finally {
       this.compensationActive.delete(runId)
+      releaseMutation()
     }
   }
 

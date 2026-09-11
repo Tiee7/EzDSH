@@ -377,6 +377,7 @@ export interface AppCopy {
   workflowSystemPrompt: string
   workflowTransformText: string
   workflowResume: string
+  workflowContinueCompensation: string
   workflowRunHistory: string
   workflowNoRuns: string
   workflowInput: string
@@ -1286,6 +1287,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowSystemPrompt: '系统提示词',
     workflowTransformText: '文本',
     workflowResume: '恢复运行',
+    workflowContinueCompensation: '继续补偿',
     workflowRunHistory: '运行记录',
     workflowNoRuns: '还没有运行记录。',
     workflowInput: '运行输入',
@@ -2220,6 +2222,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowSystemPrompt: 'System prompt',
     workflowTransformText: 'Text',
     workflowResume: 'Resume run',
+    workflowContinueCompensation: 'Continue compensation',
     workflowRunHistory: 'Run history',
     workflowNoRuns: 'No run records yet.',
     workflowInput: 'Run input',
