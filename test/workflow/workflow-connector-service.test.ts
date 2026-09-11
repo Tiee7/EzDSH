@@ -137,6 +137,7 @@ describe('WorkflowConnectorService', () => {
           order.push(`guard:${connectorId}:${method}:${operation}`)
           sameTurn = true
           queueMicrotask(() => { sameTurn = false })
+          return undefined
         },
       },
     )
@@ -149,5 +150,27 @@ describe('WorkflowConnectorService', () => {
     expect(order).toEqual(['resolve', 'resolved', 'guard:api:POST:write', 'fetch'])
     expect(sameTurnAtFetch).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed when a caller circumvents the synchronous dispatch-guard type', async () => {
+    const { connectors, credentials } = await setup()
+    const fetchMock = vi.fn(async () => new Response('{"ok":true}', { status: 200 }))
+    const requestService = new WorkflowConnectorService({
+      connectors,
+      credentials,
+      resolveHost: async () => [{ address: '93.184.216.34' }],
+      fetchImpl: fetchMock as typeof fetch,
+    })
+
+    await expect(requestService.request(
+      { connectorId: 'api', connectorPath: '/items', method: 'GET', workflowPolicy: policy(['read']) },
+      null,
+      null,
+      undefined,
+      {
+        preDispatch: (async () => undefined) as unknown as () => undefined,
+      },
+    )).rejects.toThrow(/必须同步/u)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

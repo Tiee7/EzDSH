@@ -48,7 +48,7 @@ export interface WorkflowConnectorDispatchHooks {
   /** Persist any pre-dispatch journal after URL, DNS and credentials resolve. */
   onPrepared?: (context: WorkflowConnectorDispatchContext) => Promise<void> | void
   /** Synchronous final policy check. The fetch call follows without an await. */
-  preDispatch?: (context: WorkflowConnectorDispatchContext) => void
+  preDispatch?: (context: WorkflowConnectorDispatchContext) => undefined
 }
 
 export interface WorkflowConnectorServiceOptions {
@@ -141,7 +141,15 @@ export class WorkflowConnectorService {
     const timeout = setTimeout(() => controller.abort(), clampTimeout(request.timeoutMs))
     try {
       await dispatchHooks?.onPrepared?.(dispatchContext)
-      dispatchHooks?.preDispatch?.(dispatchContext)
+      const guardResult: unknown = dispatchHooks?.preDispatch?.(dispatchContext)
+      if (guardResult !== undefined) {
+        // The exact return type catches ordinary TypeScript misuse, while this
+        // runtime check also fails closed for JavaScript or casted async hooks.
+        if (typeof guardResult === 'object' && guardResult !== null && 'then' in guardResult) {
+          void Promise.resolve(guardResult).catch(() => undefined)
+        }
+        throw new Error('连接器派发前策略检查必须同步完成。')
+      }
       let response: Response
       try {
         response = await this.fetchImpl(url, { ...requestInit, signal: controller.signal })

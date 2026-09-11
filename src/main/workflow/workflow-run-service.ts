@@ -2143,6 +2143,7 @@ export class WorkflowRunService {
           this.revalidateReleasedAccess(record)
           request.runGrant = record.connectorGrants
           assertPermission(request.workflowPolicy, request.runGrant, connectorId, operation)
+          return undefined
         } catch (error) {
           // Preparation is known not to have reached fetch when this callback
           // rejects, so ordinary failure handling must not classify it as an
