@@ -39,6 +39,16 @@ describe('workflow MCP client', () => {
     expect(normalizeMcpToolResult({ content: [{ type: 'text', text: '{"id":"42"}' }] })).toEqual({ id: '42' })
   })
 
+  it('preserves successful getter-backed structured content without reading later content', () => {
+    const result = {
+      get isError() { return false },
+      get structuredContent() { return { id: 'event-1', created: true } },
+      get content(): unknown { throw new Error('successful structured content should short-circuit text access') },
+    }
+
+    expect(normalizeMcpToolResult(result)).toEqual({ id: 'event-1', created: true })
+  })
+
   it.each([
     {
       name: 'text content',
@@ -134,5 +144,21 @@ describe('workflow MCP client', () => {
     expect(body).toBe(diagnostic.slice(0, 2_000))
     expect(body).toHaveLength(2_000)
     expect(error.message).toHaveLength(MCP_ERROR_PREFIX.length + 2_000)
+  })
+
+  it('converts a throwing top-level isError getter into the fixed bounded MCP fallback', () => {
+    const original = new Error(`sensitive original error ${'x'.repeat(5_000)}`)
+    const result = Object.defineProperty({}, 'isError', {
+      enumerable: true,
+      get: () => { throw original },
+    })
+
+    const error = captureMcpToolError(result)
+    const body = error.message.slice(MCP_ERROR_PREFIX.length)
+
+    expect(error).not.toBe(original)
+    expect(error.message).toBe(`${MCP_ERROR_PREFIX}${MCP_ERROR_FALLBACK}`)
+    expect(error.message).not.toContain('sensitive original error')
+    expect(body.length).toBeLessThanOrEqual(2_000)
   })
 })

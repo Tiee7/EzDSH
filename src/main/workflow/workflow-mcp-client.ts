@@ -69,7 +69,8 @@ export function parseMcpToolReference(value: string): McpToolReference {
 
 export function normalizeMcpToolResult(result: unknown): WorkflowValue {
   const record = asMap(result)
-  if (record?.isError === true) throw new WorkflowMcpToolError(readMcpErrorDiagnostic(record))
+  const errorDiagnostic = record === undefined ? undefined : readMcpErrorDiagnostic(record)
+  if (errorDiagnostic !== undefined) throw new WorkflowMcpToolError(errorDiagnostic)
   if (record !== undefined && isWorkflowValue(record.structuredContent)) return record.structuredContent
   const texts = readMcpTextContent(record)
   if (texts.length > 0) {
@@ -149,8 +150,9 @@ function readMcpTextContent(record: Record<string, unknown> | undefined): string
     .map((part) => part.text as string)
 }
 
-function readMcpErrorDiagnostic(record: Record<string, unknown>): string {
+function readMcpErrorDiagnostic(record: Record<string, unknown>): string | undefined {
   try {
+    if (record.isError !== true) return undefined
     const texts = readMcpTextContent(record).filter((text) => text.trim() !== '')
     if (texts.length > 0) return texts.join('\n')
     if (!isWorkflowValue(record.structuredContent)) return MCP_ERROR_FALLBACK
