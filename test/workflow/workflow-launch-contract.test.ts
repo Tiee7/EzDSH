@@ -44,6 +44,17 @@ const structuredFields: WorkflowInputField[] = [
   { name: 'note', type: 'string', required: false },
 ]
 
+function nestedObject(depth: number): Record<string, WorkflowValue> {
+  const root: Record<string, WorkflowValue> = {}
+  let cursor = root
+  for (let level = 1; level < depth; level += 1) {
+    const child: Record<string, WorkflowValue> = {}
+    cursor.child = child
+    cursor = child
+  }
+  return root
+}
+
 describe('workflow launch contract', () => {
   it('projects only safe structured launch fields and clones defaults', () => {
     const workflow = definition([{ name: 'payload', label: 'Payload', type: 'json', required: true, defaultValue: { nested: ['safe'] }, secret: 'must-not-cross' } as never])
@@ -148,6 +159,12 @@ describe('workflow launch contract', () => {
     expect(() => normalizeWorkflowLaunchInput(definition(), Number.NaN as never)).toThrow(/JSON-safe/u)
     expect(() => normalizeWorkflowLaunchInput(definition(), accessor as never)).toThrow(/JSON-safe/u)
   })
+
+  it('reports the persistence depth boundary before cloning legacy launch input', () => {
+    expect(normalizeWorkflowLaunchInput(definition(), nestedObject(256))).toBeDefined()
+    expect(() => normalizeWorkflowLaunchInput(definition(), nestedObject(257))).toThrow(/JSON-safe.*256|嵌套深度.*256/u)
+    expect(() => normalizeWorkflowLaunchInput(definition(), nestedObject(20_000))).toThrow(/JSON-safe.*256|嵌套深度.*256/u)
+  })
 })
 
 describe('WorkflowStore structured launch validation', () => {
@@ -173,6 +190,34 @@ describe('WorkflowStore structured launch validation', () => {
     await expect(store.update(created.id, { revision: created.revision, nodes: malformed.nodes })).rejects.toThrow(/字段类型|type/u)
     expect(store.get(created.id)).toEqual(created)
     expect(store.getRevision(created.id, 2)).toBeUndefined()
+  })
+
+  it.each([
+    ['empty form', 'form', []],
+    ['non-object field', 'form', [null]],
+    ['non-string name', 'form', [{ name: 42, type: 'string' }]],
+    ['unknown type', 'form', [{ name: 'count', type: 'integer' }]],
+    ['incompatible default', 'form', [{ name: 'count', type: 'number', defaultValue: 'not-a-number' }]],
+    ['duplicate name', 'form', [{ name: 'answer', type: 'string' }, { name: 'answer', type: 'string' }]],
+    ['approval fields with a malformed sentinel', 'approval', [null]],
+  ])('rejects wait-input %s instead of persisting malformed sentinels', async (_name, mode, fields) => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-wait-input-contract-'))
+    const store = new WorkflowStore(dir)
+    const workflow = definition()
+    workflow.nodes.splice(1, 0, {
+      id: 'wait-for-form',
+      type: 'wait-input',
+      label: 'Wait for form',
+      config: { mode: mode as 'form' | 'approval', message: 'Provide details', fields: fields as never },
+      position: { x: 120, y: 0 },
+    })
+    workflow.edges = [
+      { id: 'input-wait', source: 'input', target: 'wait-for-form' },
+      { id: 'wait-output', source: 'wait-for-form', target: 'output' },
+    ]
+
+    await expect(store.create({ ...workflow, id: `wait-input-${_name}` })).rejects.toThrow(/表单|等待输入字段|字段|field|type|name/u)
+    expect(store.list()).toEqual([])
   })
 })
 
@@ -267,6 +312,30 @@ describe('WorkflowRunService launch contract', () => {
 
     await expect(launch).rejects.toThrow(/title|必填/u)
     expect(runStore.list()).toEqual([])
+  })
+
+  it.each(['normal', 'released'] as const)('rejects %s input beyond the persistence depth before creating a run record', async (kind) => {
+    const { service, workflow, release, runStore } = await serviceFixture()
+    const input = { title: 'Report', nested: nestedObject(256) }
+
+    const launch = kind === 'normal'
+      ? service.start(workflow.id, input)
+      : service.startReleased(release.id, input)
+
+    await expect(launch).rejects.toThrow(/JSON-safe|嵌套|深度/u)
+    expect(runStore.list()).toEqual([])
+  })
+
+  it.each(['normal', 'released'] as const)('persists %s input at the maximum supported depth', async (kind) => {
+    const { service, workflow, release, runStore } = await serviceFixture()
+    const input = { title: 'Report', nested: nestedObject(255) }
+
+    const run = kind === 'normal'
+      ? await service.start(workflow.id, input)
+      : await service.startReleased(release.id, input)
+
+    expect(runStore.get(run.id)?.input).toEqual(run.input)
+    expect(runStore.list()).toHaveLength(1)
   })
 
   it('preserves arbitrary legacy input in direct service starts', async () => {

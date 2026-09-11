@@ -197,18 +197,25 @@ describe('workflow contract', () => {
     expect(accessorReads).toBe(0)
   })
 
-  it('handles deeply nested values and cycles without recursion overflow', () => {
-    const root: Record<string, unknown> = {}
-    let cursor = root
-    for (let index = 0; index < 20_000; index += 1) {
-      const child: Record<string, unknown> = {}
-      cursor.child = child
-      cursor = child
+  it('enforces the 256-level persistence boundary without recursion overflow', () => {
+    const nestedObject = (depth: number): Record<string, unknown> => {
+      const root: Record<string, unknown> = {}
+      let cursor = root
+      for (let level = 1; level < depth; level += 1) {
+        const child: Record<string, unknown> = {}
+        cursor.child = child
+        cursor = child
+      }
+      return root
     }
 
-    expect(isWorkflowValue(root)).toBe(true)
-    cursor.child = root
-    expect(isWorkflowValue(root)).toBe(false)
+    expect(isWorkflowValue(nestedObject(256))).toBe(true)
+    expect(isWorkflowValue(nestedObject(257))).toBe(false)
+    expect(isWorkflowValue(nestedObject(20_000))).toBe(false)
+
+    const cycle = nestedObject(2)
+    ;(cycle.child as Record<string, unknown>).child = cycle
+    expect(isWorkflowValue(cycle)).toBe(false)
   })
 
   it('round-trips the versioned JSON export envelope', () => {

@@ -37,6 +37,8 @@ export type WorkflowNodeType = (typeof WORKFLOW_NODE_TYPES)[number]
 
 export type WorkflowScalar = string | number | boolean | null
 export type WorkflowValue = WorkflowScalar | WorkflowValue[] | { [key: string]: WorkflowValue }
+/** Maximum container nesting that all JSON-backed Workflow stores can persist safely. */
+export const WORKFLOW_VALUE_MAX_DEPTH = 256
 
 export interface WorkflowPosition {
   x: number
@@ -857,23 +859,24 @@ function isValidWorkflowSourcePort(value: unknown): boolean {
 }
 
 export function isWorkflowValue(value: unknown): value is WorkflowValue {
-  const leaveFrame = Symbol('workflow-value-leave')
-  type Frame = { [leaveFrame]: object }
+  type Frame = { kind: 'visit'; value: unknown; depth: number } | { kind: 'leave'; value: object }
   const active = new WeakSet<object>()
-  const stack: Array<unknown | Frame> = [value]
+  const stack: Frame[] = [{ kind: 'visit', value, depth: 1 }]
   try {
     while (stack.length > 0) {
-      const candidate = stack.pop()
-      if (candidate !== null && typeof candidate === 'object' && leaveFrame in candidate) {
-        active.delete((candidate as Frame)[leaveFrame])
+      const frame = stack.pop()!
+      if (frame.kind === 'leave') {
+        active.delete(frame.value)
         continue
       }
+      const candidate = frame.value
       if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean') continue
       if (typeof candidate === 'number') {
         if (!Number.isFinite(candidate)) return false
         continue
       }
       if (typeof candidate !== 'object') return false
+      if (frame.depth > WORKFLOW_VALUE_MAX_DEPTH) return false
       if (active.has(candidate)) return false
       const array = Array.isArray(candidate)
       const prototype = Object.getPrototypeOf(candidate)
@@ -884,7 +887,7 @@ export function isWorkflowValue(value: unknown): value is WorkflowValue {
       const arrayLength = lengthDescriptor !== undefined && 'value' in lengthDescriptor && typeof lengthDescriptor.value === 'number' ? lengthDescriptor.value : undefined
       if (array && (arrayLength === undefined || keys.length !== arrayLength + 1)) return false
       active.add(candidate)
-      stack.push({ [leaveFrame]: candidate })
+      stack.push({ kind: 'leave', value: candidate })
       for (const key of keys) {
         const descriptor = Object.getOwnPropertyDescriptor(candidate, key)
         if (descriptor === undefined || !('value' in descriptor)) return false
@@ -897,7 +900,7 @@ export function isWorkflowValue(value: unknown): value is WorkflowValue {
           const index = Number(key)
           if (!Number.isInteger(index) || index < 0 || index >= (arrayLength as number) || String(index) !== key) return false
         }
-        stack.push(descriptor.value)
+        stack.push({ kind: 'visit', value: descriptor.value, depth: frame.depth + 1 })
       }
     }
     return true
@@ -977,9 +980,28 @@ function isValidWorkflowInputFieldValue(field: WorkflowInputField, value: unknow
   }
 }
 
+function validateWorkflowInputFields(
+  fields: WorkflowInputField[],
+  path: string,
+  issues: WorkflowValidationIssue[],
+  fieldNames: Set<string>,
+  subject: string,
+): void {
+  for (const [fieldIndex, field] of fields.entries()) {
+    const fieldPath = `${path}.${fieldIndex}`
+    const name = typeof field.name === 'string' ? field.name.trim() : undefined
+    if (name === undefined) issues.push({ path: `${fieldPath}.name`, message: `${subject}名必须是字符串。` })
+    else if (name === '') issues.push({ path: `${fieldPath}.name`, message: `${subject}名不能为空。` })
+    else if (fieldNames.has(name)) issues.push({ path: `${fieldPath}.name`, message: `${subject}名不能重复。` })
+    else fieldNames.add(name)
+    if (!['string', 'number', 'boolean', 'json', 'file', 'file-list'].includes(field.type ?? 'string')) issues.push({ path: `${fieldPath}.type`, message: `${subject}类型无效。` })
+    if (field.defaultValue !== undefined && !isValidWorkflowInputFieldValue(field, field.defaultValue)) issues.push({ path: `${fieldPath}.defaultValue`, message: `${subject}默认值与字段类型不兼容。` })
+  }
+}
+
 /** Validate a launch payload and return the exact default-applied value to persist. */
 export function normalizeWorkflowLaunchInput(workflow: WorkflowDefinition, input: WorkflowValue): WorkflowValue {
-  if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
+  if (!isWorkflowValue(input)) throw new Error(`Workflow 输入必须是 JSON-safe 值，且嵌套深度不能超过 ${WORKFLOW_VALUE_MAX_DEPTH} 层。`)
   const fields = structuredWorkflowInputFields(workflow)
   if (fields.length === 0) return cloneJsonSafeWorkflowValue(input)
   if (!isRecord(input)) throw new Error('结构化 Workflow 输入必须是对象。')
@@ -1470,16 +1492,7 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
     nodeIds.add(node.id)
     if (node.label.trim() === '') issues.push({ path: `nodes.${index}.label`, message: '节点名称不能为空。' })
     if (node.type === 'input' && (node.config.fields?.length ?? 0) > 0) {
-      for (const [fieldIndex, field] of node.config.fields!.entries()) {
-        const fieldPath = `nodes.${index}.config.fields.${fieldIndex}`
-        const name = typeof field.name === 'string' ? field.name.trim() : undefined
-        if (name === undefined) issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名必须是字符串。' })
-        else if (name === '') issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名不能为空。' })
-        else if (structuredInputFieldNames.has(name)) issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名不能重复。' })
-        else structuredInputFieldNames.add(name)
-        if (!['string', 'number', 'boolean', 'json', 'file', 'file-list'].includes(field.type ?? 'string')) issues.push({ path: `${fieldPath}.type`, message: '结构化输入字段类型无效。' })
-        if (field.defaultValue !== undefined && !isValidWorkflowInputFieldValue(field, field.defaultValue)) issues.push({ path: `${fieldPath}.defaultValue`, message: '结构化输入字段默认值与字段类型不兼容。' })
-      }
+      validateWorkflowInputFields(node.config.fields!, `nodes.${index}.config.fields`, issues, structuredInputFieldNames, '结构化输入字段')
     }
     validateNodeBindings(node, `nodes.${index}`, issues)
     validateNodeConfig(node, `nodes.${index}.config`, issues)
@@ -1731,6 +1744,8 @@ function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowVa
     case 'wait-input':
       if (node.config.message.trim() === '') add('等待输入节点需要提示。', 'message')
       if (node.config.mode !== 'approval' && node.config.mode !== 'form') add('等待输入模式无效。', 'mode')
+      if (node.config.mode === 'form' && (node.config.fields?.length ?? 0) === 0) add('表单等待输入节点至少需要一个字段。', 'fields')
+      if (node.config.fields !== undefined) validateWorkflowInputFields(node.config.fields, `${path}.fields`, issues, new Set<string>(), '等待输入字段')
       break
     case 'transform': if (!['identity', 'json', 'extract-text', 'prepend', 'append', 'replace', 'text'].includes(node.config.template)) add('数据转换模板无效。', 'template'); break
     case 'text-merge': if (node.config.template.trim() === '' && node.config.separator === undefined) add('文本合并节点需要模板或分隔符。', 'template'); break
