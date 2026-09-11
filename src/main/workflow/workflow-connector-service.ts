@@ -38,6 +38,19 @@ export interface WorkflowConnectorResponse {
   body: WorkflowValue
 }
 
+export interface WorkflowConnectorDispatchContext {
+  connectorId: string
+  method: WorkflowHttpMethod
+  operation: WorkflowConnectorOperation
+}
+
+export interface WorkflowConnectorDispatchHooks {
+  /** Persist any pre-dispatch journal after URL, DNS and credentials resolve. */
+  onPrepared?: (context: WorkflowConnectorDispatchContext) => Promise<void> | void
+  /** Synchronous final policy check. The fetch call follows without an await. */
+  preDispatch?: (context: WorkflowConnectorDispatchContext) => void
+}
+
 export interface WorkflowConnectorServiceOptions {
   connectors: WorkflowConnectorStore
   credentials: WorkflowCredentialStore
@@ -72,6 +85,7 @@ const SAFE_IDEMPOTENCY_KEY = /^[\x21-\x7e]{1,200}$/u
  * credential checks all happen in the main process immediately before fetch.
  */
 export class WorkflowConnectorService {
+  readonly supportsDispatchHooks = true
   private readonly resolveHost: (hostname: string) => Promise<Array<{ address: string }>>
   private readonly fetchImpl: typeof fetch
   private readonly maxResponseBytes: number
@@ -99,9 +113,15 @@ export class WorkflowConnectorService {
     input: WorkflowValue = null,
     previous: WorkflowValue = null,
     parentSignal?: AbortSignal,
+    dispatchHooks?: WorkflowConnectorDispatchHooks,
   ): Promise<WorkflowConnectorResponse> {
     const prepared = await this.prepare(request, input, previous)
     const { url, method, headers, resolvedBody, credential } = prepared
+    const dispatchContext: WorkflowConnectorDispatchContext = {
+      connectorId: prepared.connector.id,
+      method,
+      operation: method === 'GET' ? 'read' : 'write',
+    }
     const requestInit: RequestInit = {
       method,
       headers,
@@ -120,6 +140,8 @@ export class WorkflowConnectorService {
     parentSignal?.addEventListener('abort', onAbort, { once: true })
     const timeout = setTimeout(() => controller.abort(), clampTimeout(request.timeoutMs))
     try {
+      await dispatchHooks?.onPrepared?.(dispatchContext)
+      dispatchHooks?.preDispatch?.(dispatchContext)
       let response: Response
       try {
         response = await this.fetchImpl(url, { ...requestInit, signal: controller.signal })

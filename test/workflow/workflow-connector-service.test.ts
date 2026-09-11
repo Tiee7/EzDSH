@@ -99,4 +99,55 @@ describe('WorkflowConnectorService', () => {
     await expect(requestService.request({ connectorId: 'api', connectorPath: '/items', method: 'GET', workflowPolicy: policy(['read']) }, null, null, controller.signal)).rejects.toThrow(/取消/u)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it('runs a synchronous policy guard after preparation and immediately before dispatch', async () => {
+    const { connectors, credentials } = await setup()
+    let releaseResolution!: () => void
+    let resolutionStarted!: () => void
+    const resolutionGate = new Promise<void>((resolve) => { releaseResolution = resolve })
+    const enteredResolution = new Promise<void>((resolve) => { resolutionStarted = resolve })
+    const order: string[] = []
+    let sameTurn = false
+    let sameTurnAtFetch = false
+    const fetchMock = vi.fn(() => {
+      order.push('fetch')
+      sameTurnAtFetch = sameTurn
+      return Promise.resolve(new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } }))
+    })
+    const requestService = new WorkflowConnectorService({
+      connectors,
+      credentials,
+      resolveHost: async () => {
+        order.push('resolve')
+        resolutionStarted()
+        await resolutionGate
+        order.push('resolved')
+        return [{ address: '93.184.216.34' }]
+      },
+      fetchImpl: fetchMock as typeof fetch,
+    })
+
+    const pending = requestService.request(
+      { connectorId: 'api', connectorPath: '/items', method: 'POST', workflowPolicy: policy(['write']) },
+      null,
+      null,
+      undefined,
+      {
+        preDispatch: ({ connectorId, method, operation }) => {
+          order.push(`guard:${connectorId}:${method}:${operation}`)
+          sameTurn = true
+          queueMicrotask(() => { sameTurn = false })
+        },
+      },
+    )
+    await enteredResolution
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(order).toEqual(['resolve'])
+    releaseResolution()
+
+    await expect(pending).resolves.toMatchObject({ ok: true })
+    expect(order).toEqual(['resolve', 'resolved', 'guard:api:POST:write', 'fetch'])
+    expect(sameTurnAtFetch).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })

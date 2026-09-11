@@ -582,6 +582,7 @@ async function createReleasedAccessFixture(node?: WorkflowNode, execution?: {
   edges?: WorkflowDefinition['edges']
   complete?: () => Promise<string>
   fetchImpl?: typeof fetch
+  resolveHost?: (hostname: string) => Promise<Array<{ address: string }>>
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-release-access-'))
   const workflowStore = new WorkflowStore(dir)
@@ -625,7 +626,7 @@ async function createReleasedAccessFixture(node?: WorkflowNode, execution?: {
     ...(execution?.complete === undefined ? {} : { lightweightClient: { complete: execution.complete } }),
     connectorService: new WorkflowConnectorService({
       connectors, credentials: new WorkflowCredentialStore(dir),
-      resolveHost: async () => [{ address: '93.184.216.34' }], fetchImpl,
+      resolveHost: execution?.resolveHost ?? (async () => [{ address: '93.184.216.34' }]), fetchImpl,
     }),
     executeSubWorkflow,
   })
@@ -786,6 +787,49 @@ describe('released workflow access boundaries', () => {
       expect(settled.events.some((event) => event.nodeId === 'request' && (event.type === 'node-effect-prepared' || event.type === 'node-effect-dispatched'))).toBe(false)
     } finally {
       releaseAi?.()
+      await service.stop()
+    }
+  })
+
+  it.each([
+    { method: 'GET' as const, revocation: 'environment' as const },
+    { method: 'POST' as const, revocation: 'connector' as const },
+  ])('rechecks $revocation revocation after preparing a managed $method request and before fetch', async ({ method, revocation }) => {
+    let releaseResolution!: () => void
+    let resolutionStarted!: () => void
+    const resolutionGate = new Promise<void>((resolve) => { releaseResolution = resolve })
+    const enteredResolution = new Promise<void>((resolve) => { resolutionStarted = resolve })
+    let resolutionCalls = 0
+    const fixture = await createReleasedAccessFixture(managedHttpNode(method), {
+      resolveHost: async () => {
+        resolutionCalls += 1
+        if (resolutionCalls === 1) {
+          resolutionStarted()
+          await resolutionGate
+        }
+        return [{ address: '93.184.216.34' }]
+      },
+    })
+    const { createService, environmentStore, environment, release, fetchImpl } = fixture
+    const service = createService()
+    try {
+      await service.initialize()
+      const queued = await service.startReleased(release.id, null)
+      await enteredResolution
+      await environmentStore.upsert({
+        ...environment,
+        ...(revocation === 'environment' ? { status: 'disabled' as const } : { connectorIds: [] }),
+      })
+      releaseResolution()
+
+      const settled = await eventually(service, queued.id)
+      expect(settled.status).toBe('failed')
+      expect(resolutionCalls).toBe(1)
+      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(settled.events.some((event) => event.nodeId === 'request' && event.type === 'node-effect-prepared')).toBe(method === 'POST')
+      expect(settled.events.some((event) => event.nodeId === 'request' && event.type === 'node-effect-dispatched')).toBe(false)
+    } finally {
+      releaseResolution?.()
       await service.stop()
     }
   })

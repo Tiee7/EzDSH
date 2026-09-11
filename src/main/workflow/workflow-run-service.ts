@@ -51,7 +51,7 @@ import type { WorkflowLightweightClient, WorkflowLightweightRequest } from './wo
 import type { WorkflowMcpClient } from './workflow-mcp-client.js'
 import { WorkflowInternalSessionStore, type WorkflowInternalSessionKind } from './workflow-internal-session-store.js'
 import { planWorkflowRetry } from './workflow-retry.js'
-import type { WorkflowConnectorRequest, WorkflowConnectorService } from './workflow-connector-service.js'
+import { assertPermission, type WorkflowConnectorDispatchHooks, type WorkflowConnectorRequest, type WorkflowConnectorService } from './workflow-connector-service.js'
 import { normalizeWorkflowRelease, restrictConnectorGrantsToEnvironment, type WorkflowCustomerEnvironment, type WorkflowRelease } from '../../shared/workflow-operations.js'
 import { verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
 
@@ -77,7 +77,7 @@ export interface WorkflowRunServiceOptions {
   createGenerationSession?: (options: { sessionId?: string; model?: WorkflowModelSelection }) => Promise<WorkflowGenerationSession>
   mcpClient?: Pick<WorkflowMcpClient, 'call'>
   /** Main-process managed connector executor. Raw URL HTTP remains for legacy workflows. */
-  connectorService?: Pick<WorkflowConnectorService, 'request'> & Partial<Pick<WorkflowConnectorService, 'authorize'>>
+  connectorService?: Pick<WorkflowConnectorService, 'request'> & Partial<Pick<WorkflowConnectorService, 'authorize' | 'supportsDispatchHooks'>>
   /** Keep raw URL HTTP available to compatibility embeddings; production main disables it. */
   allowLegacyHttp?: boolean
   /** Main-process only immutable release resolver for published workflow starts. */
@@ -2090,15 +2090,28 @@ export class WorkflowRunService {
         }
       case 'http':
         if (node.config.connectorId === undefined && this.options.allowLegacyHttp === false) throw new Error('HTTP 节点必须绑定托管连接器。')
-        if (node.config.connectorId !== undefined && this.options.connectorService?.authorize !== undefined) {
-          await this.options.connectorService.authorize(this.buildManagedConnectorRequest(node, record, state?.executionScope), input, previous)
-        }
-        await this.markEffect(record, state, node, 'prepared')
-        await this.markEffect(record, state, node, 'dispatched')
         {
-          const httpOutput = node.config.connectorId === undefined
-            ? await runHttp(node.config, input, previous, active.abortController.signal)
-            : await this.executeManagedConnector(node, input, previous, record, active.abortController.signal, state?.executionScope)
+          let httpOutput: WorkflowValue
+          if (node.config.connectorId === undefined) {
+            await this.markEffect(record, state, node, 'prepared')
+            await this.markEffect(record, state, node, 'dispatched')
+            httpOutput = await runHttp(node.config, input, previous, active.abortController.signal)
+          } else if (this.options.connectorService?.supportsDispatchHooks !== true) {
+            // Compatibility connector executors predate dispatch hooks. Keep
+            // their conservative pre-call journal and optional authorization.
+            if (this.options.connectorService?.authorize !== undefined) {
+              await this.options.connectorService.authorize(this.buildManagedConnectorRequest(node, record, state?.executionScope), input, previous)
+            }
+            await this.markEffect(record, state, node, 'prepared')
+            await this.markEffect(record, state, node, 'dispatched')
+            httpOutput = await this.executeManagedConnector(node, input, previous, record, active.abortController.signal, false, state, state?.executionScope)
+          } else {
+            httpOutput = await this.executeManagedConnector(node, input, previous, record, active.abortController.signal, true, state, state?.executionScope)
+            // A prepared state is already durable before fetch. Record the
+            // descriptive dispatched event only after the final guard allowed
+            // the fetch invocation; a lost response still becomes unknown.
+            await this.markEffect(record, state, node, 'dispatched')
+          }
           await this.markEffect(record, state, node, 'confirmed')
           return httpOutput
         }
@@ -2114,9 +2127,32 @@ export class WorkflowRunService {
     }
   }
 
-  private async executeManagedConnector(node: Extract<WorkflowNode, { type: 'http' }>, input: WorkflowValue, previous: WorkflowValue, record: WorkflowRunRecord, signal: AbortSignal, scope?: WorkflowExecutionScope): Promise<WorkflowValue> {
+  private async executeManagedConnector(node: Extract<WorkflowNode, { type: 'http' }>, input: WorkflowValue, previous: WorkflowValue, record: WorkflowRunRecord, signal: AbortSignal, useDispatchHooks: boolean, state?: WorkflowNodeRunState, scope?: WorkflowExecutionScope): Promise<WorkflowValue> {
     if (this.options.connectorService === undefined) throw new Error('托管连接器服务不可用。')
-    const response = await this.options.connectorService.request(this.buildManagedConnectorRequest(node, record, scope), input, previous, signal)
+    const request = this.buildManagedConnectorRequest(node, record, scope)
+    const dispatchHooks: WorkflowConnectorDispatchHooks | undefined = useDispatchHooks ? {
+      onPrepared: async () => {
+        await this.markEffect(record, state, node, 'prepared')
+      },
+      preDispatch: ({ connectorId, operation }) => {
+        try {
+          // This callback and WorkflowConnectorService's fetch invocation are
+          // one synchronous segment. It closes in-process prepare/journal
+          // windows, but does not claim cross-process filesystem/network
+          // atomicity.
+          this.revalidateReleasedAccess(record)
+          request.runGrant = record.connectorGrants
+          assertPermission(request.workflowPolicy, request.runGrant, connectorId, operation)
+        } catch (error) {
+          // Preparation is known not to have reached fetch when this callback
+          // rejects, so ordinary failure handling must not classify it as an
+          // ambiguous external effect.
+          if (state !== undefined) state.effectState = 'none'
+          throw error
+        }
+      },
+    } : undefined
+    const response = await this.options.connectorService.request(request, input, previous, signal, dispatchHooks)
     return response as unknown as WorkflowValue
   }
 
