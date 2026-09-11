@@ -92,19 +92,33 @@ describe('workflow HTTP and code nodes', () => {
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
       resolveEmployee: () => undefined,
     })
-    const run = await service.start(workflow.id, null, { allowShellFile: true })
-    for (let attempt = 0; attempt < 100 && service.get(run.id)?.nodeStates.find((state) => state.nodeId === 'shell')?.status !== 'running'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5))
-    await service.cancel(run.id)
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const current = service.get(run.id)
-      if (current?.status === 'paused') {
-        expect(current.nodeStates.find((state) => state.nodeId === 'shell')).toMatchObject({ status: 'pending', effectState: 'unknown' })
-        await service.stop()
-        return
+    try {
+      const run = await service.start(workflow.id, null, { allowShellFile: true })
+      // Worker polling defaults to 1s. Under a loaded suite, initialize's
+      // empty drain can overlap enqueue, so wait across two poll cadences and
+      // prove the cancellation precondition instead of silently cancelling a
+      // still-queued run after an arbitrary 500ms.
+      const startDeadline = Date.now() + 3_000
+      while (Date.now() < startDeadline && service.get(run.id)?.nodeStates.find((state) => state.nodeId === 'shell')?.status !== 'running') {
+        await new Promise((resolve) => setTimeout(resolve, 10))
       }
-      await new Promise((resolve) => setTimeout(resolve, 5))
+      const started = service.get(run.id)
+      expect(started?.nodeStates.find((state) => state.nodeId === 'shell')?.status, `shell did not start before cancellation; run=${started?.status ?? 'missing'}`).toBe('running')
+
+      await service.cancel(run.id)
+      const settleDeadline = Date.now() + 1_000
+      while (Date.now() < settleDeadline) {
+        const current = service.get(run.id)
+        if (current?.status === 'paused') {
+          expect(current.nodeStates.find((state) => state.nodeId === 'shell')).toMatchObject({ status: 'pending', effectState: 'unknown' })
+          return
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      const unsettled = service.get(run.id)
+      throw new Error(`shell cancellation did not settle: run=${unsettled?.status ?? 'missing'}, shell=${unsettled?.nodeStates.find((state) => state.nodeId === 'shell')?.status ?? 'missing'}, effect=${unsettled?.nodeStates.find((state) => state.nodeId === 'shell')?.effectState ?? 'missing'}`)
+    } finally {
+      await service.stop()
     }
-    await service.stop()
-    throw new Error('shell cancellation did not settle')
   })
 })
