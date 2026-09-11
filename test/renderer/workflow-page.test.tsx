@@ -140,6 +140,62 @@ async function mountWorkflowEffectReviewPage(
   }
 }
 
+async function mountWorkflowRunCachePage(workflows: Record<string, unknown>): Promise<{
+  domWindow: ReturnType<typeof createWindow>
+  settle: () => Promise<void>
+  cleanup: () => Promise<void>
+}> {
+  const previousGlobals = {
+    window: globalThis.window,
+    document: globalThis.document,
+    navigator: globalThis.navigator,
+    HTMLElement: globalThis.HTMLElement,
+    Element: globalThis.Element,
+    Node: globalThis.Node,
+    Event: globalThis.Event,
+    MouseEvent: globalThis.MouseEvent,
+    KeyboardEvent: globalThis.KeyboardEvent,
+    CustomEvent: globalThis.CustomEvent,
+    getComputedStyle: globalThis.getComputedStyle,
+    ResizeObserver: globalThis.ResizeObserver,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+    EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH,
+  }
+  const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+  class TestResizeObserver { observe(): void {} unobserve(): void {} disconnect(): void {} }
+  const requestAnimationFrame = (_callback: FrameRequestCallback): number => 0
+  const cancelAnimationFrame = (_id: number): void => {}
+  Object.defineProperty(domWindow.HTMLElement.prototype, 'getBoundingClientRect', { configurable: true, value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 960, bottom: 640, width: 960, height: 640, toJSON: () => ({}) }) })
+  Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow), ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
+  Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame, confirm: () => true })
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+  const bridge = {
+    workflows,
+    employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
+    workflowCredentials: { list: vi.fn(async () => []) },
+    workflowConnectors: { list: vi.fn(async () => []) },
+    workflowEnvironments: { list: vi.fn(async () => []), upsert: vi.fn() },
+    workflowReleases: { list: vi.fn(async () => []), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+  }
+  ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
+  ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
+  const root = createRoot(domWindow.document.getElementById('root')!)
+  const settle = async (): Promise<void> => { await new Promise((resolve) => setTimeout(resolve, 0)); await new Promise((resolve) => setTimeout(resolve, 0)) }
+  await act(async () => { root.render(<workflowPage.WorkflowPage copy={getAppCopy('zh')} locale="zh" />); await settle() })
+  return {
+    domWindow,
+    settle,
+    cleanup: async () => {
+      await act(async () => { root.unmount() })
+      delete (globalThis as { EzDSH?: unknown }).EzDSH
+      const { navigator: previousNavigator, ...rest } = previousGlobals
+      Object.assign(globalThis, rest)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    },
+  }
+}
+
 describe('WorkflowPage regressions', () => {
   it('publishes the selected workflow revision into a selected customer environment', async () => {
     const workflow = createDefaultWorkflow('发布控制')
@@ -627,6 +683,107 @@ describe('WorkflowPage regressions', () => {
       const { navigator: previousNavigator, ...rest } = previousGlobals
       Object.assign(globalThis, rest)
       Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    }
+  })
+
+  it('replaces old runs with an authoritative empty snapshot while preserving events observed during a later request', async () => {
+    const workflow = createDefaultWorkflow('权威运行快照')
+    const oldRun: WorkflowRunRecord = { id: 'run-authoritative-old', workflowId: workflow.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [{ id: 'old-completed', time: '2026-09-12T01:00:00.000Z', type: 'run-completed' }] }
+    const liveRun: WorkflowRunRecord = { id: 'run-authoritative-live', workflowId: workflow.id, workflowRevision: 1, status: 'running', input: {}, allowShellFile: false, nodeStates: [], events: [{ id: 'live-started', time: '2026-09-12T02:00:00.000Z', type: 'run-started' }] }
+    let emitRunState!: (record: WorkflowRunRecord) => void
+    let resolveOpenSnapshot!: (records: WorkflowRunRecord[]) => void
+    const openSnapshot = new Promise<WorkflowRunRecord[]>((resolve) => { resolveOpenSnapshot = resolve })
+    let listRunsCalls = 0
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(() => {
+        listRunsCalls += 1
+        if (listRunsCalls === 1) return Promise.resolve([oldRun])
+        if (listRunsCalls === 2) return Promise.resolve([])
+        return openSnapshot
+      }),
+      onStateChange: vi.fn((listener: (record: WorkflowRunRecord) => void) => { emitRunState = listener; return () => {} }),
+      listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      const initialCard = mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement
+      expect(initialCard.textContent).toContain('1 条历史记录')
+      const refresh = mounted.domWindow.document.querySelector('.workflow-browser-heading button') as HTMLButtonElement
+      await act(async () => { refresh.click(); await mounted.settle() })
+      const refreshedCardText = mounted.domWindow.document.querySelector('.workflow-file-card-main')?.textContent
+
+      const open = mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement
+      await act(async () => { open.click(); await Promise.resolve() })
+      await act(async () => { emitRunState(liveRun); await Promise.resolve() })
+      await act(async () => { resolveOpenSnapshot([]); await openSnapshot; await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+
+      expect(refreshedCardText).toContain('0 条历史记录')
+      expect(mounted.domWindow.document.body.textContent).toContain(liveRun.id.slice(-12))
+      expect(mounted.domWindow.document.body.textContent).not.toContain(oldRun.id.slice(-12))
+    } finally {
+      resolveOpenSnapshot([])
+      await mounted.cleanup()
+    }
+  })
+
+  it('clears workflow run state before restoring the same workflow id and ignores its pending old response', async () => {
+    const workflow = createDefaultWorkflow('删除后恢复工作流')
+    const oldRun: WorkflowRunRecord = { id: 'run-before-workflow-delete', workflowId: workflow.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    let resolveOpenSnapshot!: (records: WorkflowRunRecord[]) => void
+    const openSnapshot = new Promise<WorkflowRunRecord[]>((resolve) => { resolveOpenSnapshot = resolve })
+    let listRunsCalls = 0
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(() => { listRunsCalls += 1; return listRunsCalls === 1 ? Promise.resolve([oldRun]) : openSnapshot }),
+      remove: vi.fn(async () => undefined), create: vi.fn(async () => workflow),
+      onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await Promise.resolve() })
+      const deleteWorkflow = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowDelete) as HTMLButtonElement
+      await act(async () => { deleteWorkflow.click(); await mounted.settle() })
+      await act(async () => { resolveOpenSnapshot([oldRun]); await openSnapshot; await mounted.settle() })
+      const restore = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowUndoDelete) as HTMLButtonElement
+      await act(async () => { restore.click(); await mounted.settle() })
+
+      const restoredCard = mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement
+      expect(restoredCard.textContent).toContain('0 条历史记录')
+      expect(restoredCard.textContent).not.toContain(oldRun.id.slice(-12))
+    } finally {
+      resolveOpenSnapshot([])
+      await mounted.cleanup()
+    }
+  })
+
+  it('does not resurrect a removed run when an older open snapshot resolves', async () => {
+    const workflow = createDefaultWorkflow('删除运行快照')
+    const run: WorkflowRunRecord = { id: 'run-removed-before-snapshot', workflowId: workflow.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    let emitRunState!: (record: WorkflowRunRecord) => void
+    let resolveOpenSnapshot!: (records: WorkflowRunRecord[]) => void
+    const openSnapshot = new Promise<WorkflowRunRecord[]>((resolve) => { resolveOpenSnapshot = resolve })
+    let listRunsCalls = 0
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(() => { listRunsCalls += 1; return listRunsCalls === 1 ? Promise.resolve([run]) : openSnapshot }),
+      removeRun: vi.fn(async () => undefined), onStateChange: vi.fn((listener: (record: WorkflowRunRecord) => void) => { emitRunState = listener; return () => {} }),
+      listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await Promise.resolve() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      const deleteRun = mounted.domWindow.document.querySelector('.workflow-run-item-actions button') as HTMLButtonElement
+      await act(async () => { deleteRun.click(); await mounted.settle() })
+      await act(async () => { resolveOpenSnapshot([run]); await openSnapshot; await mounted.settle() })
+      await act(async () => { emitRunState(run); await Promise.resolve() })
+
+      expect(mounted.domWindow.document.body.textContent).toContain(getAppCopy('zh').workflowNoRuns)
+      expect(mounted.domWindow.document.body.textContent).not.toContain(run.id.slice(-12))
+    } finally {
+      resolveOpenSnapshot([])
+      await mounted.cleanup()
     }
   })
 

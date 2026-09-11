@@ -89,6 +89,13 @@ interface WorkflowPageProps {
   onWorkspaceModeChange?: (active: boolean) => void
 }
 
+interface WorkflowRunSnapshotRequest {
+  workflowId: string
+  generation: number
+  lifecycle: number
+  startSequence: number
+}
+
 interface WorkflowReleasePanelProps {
   copy: AppCopy
   workflow?: WorkflowDefinition
@@ -2773,7 +2780,11 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const currentRunRef = useRef<WorkflowRunRecord>()
   const selectedWorkflowIdRef = useRef<string>()
   const knownRunsByWorkflowRef = useRef(new Map<string, Map<string, WorkflowRunRecord>>())
-  const runSummaryRequestGenerationRef = useRef(new Map<string, number>())
+  const workflowRunChangesRef = useRef(new Map<string, Map<string, { sequence: number; record?: WorkflowRunRecord; deleted?: true }>>())
+  const workflowRunSequenceRef = useRef(new Map<string, number>())
+  const workflowRunSnapshotGenerationRef = useRef(new Map<string, number>())
+  const workflowRunLifecycleRef = useRef(new Map<string, number>())
+  const removedRunIdsByWorkflowRef = useRef(new Map<string, Set<string>>())
   const workflowPageMountedRef = useRef(true)
   const openRequestGenerationRef = useRef(0)
   const workflowsRef = useRef<WorkflowDefinition[]>([])
@@ -2798,17 +2809,79 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     return [...(knownRunsByWorkflowRef.current.get(workflowId)?.values() ?? [])]
   }, [])
 
-  const mergeKnownWorkflowRuns = useCallback((workflowId: string, records: WorkflowRunRecord[]): WorkflowRunRecord[] => {
-    const next = mergeWorkflowRunRecords(knownWorkflowRuns(workflowId), records.filter((record) => record.workflowId === workflowId))
+  const storeKnownWorkflowRuns = useCallback((workflowId: string, records: WorkflowRunRecord[]): WorkflowRunRecord[] => {
+    const removedIds = removedRunIdsByWorkflowRef.current.get(workflowId)
+    const next = mergeWorkflowRunRecords([], records.filter((record) => record.workflowId === workflowId && removedIds?.has(record.id) !== true))
     knownRunsByWorkflowRef.current.set(workflowId, new Map(next.map((record) => [record.id, record])))
     return next
-  }, [knownWorkflowRuns])
+  }, [])
+
+  const recordLiveWorkflowRun = useCallback((record: WorkflowRunRecord): WorkflowRunRecord[] => {
+    if (removedRunIdsByWorkflowRef.current.get(record.workflowId)?.has(record.id) === true) return knownWorkflowRuns(record.workflowId)
+    const sequence = (workflowRunSequenceRef.current.get(record.workflowId) ?? 0) + 1
+    workflowRunSequenceRef.current.set(record.workflowId, sequence)
+    const changes = workflowRunChangesRef.current.get(record.workflowId) ?? new Map()
+    changes.set(record.id, { sequence, record })
+    workflowRunChangesRef.current.set(record.workflowId, changes)
+    return storeKnownWorkflowRuns(record.workflowId, mergeWorkflowRunRecords(knownWorkflowRuns(record.workflowId), [record]))
+  }, [knownWorkflowRuns, storeKnownWorkflowRuns])
+
+  const beginWorkflowRunSnapshot = useCallback((workflowId: string): WorkflowRunSnapshotRequest => {
+    const generation = (workflowRunSnapshotGenerationRef.current.get(workflowId) ?? 0) + 1
+    workflowRunSnapshotGenerationRef.current.set(workflowId, generation)
+    return {
+      workflowId,
+      generation,
+      lifecycle: workflowRunLifecycleRef.current.get(workflowId) ?? 0,
+      startSequence: workflowRunSequenceRef.current.get(workflowId) ?? 0,
+    }
+  }, [])
+
+  const ownsWorkflowRunSnapshot = useCallback((request: WorkflowRunSnapshotRequest): boolean => {
+    return (workflowRunLifecycleRef.current.get(request.workflowId) ?? 0) === request.lifecycle
+      && workflowRunSnapshotGenerationRef.current.get(request.workflowId) === request.generation
+  }, [])
+
+  const applyWorkflowRunSnapshot = useCallback((request: WorkflowRunSnapshotRequest, records: WorkflowRunRecord[]): WorkflowRunRecord[] | undefined => {
+    if (!ownsWorkflowRunSnapshot(request)) return undefined
+    let next = records.filter((record) => record.workflowId === request.workflowId)
+    const changes = workflowRunChangesRef.current.get(request.workflowId)
+    for (const [runId, change] of changes?.entries() ?? []) {
+      if (change.sequence <= request.startSequence) continue
+      if (change.deleted === true) next = next.filter((record) => record.id !== runId)
+      else if (change.record !== undefined) next = mergeWorkflowRunRecords(next, [change.record])
+    }
+    if (changes !== undefined) {
+      for (const [runId, change] of changes) if (change.sequence <= request.startSequence) changes.delete(runId)
+    }
+    return storeKnownWorkflowRuns(request.workflowId, next)
+  }, [ownsWorkflowRunSnapshot, storeKnownWorkflowRuns])
+
+  const clearWorkflowRunState = useCallback((workflowId: string): void => {
+    workflowRunLifecycleRef.current.set(workflowId, (workflowRunLifecycleRef.current.get(workflowId) ?? 0) + 1)
+    workflowRunSnapshotGenerationRef.current.delete(workflowId)
+    workflowRunSequenceRef.current.delete(workflowId)
+    workflowRunChangesRef.current.delete(workflowId)
+    removedRunIdsByWorkflowRef.current.delete(workflowId)
+    knownRunsByWorkflowRef.current.delete(workflowId)
+    setWorkflowRunSummaries((current) => {
+      const next = { ...current }
+      delete next[workflowId]
+      return next
+    })
+  }, [])
 
   const removeKnownWorkflowRun = useCallback((record: WorkflowRunRecord): WorkflowRunRecord[] => {
-    const next = knownWorkflowRuns(record.workflowId).filter((candidate) => candidate.id !== record.id)
-    knownRunsByWorkflowRef.current.set(record.workflowId, new Map(next.map((candidate) => [candidate.id, candidate])))
-    return next
-  }, [knownWorkflowRuns])
+    const sequence = (workflowRunSequenceRef.current.get(record.workflowId) ?? 0) + 1
+    workflowRunSequenceRef.current.set(record.workflowId, sequence)
+    const removedIds = removedRunIdsByWorkflowRef.current.get(record.workflowId) ?? new Set<string>()
+    removedIds.add(record.id)
+    removedRunIdsByWorkflowRef.current.set(record.workflowId, removedIds)
+    const changes = workflowRunChangesRef.current.get(record.workflowId) ?? new Map()
+    changes.set(record.id, { sequence, record, deleted: true })
+    workflowRunChangesRef.current.set(record.workflowId, changes)
+    return storeKnownWorkflowRuns(record.workflowId, knownWorkflowRuns(record.workflowId).filter((candidate) => candidate.id !== record.id))
+  }, [knownWorkflowRuns, storeKnownWorkflowRuns])
 
   const rememberFitView = useCallback((fitView: (() => Promise<boolean>) | undefined): void => {
     fitViewRef.current = fitView
@@ -2858,14 +2931,16 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       workflowsRef.current = list
       setWorkflows(list)
       await Promise.all(list.map(async (workflow) => {
+        const request = beginWorkflowRunSnapshot(workflow.id)
         try {
           const workflowRuns = await window.EzDSH.workflows.listRuns(workflow.id)
-          mergeKnownWorkflowRuns(workflow.id, workflowRuns)
+          applyWorkflowRunSnapshot(request, workflowRuns)
         } catch {
           // Keep the complete known set when a refresh cannot reach Main.
         }
       }))
-      const summaries = list.map((workflow) => {
+      const activeWorkflowIds = new Set(workflowsRef.current.map((workflow) => workflow.id))
+      const summaries = list.filter((workflow) => activeWorkflowIds.has(workflow.id)).map((workflow) => {
         return [workflow.id, summarizeWorkflowRuns(knownWorkflowRuns(workflow.id), viewedRunIds)] as const
       })
       setWorkflowRunSummaries((current) => ({ ...current, ...Object.fromEntries(summaries) }))
@@ -2874,7 +2949,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     } finally {
       setBusy(false)
     }
-  }, [copy.workflowLoadFailed, knownWorkflowRuns, mergeKnownWorkflowRuns, viewedRunIds])
+  }, [applyWorkflowRunSnapshot, beginWorkflowRunSnapshot, copy.workflowLoadFailed, knownWorkflowRuns, viewedRunIds])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -2977,16 +3052,16 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }, [viewedRunIds])
 
   const refreshUnselectedRunSummary = useCallback((record: WorkflowRunRecord): void => {
-    const generation = (runSummaryRequestGenerationRef.current.get(record.workflowId) ?? 0) + 1
-    runSummaryRequestGenerationRef.current.set(record.workflowId, generation)
+    const request = beginWorkflowRunSnapshot(record.workflowId)
     void window.EzDSH.workflows.listRuns(record.workflowId).then((records) => {
-      if (!workflowPageMountedRef.current || runSummaryRequestGenerationRef.current.get(record.workflowId) !== generation) return
-      updateRunSummary(record.workflowId, mergeKnownWorkflowRuns(record.workflowId, records))
+      if (!workflowPageMountedRef.current) return
+      const knownRuns = applyWorkflowRunSnapshot(request, records)
+      if (knownRuns !== undefined) updateRunSummary(record.workflowId, knownRuns)
     }).catch(() => {
-      if (!workflowPageMountedRef.current || runSummaryRequestGenerationRef.current.get(record.workflowId) !== generation) return
+      if (!workflowPageMountedRef.current || !ownsWorkflowRunSnapshot(request)) return
       updateRunSummary(record.workflowId, knownWorkflowRuns(record.workflowId))
     })
-  }, [knownWorkflowRuns, mergeKnownWorkflowRuns, updateRunSummary])
+  }, [applyWorkflowRunSnapshot, beginWorkflowRunSnapshot, knownWorkflowRuns, ownsWorkflowRunSnapshot, updateRunSummary])
 
   const markRunViewed = useCallback((run: WorkflowRunRecord, knownRuns?: WorkflowRunRecord[]): void => {
     setViewedRunIds((current) => {
@@ -3007,17 +3082,14 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   useEffect(() => {
     const unsubscribe = window.EzDSH.workflows.onStateChange((record) => {
-      const known = mergeKnownWorkflowRuns(record.workflowId, [record])
+      const known = recordLiveWorkflowRun(record)
       const nextObserved = known.find((candidate) => candidate.id === record.id) ?? record
       if (selectedWorkflowIdRef.current !== record.workflowId) {
         refreshUnselectedRunSummary(nextObserved)
         return
       }
-      setRuns((current) => {
-        const next = mergeWorkflowRunRecords(current.filter((candidate) => candidate.workflowId === record.workflowId), [nextObserved])
-        updateRunSummary(record.workflowId, next)
-        return next
-      })
+      setRuns(known)
+      updateRunSummary(record.workflowId, known)
       const inspected = currentRunRef.current
       if (inspected?.id === record.id && inspected.workflowId === record.workflowId) {
         const next = chooseFresherWorkflowRun(inspected, nextObserved)
@@ -3026,7 +3098,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       }
     })
     return unsubscribe
-  }, [mergeKnownWorkflowRuns, refreshUnselectedRunSummary, updateRunSummary])
+  }, [recordLiveWorkflowRun, refreshUnselectedRunSummary, updateRunSummary])
 
   useEffect(() => {
     const workflowId = selected?.id
@@ -3114,15 +3186,19 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setContextMenu(undefined)
     setNodes(workflowFlowNodes(userFacingWorkflow, undefined, undefined, [], employees))
     setEdges(flowEdges(userFacingWorkflow))
-    const initialKnownRuns = mergeKnownWorkflowRuns(workflow.id, preferredRun === undefined ? [] : [preferredRun])
+    if (isDraft) {
+      currentRunRef.current = undefined
+      setCurrentRun(undefined)
+      setSelectedRunNodeId(undefined)
+      setRuns([])
+      return
+    }
+    const snapshotRequest = beginWorkflowRunSnapshot(workflow.id)
+    const initialKnownRuns = preferredRun === undefined ? knownWorkflowRuns(workflow.id) : recordLiveWorkflowRun(preferredRun)
     const initialPreferred = preferredRun === undefined ? undefined : initialKnownRuns.find((record) => record.id === preferredRun.id) ?? preferredRun
     currentRunRef.current = initialPreferred
     setCurrentRun(initialPreferred)
     setSelectedRunNodeId(undefined)
-    if (isDraft) {
-      setRuns([])
-      return
-    }
     setRuns((current) => {
       const scoped = current.filter((record) => record.workflowId === workflow.id)
       const next = mergeWorkflowRunRecords(scoped, initialKnownRuns)
@@ -3135,7 +3211,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     })
     try {
       const workflowRuns = await window.EzDSH.workflows.listRuns(workflow.id)
-      const knownRuns = mergeKnownWorkflowRuns(workflow.id, workflowRuns)
+      const knownRuns = applyWorkflowRunSnapshot(snapshotRequest, workflowRuns)
+      if (knownRuns === undefined) return
       if (generation !== openRequestGenerationRef.current || selectedWorkflowIdRef.current !== workflow.id) return
       if (initialPreferred !== undefined) {
         const liveRun = currentRunRef.current?.id === initialPreferred.id ? currentRunRef.current : initialPreferred
@@ -3144,25 +3221,18 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
         currentRunRef.current = exact
         setCurrentRun(exact)
       }
-      setRuns((current) => {
-        const scoped = current.filter((record) => record.workflowId === workflow.id)
-        const next = mergeWorkflowRunRecords(scoped, knownWorkflowRuns(workflow.id))
-        updateRunSummary(workflow.id, next)
-        return next
-      })
+      setRuns(knownRuns)
+      updateRunSummary(workflow.id, knownRuns)
     } catch {
-      if (generation !== openRequestGenerationRef.current || selectedWorkflowIdRef.current !== workflow.id) return
-      setRuns((current) => {
-        const scoped = current.filter((record) => record.workflowId === workflow.id)
-        const next = mergeWorkflowRunRecords(scoped, knownWorkflowRuns(workflow.id))
-        updateRunSummary(workflow.id, next)
-        return next
-      })
+      if (!ownsWorkflowRunSnapshot(snapshotRequest) || generation !== openRequestGenerationRef.current || selectedWorkflowIdRef.current !== workflow.id) return
+      const knownRuns = knownWorkflowRuns(workflow.id)
+      setRuns(knownRuns)
+      updateRunSummary(workflow.id, knownRuns)
     }
   }
 
   const openReleasedRun = (record: WorkflowRunRecord): void => {
-    const knownRuns = mergeKnownWorkflowRuns(record.workflowId, [record])
+    const knownRuns = recordLiveWorkflowRun(record)
     const source = workflowsRef.current.find((workflow) => workflow.id === record.workflowId)
     if (source === undefined) {
       currentRunRef.current = record
@@ -3424,6 +3494,9 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const removedWorkflow = workflows.find((item) => item.id === selected.id) ?? selected
       await window.EzDSH.workflows.remove(selected.id)
       const remaining = workflows.filter((item) => item.id !== selected.id)
+      openRequestGenerationRef.current += 1
+      clearWorkflowRunState(selected.id)
+      workflowsRef.current = remaining
       setWorkflows(remaining)
       setDeletedWorkflow(cloneWorkflow(removedWorkflow))
       selectedWorkflowIdRef.current = undefined
@@ -3431,6 +3504,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       setNodes([])
       setEdges([])
       setRuns([])
+      currentRunRef.current = undefined
       setCurrentRun(undefined)
       setSelectedRunNodeId(undefined)
       setRunSetup(undefined)
@@ -3446,6 +3520,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setError('')
     try {
       const restored = await window.EzDSH.workflows.create(candidate)
+      workflowsRef.current = [restored, ...workflowsRef.current.filter((item) => item.id !== restored.id)]
       setWorkflows((current) => [restored, ...current.filter((item) => item.id !== restored.id)])
       setDeletedWorkflow(undefined)
       setMessage(copy.workflowRestored)
@@ -3681,7 +3756,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setError('')
     try {
       const record = await window.EzDSH.workflows.start(runSetup.workflowId, buildWorkflowLaunchInput(runSetup.fields, runSetup.values), { allowShellFile: runSetup.allowShellFile, allowCode: runSetup.allowCode, connectorGrants: runSetup.connectorGrants, debug: runSetup.debug, ...(runSetup.modelSelection === undefined ? {} : { model: runSetup.modelSelection }) })
-      const knownRuns = mergeKnownWorkflowRuns(record.workflowId, [record])
+      const knownRuns = recordLiveWorkflowRun(record)
       setCurrentRun(record)
       setSelectedRunNodeId(undefined)
       setRuns((current) => [record, ...current.filter((item) => item.id !== record.id)])
@@ -3692,7 +3767,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }
 
   const applyRunRecord = (record: WorkflowRunRecord, replaceDetail = true): void => {
-    const knownRuns = mergeKnownWorkflowRuns(record.workflowId, [record])
+    const knownRuns = recordLiveWorkflowRun(record)
     if (replaceDetail) currentRunRef.current = record
     setCurrentRun((current) => replaceDetail ? record : current)
     setRuns((current) => {
@@ -3752,6 +3827,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       })
       setOutputWindows((current) => current.filter((item) => !item.id.startsWith(`${record.id}:`)))
       if (currentRun?.id === record.id) {
+        currentRunRef.current = undefined
         setCurrentRun(undefined)
         setSelectedRunNodeId(undefined)
       }
