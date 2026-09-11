@@ -2,9 +2,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WorkflowRunService } from '../../src/main/workflow/workflow-run-service.js'
+import { WorkflowRunService, type WorkflowRunServiceOptions } from '../../src/main/workflow/workflow-run-service.js'
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
+import { WorkflowEnvironmentStore } from '../../src/main/workflow/workflow-environment-store.js'
+import { WorkflowReleaseStore } from '../../src/main/workflow/workflow-release-store.js'
+import { WorkflowConnectorStore } from '../../src/main/workflow/workflow-connector-store.js'
+import { WorkflowCredentialStore } from '../../src/main/workflow/workflow-credential-service.js'
+import { WorkflowConnectorService } from '../../src/main/workflow/workflow-connector-service.js'
+import { computeWorkflowDefinitionSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
+import type { WorkflowCustomerEnvironment } from '../../src/shared/workflow-operations.js'
 import type { EmployeeCreateInput, EmployeeSnapshot } from '../../src/shared/employees.js'
 import { validateWorkflow, type WorkflowDefinition, type WorkflowNode, type WorkflowOutputMode, type WorkflowRunRecord } from '../../src/shared/workflow.js'
 
@@ -112,6 +119,141 @@ async function eventually(service: WorkflowRunService, runId: string): Promise<N
   }
   throw new Error('run did not finish in time')
 }
+
+async function createReleasedAccessFixture(node?: WorkflowNode) {
+  const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-release-access-'))
+  const workflowStore = new WorkflowStore(dir)
+  const runStore = new WorkflowRunStore(dir)
+  const environmentStore = new WorkflowEnvironmentStore(dir)
+  const releaseStore = new WorkflowReleaseStore(dir)
+  const environment: WorkflowCustomerEnvironment = {
+    id: 'acme-staging', customerName: 'Acme', name: 'Staging', kind: 'staging', status: 'active',
+    connectorIds: ['crm'], allowCode: true, allowShellFile: true,
+    createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z',
+  }
+  await environmentStore.upsert(environment)
+  const middle: WorkflowNode = node ?? { id: 'approval', type: 'approval', label: 'Approve', config: { message: 'Confirm' }, position: { x: 200, y: 0 } }
+  const workflow = await workflowStore.create({
+    name: 'Released access', description: '',
+    permissionPolicy: { connectors: [{ connectorId: 'crm', operations: ['read', 'write'] }] },
+    nodes: [graph().nodes[0]!, middle, graph().nodes[4]!],
+    edges: [{ id: 'a', source: 'input', target: middle.id }, { id: 'b', source: middle.id, target: 'output' }],
+  })
+  const release = await releaseStore.publish({
+    id: 'release-access', environmentId: environment.id, workflowId: workflow.id, workflowRevision: workflow.revision,
+    workflowSnapshot: workflow, contentSha256: computeWorkflowDefinitionSha256(workflow),
+    status: 'published', connectorGrants: [{ connectorId: 'crm', operations: ['read', 'write'] }],
+    createdAt: environment.createdAt, publishedAt: environment.createdAt,
+  })
+  const connectors = new WorkflowConnectorStore(dir)
+  await connectors.upsert({ id: 'crm', name: 'CRM', kind: 'http', baseUrl: 'https://api.example.test/', allowedPathPrefixes: ['/items'] })
+  const fetchImpl = vi.fn<typeof fetch>(async () => new Response('{"ok":true}', { status: 200 }))
+  const executeSubWorkflow = vi.fn<NonNullable<WorkflowRunServiceOptions['executeSubWorkflow']>>(async () => 'undone')
+  const createService = () => new WorkflowRunService({
+    workflowStore, runStore, workflowRoot: dir,
+    createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+    resolveEmployee: () => undefined,
+    resolveReleasedWorkflow: (id) => releaseStore.get(id),
+    resolveWorkflowEnvironment: (id) => environmentStore.get(id),
+    connectorService: new WorkflowConnectorService({
+      connectors, credentials: new WorkflowCredentialStore(dir),
+      resolveHost: async () => [{ address: '93.184.216.34' }], fetchImpl,
+    }),
+    executeSubWorkflow,
+  })
+  const service = createService()
+  // Hold the real durable queue without mocking worker or persistence behavior.
+  await service.initialize()
+  await service.stop()
+  return { service, createService, runStore, environmentStore, environment, release, fetchImpl, executeSubWorkflow }
+}
+
+describe('released workflow access boundaries', () => {
+  it.each(['disabled', 'archived'] as const)('rejects a direct release start in a %s environment', async (status) => {
+    const { service, environmentStore, environment, release } = await createReleasedAccessFixture()
+    await environmentStore.upsert({ ...environment, status })
+    await expect(service.startReleased(release.id, null)).rejects.toThrow(/environment must be active/u)
+    expect(service.list()).toEqual([])
+  })
+
+  it('narrows a direct release start against current environment capabilities', async () => {
+    const { service, environmentStore, environment, release } = await createReleasedAccessFixture()
+    await environmentStore.upsert({ ...environment, connectorIds: [], allowCode: false, allowShellFile: false })
+    const run = await service.startReleased(release.id, null, { allowCode: true, allowShellFile: true })
+    expect(run).toMatchObject({ connectorGrants: [], allowCode: false, allowShellFile: false })
+  })
+
+  it.each(['resume', 'approve', 'compensate'] as const)('blocks %s after an environment is disabled without changing the record', async (action) => {
+    const { service, runStore, environmentStore, environment, release, executeSubWorkflow } = await createReleasedAccessFixture()
+    const record = await service.startReleased(release.id, null)
+    record.status = action === 'approve' ? 'waiting-approval' : 'paused'
+    if (action === 'approve') record.waitingApprovalNodeId = 'approval'
+    record.compensationStack = [{ sourceNodeId: 'input', action: { type: 'workflow', workflowId: 'undo' }, status: 'pending' }]
+    await runStore.save(record)
+    const before = service.get(record.id)
+    await environmentStore.upsert({ ...environment, status: 'disabled' })
+    const continuation = action === 'approve' ? service.approve(record.id, true) : service[action](record.id)
+    await expect(continuation).rejects.toThrow(/environment must be active/u)
+    expect(service.get(record.id)).toEqual(before)
+    expect(executeSubWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('still permits approval rejection when the environment is disabled', async () => {
+    const { service, runStore, environmentStore, environment, release } = await createReleasedAccessFixture()
+    const record = await service.startReleased(release.id, null)
+    record.status = 'waiting-approval'
+    record.waitingApprovalNodeId = 'approval'
+    await runStore.save(record)
+    await environmentStore.upsert({ ...environment, status: 'disabled' })
+    expect(await service.approve(record.id, false)).toMatchObject({ status: 'failed', error: '审批被拒绝' })
+  })
+
+  it.each(['resume', 'approve', 'compensate'] as const)('narrows %s permissions and never restores removed grants or operations', async (action) => {
+    const { service, runStore, environmentStore, environment, release, executeSubWorkflow } = await createReleasedAccessFixture()
+    const record = await service.startReleased(release.id, null, {
+      allowCode: true, allowShellFile: true, connectorGrants: [{ connectorId: 'crm', operations: ['read'] }],
+    })
+    record.status = action === 'approve' ? 'waiting-approval' : 'paused'
+    if (action === 'approve') record.waitingApprovalNodeId = 'approval'
+    record.compensationStack = [{ sourceNodeId: 'input', action: { type: 'workflow', workflowId: 'undo' }, status: 'pending' }]
+    await runStore.save(record)
+    await environmentStore.upsert({ ...environment, allowCode: false, allowShellFile: false })
+    const narrowed = action === 'approve' ? await service.approve(record.id, true) : await service[action](record.id)
+    expect(narrowed).toMatchObject({ allowCode: false, allowShellFile: false, connectorGrants: [{ connectorId: 'crm', operations: ['read'] }] })
+    if (action === 'compensate') expect(executeSubWorkflow.mock.calls[0]?.[4]).toMatchObject({ allowCode: false, allowShellFile: false })
+    narrowed.status = 'paused'
+    await runStore.save(narrowed)
+    await environmentStore.upsert({ ...environment, connectorIds: [] })
+    const revoked = await service.resume(record.id)
+    expect(revoked.connectorGrants).toEqual([])
+    revoked.status = 'paused'
+    await runStore.save(revoked)
+    await environmentStore.upsert(environment)
+    expect(await service.resume(record.id)).toMatchObject({ connectorGrants: [], allowCode: false, allowShellFile: false })
+  })
+
+  it.each(['disabled', 'connector'] as const)('rechecks %s revocation after queueing and before worker execution', async (revocation) => {
+    const fixture = await createReleasedAccessFixture({
+      id: 'request', type: 'http', label: 'Request', position: { x: 200, y: 0 },
+      config: { method: 'GET', connectorId: 'crm', connectorPath: '/items', url: '', headers: {}, responseMode: 'json' },
+    })
+    const { service, createService, environmentStore, environment, release, fetchImpl } = fixture
+    const queued = await service.startReleased(release.id, null)
+    await environmentStore.upsert({ ...environment, ...(revocation === 'disabled' ? { status: 'disabled' as const } : { connectorIds: [] }) })
+    const workerService = createService()
+    try {
+      await workerService.initialize()
+      const settled = await eventually(workerService, queued.id)
+      expect(settled.status).toBe('failed')
+      if (revocation === 'disabled') expect(settled.error).toMatch(/environment must be active/u)
+      else expect(settled.connectorGrants).toEqual([])
+      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(settled.events.some((event) => event.type === 'node-effect-dispatched')).toBe(false)
+    } finally {
+      await workerService.stop()
+    }
+  })
+})
 
 describe('workflow run service', () => {
   it('treats a numeric input string as equal to the same configured number', async () => {

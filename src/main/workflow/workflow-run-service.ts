@@ -45,7 +45,7 @@ import type { WorkflowMcpClient } from './workflow-mcp-client.js'
 import { WorkflowInternalSessionStore, type WorkflowInternalSessionKind } from './workflow-internal-session-store.js'
 import { planWorkflowRetry } from './workflow-retry.js'
 import type { WorkflowConnectorRequest, WorkflowConnectorService } from './workflow-connector-service.js'
-import type { WorkflowRelease } from '../../shared/workflow-operations.js'
+import { restrictConnectorGrantsToEnvironment, type WorkflowCustomerEnvironment, type WorkflowRelease } from '../../shared/workflow-operations.js'
 import { verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
 
 export interface WorkflowRunServiceOptions {
@@ -75,6 +75,8 @@ export interface WorkflowRunServiceOptions {
   allowLegacyHttp?: boolean
   /** Main-process only immutable release resolver for published workflow starts. */
   resolveReleasedWorkflow?: (releaseId: string) => WorkflowRelease | undefined
+  /** Current Main-process environment policy; omitted only by compatibility embeddings. */
+  resolveWorkflowEnvironment?: (environmentId: string) => WorkflowCustomerEnvironment | undefined
   /** Executes a referenced workflow and returns its final output. */
   executeSubWorkflow?: (workflowId: string, input: WorkflowValue, waitForCompletion: boolean, version?: number | 'latest', options?: WorkflowRunOptions) => Promise<WorkflowValue>
   internalSessionStore?: WorkflowInternalSessionStore
@@ -232,6 +234,7 @@ export class WorkflowRunService {
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以恢复')
     if (record.nodeStates.some((state) => state.effectState === 'unknown' || state.effectState === 'confirmed' && state.status !== 'completed')) throw new Error('运行包含状态不确定的外部副作用，请先完成补偿或人工核对')
+    this.revalidateReleasedAccess(record)
     record.status = 'queued'
     record.error = undefined
     record.completedAt = undefined
@@ -273,6 +276,7 @@ export class WorkflowRunService {
       await this.save(record, 'approval-resolved', '审批被拒绝', node.id)
       return this.options.runStore.get(runId) ?? record
     }
+    this.revalidateReleasedAccess(record)
     const outputs = new Map(record.nodeStates.filter((candidate) => candidate.output !== undefined).map((candidate) => [candidate.nodeId, candidate.output as WorkflowValue]))
     const incoming = workflow.edges.filter((edge) => edge.target === node.id)
     const nodeMap = new Map(workflow.nodes.map((candidate) => [candidate.id, candidate]))
@@ -317,6 +321,7 @@ export class WorkflowRunService {
     const record = this.options.runStore.get(runId)
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') throw new Error('运行尚未结束，不能执行补偿')
+    this.revalidateReleasedAccess(record)
     this.compensationActive.add(runId)
     try {
       const stack = record.compensationStack ?? []
@@ -671,6 +676,20 @@ export class WorkflowRunService {
     return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision) ?? this.options.workflowStore.get(record.workflowId)
   }
 
+  private revalidateReleasedAccess(record: WorkflowRunRecord): void {
+    if (record.releaseId === undefined || this.options.resolveWorkflowEnvironment === undefined) return
+    const release = this.resolveReleasedWorkflowOrThrow(record.releaseId)
+    const environment = this.options.resolveWorkflowEnvironment(release.environmentId)
+    if (environment === undefined) throw new Error(`Workflow environment not found: ${release.environmentId}`)
+    if (environment.status !== 'active') throw new Error(`Workflow environment must be active: ${release.environmentId}`)
+    record.connectorGrants = restrictConnectorGrantsToEnvironment(
+      intersectConnectorGrants(release.connectorGrants, record.connectorGrants ?? []),
+      environment,
+    )
+    record.allowShellFile = record.allowShellFile && environment.allowShellFile
+    record.allowCode = record.allowCode === true && environment.allowCode
+  }
+
   private resolveReleasedWorkflowOrThrow(releaseId: string): WorkflowRelease {
     const release = this.options.resolveReleasedWorkflow?.(releaseId)
     if (release === undefined) throw new Error(`Workflow release not found: ${releaseId}`)
@@ -711,6 +730,7 @@ export class WorkflowRunService {
     const workflow = this.resolveReleasedDefinitionOrThrow(release, definition.id, definition.revision)
     assertValidWorkflow(workflow, '启动发布工作流')
     const record = this.createRecord(workflow, input, options, release)
+    this.revalidateReleasedAccess(record)
     const enqueued = await this.enqueue(record, '发布运行已排队')
     if (wakeWorker) this.worker.wake()
     return cloneWorkflow(enqueued)
@@ -773,6 +793,7 @@ export class WorkflowRunService {
       const workflow = this.workflowForRecord(record)
       if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
       assertValidWorkflow(workflow, '运行工作流')
+      this.revalidateReleasedAccess(record)
       record.status = 'running'
       record.startedAt ??= new Date().toISOString()
       await this.save(record, 'run-started', '运行开始')

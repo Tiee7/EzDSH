@@ -693,6 +693,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     mcpClient: new WorkflowMcpClient({ patchPath: join(layout.harness, 'profiles', 'web', 'cordis.patch.yml') }),
     connectorService: workflowConnectorService,
     resolveReleasedWorkflow: (releaseId) => workflowReleaseStore?.get(releaseId),
+    resolveWorkflowEnvironment: (environmentId) => workflowEnvironmentStore?.get(environmentId),
     allowLegacyHttp: false,
     executeSubWorkflow: async (childWorkflowId, input, waitForCompletion, version, childOptions) => {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')

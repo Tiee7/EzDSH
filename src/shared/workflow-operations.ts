@@ -282,3 +282,13 @@ export function deriveEnvironmentConnectorGrants(workflow: WorkflowDefinition, e
   }
   return [...grants.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
 }
+
+/** Narrow existing grants without restoring previously removed operations. */
+export function restrictConnectorGrantsToEnvironment(
+  grants: readonly WorkflowConnectorGrant[],
+  environment: WorkflowCustomerEnvironment,
+): WorkflowConnectorGrant[] {
+  const allowed = new Set(environment.connectorIds)
+  return grants.filter((grant) => allowed.has(grant.connectorId))
+    .map((grant) => ({ connectorId: grant.connectorId, operations: [...grant.operations] }))
+}

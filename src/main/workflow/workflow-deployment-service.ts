@@ -7,6 +7,7 @@ import { WorkflowStore } from './workflow-store.js'
 import { assertValidWorkflow } from './workflow-validator.js'
 import {
   deriveEnvironmentConnectorGrants,
+  restrictConnectorGrantsToEnvironment,
   type WorkflowCustomerEnvironment,
   type WorkflowRelease,
   type WorkflowReleasePublishInput,
@@ -59,13 +60,14 @@ export class WorkflowDeploymentService {
     if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
     const release = this.requirePublishedVerifiedRelease(releaseId)
     const environment = this.requireActiveEnvironment(release.environmentId)
+    const currentGrants = restrictConnectorGrantsToEnvironment(release.connectorGrants, environment)
     return this.options.runService.startReleased(release.id, input, {
       ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
       allowShellFile: environment.allowShellFile && options.allowShellFile === true,
       allowCode: environment.allowCode && options.allowCode === true,
       connectorGrants: options.connectorGrants === undefined
-        ? cloneConnectorGrants(release.connectorGrants)
-        : intersectConnectorGrants(release.connectorGrants, options.connectorGrants),
+        ? currentGrants
+        : intersectConnectorGrants(currentGrants, options.connectorGrants),
       ...(options.debug === undefined ? {} : { debug: options.debug }),
       ...(options.model === undefined ? {} : { model: options.model }),
     })
@@ -196,10 +198,6 @@ export class WorkflowDeploymentService {
       throw new Error(`生产环境禁止 ${node.type} 节点`)
     }
   }
-}
-
-function cloneConnectorGrants(grants: readonly WorkflowConnectorGrant[]): WorkflowConnectorGrant[] {
-  return grants.map((grant) => ({ connectorId: grant.connectorId, operations: [...grant.operations] }))
 }
 
 function intersectConnectorGrants(

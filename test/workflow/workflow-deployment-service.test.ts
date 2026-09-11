@@ -98,6 +98,24 @@ function updateTransformNode(workflow: WorkflowDefinition, text: string): Workfl
 }
 
 describe('WorkflowDeploymentService', () => {
+  it.each([{ connectorGrants: undefined }, { connectorGrants: [{ connectorId: 'crm', operations: ['write' as const] }] }])('drops connectors removed after publishing with requested grants %j', async ({ connectorGrants }) => {
+    const { workflowStore, environmentStore, releaseStore, deploymentService, runService } = await createFixture()
+    await environmentStore.upsert(createEnvironment())
+    const workflow = await workflowStore.create(createWorkflowInput({
+      name: 'Revoked connector',
+      permissionPolicy: { connectors: [{ connectorId: 'crm', operations: ['read', 'write'] }] },
+    }))
+    const release = await deploymentService.publish({ workflowId: workflow.id, environmentId: 'customer-acme-staging' })
+    await environmentStore.upsert(createEnvironment({ connectorIds: [] }))
+    try {
+      const run = await deploymentService.start(release.id, null, { connectorGrants })
+      expect(run.connectorGrants).toEqual([])
+      expect(releaseStore.get(release.id)?.connectorGrants).toEqual([{ connectorId: 'crm', operations: ['read', 'write'] }])
+    } finally {
+      await runService.stop()
+    }
+  })
+
   it('pins a release snapshot and still starts from it after the source workflow changes or is removed', async () => {
     const { workflowStore, environmentStore, deploymentService, runService } = await createFixture()
     await environmentStore.upsert(createEnvironment())

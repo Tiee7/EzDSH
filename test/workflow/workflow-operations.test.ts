@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultWorkflow } from '../../src/shared/workflow.js'
 import { computeWorkflowDefinitionSha256, computeWorkflowReleaseSha256, verifyWorkflowReleaseIntegrity } from '../../src/main/workflow/workflow-release-integrity.js'
-import { deriveEnvironmentConnectorGrants, normalizeWorkflowCustomerEnvironment, normalizeWorkflowObservationEvent, normalizeWorkflowRelease, workflowReleaseSummary } from '../../src/shared/workflow-operations.js'
+import { deriveEnvironmentConnectorGrants, restrictConnectorGrantsToEnvironment, normalizeWorkflowCustomerEnvironment, normalizeWorkflowObservationEvent, normalizeWorkflowRelease, workflowReleaseSummary } from '../../src/shared/workflow-operations.js'
 
 describe('workflow operations contracts', () => {
   it('rejects production shell capability while accepting a valid environment', () => {
@@ -142,5 +142,19 @@ describe('workflow operations contracts', () => {
     expect(deriveEnvironmentConnectorGrants(workflow, environment)).toEqual([
       { connectorId: 'crm', operations: ['read', 'write'] },
     ])
+  })
+
+  it('removes revoked connectors without expanding or aliasing retained grants', () => {
+    const environment = normalizeWorkflowCustomerEnvironment({
+      id: 'staging', customerName: 'Acme', name: 'Staging', kind: 'staging', status: 'active',
+      connectorIds: ['crm', 'billing'], allowShellFile: false, allowCode: false,
+      createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z',
+    })!
+    const grants = [{ connectorId: 'crm', operations: ['read' as const] }]
+    expect(restrictConnectorGrantsToEnvironment(grants, { ...environment, connectorIds: [] })).toEqual([])
+    const retained = restrictConnectorGrantsToEnvironment(grants, environment)
+    expect(retained).toEqual(grants)
+    retained[0]!.operations.push('write')
+    expect(grants[0]!.operations).toEqual(['read'])
   })
 })
