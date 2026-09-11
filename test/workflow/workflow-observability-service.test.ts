@@ -245,6 +245,29 @@ describe('WorkflowObservabilityService', () => {
     expect(service.health('customer-acme-prod')).toMatchObject({ status: 'healthy', reason: 'healthy' })
   })
 
+  it('keeps a newer node failure degraded after an older same-release completion', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-newer-node-failure-'))
+    const store = new WorkflowObservationStore(dir)
+    const service = new WorkflowObservabilityService({
+      store,
+      now: () => '2026-09-03T10:00:00.000Z',
+      recentFailureWindowMs: 60_000,
+    })
+
+    await service.observeRun(createRunRecord({
+      id: 'run-completed-release-a',
+      releaseId: 'release-a',
+      events: [{ id: 'event-completed-release-a', time: '2026-09-03T09:59:20.000Z', type: 'run-completed' }],
+    }))
+    await service.observeRun(createRunRecord({
+      id: 'run-node-failed-release-a',
+      releaseId: 'release-a',
+      events: [{ id: 'event-node-failed-release-a', time: '2026-09-03T09:59:30.000Z', type: 'node-failed', nodeId: 'node-a' }],
+    }))
+
+    expect(service.health('customer-acme-prod')).toMatchObject({ status: 'degraded', reason: 'recent-failures' })
+  })
+
   it('keeps old approval rejections degraded', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-approval-rejection-health-'))
     const store = new WorkflowObservationStore(dir)

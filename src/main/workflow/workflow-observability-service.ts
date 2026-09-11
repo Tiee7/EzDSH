@@ -269,7 +269,7 @@ function hasRecentUnresolvedFailure(
     && !Number.isNaN(Date.parse(event.time))
     && nowMs - Date.parse(event.time) >= 0
     && nowMs - Date.parse(event.time) < recentFailureWindowMs
-    && (latestByRelease.get(releaseGroup(event)) === undefined || isTerminalFailure(latestByRelease.get(releaseGroup(event))!))
+    && !isSuccessfulTerminalAfter(latestByRelease.get(releaseGroup(event)), event)
   ))
 }
 
@@ -283,4 +283,8 @@ function isTerminalSignal(event: WorkflowObservationEvent): boolean {
 
 function isTerminalFailure(event: WorkflowObservationEvent): boolean {
   return event.action === 'run-failed' || event.action === 'approval-rejected'
+}
+
+function isSuccessfulTerminalAfter(terminal: WorkflowObservationEvent | undefined, event: WorkflowObservationEvent): boolean {
+  return terminal?.action === 'run-completed' && compareObservations(terminal, event) > 0
 }
