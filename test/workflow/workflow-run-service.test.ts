@@ -655,11 +655,27 @@ describe('ordinary run revision boundaries', () => {
       mcpClient: { call: mcpCall },
       connectorService: { request: connectorRequest },
     })
-    return { service, record, mcpCall, fetchImpl, connectorRequest }
+    return { dir, service, record, mcpCall, fetchImpl, connectorRequest }
   }
 
   it('fails a queued historical run closed when its exact revision is missing without dispatching current writes', async () => {
     const { service, record, mcpCall, fetchImpl, connectorRequest } = await missingHistoricalRevisionFixture('queued')
+    try {
+      await service.initialize()
+      const failed = await eventually(service, record.id)
+      expect(failed).toMatchObject({ status: 'failed', error: expect.stringMatching(/Workflow|revision|版本|不存在/u) })
+      expect(mcpCall).not.toHaveBeenCalled()
+      expect(connectorRequest).not.toHaveBeenCalled()
+      expect(fetchImpl).not.toHaveBeenCalled()
+    } finally { await service.stop() }
+  })
+
+  it('rejects a revision index whose stored snapshot claims a different revision without dispatching its writes', async () => {
+    const { dir, service, record, mcpCall, fetchImpl, connectorRequest } = await missingHistoricalRevisionFixture('queued')
+    const current = (JSON.parse(await readFile(join(dir, 'workflows.json'), 'utf8')) as WorkflowDefinition[])[0]!
+    await writeFile(join(dir, 'workflow-versions.json'), `${JSON.stringify({
+      [record.workflowId]: { [String(record.workflowRevision)]: current },
+    }, null, 2)}\n`)
     try {
       await service.initialize()
       const failed = await eventually(service, record.id)
@@ -708,6 +724,53 @@ describe('ordinary run revision boundaries', () => {
     try {
       const completed = await eventually(service, (await service.start(workflow.id, 'payload')).id)
       expect(completed).toMatchObject({ status: 'completed', output: 'payload', workflowRevision: workflow.revision })
+    } finally { await service.stop() }
+  })
+
+  it.each([
+    ['environment-only', { environmentId: 'customer-a' }],
+    ['trace-only', { traceId: 'trace-a' }],
+    ['conflicting-environment', { releaseId: 'release-a', environmentId: 'customer-b', traceId: 'trace-a' }],
+  ] as const)('fails a %s released-shaped run closed before MCP or managed fetch dispatch', async (_case, identity) => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-released-identity-boundary-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: `released-identity-${_case}`, name: 'Released identity boundary', description: '',
+      nodes: currentWriteNodes, edges,
+    })
+    const runStore = new WorkflowRunStore(dir)
+    const record: WorkflowRunRecord = {
+      id: `run-released-identity-${_case}`, workflowId: workflow.id, workflowRevision: workflow.revision,
+      ...identity,
+      status: 'queued', queue: { enqueuedAt: new Date().toISOString(), availableAt: new Date().toISOString() },
+      input: 'payload', allowShellFile: false, connectorGrants: [{ connectorId: 'crm', operations: ['write'] }],
+      nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending' })), events: [],
+    }
+    await runStore.enqueue(record)
+    const mcpCall = vi.fn(async () => 'written')
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }))
+    const connectorRequest = vi.fn(async () => {
+      const response = await fetchImpl('https://connector.invalid/write')
+      return { status: response.status, ok: response.ok, headers: {}, body: {} }
+    })
+    const release = {
+      id: 'release-a', environmentId: 'customer-a', workflowId: workflow.id, workflowRevision: workflow.revision,
+      contentSha256: computeWorkflowDefinitionSha256(workflow), workflowSnapshot: workflow,
+      status: 'published' as const, connectorGrants: [], createdAt: new Date().toISOString(), publishedAt: new Date().toISOString(),
+    }
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      mcpClient: { call: mcpCall }, connectorService: { request: connectorRequest },
+      resolveReleasedWorkflow: (releaseId) => releaseId === release.id ? release : undefined,
+    })
+    try {
+      await service.initialize()
+      const failed = await eventually(service, record.id)
+      expect(failed).toMatchObject({ status: 'failed', error: expect.stringMatching(/Workflow|revision|release|发布|身份|不可用/u) })
+      expect(mcpCall).not.toHaveBeenCalled()
+      expect(connectorRequest).not.toHaveBeenCalled()
+      expect(fetchImpl).not.toHaveBeenCalled()
     } finally { await service.stop() }
   })
 })

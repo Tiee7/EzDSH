@@ -1100,12 +1100,18 @@ export class WorkflowRunService {
   }
 
   private workflowForRecord(record: WorkflowRunRecord): WorkflowDefinition | undefined {
-    if (record.releaseId !== undefined) {
-      const release = this.options.resolveReleasedWorkflow?.(record.releaseId)
-      if (release === undefined || !verifyWorkflowReleaseIntegrity(release)) return undefined
-      return this.resolveReleasedDefinition(release, record.workflowId, record.workflowRevision)
+    const { releaseId, environmentId, traceId } = record
+    const releaseIdentity = [releaseId, environmentId, traceId]
+    let workflow: WorkflowDefinition | undefined
+    if (releaseIdentity.some((value) => value !== undefined)) {
+      if (typeof releaseId !== 'string' || releaseId.trim() === '' || typeof environmentId !== 'string' || environmentId.trim() === '' || typeof traceId !== 'string' || traceId.trim() === '') return undefined
+      const release = normalizeWorkflowRelease(this.options.resolveReleasedWorkflow?.(releaseId))
+      if (release === undefined || release.id !== releaseId || release.environmentId !== environmentId || !verifyWorkflowReleaseIntegrity(release)) return undefined
+      workflow = this.resolveReleasedDefinition(release, record.workflowId, record.workflowRevision)
+    } else {
+      workflow = this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision)
     }
-    return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision)
+    return workflow?.id === record.workflowId && workflow.revision === record.workflowRevision ? workflow : undefined
   }
 
   private requireWorkflowForRecord(record: WorkflowRunRecord): WorkflowDefinition {
@@ -1116,12 +1122,7 @@ export class WorkflowRunService {
 
   /** Historical recovery must never project state through the current editable graph. */
   private immutableWorkflowForRecord(record: WorkflowRunRecord): WorkflowDefinition | undefined {
-    if (record.releaseId !== undefined) {
-      const release = this.options.resolveReleasedWorkflow?.(record.releaseId)
-      if (release === undefined || !verifyWorkflowReleaseIntegrity(release)) return undefined
-      return this.resolveReleasedDefinition(release, record.workflowId, record.workflowRevision)
-    }
-    return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision)
+    return this.workflowForRecord(record)
   }
 
   private async backfillLegacyEffectReconciliationTargets(): Promise<void> {
