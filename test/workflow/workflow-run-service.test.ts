@@ -64,6 +64,165 @@ const loopWriteNode: WorkflowNode = {
   config: { method: 'POST', connectorId: 'crm', connectorPath: '/items', responseMode: 'json' },
 }
 
+describe('effect reconciliation', () => {
+  async function ordinary() {
+    const fixture = await createReleasedAccessFixture(loopWriteNode)
+    const run = await fixture.service.startReleased(fixture.release.id, 'item')
+    run.status = 'paused'
+    Object.assign(run.nodeStates.find((state) => state.nodeId === 'body')!, { status: 'pending', effectState: 'unknown', error: 'response lost' })
+    await fixture.runStore.save(run)
+    return { ...fixture, run }
+  }
+
+  it.each(['paused', 'failed'] as const)('persists a confirmed terminal decision from %s and notifies observers without output or downstream execution', async (status) => {
+    const fixture = await ordinary()
+    fixture.run.status = status
+    await fixture.runStore.save(fixture.run)
+    const observed: WorkflowRunRecord[] = []
+    fixture.service.watch((record) => observed.push(record))
+    const result = await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'dispatched', note: '  checked receipt  ' })
+    expect(result.status).toBe('failed')
+    expect(result.nodeStates.find((state) => state.nodeId === 'body')).toMatchObject({ status: 'failed', effectState: 'confirmed', effectReconciliation: { outcome: 'dispatched', note: 'checked receipt', resolvedAt: expect.any(String) } })
+    expect(result.nodeStates.find((state) => state.nodeId === 'body')?.output).toBeUndefined()
+    expect(result.nodeStates.find((state) => state.nodeId === 'output')?.status).toBe('pending')
+    expect(result.events.at(-1)).toMatchObject({ type: 'node-effect-reconciled-dispatched', nodeId: 'body' })
+    expect(result.events.at(-1)?.message).not.toContain('checked receipt')
+    expect(observed.at(-1)).toEqual(result)
+    await expect(fixture.service.resume(result.id)).rejects.toThrow(/副作用/u)
+    await expect(fixture.service.reconcileEffect(result.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'again' })).rejects.toThrow()
+    expect(fixture.fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('atomically saves an ordinary not-dispatched decision with its exact reset and queue state', async () => {
+    const fixture = await ordinary()
+    const observed: WorkflowRunRecord[] = []
+    fixture.service.watch((record) => observed.push(record))
+    const result = await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'no request received' })
+    expect(result).toMatchObject({ status: 'queued', queue: { availableAt: expect.any(String) } })
+    expect(result.nodeStates.find((state) => state.nodeId === 'body')).toMatchObject({ status: 'pending', effectState: 'none', effectReconciliation: { outcome: 'not-dispatched' } })
+    expect(result.nodeStates.find((state) => state.nodeId === 'body')?.error).toBeUndefined()
+    expect(observed).toHaveLength(1)
+    expect(observed[0]).toEqual(result)
+    expect(result.events.at(-1)?.type).toBe('node-effect-reconciled-not-dispatched')
+  })
+
+  it.each(['queued', 'running', 'completed', 'cancelled', 'waiting-approval'] as const)('rejects reconciliation of a %s run without mutation', async (status) => {
+    const fixture = await ordinary()
+    fixture.run.status = status
+    await fixture.runStore.save(fixture.run)
+    const before = fixture.service.get(fixture.run.id)
+    await expect(fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'dispatched', note: 'verified' })).rejects.toThrow()
+    expect(fixture.service.get(fixture.run.id)).toEqual(before)
+  })
+
+  it('rejects missing, wrong-iteration and non-unknown targets without mutation', async () => {
+    const fixture = await ordinary()
+    const before = fixture.service.get(fixture.run.id)
+    for (const target of [{ nodeId: 'missing' }, { nodeId: 'input' }, { nodeId: 'body', iterationId: 'not-an-iteration' }]) {
+      await expect(fixture.service.reconcileEffect(fixture.run.id, { ...target, outcome: 'dispatched', note: 'verified' })).rejects.toThrow()
+      expect(fixture.service.get(fixture.run.id)).toEqual(before)
+    }
+  })
+
+  it('validates untrusted service inputs before mutation', async () => {
+    const fixture = await ordinary()
+    const before = fixture.service.get(fixture.run.id)
+    for (const request of [null, {}, { nodeId: 'body', outcome: 'dispatched', note: ' ' }, { nodeId: 'body', outcome: 'dispatched', note: 'x'.repeat(501) }, { nodeId: 'body', outcome: 'other', note: 'ok' }]) {
+      await expect(fixture.service.reconcileEffect(fixture.run.id, request as never)).rejects.toThrow()
+    }
+    expect(fixture.service.get(fixture.run.id)).toEqual(before)
+  })
+
+  it('keeps multiple unknown effects paused until the final unsafe target is reconciled', async () => {
+    const fixture = await ordinary()
+    // Durable imported runs may carry more than one uncertain external effect.
+    fixture.run.nodeStates.push({ nodeId: 'second', status: 'pending', effectState: 'unknown' })
+    await fixture.runStore.save(fixture.run)
+    const first = await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'first checked' })
+    expect(first.status).toBe('paused')
+    expect(first.nodeStates.find((state) => state.nodeId === 'second')).toEqual({ nodeId: 'second', status: 'pending', effectState: 'unknown' })
+    expect(first.nodeStates.find((state) => state.nodeId === 'body')).toMatchObject({ effectState: 'none', effectReconciliation: { outcome: 'not-dispatched' } })
+    expect((await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'second', outcome: 'not-dispatched', note: 'second checked' })).status).toBe('queued')
+  })
+
+  it('accepts only one concurrent decision for an unknown target', async () => {
+    const fixture = await ordinary()
+    const results = await Promise.allSettled([
+      fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'dispatched', note: 'receipt' }),
+      fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'absent' }),
+    ])
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    expect(fixture.service.get(fixture.run.id)?.events.filter((event) => event.type.startsWith('node-effect-reconciled-'))).toHaveLength(1)
+  })
+
+  it('retains every decision note when the same target becomes unknown again and reloads', async () => {
+    const fixture = await ordinary()
+    const first = await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'first investigation' })
+    first.status = 'paused'
+    first.nodeStates.find((state) => state.nodeId === 'body')!.effectState = 'unknown'
+    await fixture.runStore.save(first)
+    const final = await fixture.service.reconcileEffect(first.id, { nodeId: 'body', outcome: 'dispatched', note: 'second investigation' })
+    const state = final.nodeStates.find((candidate) => candidate.nodeId === 'body')!
+    expect(state.effectReconciliationHistory).toEqual([
+      { outcome: 'not-dispatched', note: 'first investigation', resolvedAt: expect.any(String) },
+      { outcome: 'dispatched', note: 'second investigation', resolvedAt: expect.any(String) },
+    ])
+    expect(state.effectReconciliation).toEqual(state.effectReconciliationHistory?.at(-1))
+    const reloaded = new WorkflowRunStore(fixture.dir)
+    await reloaded.initialize()
+    expect(reloaded.get(first.id)?.nodeStates.find((candidate) => candidate.nodeId === 'body')?.effectReconciliationHistory).toEqual(state.effectReconciliationHistory)
+  })
+
+  it('revalidates current environment before requeue and preserves an unresolved decision if disabled', async () => {
+    const fixture = await ordinary()
+    const before = fixture.service.get(fixture.run.id)
+    await fixture.environmentStore.upsert({ ...fixture.environment, status: 'disabled' })
+    await expect(fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'checked' })).rejects.toThrow(/environment must be active/u)
+    expect(fixture.service.get(fixture.run.id)).toEqual(before)
+    expect((await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'dispatched', note: 'receipt found' })).status).toBe('failed')
+  })
+
+  it('narrows current environment grants when requeueing', async () => {
+    const fixture = await ordinary()
+    await fixture.environmentStore.upsert({ ...fixture.environment, connectorIds: [], allowCode: false, allowShellFile: false })
+    expect(await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'checked' })).toMatchObject({ connectorGrants: [], allowCode: false, allowShellFile: false })
+  })
+
+  it.each(['not-dispatched', 'dispatched'] as const)('selects the exact loop iteration, reloads its %s audit and never replays completed items', async (outcome) => {
+    const calls: WorkflowValue[] = []
+    let failed = false
+    const fixture = await loopSafetyFixture(loopWriteNode, { request: async (_request, _input, previous) => {
+      calls.push(previous)
+      if (previous === 'B' && !failed) { failed = true; throw new Error('response lost') }
+      return loopResponse(previous)
+    } })
+    const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, ['A', 'B'])).id)
+    await fixture.service.stop()
+    const iterations = run.nodeStates.find((state) => state.nodeId === 'loop')!.loopIterations!
+    for (const target of [{ nodeId: 'body' }, { nodeId: 'body', iterationId: iterations[0]!.iterationId }, { nodeId: 'output', iterationId: iterations[1]!.iterationId }]) {
+      await expect(fixture.service.reconcileEffect(run.id, { ...target, outcome, note: 'checked' })).rejects.toThrow()
+    }
+    const result = await fixture.service.reconcileEffect(run.id, { nodeId: 'body', iterationId: iterations[1]!.iterationId, outcome, note: '  checked  ' })
+    expect(result.nodeStates.find((state) => state.nodeId === 'loop')!.loopIterations![0]).toEqual(iterations[0])
+    expect(result.events.at(-1)).toMatchObject({ type: `node-effect-reconciled-${outcome}`, executionScope: { iterationId: iterations[1]!.iterationId, iterationIndex: 1, loopNodeId: 'loop' } })
+    const reloadedStore = new WorkflowRunStore(fixture.dir)
+    await reloadedStore.initialize()
+    const restored = reloadedStore.get(run.id)!
+    expect(restored.nodeStates.find((state) => state.nodeId === 'loop')!.loopIterations![1]!.nodeStates[0]?.effectReconciliation).toEqual({ outcome, note: 'checked', resolvedAt: expect.any(String) })
+    const restarted = fixture.createService(reloadedStore)
+    await restarted.initialize()
+    if (outcome === 'not-dispatched') {
+      expect((await eventually(restarted, run.id)).status).toBe('completed')
+      expect(calls).toEqual(['A', 'B', 'B'])
+    } else {
+      expect(restarted.get(run.id)?.status).toBe('failed')
+      await expect(restarted.resume(run.id)).rejects.toThrow(/副作用/u)
+      expect(calls).toEqual(['A', 'B'])
+    }
+    await restarted.stop()
+  })
+})
+
 describe('durable loop execution identity', () => {
   it.each([{ name: 'last of two items', items: ['A', 'B'] }, { name: 'only item', items: ['B'] }])('completes a continue loop when its final item fails ($name)', async ({ items }) => {
     const fixture = await loopSafetyFixture({ ...loopWriteNode, config: { ...loopWriteNode.config, method: 'GET' } }, {
@@ -316,7 +475,7 @@ async function createReleasedAccessFixture(node?: WorkflowNode) {
   // Hold the real durable queue without mocking worker or persistence behavior.
   await service.initialize()
   await service.stop()
-  return { service, createService, runStore, environmentStore, environment, release, fetchImpl, executeSubWorkflow }
+  return { dir, service, createService, runStore, environmentStore, environment, release, fetchImpl, executeSubWorkflow }
 }
 
 describe('released workflow access boundaries', () => {

@@ -474,6 +474,30 @@ export type WorkflowNodeRunStatus = 'pending' | 'running' | 'completed' | 'skipp
 /** Journal state for an operation that may have reached an external system. */
 export type WorkflowNodeEffectState = 'none' | 'prepared' | 'dispatched' | 'confirmed' | 'unknown'
 
+export interface WorkflowEffectReconcileRequest {
+  nodeId: string
+  iterationId?: string
+  outcome: 'not-dispatched' | 'dispatched'
+  note: string
+}
+
+export interface WorkflowEffectReconciliation {
+  outcome: WorkflowEffectReconcileRequest['outcome']
+  note: string
+  resolvedAt: string
+}
+
+/** Validate at both the IPC boundary and the service's direct-call boundary. */
+export function validateWorkflowEffectReconcileRequest(value: unknown): WorkflowEffectReconcileRequest {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid workflow effect reconciliation request')
+  const request = value as Record<string, unknown>
+  if (typeof request.nodeId !== 'string' || request.nodeId.trim() === '') throw new Error('Invalid reconciliation node ID')
+  if (request.iterationId !== undefined && (typeof request.iterationId !== 'string' || request.iterationId.trim() === '')) throw new Error('Invalid reconciliation iteration ID')
+  if (request.outcome !== 'not-dispatched' && request.outcome !== 'dispatched') throw new Error('Invalid reconciliation outcome')
+  if (typeof request.note !== 'string' || request.note.trim().length < 1 || request.note.trim().length > 500) throw new Error('核对说明去除首尾空白后须为 1–500 字符')
+  return { nodeId: request.nodeId, ...(request.iterationId === undefined ? {} : { iterationId: request.iterationId as string }), outcome: request.outcome, note: request.note.trim() }
+}
+
 /** A persisted ownership lease for one locally claimed Workflow run. */
 export interface WorkflowRunLease {
   ownerId: string
@@ -516,6 +540,9 @@ export interface WorkflowNodeRunState {
   nextAttemptAt?: string
   /** An unknown effect is never replayed automatically. */
   effectState?: WorkflowNodeEffectState
+  /** Latest manual decision, mirrored from the append-only private audit below. */
+  effectReconciliation?: WorkflowEffectReconciliation
+  effectReconciliationHistory?: WorkflowEffectReconciliation[]
   startedAt?: string
   completedAt?: string
   /** Elapsed execution time recorded in milliseconds. Older records omit this and render as 0. */
@@ -526,7 +553,7 @@ export interface WorkflowNodeRunState {
   error?: string
 }
 
-export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
+export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-effect-reconciled-not-dispatched' | 'node-effect-reconciled-dispatched' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
 
 export interface WorkflowRunEvent {
   id: string

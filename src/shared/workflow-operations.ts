@@ -76,6 +76,7 @@ export interface WorkflowReleasePublishInput {
 const environmentIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u
 const sha256Pattern = /^[a-f0-9]{64}$/iu
 const observationActions = new Set<WorkflowObservationAction>([
+  'node-effect-reconciled-not-dispatched', 'node-effect-reconciled-dispatched',
   'run-created', 'run-started', 'node-started', 'node-retry', 'node-effect-prepared', 'node-effect-dispatched', 'node-effect-confirmed', 'node-completed', 'node-skipped', 'node-failed', 'compensation-started', 'compensation-completed', 'compensation-failed', 'approval-requested', 'approval-approved', 'approval-rejected', 'approval-resolved', 'run-completed', 'run-failed', 'run-paused', 'run-cancelled',
   'release-published', 'release-superseded', 'release-rolled-back',
 ])

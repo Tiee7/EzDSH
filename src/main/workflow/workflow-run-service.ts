@@ -5,6 +5,8 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import type {
   WorkflowDefinition,
+  WorkflowEffectReconcileRequest,
+  WorkflowEffectReconciliation,
   WorkflowEdge,
   WorkflowGenerateRequest,
   WorkflowGenerateResult,
@@ -34,7 +36,7 @@ import type {
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
-import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, workflowAllNodeRunStates, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
+import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, validateWorkflowEffectReconcileRequest, workflowAllNodeRunStates, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
@@ -119,6 +121,7 @@ export class WorkflowRunService {
   private readonly internalSessionStore: WorkflowInternalSessionStore
   private readonly worker: WorkflowRunWorker
   private readonly compensationActive = new Set<string>()
+  private readonly reconciliationActive = new Set<string>()
   private initialized = false
   private initializationPromise: Promise<void> | undefined
 
@@ -318,6 +321,7 @@ export class WorkflowRunService {
 
   async resume(runId: string): Promise<WorkflowRunRecord> {
     await this.initialize()
+    if (this.reconciliationActive.has(runId)) throw new Error('该运行的人工核对正在保存。')
     const record = this.options.runStore.get(runId)
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以恢复')
@@ -342,6 +346,77 @@ export class WorkflowRunService {
     await this.save(record, 'run-created', '运行已重新排队')
     this.worker.wake()
     return cloneWorkflow(record)
+  }
+
+  async reconcileEffect(runId: string, input: WorkflowEffectReconcileRequest): Promise<WorkflowRunRecord> {
+    if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
+    const request = validateWorkflowEffectReconcileRequest(input)
+    await this.initialize()
+    if (this.reconciliationActive.has(runId) || this.compensationActive.has(runId)) throw new Error('该运行的人工核对或补偿正在执行。')
+    this.reconciliationActive.add(runId)
+    try {
+      const record = this.options.runStore.get(runId)
+      if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以人工核对副作用')
+      let scope: WorkflowExecutionScope | undefined
+      let state: WorkflowNodeRunState | undefined
+      if (request.iterationId === undefined) {
+        // Loop summaries are projections, never authoritative effect targets.
+        const workflow = this.workflowForRecord(record)
+        const isLoopBody = workflow?.nodes.some((node) => node.type === 'loop' && workflowLoopBodyNodeIds(workflow, node.id).includes(request.nodeId)) === true
+        if (!isLoopBody) state = record.nodeStates.find((candidate) => candidate.nodeId === request.nodeId && candidate.executionScope === undefined)
+      } else {
+        for (const owner of record.nodeStates) {
+          const iteration = owner.loopIterations?.find((candidate) => candidate.iterationId === request.iterationId)
+          if (iteration === undefined || iteration.status === 'completed') continue
+          state = iteration.nodeStates.find((candidate) => candidate.nodeId === request.nodeId)
+          scope = { loopNodeId: owner.nodeId, iterationId: iteration.iterationId, iterationIndex: iteration.iterationIndex }
+          break
+        }
+      }
+      if (state === undefined || state.effectState !== 'unknown') throw new Error('指定节点或循环迭代不存在未知副作用')
+      const unsafe = (candidate: WorkflowNodeRunState): boolean => candidate.effectState === 'prepared' || candidate.effectState === 'dispatched' || candidate.effectState === 'unknown' || candidate.effectState === 'confirmed' && candidate.status !== 'completed'
+      const canRequeue = request.outcome === 'not-dispatched' && !this.hasUncheckpointedLoopEffects(record)
+        && !workflowAllNodeRunStates(record.nodeStates).some((candidate) => candidate !== state && unsafe(candidate))
+      if (canRequeue) this.revalidateReleasedAccess(record)
+      const resolvedAt = new Date().toISOString()
+      appendEffectReconciliation(state, { outcome: request.outcome, note: request.note, resolvedAt })
+      if (scope !== undefined) state.executionScope = scope
+      if (request.outcome === 'dispatched') {
+        state.effectState = 'confirmed'
+        state.status = 'failed'
+        state.completedAt = resolvedAt
+        state.error = '人工确认副作用已派发；缺少执行结果，运行保持终止。'
+        record.status = 'failed'
+        record.error = state.error
+        record.completedAt = resolvedAt
+      } else {
+        state.effectState = 'none'
+        state.status = 'pending'
+        state.error = undefined
+        state.startedAt = undefined
+        state.completedAt = undefined
+        state.elapsedMs = undefined
+        state.nextAttemptAt = undefined
+        state.input = undefined
+        state.output = undefined
+        if (canRequeue) {
+          record.error = undefined
+          record.completedAt = undefined
+          record.retentionExpiresAt = undefined
+          this.prepareQueuedRecord(record)
+        } else {
+          record.status = 'paused'
+          record.error = '仍有其他副作用需要人工核对，运行保持暂停。'
+        }
+      }
+      // Audit, precise reset and queue transition share one durable snapshot.
+      await this.save(record, `node-effect-reconciled-${request.outcome}`, request.outcome === 'dispatched' ? '人工确认副作用已派发，运行终止。' : '人工确认副作用未派发。', request.nodeId, scope)
+      if (canRequeue) this.worker.wake()
+      return this.options.runStore.get(runId) ?? cloneWorkflow(record)
+    } finally {
+      this.reconciliationActive.delete(runId)
+    }
   }
 
   private hasUncheckpointedLoopEffects(record: WorkflowRunRecord): boolean {
@@ -425,6 +500,7 @@ export class WorkflowRunService {
    */
   async compensate(runId: string): Promise<WorkflowRunRecord> {
     await this.initialize()
+    if (this.reconciliationActive.has(runId)) throw new Error('该运行的人工核对正在保存。')
     if (this.compensationActive.has(runId)) throw new Error('该运行的补偿正在执行。')
     const record = this.options.runStore.get(runId)
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
@@ -1846,6 +1922,12 @@ export class WorkflowRunService {
     const saved = await this.options.runStore.save(record)
     for (const listener of this.listeners) listener(cloneWorkflow(saved))
   }
+}
+
+function appendEffectReconciliation(state: WorkflowNodeRunState, decision: WorkflowEffectReconciliation): void {
+  const history = state.effectReconciliationHistory ?? (state.effectReconciliationHistory = state.effectReconciliation === undefined ? [] : [cloneWorkflow(state.effectReconciliation)])
+  history.push(cloneWorkflow(decision))
+  state.effectReconciliation = cloneWorkflow(decision)
 }
 
 class WorkflowLoopStopped extends Error {}

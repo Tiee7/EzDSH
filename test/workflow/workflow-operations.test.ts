@@ -1,9 +1,38 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultWorkflow } from '../../src/shared/workflow.js'
+import * as workflowContracts from '../../src/shared/workflow.js'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { WorkflowObservabilityService } from '../../src/main/workflow/workflow-observability-service.js'
+import { WorkflowObservationStore } from '../../src/main/workflow/workflow-observation-store.js'
 import { computeWorkflowDefinitionSha256, computeWorkflowReleaseSha256, verifyWorkflowReleaseIntegrity } from '../../src/main/workflow/workflow-release-integrity.js'
 import { deriveEnvironmentConnectorGrants, restrictConnectorGrantsToEnvironment, normalizeWorkflowCustomerEnvironment, normalizeWorkflowObservationEvent, normalizeWorkflowRelease, workflowReleaseSummary } from '../../src/shared/workflow-operations.js'
 
 describe('workflow operations contracts', () => {
+  it('persists typed reconciliation observations without copying private notes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-reconcile-observation-'))
+    const store = new WorkflowObservationStore(dir)
+    const service = new WorkflowObservabilityService({ store })
+    const events: workflowContracts.WorkflowRunEvent[] = ['not-dispatched', 'dispatched'].map((outcome, index) => ({ id: `decision-${index}`, time: '2026-09-11T00:00:00.000Z', type: `node-effect-reconciled-${outcome}` as workflowContracts.WorkflowRunEventType, nodeId: 'body', message: 'private receipt details' }))
+    await service.observeRun({ id: 'run-1', workflowId: 'workflow-1', workflowRevision: 1, environmentId: 'customer-1', status: 'failed', input: null, allowShellFile: false, nodeStates: [], events })
+    const reloaded = new WorkflowObservationStore(dir)
+    await reloaded.initialize()
+    expect(reloaded.list()).toHaveLength(2)
+    expect(reloaded.list().map((event) => ({ kind: event.kind, action: event.action, outcome: event.outcome }))).toEqual([
+      { kind: 'effect', action: 'node-effect-reconciled-not-dispatched', outcome: 'succeeded' },
+      { kind: 'effect', action: 'node-effect-reconciled-dispatched', outcome: 'succeeded' },
+    ])
+    expect(JSON.stringify(reloaded.list())).not.toContain('private receipt details')
+  })
+  it('validates and trims effect reconciliation requests at the shared boundary', () => {
+    for (const length of [1, 500]) {
+      expect(workflowContracts.validateWorkflowEffectReconcileRequest({ nodeId: 'write', iterationId: 'iteration-2', outcome: 'dispatched', note: `  ${'x'.repeat(length)}  ` })).toEqual({ nodeId: 'write', iterationId: 'iteration-2', outcome: 'dispatched', note: 'x'.repeat(length) })
+    }
+    for (const input of [null, [], {}, { nodeId: '', outcome: 'dispatched', note: 'ok' }, { nodeId: 'write', iterationId: '', outcome: 'dispatched', note: 'ok' }, { nodeId: 'write', outcome: 'unknown', note: 'ok' }, { nodeId: 'write', outcome: 'dispatched', note: ' ' }, { nodeId: 'write', outcome: 'dispatched', note: 'x'.repeat(501) }]) {
+      expect(() => workflowContracts.validateWorkflowEffectReconcileRequest(input)).toThrow()
+    }
+  })
   it('rejects production shell capability while accepting a valid environment', () => {
     const common = {
       id: 'customer-acme-prod', customerName: 'Acme', name: '生产', kind: 'production',

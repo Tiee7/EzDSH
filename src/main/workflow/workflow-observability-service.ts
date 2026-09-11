@@ -169,6 +169,8 @@ function kindForRunEvent(type: WorkflowRunEventType): WorkflowObservationEvent['
     case 'node-effect-prepared':
     case 'node-effect-dispatched':
     case 'node-effect-confirmed':
+    case 'node-effect-reconciled-not-dispatched':
+    case 'node-effect-reconciled-dispatched':
       return 'effect'
     case 'node-started':
     case 'node-retry':
@@ -221,6 +223,8 @@ function outcomeForAction(action: WorkflowObservationAction): WorkflowObservatio
       return 'started'
     case 'node-completed':
     case 'node-effect-confirmed':
+    case 'node-effect-reconciled-not-dispatched':
+    case 'node-effect-reconciled-dispatched':
     case 'compensation-completed':
     case 'approval-approved':
     case 'run-completed':
