@@ -27,10 +27,10 @@ async function fixture(localPackage: { packageJson?: string }): Promise<{
   await mkdir(join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib'), { recursive: true })
   await mkdir(join(root, 'harness', 'profiles', 'web', 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib'), { recursive: true })
   await writeFile(runtimeEntryPath, '')
-  await writeFile(runtimePackagePath, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.5-alpha.1' }))
+  await writeFile(runtimePackagePath, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.5-rc.1' }))
   await writeFile(packagePath, JSON.stringify({
     name: '@deepseek-ai/dsh-llm',
-    version: '0.1.5-alpha.1',
+    version: '0.1.5-rc.1',
     exports: { './package.json': './package.json', '.': './lib/index.js' },
   }))
   await writeFile(join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib', 'index.js'), '')
@@ -71,7 +71,7 @@ describe('profile module repair', () => {
   })
 
   it('leaves a profile copy from the selected Runtime untouched', async () => {
-    const current = await fixture({ packageJson: JSON.stringify({ name: '@deepseek-ai/dsh-llm', version: '0.1.5-alpha.1' }) })
+    const current = await fixture({ packageJson: JSON.stringify({ name: '@deepseek-ai/dsh-llm', version: '0.1.5-rc.1' }) })
 
     await expect(repairProfileModuleDrift({
       dshHome: current.dshHome,

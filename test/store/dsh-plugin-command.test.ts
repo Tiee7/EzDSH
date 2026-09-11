@@ -103,7 +103,7 @@ describe('createDshPluginCommand', () => {
     const runtimeRoot = join(root, 'out', 'dsh-runtime')
     const runtimeEntryPath = join(runtimeRoot, 'lib', 'bin.js')
     await mkdir(join(runtimeRoot, 'lib'), { recursive: true })
-    await writeFile(join(runtimeRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.5-alpha.1' }))
+    await writeFile(join(runtimeRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.5-rc.1' }))
     await mkdir(join(root, 'node_modules', 'pnpm'), { recursive: true })
     await writeFile(join(root, 'node_modules', 'pnpm', 'package.json'), JSON.stringify({ name: 'pnpm', version: '11.7.0' }))
     await mkdir(join(root, 'node_modules', '.bin'), { recursive: true })
@@ -127,7 +127,7 @@ describe('createDshPluginCommand', () => {
 
     const files = await readdir(join(root, 'logs', 'plugins'))
     const log = await readFile(join(root, 'logs', 'plugins', files[0] as string), 'utf8')
-    expect(log).toContain('dshVersion=0.1.5-alpha.1')
+    expect(log).toContain('dshVersion=0.1.5-rc.1')
   })
 
   it('rejects a non-zero DSH command and includes captured output', async () => {
@@ -181,7 +181,7 @@ describe('createDshPluginCommand', () => {
     const log = await readFile(join(root, 'logs', 'plugins', files[0] as string), 'utf8')
     expect(log).toContain('DSH plugin operation')
     expect(log).toContain('profile=web')
-    expect(log).toContain('dshVersion=0.1.5-alpha.1')
+    expect(log).toContain('dshVersion=0.1.5-rc.1')
     expect(log).toContain('pnpmVersion=11.7.0')
     expect(log).toContain('workspaceRootWorkaroundApplied=false')
     expect(log).toContain('ERR_PNPM_ADDING_TO_ROOT')

@@ -27,7 +27,7 @@ npm ci
 确认以下内容已经准备好：
 
 - 当前分支包含要发布的代码和 `vendor/deepseek-harness` 子模块提交；
-- `vendor/deepseek-harness` 必须指向 `5dda764ed3aa172535a7967b06ff95d9cbfe536a`，其 CLI manifest 必须为 `@deepseek-ai/dsh@0.1.5-alpha.1`；根项目中的 DSH 依赖也必须锁定为 `0.1.5-alpha.1`；
+- `vendor/deepseek-harness` 必须指向 `183f08e9c6dde7e36cd2318eaee70b0da08fb35e`，其 CLI manifest 必须为 `@deepseek-ai/dsh@0.1.5-rc.1`；根项目中的 DSH 依赖也必须锁定为 `0.1.5-rc.1`；
 - 当前平台与发布目标匹配：macOS arm64 或 Windows x64；
 - 签名、公证所需的证书和 CI Secret 已通过环境变量注入；
 - 自动更新源和安装包上传位置可用；
@@ -96,7 +96,7 @@ npm run verify:runtime
 
 - 应用展示版本从 `package.json` 正确读取；
 - Runtime 依赖没有重复的 `@deepseek-ai/dsh-tools` 模块；
-- DSH Runtime 的实际所属 manifest 为 `@deepseek-ai/dsh@0.1.5-alpha.1`，且能启动、健康检查能通过；
+- DSH Runtime 的实际所属 manifest 为 `@deepseek-ai/dsh@0.1.5-rc.1`，且能启动、健康检查能通过；
 - Session、Workspace、Plugin 和用户数据目录没有被构建流程写入或删除；
 - 开发模式仍可正常运行：
 
@@ -114,7 +114,7 @@ npm run dev
 npm run package:mac
 ```
 
-该命令会先校验可安装的 npm DSH 依赖，再安装/构建 vendored `@deepseek-ai/dsh@0.1.5-alpha.1`，暂存 source-built Runtime、执行健康检查和 Electron 打包，并验证最终 `.app` 内实际选中的 Runtime manifest。若 vendor checkout 仍为旧 pin（例如 `0.1.0-rc.8`），会在暂存前被拒绝。
+该命令会先校验可安装的 npm DSH 依赖，再安装/构建 vendored `@deepseek-ai/dsh@0.1.5-rc.1`，暂存 source-built Runtime、执行健康检查和 Electron 打包，并验证最终 `.app` 内实际选中的 Runtime manifest。若 vendor checkout 仍为旧 pin（例如 `0.1.0-rc.8`），会在暂存前被拒绝。
 
 ### 6.2 macOS 正式包
 

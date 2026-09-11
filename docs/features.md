@@ -43,7 +43,7 @@ EzDSH 将 DeepSeek Harness 封装为开箱即用的本地 AI 工作入口，核�
 
 ### 3.1 启动与生命周期
 
-EzDSH 内置并固定使用 DSH Runtime（当前依赖版本 `@deepseek-ai/dsh@0.1.5-alpha.1`，正式包使用构建后的 vendored Runtime），不依赖用户 PATH 中的全局 DSH。
+EzDSH 内置并固定使用 DSH Runtime（当前依赖版本 `@deepseek-ai/dsh@0.1.5-rc.1`，正式包使用构建后的 vendored Runtime），不依赖用户 PATH 中的全局 DSH。
 
 启动流程：
 

@@ -13,13 +13,13 @@ import {
 
 describe('DSH Runtime version', () => {
   it('uses the exact vendored source Runtime pin', () => {
-    expect(PINNED_DSH_RUNTIME_VERSION).toBe('0.1.5-alpha.1')
-    expect(PINNED_DSH_SOURCE_COMMIT).toBe('5dda764ed3aa172535a7967b06ff95d9cbfe536a')
+    expect(PINNED_DSH_RUNTIME_VERSION).toBe('0.1.5-rc.1')
+    expect(PINNED_DSH_SOURCE_COMMIT).toBe('183f08e9c6dde7e36cd2318eaee70b0da08fb35e')
   })
 
   it('rejects a vendored checkout that differs from the source commit pin', () => {
     expect(() => assertPinnedDshSourceCommit('fixture', '141eb6fef83422698aef7a981029e843e8161534'))
-      .toThrow(/fixture.*5dda764e.*141eb6fe/)
+      .toThrow(/fixture.*183f08e9.*141eb6fe/)
   })
 
   it('accepts the pinned vendored source commit', () => {
@@ -37,11 +37,11 @@ describe('DSH Runtime version', () => {
 
   it('rejects a version that differs from the pin with useful details', () => {
     expect(() => assertPinnedDshRuntimeVersion('fixture', '0.1.0-rc.8'))
-      .toThrow(/fixture.*0\.1\.5-alpha\.1.*0\.1\.0-rc\.8/)
+      .toThrow(/fixture.*0\.1\.5-rc\.1.*0\.1\.0-rc\.8/)
   })
 
   it('accepts the pinned version', () => {
-    expect(() => assertPinnedDshRuntimeVersion('fixture', '0.1.5-alpha.1')).not.toThrow()
+    expect(() => assertPinnedDshRuntimeVersion('fixture', '0.1.5-rc.1')).not.toThrow()
   })
 
   it('verifies the authenticated token URL with slash-style workspace and session RPCs', async () => {
@@ -65,7 +65,7 @@ describe('DSH Runtime version', () => {
       await mkdir(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh-tools'), { recursive: true })
       await writeFile(nodeExecutable, `#!/bin/sh\nexec ${shellQuote(process.execPath)} \"$@\"\n`, { mode: 0o755 })
       await writeFile(pnpmExecutable, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
-      await writeFile(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.5-alpha.1' }))
+      await writeFile(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.1.5-rc.1' }))
       await writeFile(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh-agent', 'index.js'), 'module.exports = {}\n')
       await writeFile(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh-agent-loop', 'index.js'), 'module.exports = {}\n')
       await writeFile(join(bundleRoot, 'node_modules', '@deepseek-ai', 'dsh-agent-presets', 'index.js'), 'module.exports = {}\n')
@@ -155,7 +155,7 @@ server.listen(port, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' 
       const verifier = resolve('scripts/verify-runtime-bundle.mjs')
       const result = spawnSync(process.execPath, [verifier, bundleRoot], { encoding: 'utf8' })
       expect(result.status).not.toBe(0)
-      expect(result.stderr).toMatch(/selected DSH Runtime.*0\.1\.5-alpha\.1.*0\.1\.0-rc\.8/)
+      expect(result.stderr).toMatch(/selected DSH Runtime.*0\.1\.5-rc\.1.*0\.1\.0-rc\.8/)
     } finally {
       await rm(bundleRoot, { recursive: true, force: true })
     }
@@ -192,7 +192,7 @@ server.listen(port, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' 
       const verifier = resolve('scripts/verify-runtime-bundle.mjs')
       const result = spawnSync(process.execPath, [verifier, bundleRoot], { encoding: 'utf8' })
       expect(result.status).not.toBe(0)
-      expect(result.stderr).toMatch(/selected DSH Runtime.*0\.1\.5-alpha\.1.*0\.1\.1-rc\.2/)
+      expect(result.stderr).toMatch(/selected DSH Runtime.*0\.1\.5-rc\.1.*0\.1\.1-rc\.2/)
     } finally {
       await rm(bundleRoot, { recursive: true, force: true })
     }

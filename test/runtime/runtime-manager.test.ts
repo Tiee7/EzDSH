@@ -234,7 +234,7 @@ describe('RuntimeManager', () => {
       runtimeEntryPath: '/dev/null',
       command: process.execPath,
       appVersion: '1.8.1540',
-      runtimeVersion: '0.1.5-alpha.1',
+      runtimeVersion: '0.1.5-rc.1',
       startupTimeoutMs: 2_000,
       stopTimeoutMs: 1_000,
       allocatePort: async () => 4567,
@@ -268,7 +268,7 @@ describe('RuntimeManager', () => {
     await expect(import('node:fs/promises').then(({ access }) => access(layout.harness))).resolves.toBeUndefined()
     const runtimeLog = await readFile(join(layout.logs, 'harness.log'), 'utf8')
     expect(runtimeLog).toContain('appVersion=1.8.1540')
-    expect(runtimeLog).toContain('runtimeVersion=0.1.5-alpha.1')
+    expect(runtimeLog).toContain('runtimeVersion=0.1.5-rc.1')
     expect(runtimeLog).toContain('runtimeEntryPath=/dev/null')
     expect(runtimeLog).toContain(`DSH_HOME=${layout.harness}`)
   })
