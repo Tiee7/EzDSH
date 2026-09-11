@@ -857,14 +857,96 @@ function isValidWorkflowSourcePort(value: unknown): boolean {
 }
 
 export function isWorkflowValue(value: unknown): value is WorkflowValue {
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return true
-  if (Array.isArray(value)) return value.every(isWorkflowValue)
-  if (typeof value !== 'object') return false
-  return Object.values(value as Record<string, unknown>).every(isWorkflowValue)
+  const leaveFrame = Symbol('workflow-value-leave')
+  type Frame = { [leaveFrame]: object }
+  const active = new WeakSet<object>()
+  const stack: Array<unknown | Frame> = [value]
+  try {
+    while (stack.length > 0) {
+      const candidate = stack.pop()
+      if (candidate !== null && typeof candidate === 'object' && leaveFrame in candidate) {
+        active.delete((candidate as Frame)[leaveFrame])
+        continue
+      }
+      if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean') continue
+      if (typeof candidate === 'number') {
+        if (!Number.isFinite(candidate)) return false
+        continue
+      }
+      if (typeof candidate !== 'object') return false
+      if (active.has(candidate)) return false
+      const array = Array.isArray(candidate)
+      const prototype = Object.getPrototypeOf(candidate)
+      if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) return false
+      const keys = Reflect.ownKeys(candidate)
+      if (keys.some((key) => typeof key === 'symbol')) return false
+      const lengthDescriptor = array ? Object.getOwnPropertyDescriptor(candidate, 'length') : undefined
+      const arrayLength = lengthDescriptor !== undefined && 'value' in lengthDescriptor && typeof lengthDescriptor.value === 'number' ? lengthDescriptor.value : undefined
+      if (array && (arrayLength === undefined || keys.length !== arrayLength + 1)) return false
+      active.add(candidate)
+      stack.push({ [leaveFrame]: candidate })
+      for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(candidate, key)
+        if (descriptor === undefined || !('value' in descriptor)) return false
+        if (array && key === 'length') {
+          if (descriptor.enumerable) return false
+          continue
+        }
+        if (!descriptor.enumerable) return false
+        if (array) {
+          const index = Number(key)
+          if (!Number.isInteger(index) || index < 0 || index >= (arrayLength as number) || String(index) !== key) return false
+        }
+        stack.push(descriptor.value)
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function cloneWorkflow<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
+}
+
+function cloneJsonSafeWorkflowValue(value: WorkflowValue): WorkflowValue {
+  if (value === null || typeof value !== 'object') return value
+  try {
+    const createContainer = (source: WorkflowValue[] | { [key: string]: WorkflowValue }): WorkflowValue[] | Record<string, WorkflowValue> => {
+      if (!Array.isArray(source)) return {}
+      const descriptor = Object.getOwnPropertyDescriptor(source, 'length')
+      if (descriptor === undefined || !('value' in descriptor) || typeof descriptor.value !== 'number') throw new Error('invalid JSON-safe array length')
+      return new Array(descriptor.value)
+    }
+    const root = createContainer(value)
+    const clones = new WeakMap<object, WorkflowValue[] | Record<string, WorkflowValue>>([[value, root]])
+    const stack: Array<{ source: WorkflowValue[] | { [key: string]: WorkflowValue }; target: WorkflowValue[] | Record<string, WorkflowValue> }> = [{ source: value, target: root }]
+    while (stack.length > 0) {
+      const { source, target } = stack.pop()!
+      for (const key of Reflect.ownKeys(source)) {
+        if (Array.isArray(source) && key === 'length') continue
+        const descriptor = Object.getOwnPropertyDescriptor(source, key)
+        if (typeof key !== 'string' || descriptor === undefined || !('value' in descriptor)) throw new Error('invalid JSON-safe descriptor')
+        const child = descriptor.value as WorkflowValue
+        let clonedChild = child
+        if (child !== null && typeof child === 'object') {
+          const existing = clones.get(child)
+          if (existing !== undefined) clonedChild = existing
+          else {
+            const container = createContainer(child)
+            clones.set(child, container)
+            stack.push({ source: child, target: container })
+            clonedChild = container
+          }
+        }
+        Object.defineProperty(target, key, { value: clonedChild, enumerable: true, writable: true, configurable: true })
+      }
+    }
+    return root
+  } catch {
+    throw new Error('Workflow 输入包含无法安全复制的 JSON 值。')
+  }
 }
 
 function structuredWorkflowInputFields(workflow: WorkflowDefinition): WorkflowInputField[] {
@@ -880,13 +962,13 @@ export function deriveWorkflowLaunchFields(workflow: WorkflowDefinition): Workfl
     ...(field.label === undefined ? {} : { label: field.label }),
     ...(field.type === undefined ? {} : { type: field.type }),
     ...(field.required === undefined ? {} : { required: field.required }),
-    ...(field.defaultValue === undefined ? {} : { defaultValue: cloneWorkflow(field.defaultValue) }),
+    ...(field.defaultValue === undefined ? {} : { defaultValue: cloneJsonSafeWorkflowValue(field.defaultValue) }),
   }))
 }
 
 function isValidWorkflowInputFieldValue(field: WorkflowInputField, value: unknown): value is WorkflowValue {
   switch (field.type ?? 'string') {
-    case 'string': return typeof value === 'string' && (field.required !== true || value.trim() !== '')
+    case 'string': return typeof value === 'string' && (field.required === false || value.trim() !== '')
     case 'number': return typeof value === 'number' && Number.isFinite(value)
     case 'boolean': return typeof value === 'boolean'
     case 'json': return isWorkflowValue(value)
@@ -899,14 +981,16 @@ function isValidWorkflowInputFieldValue(field: WorkflowInputField, value: unknow
 export function normalizeWorkflowLaunchInput(workflow: WorkflowDefinition, input: WorkflowValue): WorkflowValue {
   if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
   const fields = structuredWorkflowInputFields(workflow)
-  if (fields.length === 0) return cloneWorkflow(input)
+  if (fields.length === 0) return cloneJsonSafeWorkflowValue(input)
   if (!isRecord(input)) throw new Error('结构化 Workflow 输入必须是对象。')
-  const effective = cloneWorkflow(input) as Record<string, WorkflowValue>
+  const effective = cloneJsonSafeWorkflowValue(input) as Record<string, WorkflowValue>
   for (const field of fields) {
     const label = field.label?.trim() || field.name
     if (!Object.prototype.hasOwnProperty.call(effective, field.name)) {
-      if (field.defaultValue !== undefined) effective[field.name] = cloneWorkflow(field.defaultValue)
-      else if (field.required === true) throw new Error(`Workflow 输入字段「${label}」为必填项。`)
+      if (field.defaultValue !== undefined) {
+        if (!isValidWorkflowInputFieldValue(field, field.defaultValue)) throw new Error(`Workflow 输入字段「${label}」的默认值不符合 ${field.type ?? 'string'} 类型要求。`)
+        Object.defineProperty(effective, field.name, { value: cloneJsonSafeWorkflowValue(field.defaultValue), enumerable: true, writable: true, configurable: true })
+      } else if (field.required !== false) throw new Error(`Workflow 输入字段「${label}」为必填项。`)
       else continue
     }
     if (!isValidWorkflowInputFieldValue(field, effective[field.name])) {
@@ -982,17 +1066,24 @@ function readStringArray(value: unknown): string[] {
 }
 
 function readInputFields(value: unknown): WorkflowInputField[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  return value.flatMap((item) => {
-    if (!isRecord(item) || typeof item.name !== 'string') return []
-    const type: WorkflowInputFieldType = item.type === 'number' || item.type === 'boolean' || item.type === 'json' || item.type === 'file' || item.type === 'file-list' ? item.type : 'string'
-    return [{
-      name: item.name.trim(),
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) return [{ name: undefined as never, type: '__invalid__' as WorkflowInputFieldType }]
+  return value.map((item) => {
+    if (!isRecord(item)) return { name: undefined as never, type: '__invalid__' as WorkflowInputFieldType }
+    const type = (item.type === undefined ? 'string' : item.type) as WorkflowInputFieldType
+    const defaultDescriptor = Object.getOwnPropertyDescriptor(item, 'defaultValue')
+    const defaultValue = defaultDescriptor === undefined
+      ? undefined
+      : 'value' in defaultDescriptor && isWorkflowValue(defaultDescriptor.value)
+        ? defaultDescriptor.value
+        : Number.NaN
+    return {
+      name: (typeof item.name === 'string' ? item.name.trim() : item.name) as string,
       ...(typeof item.label === 'string' && item.label.trim() !== '' ? { label: item.label.trim() } : {}),
       type,
       required: item.required !== false,
-      ...(isWorkflowValue(item.defaultValue) ? { defaultValue: item.defaultValue } : {}),
-    }]
+      ...(defaultDescriptor === undefined ? {} : { defaultValue: defaultValue as WorkflowValue }),
+    }
   })
 }
 
@@ -1381,8 +1472,9 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
     if (node.type === 'input' && (node.config.fields?.length ?? 0) > 0) {
       for (const [fieldIndex, field] of node.config.fields!.entries()) {
         const fieldPath = `nodes.${index}.config.fields.${fieldIndex}`
-        const name = field.name.trim()
-        if (name === '') issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名不能为空。' })
+        const name = typeof field.name === 'string' ? field.name.trim() : undefined
+        if (name === undefined) issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名必须是字符串。' })
+        else if (name === '') issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名不能为空。' })
         else if (structuredInputFieldNames.has(name)) issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名不能重复。' })
         else structuredInputFieldNames.add(name)
         if (!['string', 'number', 'boolean', 'json', 'file', 'file-list'].includes(field.type ?? 'string')) issues.push({ path: `${fieldPath}.type`, message: '结构化输入字段类型无效。' })

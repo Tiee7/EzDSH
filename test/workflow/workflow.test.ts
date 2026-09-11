@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDefaultWorkflow, createWorkflowExportDocument, formatWorkflowValidationIssues, normalizeWorkflow, parseWorkflowExportDocument, validateWorkflow, type WorkflowNode } from '../../src/shared/workflow.js'
+import { createDefaultWorkflow, createWorkflowExportDocument, formatWorkflowValidationIssues, isWorkflowValue, normalizeWorkflow, parseWorkflowExportDocument, validateWorkflow, type WorkflowNode } from '../../src/shared/workflow.js'
 
 describe('workflow contract', () => {
   it('creates a valid starter graph', () => {
@@ -126,6 +126,89 @@ describe('workflow contract', () => {
         ],
       },
     })
+  })
+
+  it('keeps absent and empty launch fields distinct while retaining malformed entries for validation', () => {
+    const raw = JSON.parse(JSON.stringify(createDefaultWorkflow('Launch field normalization'))) as { nodes: Array<{ type: string; config: Record<string, unknown> }> }
+    const input = raw.nodes.find((node) => node.type === 'input')!
+
+    delete input.config.fields
+    const absent = normalizeWorkflow(raw)?.nodes.find((node) => node.type === 'input')
+    input.config.fields = []
+    const empty = normalizeWorkflow(raw)?.nodes.find((node) => node.type === 'input')
+    input.config.fields = 'not-an-array'
+    const malformedContainer = normalizeWorkflow(raw)
+    const malformedContainerInput = malformedContainer?.nodes.find((node) => node.type === 'input')
+    input.config.fields = [null, { name: 42, type: 'string' }, { name: 'count', type: 'integer' }, { name: 'enabled', type: 42 }]
+    const malformed = normalizeWorkflow(raw)
+    const malformedInput = malformed?.nodes.find((node) => node.type === 'input')
+
+    expect(absent?.type === 'input' && Object.hasOwn(absent.config, 'fields')).toBe(false)
+    expect(empty?.type === 'input' && empty.config.fields).toEqual([])
+    expect(malformedContainerInput?.type === 'input' && malformedContainerInput.config.fields).toHaveLength(1)
+    expect(validateWorkflow(malformedContainer!).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.stringMatching(/fields\.0\.name$/u) }),
+    ]))
+    expect(malformedInput?.type === 'input' && malformedInput.config.fields).toHaveLength(4)
+    expect(validateWorkflow(malformed!).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.stringMatching(/fields\.0\.name$/u) }),
+      expect.objectContaining({ path: expect.stringMatching(/fields\.1\.name$/u) }),
+      expect.objectContaining({ path: expect.stringMatching(/fields\.2\.type$/u) }),
+      expect.objectContaining({ path: expect.stringMatching(/fields\.3\.type$/u) }),
+    ]))
+  })
+
+  it('rejects malformed structured launch fields through portable import normalization', () => {
+    const document = createWorkflowExportDocument(createDefaultWorkflow('Malformed launch import')) as unknown as { workflow: { nodes: Array<{ type: string; config: Record<string, unknown> }> } }
+    const input = document.workflow.nodes.find((node) => node.type === 'input')!
+    input.config.fields = [{ name: 'payload', type: { unexpected: true } }]
+
+    expect(() => parseWorkflowExportDocument(document)).toThrow(/字段类型|type/u)
+  })
+
+  it('recognizes only finite, plain, dense, own-data JSON values without invoking accessors', () => {
+    const shared = { safe: true }
+    const nullPrototype = Object.assign(Object.create(null) as Record<string, unknown>, { safe: true })
+    expect(isWorkflowValue({ left: shared, right: shared, nullPrototype })).toBe(true)
+
+    const sparse = new Array(1)
+    const extraArray = ['value'] as Array<unknown> & { extra?: boolean }
+    extraArray.extra = true
+    const symbolArray = ['value'] as unknown[] & { [key: symbol]: boolean }
+    symbolArray[Symbol('extra')] = true
+    let accessorReads = 0
+    const accessorObject = {}
+    Object.defineProperty(accessorObject, 'danger', { enumerable: true, get: () => { accessorReads += 1; throw new Error('must not escape') } })
+    const accessorArray: unknown[] = []
+    Object.defineProperty(accessorArray, '0', { enumerable: true, get: () => { accessorReads += 1; throw new Error('must not escape') } })
+    accessorArray.length = 1
+    const nonEnumerable = { safe: true }
+    Object.defineProperty(nonEnumerable, 'hidden', { value: true })
+    const symbolObject = { safe: true } as Record<string | symbol, unknown>
+    symbolObject[Symbol('extra')] = true
+
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, new Date(), Object.create({ inherited: true }), sparse, extraArray, symbolArray, nonEnumerable, symbolObject]) {
+      expect(isWorkflowValue(value)).toBe(false)
+    }
+    expect(() => isWorkflowValue(accessorObject)).not.toThrow()
+    expect(() => isWorkflowValue(accessorArray)).not.toThrow()
+    expect(isWorkflowValue(accessorObject)).toBe(false)
+    expect(isWorkflowValue(accessorArray)).toBe(false)
+    expect(accessorReads).toBe(0)
+  })
+
+  it('handles deeply nested values and cycles without recursion overflow', () => {
+    const root: Record<string, unknown> = {}
+    let cursor = root
+    for (let index = 0; index < 20_000; index += 1) {
+      const child: Record<string, unknown> = {}
+      cursor.child = child
+      cursor = child
+    }
+
+    expect(isWorkflowValue(root)).toBe(true)
+    cursor.child = root
+    expect(isWorkflowValue(root)).toBe(false)
   })
 
   it('round-trips the versioned JSON export envelope', () => {

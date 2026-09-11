@@ -71,6 +71,7 @@ describe('workflow launch contract', () => {
       attachments: ['docs/a.md', ' docs/b.md '],
       metadata: null,
       note: '   ',
+      length: 3,
       unknown: { preserved: true },
     }
 
@@ -127,6 +128,52 @@ describe('workflow launch contract', () => {
 
     expect(validateWorkflow(workflow)).toMatchObject({ valid: true, issues: [] })
   })
+
+  it('uses the persisted required-by-default semantics for missing, blank, and default string values', () => {
+    const workflow = definition([{ name: 'title', type: 'string' }])
+    const invalidDefault = definition([{ name: 'title', type: 'string', defaultValue: '   ' }])
+
+    expect(() => normalizeWorkflowLaunchInput(workflow, {})).toThrow(/title|必填/u)
+    expect(() => normalizeWorkflowLaunchInput(workflow, { title: '   ' })).toThrow(/title|string/u)
+    expect(validateWorkflow(invalidDefault).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'nodes.0.config.fields.0.defaultValue' }),
+    ]))
+  })
+
+  it('rejects non-JSON-safe legacy launch values with a diagnostic error', () => {
+    const accessor = {}
+    Object.defineProperty(accessor, 'danger', { enumerable: true, get: () => { throw new Error('secret getter failure') } })
+
+    expect(() => normalizeWorkflowLaunchInput(definition(), new Date() as never)).toThrow(/JSON-safe/u)
+    expect(() => normalizeWorkflowLaunchInput(definition(), Number.NaN as never)).toThrow(/JSON-safe/u)
+    expect(() => normalizeWorkflowLaunchInput(definition(), accessor as never)).toThrow(/JSON-safe/u)
+  })
+})
+
+describe('WorkflowStore structured launch validation', () => {
+  it.each([
+    ['non-object entry', [null]],
+    ['non-string name', [{ name: 42, type: 'string' }]],
+    ['unknown type', [{ name: 'count', type: 'integer' }]],
+    ['non-string type', [{ name: 'enabled', type: 42 }]],
+  ])('rejects a %s during create instead of degrading it to legacy input', async (_name, fields) => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-launch-contract-create-'))
+    const store = new WorkflowStore(dir)
+
+    await expect(store.create({ ...definition(fields as never), id: 'malformed-create' })).rejects.toThrow(/字段|field|type|name/u)
+    expect(store.list()).toEqual([])
+  })
+
+  it('rejects malformed fields during update and keeps the prior valid revision', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-launch-contract-update-'))
+    const store = new WorkflowStore(dir)
+    const created = await store.create({ ...definition(), id: 'malformed-update' })
+    const malformed = definition([{ name: 'payload', type: { unexpected: true } as never }])
+
+    await expect(store.update(created.id, { revision: created.revision, nodes: malformed.nodes })).rejects.toThrow(/字段类型|type/u)
+    expect(store.get(created.id)).toEqual(created)
+    expect(store.getRevision(created.id, 2)).toBeUndefined()
+  })
 })
 
 async function serviceFixture() {
@@ -137,6 +184,8 @@ async function serviceFixture() {
     ...definition([
       { name: 'title', type: 'string', required: true },
       { name: 'count', type: 'number', defaultValue: 2 },
+      { name: '__proto__', type: 'json', defaultValue: { safe: true } },
+      { name: 'constructor', type: 'string', defaultValue: 'safe-constructor' },
     ]),
   })
   const release: WorkflowRelease = {
@@ -185,10 +234,28 @@ describe('WorkflowRunService launch contract', () => {
     const normal = await service.start(workflow.id, supplied)
     const released = await service.startReleased(release.id, supplied)
 
-    expect(normal.input).toEqual({ title: 'Report', unknown: ['preserved'], count: 2 })
+    expect(normal.input).toEqual({ title: 'Report', unknown: ['preserved'], count: 2, ['__proto__']: { safe: true }, constructor: 'safe-constructor' })
     expect(released.input).toEqual(normal.input)
     expect(runStore.get(normal.id)?.input).toEqual(normal.input)
     expect(runStore.get(released.id)?.input).toEqual(normal.input)
+    for (const record of [normal, released, runStore.get(normal.id), runStore.get(released.id)]) {
+      const descriptor = Object.getOwnPropertyDescriptor(record?.input, '__proto__')
+      expect(descriptor).toMatchObject({ enumerable: true, value: { safe: true } })
+      expect(Object.getOwnPropertyDescriptor(record?.input, 'constructor')).toMatchObject({ enumerable: true, value: 'safe-constructor' })
+    }
+  })
+
+  it('preserves caller-supplied own __proto__ and constructor fields in the durable run', async () => {
+    const { service, workflow, runStore } = await serviceFixture()
+    const supplied: Record<string, WorkflowValue> = { title: 'Report' }
+    Object.defineProperty(supplied, '__proto__', { value: { caller: true }, enumerable: true, writable: true, configurable: true })
+    Object.defineProperty(supplied, 'constructor', { value: 'caller-constructor', enumerable: true, writable: true, configurable: true })
+
+    const run = await service.start(workflow.id, supplied)
+    const persisted = runStore.get(run.id)
+
+    expect(Object.getOwnPropertyDescriptor(persisted?.input, '__proto__')).toMatchObject({ enumerable: true, value: { caller: true } })
+    expect(Object.getOwnPropertyDescriptor(persisted?.input, 'constructor')).toMatchObject({ enumerable: true, value: 'caller-constructor' })
   })
 
   it.each(['normal', 'released'] as const)('rejects invalid %s starts without creating a run record', async (kind) => {
