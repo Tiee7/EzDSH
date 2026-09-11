@@ -1590,6 +1590,12 @@ export class WorkflowRunService {
   ): Promise<WorkflowValue> {
     for (;;) {
       if (active.cancelled) throw new Error('运行已取消。')
+      // A released run may outlive an operator's environment change. Refresh
+      // the current policy before every node attempt so both read and write
+      // connectors observe revocation before authorization or effect
+      // journaling. revalidateReleasedAccess only intersects existing grants,
+      // therefore a later environment restoration cannot widen this run.
+      this.revalidateReleasedAccess(record)
       state.attempt = (state.attempt ?? 0) + 1
       state.nextAttemptAt = undefined
       try {

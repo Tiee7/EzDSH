@@ -577,7 +577,12 @@ async function eventually(service: WorkflowRunService, runId: string): Promise<N
   throw new Error('run did not finish in time')
 }
 
-async function createReleasedAccessFixture(node?: WorkflowNode) {
+async function createReleasedAccessFixture(node?: WorkflowNode, execution?: {
+  nodes?: WorkflowNode[]
+  edges?: WorkflowDefinition['edges']
+  complete?: () => Promise<string>
+  fetchImpl?: typeof fetch
+}) {
   const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-release-access-'))
   const workflowStore = new WorkflowStore(dir)
   const runStore = new WorkflowRunStore(dir)
@@ -590,11 +595,16 @@ async function createReleasedAccessFixture(node?: WorkflowNode) {
   }
   await environmentStore.upsert(environment)
   const middle: WorkflowNode = node ?? { id: 'approval', type: 'approval', label: 'Approve', config: { message: 'Confirm' }, position: { x: 200, y: 0 } }
+  const middleNodes = execution?.nodes ?? [middle]
   const workflow = await workflowStore.create({
     name: 'Released access', description: '',
     permissionPolicy: { connectors: [{ connectorId: 'crm', operations: ['read', 'write'] }] },
-    nodes: [graph().nodes[0]!, middle, graph().nodes[4]!],
-    edges: [{ id: 'a', source: 'input', target: middle.id }, { id: 'b', source: middle.id, target: 'output' }],
+    nodes: [graph().nodes[0]!, ...middleNodes, graph().nodes[4]!],
+    edges: execution?.edges ?? [
+      { id: 'access-input', source: 'input', target: middleNodes[0]!.id },
+      ...middleNodes.slice(1).map((current, index) => ({ id: `access-${index}`, source: middleNodes[index]!.id, target: current.id })),
+      { id: 'access-output', source: middleNodes.at(-1)!.id, target: 'output' },
+    ],
   })
   const release = await releaseStore.publish({
     id: 'release-access', environmentId: environment.id, workflowId: workflow.id, workflowRevision: workflow.revision,
@@ -604,7 +614,7 @@ async function createReleasedAccessFixture(node?: WorkflowNode) {
   })
   const connectors = new WorkflowConnectorStore(dir)
   await connectors.upsert({ id: 'crm', name: 'CRM', kind: 'http', baseUrl: 'https://api.example.test/', allowedPathPrefixes: ['/items'] })
-  const fetchImpl = vi.fn<typeof fetch>(async () => new Response('{"ok":true}', { status: 200 }))
+  const fetchImpl = vi.fn<typeof fetch>(execution?.fetchImpl ?? (async () => new Response('{"ok":true}', { status: 200 })))
   const executeSubWorkflow = vi.fn<NonNullable<WorkflowRunServiceOptions['executeSubWorkflow']>>(async () => 'undone')
   const createService = () => new WorkflowRunService({
     workflowStore, runStore, workflowRoot: dir,
@@ -612,6 +622,7 @@ async function createReleasedAccessFixture(node?: WorkflowNode) {
     resolveEmployee: () => undefined,
     resolveReleasedWorkflow: (id) => releaseStore.get(id),
     resolveWorkflowEnvironment: (id) => environmentStore.get(id),
+    ...(execution?.complete === undefined ? {} : { lightweightClient: { complete: execution.complete } }),
     connectorService: new WorkflowConnectorService({
       connectors, credentials: new WorkflowCredentialStore(dir),
       resolveHost: async () => [{ address: '93.184.216.34' }], fetchImpl,
@@ -626,6 +637,15 @@ async function createReleasedAccessFixture(node?: WorkflowNode) {
 }
 
 describe('released workflow access boundaries', () => {
+  const blockingAiNode = (id: string): WorkflowNode => ({
+    id, type: 'ai-task', label: id, position: { x: 200, y: 0 },
+    config: { instruction: 'wait', mode: 'single', skillIds: [], outputMode: 'text' },
+  })
+  const managedHttpNode = (method: 'GET' | 'POST'): WorkflowNode => ({
+    id: 'request', type: 'http', label: `${method} Request`, position: { x: 400, y: 0 },
+    config: { method, connectorId: 'crm', connectorPath: '/items', url: '', headers: {}, responseMode: 'json' },
+  })
+
   it.each(['disabled', 'archived'] as const)('rejects a direct release start in a %s environment', async (status) => {
     const { service, environmentStore, environment, release } = await createReleasedAccessFixture()
     await environmentStore.upsert({ ...environment, status })
@@ -711,6 +731,174 @@ describe('released workflow access boundaries', () => {
       expect(settled.events.some((event) => event.type === 'node-effect-dispatched')).toBe(false)
     } finally {
       await workerService.stop()
+    }
+  })
+
+  it('rechecks a disabled environment after a blocking AI node and before a managed read dispatch', async () => {
+    let releaseAi!: () => void
+    let aiStarted!: () => void
+    const aiGate = new Promise<void>((resolve) => { releaseAi = resolve })
+    const enteredAi = new Promise<void>((resolve) => { aiStarted = resolve })
+    const fixture = await createReleasedAccessFixture(undefined, {
+      nodes: [blockingAiNode('blocker'), managedHttpNode('GET')],
+      complete: async () => { aiStarted(); await aiGate; return 'ready' },
+    })
+    const { createService, environmentStore, environment, release, fetchImpl } = fixture
+    const service = createService()
+    try {
+      await service.initialize()
+      const queued = await service.startReleased(release.id, null)
+      await enteredAi
+      await environmentStore.upsert({ ...environment, status: 'disabled' })
+      releaseAi()
+
+      const settled = await eventually(service, queued.id)
+      expect(settled).toMatchObject({ status: 'failed', error: expect.stringMatching(/environment must be active/u) })
+      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(settled.events.some((event) => event.nodeId === 'request' && (event.type === 'node-effect-prepared' || event.type === 'node-effect-dispatched'))).toBe(false)
+    } finally {
+      releaseAi?.()
+      await service.stop()
+    }
+  })
+
+  it.each(['GET', 'POST'] as const)('rechecks connector removal after a blocking AI node and before a managed %s dispatch', async (method) => {
+    let releaseAi!: () => void
+    let aiStarted!: () => void
+    const aiGate = new Promise<void>((resolve) => { releaseAi = resolve })
+    const enteredAi = new Promise<void>((resolve) => { aiStarted = resolve })
+    const fixture = await createReleasedAccessFixture(undefined, {
+      nodes: [blockingAiNode('blocker'), managedHttpNode(method)],
+      complete: async () => { aiStarted(); await aiGate; return 'ready' },
+    })
+    const { createService, environmentStore, environment, release, fetchImpl } = fixture
+    const service = createService()
+    try {
+      await service.initialize()
+      const queued = await service.startReleased(release.id, null)
+      await enteredAi
+      await environmentStore.upsert({ ...environment, connectorIds: [] })
+      releaseAi()
+
+      const settled = await eventually(service, queued.id)
+      expect(settled).toMatchObject({ status: 'failed', connectorGrants: [], error: expect.stringMatching(/未授(?:予|权)连接器/u) })
+      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(settled.events.some((event) => event.nodeId === 'request' && (event.type === 'node-effect-prepared' || event.type === 'node-effect-dispatched'))).toBe(false)
+    } finally {
+      releaseAi?.()
+      await service.stop()
+    }
+  })
+
+  it('rechecks connector removal before a managed read inside a loop body', async () => {
+    let releaseAi!: () => void
+    let aiStarted!: () => void
+    const aiGate = new Promise<void>((resolve) => { releaseAi = resolve })
+    const enteredAi = new Promise<void>((resolve) => { aiStarted = resolve })
+    const blocker: WorkflowNode = {
+      ...blockingAiNode('blocker'),
+      config: { instruction: 'return items', mode: 'single', skillIds: [], outputMode: 'json' },
+    }
+    const loop: WorkflowNode = { id: 'loop', type: 'loop', label: 'Loop', config: { maxIterations: 2 }, position: { x: 400, y: 0 } }
+    const request = managedHttpNode('GET')
+    const fixture = await createReleasedAccessFixture(undefined, {
+      nodes: [blocker, loop, request],
+      edges: [
+        { id: 'input-blocker', source: 'input', target: 'blocker' },
+        { id: 'blocker-loop', source: 'blocker', target: 'loop' },
+        { id: 'loop-body', source: 'loop', target: 'request', sourcePort: 'loop-body' },
+        { id: 'loop-output', source: 'loop', target: 'output', sourcePort: 'loop-next' },
+      ],
+      complete: async () => { aiStarted(); await aiGate; return '["item"]' },
+    })
+    const { createService, environmentStore, environment, release, fetchImpl } = fixture
+    const service = createService()
+    try {
+      await service.initialize()
+      const queued = await service.startReleased(release.id, null)
+      await enteredAi
+      await environmentStore.upsert({ ...environment, connectorIds: [] })
+      releaseAi()
+
+      const settled = await eventually(service, queued.id)
+      expect(settled).toMatchObject({ status: 'failed', connectorGrants: [] })
+      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(settled.nodeStates.find((state) => state.nodeId === 'loop')?.loopIterations?.[0]?.nodeStates[0]).toMatchObject({ nodeId: 'request', status: 'failed' })
+    } finally {
+      releaseAi?.()
+      await service.stop()
+    }
+  })
+
+  it('never restores a connector grant removed earlier in the same released run', async () => {
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    let firstStarted!: () => void
+    let secondStarted!: () => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve })
+    const enteredFirst = new Promise<void>((resolve) => { firstStarted = resolve })
+    const enteredSecond = new Promise<void>((resolve) => { secondStarted = resolve })
+    let calls = 0
+    const fixture = await createReleasedAccessFixture(undefined, {
+      nodes: [blockingAiNode('first'), blockingAiNode('second'), managedHttpNode('GET')],
+      complete: async () => {
+        calls += 1
+        if (calls === 1) { firstStarted(); await firstGate }
+        else { secondStarted(); await secondGate }
+        return 'ready'
+      },
+    })
+    const { createService, environmentStore, environment, release, fetchImpl } = fixture
+    const service = createService()
+    try {
+      await service.initialize()
+      const queued = await service.startReleased(release.id, null)
+      await enteredFirst
+      await environmentStore.upsert({ ...environment, connectorIds: [] })
+      releaseFirst()
+      await enteredSecond
+      await environmentStore.upsert(environment)
+      releaseSecond()
+
+      const settled = await eventually(service, queued.id)
+      expect(settled).toMatchObject({ status: 'failed', connectorGrants: [], error: expect.stringMatching(/未授(?:予|权)连接器/u) })
+      expect(fetchImpl).not.toHaveBeenCalled()
+    } finally {
+      releaseFirst?.()
+      releaseSecond?.()
+      await service.stop()
+    }
+  })
+
+  it('rechecks connector removal before retrying the same managed read node', async () => {
+    let releaseRequest!: () => void
+    let requestStarted!: () => void
+    const requestGate = new Promise<void>((resolve) => { releaseRequest = resolve })
+    const enteredRequest = new Promise<void>((resolve) => { requestStarted = resolve })
+    const request = {
+      ...managedHttpNode('GET'),
+      retryPolicy: { mode: 'idempotent' as const, maxAttempts: 2, baseDelayMs: 0, jitterRatio: 0 },
+    }
+    const fixture = await createReleasedAccessFixture(request, {
+      fetchImpl: async () => { requestStarted(); await requestGate; throw new Error('connection lost') },
+    })
+    const { createService, environmentStore, environment, release, fetchImpl } = fixture
+    const service = createService()
+    try {
+      await service.initialize()
+      const queued = await service.startReleased(release.id, null)
+      await enteredRequest
+      await environmentStore.upsert({ ...environment, connectorIds: [] })
+      releaseRequest()
+
+      const settled = await eventually(service, queued.id)
+      expect(settled).toMatchObject({ status: 'failed', connectorGrants: [], error: expect.stringMatching(/未授(?:予|权)连接器/u) })
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      expect(settled.nodeStates.find((state) => state.nodeId === 'request')?.attempt).toBe(2)
+    } finally {
+      releaseRequest?.()
+      await service.stop()
     }
   })
 })
