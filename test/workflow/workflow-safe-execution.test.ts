@@ -29,7 +29,93 @@ function queuedRecord(id: string, idempotencyKey?: string): WorkflowRunRecord {
   } as unknown as WorkflowRunRecord
 }
 
+function rejectNextPersist(store: WorkflowRunStore, message = 'ENOSPC'): void {
+  vi.spyOn(store as unknown as { persist(): Promise<void> }, 'persist')
+    .mockRejectedValueOnce(Object.assign(new Error(message), { code: 'ENOSPC' }))
+}
+
 describe('workflow safe execution store', () => {
+  it('rolls back enqueue when persistence fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-persist-failure-'))
+    const store = new WorkflowRunStore(directory)
+    await store.initialize()
+    const beforeList = store.list()
+    const beforeRun = store.get('run-enqueue-failure')
+    rejectNextPersist(store)
+
+    await expect(store.enqueue(queuedRecord('run-enqueue-failure'))).rejects.toThrow('ENOSPC')
+
+    expect(store.list()).toEqual(beforeList)
+    expect(store.get('run-enqueue-failure')).toEqual(beforeRun)
+  })
+
+  it('rolls back save when persistence fails and accepts the next mutation', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-persist-failure-'))
+    const store = new WorkflowRunStore(directory)
+    const record = await store.enqueue(queuedRecord('run-save-failure'))
+    const beforeList = store.list()
+    const beforeRun = store.get(record.id)
+    rejectNextPersist(store)
+
+    await expect(store.save({ ...record, output: 'uncommitted-output' })).rejects.toThrow('ENOSPC')
+
+    expect(store.list()).toEqual(beforeList)
+    expect(store.get(record.id)).toEqual(beforeRun)
+    await expect(store.save({ ...record, output: 'committed-output' })).resolves.toMatchObject({ output: 'committed-output' })
+  })
+
+  it('rolls back claimNextDue when persistence fails in memory and on disk', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-persist-failure-'))
+    const store = new WorkflowRunStore(directory)
+    const record = await store.enqueue(queuedRecord('run-claim-failure'))
+    const beforeList = store.list()
+    const beforeRun = store.get(record.id)
+    rejectNextPersist(store)
+
+    await expect(store.claimNextDue('worker-left', 10_000)).rejects.toThrow('ENOSPC')
+
+    expect(store.list()).toEqual(beforeList)
+    expect(store.get(record.id)).toEqual(beforeRun)
+    const diskStore = new WorkflowRunStore(directory)
+    await diskStore.initialize()
+    expect(diskStore.get(record.id)).toMatchObject({ status: 'queued' })
+    expect(diskStore.get(record.id)?.queue?.lease).toBeUndefined()
+  })
+
+  it('rolls back renewLease when persistence fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-persist-failure-'))
+    const store = new WorkflowRunStore(directory)
+    const record = queuedRecord('run-renew-failure')
+    record.queue = { enqueuedAt: '2026-01-01T00:00:00.000Z', availableAt: '2026-01-01T00:00:00.000Z' }
+    await store.enqueue(record)
+    await store.claimNextDue('worker-left', 2_000, new Date('2026-01-01T00:00:00.000Z'))
+    const beforeList = store.list()
+    const beforeRun = store.get(record.id)
+    rejectNextPersist(store)
+
+    await expect(store.renewLease(record.id, 'worker-left', 10_000, new Date('2026-01-01T00:00:01.000Z'))).rejects.toThrow('ENOSPC')
+
+    expect(store.list()).toEqual(beforeList)
+    expect(store.get(record.id)).toEqual(beforeRun)
+  })
+
+  it('rolls back releaseLease when persistence fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-persist-failure-'))
+    const store = new WorkflowRunStore(directory)
+    const record = queuedRecord('run-release-failure')
+    record.queue = { enqueuedAt: '2026-01-01T00:00:00.000Z', availableAt: '2026-01-01T00:00:00.000Z' }
+    await store.enqueue(record)
+    await store.claimNextDue('worker-left', 2_000, new Date('2026-01-01T00:00:00.000Z'))
+    const beforeList = store.list()
+    const beforeRun = store.get(record.id)
+    rejectNextPersist(store)
+
+    await expect(store.releaseLease(record.id, 'worker-left')).rejects.toThrow('ENOSPC')
+
+    expect(store.list()).toEqual(beforeList)
+    expect(store.get(record.id)).toEqual(beforeRun)
+  })
+
   it('rejects malformed persisted loop checkpoints before recovery traverses them', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-loop-malformed-'))
     await writeFile(join(dir, 'workflow-runs.json'), JSON.stringify([{ ...queuedRecord('malformed-loop'), nodeStates: [{ nodeId: 'loop', status: 'pending', loopIterations: [{ iterationId: 'x', iterationIndex: 0, input: 'A', status: 'running', nodeStates: null }] }] }]))

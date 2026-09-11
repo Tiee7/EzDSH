@@ -476,8 +476,26 @@ export class WorkflowRunStore {
     await atomicWriteJson(this.filePath, Array.from(this.runs.values()))
   }
 
+  private cloneRuns(): Map<string, WorkflowRunRecord> {
+    return new Map(Array.from(this.runs, ([id, record]) => [id, cloneWorkflow(record)]))
+  }
+
+  private restoreRuns(snapshot: Map<string, WorkflowRunRecord>): void {
+    this.runs.clear()
+    for (const [id, record] of snapshot) this.runs.set(id, cloneWorkflow(record))
+  }
+
   private async mutate<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.mutationChain.then(operation, operation)
+    const mutateWithRollback = async (): Promise<T> => {
+      const snapshot = this.cloneRuns()
+      try {
+        return await operation()
+      } catch (error) {
+        this.restoreRuns(snapshot)
+        throw error
+      }
+    }
+    const result = this.mutationChain.then(mutateWithRollback, mutateWithRollback)
     this.mutationChain = result.then(() => undefined, () => undefined)
     return result
   }
