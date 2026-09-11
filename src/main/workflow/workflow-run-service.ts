@@ -273,7 +273,7 @@ export class WorkflowRunService {
       record.error = '审批被拒绝'
       record.completedAt = new Date().toISOString()
       record.waitingApprovalNodeId = undefined
-      await this.save(record, 'approval-resolved', '审批被拒绝', node.id)
+      await this.save(record, 'approval-rejected', '审批被拒绝', node.id)
       return this.options.runStore.get(runId) ?? record
     }
     this.revalidateReleasedAccess(record)
@@ -290,7 +290,7 @@ export class WorkflowRunService {
     record.error = undefined
     record.waitingApprovalNodeId = undefined
     this.prepareQueuedRecord(record)
-    await this.save(record, 'approval-resolved', '审批通过，继续运行', node.id)
+    await this.save(record, 'approval-approved', '审批通过，继续运行', node.id)
     this.worker.wake()
     return this.options.runStore.get(runId) ?? record
   }

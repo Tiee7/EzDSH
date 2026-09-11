@@ -1670,6 +1670,30 @@ describe('workflow run service', () => {
     expect((await eventually(service, initial.id)).status).toBe('completed')
   })
 
+  it('records an approval rejection explicitly', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-approval-rejection-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      ...graph(), id: 'workflow-approval-rejection', name: 'Approval rejection',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'approval', type: 'approval', label: 'Approve', config: { message: 'Confirm' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'approval' }, { id: 'b', source: 'approval', target: 'output' }],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+
+    const waiting = await eventually(service, (await service.start(workflow.id, 'hello')).id)
+    const rejected = await service.approve(waiting.id, false)
+
+    expect(rejected.events.at(-1)?.type).toBe('approval-rejected')
+  })
+
   it('runs explicit compensation actions in reverse order', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-'))
     const workflowStore = new WorkflowStore(dir)

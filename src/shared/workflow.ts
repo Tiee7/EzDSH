@@ -507,7 +507,7 @@ export interface WorkflowNodeRunState {
   error?: string
 }
 
-export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
+export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
 
 export interface WorkflowRunEvent {
   id: string

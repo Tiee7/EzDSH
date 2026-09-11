@@ -123,7 +123,7 @@ describe('WorkflowObservabilityService', () => {
     expect(persisted).not.toMatch(/private prompt|top-secret|sensitive body|secret output|Authorization|headers|query|body|raw response/u)
   })
 
-  it('records deployment metadata and reports no-observations, recent failures, rolled back releases, and healthy states', async () => {
+  it('records deployment metadata and reports no observations, recent failures, rollbacks, and sticky release failures', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-health-'))
     const store = new WorkflowObservationStore(dir)
     const service = new WorkflowObservabilityService({
@@ -194,15 +194,65 @@ describe('WorkflowObservabilityService', () => {
     })
     expect(service.health('customer-healthy')).toEqual({
       environmentId: 'customer-healthy',
-      status: 'healthy',
+      status: 'degraded',
       observedAt: '2026-09-03T10:00:00.000Z',
-      reason: 'healthy',
+      reason: 'latest-run-failed',
     })
 
     const persisted = await readFile(join(dir, 'workflow-observations.jsonl'), 'utf8')
     expect(persisted).toContain('"action":"release-rolled-back"')
     expect(persisted).toContain('"action":"release-published"')
     expect(persisted).not.toContain('customer prompt: secret')
+  })
+
+  it('records explicit approval outcomes while retaining ambiguous legacy approval resolutions', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-approval-'))
+    const store = new WorkflowObservationStore(dir)
+    const service = new WorkflowObservabilityService({ store })
+
+    await service.observeRun(createRunRecord({
+      events: [
+        { id: 'event-approval-resolved', time: '2026-09-03T09:00:00.000Z', type: 'approval-resolved', nodeId: 'approval' },
+        { id: 'event-approval-rejected', time: '2026-09-03T09:01:00.000Z', type: 'approval-rejected', nodeId: 'approval' },
+      ],
+    }))
+
+    const [legacyObservation, rejectedObservation] = store.list()
+    expect(legacyObservation).toMatchObject({ action: 'approval-resolved', severity: 'info', outcome: 'unknown' })
+    expect(rejectedObservation).toMatchObject({ action: 'approval-rejected', severity: 'warning', outcome: 'failed' })
+  })
+
+  it('keeps failed releases degraded until a later success for the same release', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-sticky-failure-'))
+    const store = new WorkflowObservationStore(dir)
+    let observedAt = '2026-09-03T10:00:00.000Z'
+    const service = new WorkflowObservabilityService({
+      store,
+      now: () => observedAt,
+      recentFailureWindowMs: 60_000,
+    })
+
+    await service.observeRun(createRunRecord({
+      id: 'run-failed-release-a',
+      releaseId: 'release-a',
+      events: [{ id: 'event-failed-release-a', time: '2026-09-03T08:00:00.000Z', type: 'run-failed' }],
+    }))
+    expect(service.health('customer-acme-prod')).toMatchObject({ status: 'degraded', reason: 'latest-run-failed' })
+
+    await service.observeRun(createRunRecord({
+      id: 'run-completed-release-b',
+      releaseId: 'release-b',
+      events: [{ id: 'event-completed-release-b', time: '2026-09-03T09:00:00.000Z', type: 'run-completed' }],
+    }))
+    expect(service.health('customer-acme-prod')).toMatchObject({ status: 'degraded', reason: 'latest-run-failed' })
+
+    await service.observeRun(createRunRecord({
+      id: 'run-completed-release-a',
+      releaseId: 'release-a',
+      events: [{ id: 'event-completed-release-a', time: '2026-09-03T10:01:00.000Z', type: 'run-completed' }],
+    }))
+    observedAt = '2026-09-03T12:00:00.000Z'
+    expect(service.health('customer-acme-prod')).toMatchObject({ status: 'healthy', reason: 'healthy' })
   })
 
   it('records each release lifecycle event with a unique observation id and the supplied lifecycle time', async () => {

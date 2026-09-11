@@ -125,6 +125,15 @@ export class WorkflowObservabilityService {
       }
     }
 
+    if (hasLatestRunFailure(observations)) {
+      return {
+        environmentId,
+        status: 'degraded',
+        observedAt,
+        reason: 'latest-run-failed',
+      }
+    }
+
     return {
       environmentId,
       status: 'healthy',
@@ -175,6 +184,8 @@ function kindForRunEvent(type: WorkflowRunEventType): WorkflowObservationEvent['
     case 'compensation-completed':
     case 'compensation-failed':
     case 'approval-requested':
+    case 'approval-approved':
+    case 'approval-rejected':
     case 'approval-resolved':
       return 'node'
     case 'run-created':
@@ -193,6 +204,8 @@ function severityForAction(action: WorkflowObservationAction): WorkflowObservati
     case 'compensation-failed':
     case 'run-failed':
       return 'error'
+    case 'approval-rejected':
+      return 'warning'
     case 'node-retry':
     case 'run-paused':
     case 'run-cancelled':
@@ -214,13 +227,15 @@ function outcomeForAction(action: WorkflowObservationAction): WorkflowObservatio
     case 'node-completed':
     case 'node-effect-confirmed':
     case 'compensation-completed':
-    case 'approval-resolved':
+    case 'approval-approved':
     case 'run-completed':
     case 'release-published':
       return 'succeeded'
     case 'node-failed':
     case 'compensation-failed':
     case 'run-failed':
+      return 'failed'
+    case 'approval-rejected':
       return 'failed'
     case 'run-cancelled':
       return 'cancelled'
@@ -231,5 +246,19 @@ function outcomeForAction(action: WorkflowObservationAction): WorkflowObservatio
     case 'release-superseded':
     case 'release-rolled-back':
       return 'unknown'
+    case 'approval-resolved':
+      return 'unknown'
   }
+}
+
+function hasLatestRunFailure(observations: readonly WorkflowObservationEvent[]): boolean {
+  const latestByRelease = new Map<string, WorkflowObservationEvent>()
+  const terminalSignals = observations
+    .filter((event) => event.action === 'run-completed' || event.action === 'run-failed')
+    .sort(compareObservations)
+  for (const signal of terminalSignals) {
+    const group = signal.releaseId === undefined ? 'legacy' : `release:${signal.releaseId}`
+    latestByRelease.set(group, signal)
+  }
+  return [...latestByRelease.values()].some((signal) => signal.action === 'run-failed')
 }
