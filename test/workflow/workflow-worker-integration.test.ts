@@ -653,6 +653,52 @@ describe('workflow service lifecycle', () => {
     return { directory, workflow, workflowStore, runStore, createService, service: createService() }
   }
 
+  it('maps service and Worker lifecycle into a durable read-only operations snapshot', async () => {
+    const fixture = await createLifecycleFixture('workflow-operations-snapshot')
+    const initializeEntered = deferred<void>()
+    const allowInitialize = deferred<void>()
+    const originalInitialize = fixture.workflowStore.initialize.bind(fixture.workflowStore)
+    vi.spyOn(fixture.workflowStore, 'initialize').mockImplementation(async () => {
+      initializeEntered.resolve()
+      await allowInitialize.promise
+      await originalInitialize()
+    })
+
+    expect(fixture.service.operationsSnapshot()).toEqual({
+      lifecycle: 'new',
+      worker: { state: 'stopped', consecutiveClaimFailures: 0 },
+    })
+
+    const initializing = fixture.service.initialize()
+    await initializeEntered.promise
+    expect(fixture.service.operationsSnapshot()).toEqual({
+      lifecycle: 'initializing',
+      worker: { state: 'stopped', consecutiveClaimFailures: 0 },
+    })
+
+    allowInitialize.resolve()
+    await initializing
+    const accepting = await eventually(
+      () => fixture.service.operationsSnapshot(),
+      (snapshot) => snapshot.lifecycle === 'accepting' && snapshot.worker.state === 'ready',
+    )
+    expect(accepting.worker.lastPollAttemptAt).toEqual(expect.any(String))
+    expect(accepting.worker.lastPollSucceededAt).toEqual(expect.any(String))
+    const isolated = accepting as { lifecycle: string; worker: { state: string } }
+    isolated.lifecycle = 'corrupted'
+    isolated.worker.state = 'corrupted'
+    expect(fixture.service.operationsSnapshot()).toMatchObject({ lifecycle: 'accepting', worker: { state: 'ready' } })
+
+    const stopping = fixture.service.stop()
+    expect(fixture.service.operationsSnapshot()).toMatchObject({ lifecycle: 'stopping', worker: { state: 'stopping' } })
+    await stopping
+    expect(fixture.service.operationsSnapshot()).toMatchObject({
+      lifecycle: 'stopped',
+      worker: { state: 'stopped', consecutiveClaimFailures: 0 },
+    })
+    expect(fixture.service.operationsSnapshot()).not.toBe(accepting)
+  })
+
   it('retries failed initialization instead of poisoning the service', async () => {
     const fixture = await createLifecycleFixture('workflow-init-retry')
     const initialize = vi.spyOn(fixture.workflowStore, 'initialize')

@@ -45,7 +45,7 @@ import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
 import { WorkflowRunStore } from './workflow-run-store.js'
-import { WorkflowRunWorker } from './workflow-run-worker.js'
+import { WorkflowRunWorker, type WorkflowRunWorkerOperationsSnapshot } from './workflow-run-worker.js'
 import { DshWorkflowAdapter, WorkflowNodeOutputError, buildNodePrompt, extractJsonDocument, invalidWorkflowJsonOutputError, parseWorkflowJson, type WorkflowSessionClient } from './dsh-workflow-adapter.js'
 import type { WorkflowLightweightClient, WorkflowLightweightRequest } from './workflow-lightweight-client.js'
 import type { WorkflowMcpClient } from './workflow-mcp-client.js'
@@ -115,7 +115,12 @@ interface ActiveRun {
   readonly sessionKeys: Map<string, string>
 }
 
-type WorkflowRunServiceLifecycleState = 'new' | 'initializing' | 'accepting' | 'stopping' | 'stopped'
+export type WorkflowRunServiceLifecycleState = 'new' | 'initializing' | 'accepting' | 'stopping' | 'stopped'
+
+export interface WorkflowRunServiceOperationsSnapshot {
+  readonly lifecycle: WorkflowRunServiceLifecycleState
+  readonly worker: WorkflowRunWorkerOperationsSnapshot
+}
 
 export class WorkflowRunServiceUnavailableError extends Error {
   readonly code = 'WORKFLOW_RUN_SERVICE_UNAVAILABLE'
@@ -208,6 +213,13 @@ export class WorkflowRunService {
 
   get(runId: string): WorkflowRunRecord | undefined {
     return this.options.runStore.get(runId)
+  }
+
+  operationsSnapshot(): WorkflowRunServiceOperationsSnapshot {
+    return {
+      lifecycle: this.lifecycleState,
+      worker: this.worker.operationsSnapshot(),
+    }
   }
 
   async getRunDefinition(runId: string): Promise<WorkflowDefinition | undefined> {

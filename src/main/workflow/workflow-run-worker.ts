@@ -13,6 +13,17 @@ export interface WorkflowRunWorkerOptions {
   onWorkerError?: (error: unknown) => Promise<void> | void
 }
 
+export type WorkflowRunWorkerState = 'starting' | 'ready' | 'backing-off' | 'stopping' | 'stopped'
+
+export interface WorkflowRunWorkerOperationsSnapshot {
+  readonly state: WorkflowRunWorkerState
+  readonly consecutiveClaimFailures: number
+  readonly lastPollAttemptAt?: string
+  readonly lastPollSucceededAt?: string
+  readonly lastPollFailedAt?: string
+  readonly nextPollAt?: string
+}
+
 /**
  * A single durable local Worker. Queue ownership is persisted by the store;
  * this class only controls polling, lease heartbeats, and graceful shutdown.
@@ -26,8 +37,13 @@ export class WorkflowRunWorker {
   private readonly onWorkerError: NonNullable<WorkflowRunWorkerOptions['onWorkerError']> | undefined
   private started = false
   private stopping = false
+  private state: WorkflowRunWorkerState = 'stopped'
   private consecutiveClaimFailures = 0
   private retryNotBefore: number | undefined
+  private lastPollAttemptAt: string | undefined
+  private lastPollSucceededAt: string | undefined
+  private lastPollFailedAt: string | undefined
+  private nextPollAt: string | undefined
   private drainPromise: Promise<void> | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
 
@@ -44,13 +60,26 @@ export class WorkflowRunWorker {
     if (this.started && !this.stopping) return
     this.started = true
     this.stopping = false
+    this.state = 'starting'
     this.wake()
+  }
+
+  operationsSnapshot(): WorkflowRunWorkerOperationsSnapshot {
+    return {
+      state: this.state,
+      consecutiveClaimFailures: this.consecutiveClaimFailures,
+      ...(this.lastPollAttemptAt === undefined ? {} : { lastPollAttemptAt: this.lastPollAttemptAt }),
+      ...(this.lastPollSucceededAt === undefined ? {} : { lastPollSucceededAt: this.lastPollSucceededAt }),
+      ...(this.lastPollFailedAt === undefined ? {} : { lastPollFailedAt: this.lastPollFailedAt }),
+      ...(this.nextPollAt === undefined ? {} : { nextPollAt: this.nextPollAt }),
+    }
   }
 
   wake(): void {
     if (!this.started || this.stopping || this.drainPromise !== undefined) return
     const retryDelay = this.retryNotBefore === undefined ? 0 : this.retryNotBefore - Date.now()
     if (retryDelay > 0) {
+      this.state = 'backing-off'
       this.scheduleWake(retryDelay)
       return
     }
@@ -58,6 +87,7 @@ export class WorkflowRunWorker {
     if (this.timer !== undefined) {
       clearTimeout(this.timer)
       this.timer = undefined
+      this.nextPollAt = undefined
     }
     this.drainPromise = this.drain().finally(() => {
       this.drainPromise = undefined
@@ -65,25 +95,38 @@ export class WorkflowRunWorker {
   }
 
   async stop(): Promise<void> {
+    if (!this.started && this.state === 'stopped') return
     this.stopping = true
     this.started = false
+    this.state = 'stopping'
     if (this.timer !== undefined) {
       clearTimeout(this.timer)
       this.timer = undefined
     }
-    await this.drainPromise
-    this.drainPromise = undefined
+    this.nextPollAt = undefined
+    try {
+      await this.drainPromise
+      this.drainPromise = undefined
+    } finally {
+      this.state = 'stopped'
+    }
   }
 
   private async drain(): Promise<void> {
     while (this.started && !this.stopping) {
       let claimed
       try {
+        this.nextPollAt = undefined
+        this.lastPollAttemptAt = new Date().toISOString()
         claimed = await this.options.store.claimNextDue(this.ownerId, this.leaseMs)
         this.consecutiveClaimFailures = 0
         this.retryNotBefore = undefined
+        this.lastPollSucceededAt = new Date().toISOString()
+        if (this.started && !this.stopping) this.state = 'ready'
       } catch (error) {
         this.consecutiveClaimFailures += 1
+        this.lastPollFailedAt = new Date().toISOString()
+        if (this.started && !this.stopping) this.state = 'backing-off'
         try {
           await this.onWorkerError?.(error)
         } catch {
@@ -144,8 +187,10 @@ export class WorkflowRunWorker {
     if (!this.started || this.stopping || this.timer !== undefined) return
     const nextDueAt = delay === undefined ? this.options.store.nextDueAt() : undefined
     const dueDelay = delay ?? (nextDueAt === undefined ? this.pollIntervalMs : Math.max(25, Date.parse(nextDueAt) - Date.now()))
+    this.nextPollAt = new Date(Date.now() + dueDelay).toISOString()
     this.timer = setTimeout(() => {
       this.timer = undefined
+      this.nextPollAt = undefined
       this.wake()
     }, dueDelay)
     this.timer.unref?.()

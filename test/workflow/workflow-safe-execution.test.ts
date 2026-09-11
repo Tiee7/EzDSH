@@ -396,6 +396,155 @@ describe('workflow safe execution store', () => {
     expect(store.get('run-first')?.status).toBe('running')
   })
 
+  it('reports a successful first poll as a value-isolated ready snapshot', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    let resolveClaim!: (record: WorkflowRunRecord | undefined) => void
+    const claimNextDue = vi.fn(() => new Promise<WorkflowRunRecord | undefined>((resolve) => {
+      resolveClaim = resolve
+    }))
+    const store = {
+      claimNextDue,
+      nextDueAt: vi.fn(() => undefined),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({
+      store,
+      ownerId: 'observable-worker',
+      pollIntervalMs: 100,
+      executeClaimedRun: vi.fn(),
+    })
+
+    try {
+      expect(worker.operationsSnapshot()).toEqual({
+        state: 'stopped',
+        consecutiveClaimFailures: 0,
+      })
+
+      await worker.start()
+      expect(worker.operationsSnapshot()).toEqual({
+        state: 'starting',
+        consecutiveClaimFailures: 0,
+        lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
+      })
+
+      resolveClaim(undefined)
+      await vi.advanceTimersByTimeAsync(0)
+      const snapshot = worker.operationsSnapshot()
+      expect(snapshot).toEqual({
+        state: 'ready',
+        consecutiveClaimFailures: 0,
+        lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
+        lastPollSucceededAt: '2026-01-01T00:00:00.000Z',
+        nextPollAt: '2026-01-01T00:00:00.100Z',
+      })
+      ;(snapshot as { state: string }).state = 'corrupted'
+      expect(worker.operationsSnapshot().state).toBe('ready')
+      expect(worker.operationsSnapshot()).not.toBe(snapshot)
+    } finally {
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports claim backoff without leaking the error and returns to ready after recovery', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const claimNextDue = vi.fn()
+      .mockRejectedValueOnce(new Error('secret storage path'))
+      .mockResolvedValue(undefined)
+    const store = {
+      claimNextDue,
+      nextDueAt: vi.fn(() => undefined),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({
+      store,
+      ownerId: 'recovering-observable-worker',
+      pollIntervalMs: 100,
+      executeClaimedRun: vi.fn(),
+    })
+
+    try {
+      await worker.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(worker.operationsSnapshot()).toEqual({
+        state: 'backing-off',
+        consecutiveClaimFailures: 1,
+        lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
+        lastPollFailedAt: '2026-01-01T00:00:00.000Z',
+        nextPollAt: '2026-01-01T00:00:00.100Z',
+      })
+
+      worker.wake()
+      worker.wake()
+      await vi.advanceTimersByTimeAsync(99)
+      expect(claimNextDue).toHaveBeenCalledOnce()
+      expect(worker.operationsSnapshot().state).toBe('backing-off')
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(claimNextDue).toHaveBeenCalledTimes(2)
+      expect(worker.operationsSnapshot()).toEqual({
+        state: 'ready',
+        consecutiveClaimFailures: 0,
+        lastPollAttemptAt: '2026-01-01T00:00:00.100Z',
+        lastPollSucceededAt: '2026-01-01T00:00:00.100Z',
+        lastPollFailedAt: '2026-01-01T00:00:00.000Z',
+        nextPollAt: '2026-01-01T00:00:00.200Z',
+      })
+      expect(JSON.stringify(worker.operationsSnapshot())).not.toContain('secret storage path')
+    } finally {
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps stopping visible until a delayed claim settles and then remains stopped', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    let resolveClaim!: (record: WorkflowRunRecord | undefined) => void
+    const claimNextDue = vi.fn(() => new Promise<WorkflowRunRecord | undefined>((resolve) => {
+      resolveClaim = resolve
+    }))
+    const store = {
+      claimNextDue,
+      nextDueAt: vi.fn(() => undefined),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({
+      store,
+      ownerId: 'delayed-stop-worker',
+      executeClaimedRun: vi.fn(),
+    })
+
+    try {
+      await worker.start()
+      const stopping = worker.stop()
+      expect(worker.operationsSnapshot()).toMatchObject({
+        state: 'stopping',
+        lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
+      })
+
+      worker.wake()
+      resolveClaim(undefined)
+      await stopping
+      expect(worker.operationsSnapshot()).toEqual({
+        state: 'stopped',
+        consecutiveClaimFailures: 0,
+        lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
+        lastPollSucceededAt: '2026-01-01T00:00:00.000Z',
+      })
+
+      worker.wake()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(claimNextDue).toHaveBeenCalledOnce()
+      const stoppedAgain = worker.stop()
+      expect(worker.operationsSnapshot().state).toBe('stopped')
+      await stoppedAgain
+    } finally {
+      resolveClaim(undefined)
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
   it('retries a failed claim without an external wake or unhandled rejection', async () => {
     vi.useFakeTimers()
     const claimError = new Error('transient claim failure')
