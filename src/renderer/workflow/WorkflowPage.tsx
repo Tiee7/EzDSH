@@ -750,10 +750,15 @@ export function workflowReconciliationErrorMessage(copy: AppCopy): string {
   return copy.workflowEffectReviewFailed
 }
 
+/** Keep an asynchronous run action attached to the run that submitted it. */
+export async function applyWorkflowRunActionRequest(runId: string, bridge: () => Promise<WorkflowRunRecord>, selectedRunId: () => string | undefined, apply: (record: WorkflowRunRecord, replaceDetail: boolean) => void): Promise<void> {
+  const record = await bridge()
+  apply(record, record.id === runId && selectedRunId() === runId)
+}
+
 /** Apply an asynchronous reconciliation result without replacing a newer run selection. */
 export async function reconcileWorkflowEffectRequest(runId: string, request: WorkflowEffectReconcileRequest, bridge: () => Promise<WorkflowRunRecord>, selectedRunId: () => string | undefined, apply: (record: WorkflowRunRecord, replaceDetail: boolean) => void): Promise<void> {
-  const record = await bridge()
-  apply(record, selectedRunId() === runId)
+  await applyWorkflowRunActionRequest(runId, bridge, selectedRunId, apply)
 }
 
 /** Join a selected canvas node to the output, error, and events persisted for this run. */
@@ -3827,11 +3832,16 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       currentRunRef.current = record
       setCurrentRun(record)
     }
-    setRuns((current) => {
-      const next = [record, ...current.filter((item) => item.id !== record.id)]
+    const visibleWorkflowId = selectedWorkflowIdRef.current ?? currentRunRef.current?.workflowId
+    if (replaceDetail || visibleWorkflowId === record.workflowId) {
+      setRuns((current) => {
+        const next = [record, ...current.filter((item) => item.id !== record.id)]
+        updateRunSummary(record.workflowId, knownRuns)
+        return next
+      })
+    } else {
       updateRunSummary(record.workflowId, knownRuns)
-      return next
-    })
+    }
   }
 
   const selectRun = (record: WorkflowRunRecord): void => {
@@ -3948,19 +3958,34 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const cancel = async (): Promise<void> => {
     if (currentRun === undefined) return
-    try { applyRunRecord(await window.EzDSH.workflows.cancel(currentRun.id)) } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) }
+    const submittedRunId = currentRun.id
+    try {
+      await applyWorkflowRunActionRequest(submittedRunId, () => window.EzDSH.workflows.cancel(submittedRunId), () => currentRunRef.current?.id, applyRunRecord)
+    } catch (reason) {
+      if (currentRunRef.current?.id === submittedRunId) setError(reason instanceof Error ? reason.message : copy.workflowRunFailed)
+    }
   }
 
   const resume = async (): Promise<void> => {
     if (currentRun === undefined) return
-    try { applyRunRecord(await window.EzDSH.workflows.resume(currentRun.id)) } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) }
+    const submittedRunId = currentRun.id
+    try {
+      await applyWorkflowRunActionRequest(submittedRunId, () => window.EzDSH.workflows.resume(submittedRunId), () => currentRunRef.current?.id, applyRunRecord)
+    } catch (reason) {
+      if (currentRunRef.current?.id === submittedRunId) setError(reason instanceof Error ? reason.message : copy.workflowRunFailed)
+    }
   }
 
   const continueCompensation = async (): Promise<void> => {
     if (currentRun === undefined) return
+    const submittedRunId = currentRun.id
     setBusy(true)
     setError('')
-    try { applyRunRecord(await window.EzDSH.workflows.compensate(currentRun.id)) } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) } finally { setBusy(false) }
+    try {
+      await applyWorkflowRunActionRequest(submittedRunId, () => window.EzDSH.workflows.compensate(submittedRunId), () => currentRunRef.current?.id, applyRunRecord)
+    } catch (reason) {
+      if (currentRunRef.current?.id === submittedRunId) setError(reason instanceof Error ? reason.message : copy.workflowRunFailed)
+    } finally { setBusy(false) }
   }
 
   const reconcileEffect = async (request: WorkflowEffectReconcileRequest): Promise<boolean> => {
@@ -3978,7 +4003,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       )
       return true
     } catch (reason) {
-      setError(workflowReconciliationErrorMessage(copy))
+      if (currentRunRef.current?.id === submittedRunId) setError(workflowReconciliationErrorMessage(copy))
       return false
     } finally {
       setBusy(false)
@@ -3998,7 +4023,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       if (shouldContinue) applyRunRecord(await window.EzDSH.workflows.compensate(submittedRunId), currentRunRef.current?.id === submittedRunId)
       return true
     } catch {
-      setError(workflowReconciliationErrorMessage(copy))
+      if (currentRunRef.current?.id === submittedRunId) setError(workflowReconciliationErrorMessage(copy))
       return false
     } finally {
       setBusy(false)
@@ -4007,7 +4032,12 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const approve = async (approved: boolean): Promise<void> => {
     if (currentRun === undefined) return
-    try { applyRunRecord(await window.EzDSH.workflows.approve(currentRun.id, approved)) } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) }
+    const submittedRunId = currentRun.id
+    try {
+      await applyWorkflowRunActionRequest(submittedRunId, () => window.EzDSH.workflows.approve(submittedRunId, approved), () => currentRunRef.current?.id, applyRunRecord)
+    } catch (reason) {
+      if (currentRunRef.current?.id === submittedRunId) setError(reason instanceof Error ? reason.message : copy.workflowRunFailed)
+    }
   }
 
   const importEmployee = async (): Promise<void> => {

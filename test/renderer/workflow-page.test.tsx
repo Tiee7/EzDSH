@@ -2743,6 +2743,117 @@ describe('WorkflowPage regressions', () => {
     expect(applied).toEqual([{ record: reconciled, replaceDetail: false }])
   })
 
+  it.each([
+    { name: 'cancel', status: 'running' as const, actionLabel: getAppCopy('zh').workflowCancel, bridgeKey: 'cancel' as const, resultStatus: 'cancelled' as const, resultLabel: getAppCopy('zh').workflowRunCancelled, approved: undefined },
+    { name: 'resume', status: 'paused' as const, actionLabel: getAppCopy('zh').workflowResume, bridgeKey: 'resume' as const, resultStatus: 'queued' as const, resultLabel: getAppCopy('zh').workflowNodePending, approved: undefined },
+    { name: 'approve', status: 'waiting-approval' as const, actionLabel: getAppCopy('zh').workflowApprove, bridgeKey: 'approve' as const, resultStatus: 'queued' as const, resultLabel: getAppCopy('zh').workflowNodePending, approved: true },
+    { name: 'reject', status: 'waiting-approval' as const, actionLabel: getAppCopy('zh').workflowReject, bridgeKey: 'approve' as const, resultStatus: 'failed' as const, resultLabel: getAppCopy('zh').workflowRunFailed, approved: false },
+    { name: 'compensation', status: 'failed' as const, actionLabel: getAppCopy('zh').workflowContinueCompensation, bridgeKey: 'compensate' as const, resultStatus: 'failed' as const, resultLabel: getAppCopy('zh').workflowRunFailed, approved: undefined },
+  ])('keeps run B selected when a pending $name response for run A resolves', async ({ status, actionLabel, bridgeKey, resultStatus, resultLabel, approved }) => {
+    const workflow = createDefaultWorkflow(`异步动作所有权-${bridgeKey}`)
+    const compensationStack: WorkflowRunRecord['compensationStack'] = bridgeKey === 'compensate'
+      ? [{ sourceNodeId: 'write', action: { type: 'workflow', workflowId: 'rollback' }, status: 'pending', effectState: 'not-dispatched' }]
+      : undefined
+    const runA: WorkflowRunRecord = {
+      id: `run-action-a-${bridgeKey}`,
+      workflowId: workflow.id,
+      workflowRevision: workflow.revision,
+      status,
+      input: {},
+      allowShellFile: false,
+      nodeStates: [],
+      events: [],
+      ...(compensationStack === undefined ? {} : { compensationStack }),
+    }
+    const runB: WorkflowRunRecord = {
+      id: `run-action-b-${bridgeKey}`,
+      workflowId: workflow.id,
+      workflowRevision: workflow.revision,
+      status: 'completed',
+      input: {},
+      output: `run B ${bridgeKey}`,
+      allowShellFile: false,
+      nodeStates: [],
+      events: [],
+    }
+    const updatedRunA: WorkflowRunRecord = {
+      ...runA,
+      status: resultStatus,
+      events: [...runA.events, { id: `action-result-${bridgeKey}`, time: '2026-09-12T08:00:00.000Z', type: resultStatus === 'cancelled' ? 'run-cancelled' : 'run-resumed' }],
+    }
+    let resolveAction!: (record: WorkflowRunRecord) => void
+    const actionResult = new Promise<WorkflowRunRecord>((resolve) => { resolveAction = resolve })
+    const action = vi.fn(() => actionResult)
+    const getRunDefinition = vi.fn(async () => workflow)
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(async () => [runA, runB]),
+      getRunDefinition,
+      [bridgeKey]: action,
+      onStateChange: vi.fn(() => () => {}),
+      listModificationHistory: vi.fn(async () => []),
+      onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      const runAButton = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item-main')).find((button) => button.textContent?.includes(runA.id.slice(-12))) as HTMLButtonElement
+      await act(async () => { runAButton.click(); await mounted.settle() })
+      const actionButton = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === actionLabel) as HTMLButtonElement
+      await act(async () => { actionButton.click(); await Promise.resolve() })
+      if (bridgeKey === 'approve') expect(action).toHaveBeenCalledWith(runA.id, approved)
+      else expect(action).toHaveBeenCalledWith(runA.id)
+
+      const runBButton = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item-main')).find((button) => button.textContent?.includes(runB.id.slice(-12))) as HTMLButtonElement
+      await act(async () => { runBButton.click(); await mounted.settle() })
+      await act(async () => { resolveAction(updatedRunA); await actionResult; await mounted.settle() })
+
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity')?.textContent).toContain(runB.id)
+      expect(mounted.domWindow.document.querySelector('.workflow-run-item-active')?.textContent).toContain(runB.id.slice(-12))
+      const updatedRunAItem = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item')).find((item) => item.textContent?.includes(runA.id.slice(-12)))
+      expect(updatedRunAItem?.querySelector('strong')?.textContent).toBe(resultLabel)
+      expect(getRunDefinition.mock.calls.map(([runId]) => runId)).toEqual([runA.id, runB.id])
+    } finally {
+      resolveAction(updatedRunA)
+      await mounted.cleanup()
+    }
+  })
+
+  it('does not attach a late run A action error to the newly selected run B', async () => {
+    const workflow = createDefaultWorkflow('异步动作错误所有权')
+    const runA: WorkflowRunRecord = { id: 'run-late-error-a', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'running', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const runB: WorkflowRunRecord = { id: 'run-late-error-b', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'completed', input: {}, output: 'run B remains selected', allowShellFile: false, nodeStates: [], events: [] }
+    let rejectCancel!: (reason: Error) => void
+    const cancelResult = new Promise<WorkflowRunRecord>((_resolve, reject) => { rejectCancel = reject })
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(async () => [runA, runB]),
+      getRunDefinition: vi.fn(async () => workflow),
+      cancel: vi.fn(() => cancelResult),
+      onStateChange: vi.fn(() => () => {}),
+      listModificationHistory: vi.fn(async () => []),
+      onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      const runButton = (runId: string): HTMLButtonElement => Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item-main')).find((button) => button.textContent?.includes(runId.slice(-12))) as HTMLButtonElement
+      await act(async () => { runButton(runA.id).click(); await mounted.settle() })
+      const cancelButton = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowCancel) as HTMLButtonElement
+      await act(async () => { cancelButton.click(); await Promise.resolve() })
+      await act(async () => { runButton(runB.id).click(); await mounted.settle() })
+      await act(async () => { rejectCancel(new Error('late run A failure')); await mounted.settle() })
+
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity')?.textContent).toContain(runB.id)
+      expect(mounted.domWindow.document.body.textContent).not.toContain('late run A failure')
+    } finally {
+      rejectCancel(new Error('cleanup'))
+      await mounted.cleanup()
+    }
+  })
+
   it('labels reconciliation controls with the node and loop iteration identity', () => {
     const markup = renderToStaticMarkup(<workflowPage.WorkflowEffectReconciliationPanel copy={getAppCopy('zh')} targets={[{ key: 'run-a:iteration-2:write', nodeId: 'write', nodeLabel: '发送回执', iterationId: 'iteration-2', iterationIndex: 2, loopNodeLabel: '逐项发送', input: 'R-2' }]} onReconcile={vi.fn()} />)
 
