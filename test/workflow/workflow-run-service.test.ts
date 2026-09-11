@@ -577,6 +577,141 @@ async function eventually(service: WorkflowRunService, runId: string): Promise<N
   throw new Error('run did not finish in time')
 }
 
+async function overwriteWorkflowVersionsWithCurrentOnly(dir: string, workflow: WorkflowDefinition): Promise<void> {
+  await writeFile(join(dir, 'workflow-versions.json'), `${JSON.stringify({
+    [workflow.id]: { [String(workflow.revision)]: workflow },
+  }, null, 2)}\n`)
+}
+
+describe('ordinary run revision boundaries', () => {
+  const historicalNodes: WorkflowNode[] = [
+    { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+    { id: 'first', type: 'transform', label: 'Historical first', config: { template: 'identity' }, position: { x: 200, y: 0 } },
+    { id: 'second', type: 'transform', label: 'Historical second', config: { template: 'identity' }, position: { x: 400, y: 0 } },
+    { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 600, y: 0 } },
+  ]
+  const currentWriteNodes: WorkflowNode[] = [
+    historicalNodes[0]!,
+    { id: 'first', type: 'mcp', label: 'Current MCP write', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } },
+    { id: 'second', type: 'http', label: 'Current managed write', config: { method: 'POST', connectorId: 'crm', connectorPath: '/write', responseMode: 'json' }, position: { x: 400, y: 0 } },
+    historicalNodes[3]!,
+  ]
+  const edges = [
+    { id: 'a', source: 'input', target: 'first' },
+    { id: 'b', source: 'first', target: 'second' },
+    { id: 'c', source: 'second', target: 'output' },
+  ]
+
+  async function missingHistoricalRevisionFixture(kind: 'queued' | 'approval' | 'paused') {
+    const dir = await mkdtemp(join(tmpdir(), `ezdsh-missing-run-revision-${kind}-`))
+    const authoringStore = new WorkflowStore(dir)
+    const initialNodes: WorkflowNode[] = kind === 'approval'
+      ? [
+          historicalNodes[0]!,
+          { id: 'approval', type: 'approval', label: 'Historical approval', config: { message: 'Confirm' }, position: { x: 200, y: 0 } },
+          historicalNodes[3]!,
+        ]
+      : historicalNodes
+    const initialEdges = kind === 'approval'
+      ? [{ id: 'a', source: 'input', target: 'approval' }, { id: 'b', source: 'approval', target: 'output' }]
+      : edges
+    const historical = await authoringStore.create({ id: `missing-${kind}`, name: 'Historical', description: '', nodes: initialNodes, edges: initialEdges })
+    const current = await authoringStore.update(historical.id, {
+      ...historical,
+      nodes: kind === 'approval' ? initialNodes.map((node) => ({ ...node, label: `Current ${node.label}` })) : currentWriteNodes,
+      edges: initialEdges,
+    })
+    await overwriteWorkflowVersionsWithCurrentOnly(dir, current)
+
+    const runStore = new WorkflowRunStore(dir)
+    const record: WorkflowRunRecord = {
+      id: `run-missing-${kind}`,
+      workflowId: historical.id,
+      workflowRevision: historical.revision,
+      status: kind === 'approval' ? 'waiting-approval' : kind,
+      ...(kind === 'approval' ? { waitingApprovalNodeId: 'approval' } : {}),
+      queue: { enqueuedAt: new Date().toISOString(), availableAt: new Date().toISOString() },
+      input: 'payload',
+      allowShellFile: false,
+      connectorGrants: [{ connectorId: 'crm', operations: ['write'] }],
+      nodeStates: initialNodes.map((node) => ({
+        nodeId: node.id,
+        status: kind === 'approval' && node.id === 'input' ? 'completed' : kind === 'approval' && node.id === 'approval' ? 'running' : 'pending',
+        ...(kind === 'approval' && node.id === 'input' ? { output: 'payload' } : {}),
+      })),
+      events: [],
+    }
+    await runStore.enqueue(record)
+    const mcpCall = vi.fn(async () => 'written')
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }))
+    const connectorRequest = vi.fn(async () => {
+      const response = await fetchImpl('https://connector.invalid/write')
+      return { status: response.status, ok: response.ok, headers: {}, body: {} }
+    })
+    const service = new WorkflowRunService({
+      workflowStore: new WorkflowStore(dir), runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      mcpClient: { call: mcpCall },
+      connectorService: { request: connectorRequest },
+    })
+    return { service, record, mcpCall, fetchImpl, connectorRequest }
+  }
+
+  it('fails a queued historical run closed when its exact revision is missing without dispatching current writes', async () => {
+    const { service, record, mcpCall, fetchImpl, connectorRequest } = await missingHistoricalRevisionFixture('queued')
+    try {
+      await service.initialize()
+      const failed = await eventually(service, record.id)
+      expect(failed).toMatchObject({ status: 'failed', error: expect.stringMatching(/Workflow|revision|版本|不存在/u) })
+      expect(mcpCall).not.toHaveBeenCalled()
+      expect(connectorRequest).not.toHaveBeenCalled()
+      expect(fetchImpl).not.toHaveBeenCalled()
+    } finally { await service.stop() }
+  })
+
+  it('rejects approval against a missing historical revision without mutating the waiting record', async () => {
+    const { service, record, mcpCall, fetchImpl, connectorRequest } = await missingHistoricalRevisionFixture('approval')
+    try {
+      await service.initialize()
+      const before = service.get(record.id)
+      await expect(service.approve(record.id, true)).rejects.toThrow(/Workflow|revision|版本|不存在/u)
+      expect(service.get(record.id)).toEqual(before)
+      expect(mcpCall).not.toHaveBeenCalled()
+      expect(connectorRequest).not.toHaveBeenCalled()
+      expect(fetchImpl).not.toHaveBeenCalled()
+    } finally { await service.stop() }
+  })
+
+  it('rejects resume against a missing historical revision without requeueing or mutating the record', async () => {
+    const { service, record, mcpCall, fetchImpl, connectorRequest } = await missingHistoricalRevisionFixture('paused')
+    try {
+      await service.initialize()
+      const before = service.get(record.id)
+      await expect(service.resume(record.id)).rejects.toThrow(/Workflow|revision|版本|不存在/u)
+      expect(service.get(record.id)).toEqual(before)
+      expect(mcpCall).not.toHaveBeenCalled()
+      expect(connectorRequest).not.toHaveBeenCalled()
+      expect(fetchImpl).not.toHaveBeenCalled()
+    } finally { await service.stop() }
+  })
+
+  it('backfills the current workflow revision for legacy stores without a versions snapshot', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-current-revision-backfill-'))
+    const authoringStore = new WorkflowStore(dir)
+    const workflow = await authoringStore.create({ id: 'current-backfill', name: 'Current', description: '', nodes: historicalNodes, edges })
+    await writeFile(join(dir, 'workflow-versions.json'), '{}\n')
+    const service = new WorkflowRunService({
+      workflowStore: new WorkflowStore(dir), runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    try {
+      const completed = await eventually(service, (await service.start(workflow.id, 'payload')).id)
+      expect(completed).toMatchObject({ status: 'completed', output: 'payload', workflowRevision: workflow.revision })
+    } finally { await service.stop() }
+  })
+})
+
 async function createReleasedAccessFixture(node?: WorkflowNode, execution?: {
   nodes?: WorkflowNode[]
   edges?: WorkflowDefinition['edges']

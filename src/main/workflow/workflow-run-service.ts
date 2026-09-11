@@ -634,8 +634,7 @@ export class WorkflowRunService {
   }
 
   private hasUncheckpointedLoopEffects(record: WorkflowRunRecord): boolean {
-    const workflow = this.workflowForRecord(record)
-    if (workflow === undefined) return false
+    const workflow = this.requireWorkflowForRecord(record)
     return workflow.nodes.some((node) => {
       if (node.type !== 'loop') return false
       const owner = record.nodeStates.find((state) => state.nodeId === node.id)
@@ -656,8 +655,7 @@ export class WorkflowRunService {
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
       if (record.status !== 'waiting-approval' || record.waitingApprovalNodeId === undefined) throw new Error('当前运行没有等待中的审批')
-      const workflow = this.workflowForRecord(record)
-      if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
+      const workflow = this.requireWorkflowForRecord(record)
       const node = workflow.nodes.find((candidate) => candidate.id === record.waitingApprovalNodeId)
       const state = record.nodeStates.find((candidate) => candidate.nodeId === record.waitingApprovalNodeId)
       if ((node?.type !== 'approval' && node?.type !== 'wait-input') || state === undefined || (node.type === 'wait-input' && node.config.mode !== 'approval')) throw new Error('审批节点不存在')
@@ -1107,7 +1105,13 @@ export class WorkflowRunService {
       if (release === undefined || !verifyWorkflowReleaseIntegrity(release)) return undefined
       return this.resolveReleasedDefinition(release, record.workflowId, record.workflowRevision)
     }
-    return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision) ?? this.options.workflowStore.get(record.workflowId)
+    return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision)
+  }
+
+  private requireWorkflowForRecord(record: WorkflowRunRecord): WorkflowDefinition {
+    const workflow = this.workflowForRecord(record)
+    if (workflow === undefined) throw new Error(`Workflow revision unavailable: ${record.workflowId}@${String(record.workflowRevision)}`)
+    return workflow
   }
 
   /** Historical recovery must never project state through the current editable graph. */
@@ -1326,8 +1330,7 @@ export class WorkflowRunService {
         await this.save(record, 'run-cancelled', record.error)
         return
       }
-      const workflow = this.workflowForRecord(record)
-      if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
+      const workflow = this.requireWorkflowForRecord(record)
       assertValidWorkflow(workflow, '运行工作流')
       this.revalidateReleasedAccess(record)
       const lineage = new Set([...(record.workflowAncestry ?? []), record.workflowId])
@@ -2172,7 +2175,7 @@ export class WorkflowRunService {
       // Compensation children inherit their durable parent occurrence instead
       // of exposing a newly generated child run id at the remote boundary.
       ...(config.method === 'GET' ? {} : { idempotencyKey: this.managedEffectIdempotencyKey(record, node.id, scope) }),
-      workflowPolicy: this.workflowForRecord(record)?.permissionPolicy,
+      workflowPolicy: this.requireWorkflowForRecord(record).permissionPolicy,
       runGrant: record.connectorGrants,
     }
   }
