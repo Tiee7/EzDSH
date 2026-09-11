@@ -1,0 +1,303 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { WorkflowRunService } from '../../src/main/workflow/workflow-run-service.js'
+import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
+import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
+import { computeWorkflowReleaseSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
+import type { EzDSHBridge } from '../../src/shared/contracts.js'
+import type { WorkflowRelease } from '../../src/shared/workflow-operations.js'
+import type { WorkflowDefinition, WorkflowRunRecord } from '../../src/shared/workflow.js'
+
+const preloadElectron = vi.hoisted(() => ({
+  exposeInMainWorld: vi.fn(),
+  invoke: vi.fn(),
+  on: vi.fn(),
+  removeListener: vi.fn(),
+}))
+
+vi.mock('electron', () => ({
+  contextBridge: { exposeInMainWorld: preloadElectron.exposeInMainWorld },
+  ipcRenderer: {
+    invoke: preloadElectron.invoke,
+    on: preloadElectron.on,
+    removeListener: preloadElectron.removeListener,
+  },
+}))
+
+const services: WorkflowRunService[] = []
+
+afterEach(async () => {
+  await Promise.all(services.splice(0).map((service) => service.stop()))
+  vi.clearAllMocks()
+})
+
+function definition(id: string, revision: number, label: string, middleId = `step-${String(revision)}`): WorkflowDefinition {
+  const timestamp = '2026-09-12T00:00:00.000Z'
+  return {
+    schemaVersion: 2,
+    id,
+    name: label,
+    description: '',
+    revision,
+    enabled: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    nodes: [
+      { id: 'input', type: 'input', label: `${label} input`, config: {}, position: { x: 0, y: 0 } },
+      { id: middleId, type: 'transform', label, config: { template: 'prepend', text: `${label}: ` }, position: { x: 200, y: 0 } },
+      { id: 'output', type: 'output', label: `${label} output`, config: { contentMode: 'variable' }, position: { x: 400, y: 0 } },
+    ],
+    edges: [
+      { id: `${middleId}-in`, source: 'input', target: middleId },
+      { id: `${middleId}-out`, source: middleId, target: 'output' },
+    ],
+  }
+}
+
+function runRecord(workflow: Pick<WorkflowDefinition, 'id' | 'revision' | 'nodes'>, overrides: Partial<WorkflowRunRecord> = {}): WorkflowRunRecord {
+  return {
+    id: `run-${workflow.id}-${String(workflow.revision)}`,
+    workflowId: workflow.id,
+    workflowRevision: workflow.revision,
+    origin: { kind: 'top-level' },
+    status: 'completed',
+    input: null,
+    output: null,
+    nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'completed', elapsedMs: 0 })),
+    events: [],
+    allowShellFile: false,
+    allowCode: false,
+    debug: false,
+    ...overrides,
+  }
+}
+
+function release(root: WorkflowDefinition, dependencies: WorkflowDefinition[] = []): WorkflowRelease {
+  const timestamp = '2026-09-12T00:00:00.000Z'
+  const snapshots = { workflowSnapshot: root, ...(dependencies.length === 0 ? {} : { workflowDependencies: dependencies }) }
+  return {
+    id: `release-${root.id}`,
+    environmentId: 'customer-production',
+    workflowId: root.id,
+    workflowRevision: root.revision,
+    contentSha256: computeWorkflowReleaseSha256(snapshots),
+    workflowSnapshot: root,
+    ...(dependencies.length === 0 ? {} : { workflowDependencies: dependencies }),
+    status: 'published',
+    connectorGrants: [],
+    createdAt: timestamp,
+    publishedAt: timestamp,
+  }
+}
+
+function createService(
+  directory: string,
+  workflowStore: WorkflowStore,
+  runStore: WorkflowRunStore,
+  resolveReleasedWorkflow?: (releaseId: string) => WorkflowRelease | undefined,
+): WorkflowRunService {
+  const service = new WorkflowRunService({
+    workflowStore,
+    runStore,
+    workflowRoot: directory,
+    createClient: () => ({
+      createSession: async () => ({ sessionId: 'unused' }),
+      sendPrompt: async () => ({ text: 'unused' }),
+    }),
+    resolveEmployee: () => undefined,
+    resolveReleasedWorkflow,
+  })
+  services.push(service)
+  return service
+}
+
+async function createVersionedFixture() {
+  const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-definition-'))
+  const workflowStore = new WorkflowStore(directory)
+  const v1Input = definition('workflow-history', 1, 'Version one', 'v1-step')
+  const v1 = await workflowStore.create({
+    id: v1Input.id,
+    name: v1Input.name,
+    description: v1Input.description,
+    nodes: v1Input.nodes,
+    edges: v1Input.edges,
+  })
+  const v2Input = definition(v1.id, 2, 'Version two', 'v2-step')
+  const v2 = await workflowStore.update(v1.id, {
+    revision: v1.revision,
+    name: v2Input.name,
+    description: v2Input.description,
+    nodes: v2Input.nodes,
+    edges: v2Input.edges,
+  })
+  const runStore = new WorkflowRunStore(directory)
+  const run = await runStore.save(runRecord(v1))
+  return { directory, workflowStore, runStore, run, v1, v2 }
+}
+
+describe('WorkflowRunService.getRunDefinition', () => {
+  it('returns the exact ordinary revision instead of the current workflow', async () => {
+    const fixture = await createVersionedFixture()
+    const service = createService(fixture.directory, fixture.workflowStore, fixture.runStore)
+
+    const result = await service.getRunDefinition(fixture.run.id)
+
+    expect(result).toEqual(fixture.v1)
+    expect(result?.nodes.map((node) => node.id)).toContain('v1-step')
+    expect(result?.nodes.map((node) => node.id)).not.toContain('v2-step')
+  })
+
+  it('returns the ordinary revision when the current definition is absent', async () => {
+    const fixture = await createVersionedFixture()
+    await writeFile(join(fixture.directory, 'workflows.json'), '[]\n')
+    const historicalStore = new WorkflowStore(fixture.directory)
+    const service = createService(fixture.directory, historicalStore, fixture.runStore)
+
+    await expect(service.getRunDefinition(fixture.run.id)).resolves.toEqual(fixture.v1)
+    expect(historicalStore.get(fixture.v1.id)).toBeUndefined()
+  })
+
+  it('returns undefined when the exact ordinary revision is absent even if current exists', async () => {
+    const fixture = await createVersionedFixture()
+    await writeFile(join(fixture.directory, 'workflow-versions.json'), `${JSON.stringify({ [fixture.v2.id]: { [String(fixture.v2.revision)]: fixture.v2 } }, null, 2)}\n`)
+    const incompleteStore = new WorkflowStore(fixture.directory)
+    const service = createService(fixture.directory, incompleteStore, fixture.runStore)
+
+    await expect(service.getRunDefinition(fixture.run.id)).resolves.toBeUndefined()
+    expect(incompleteStore.get(fixture.v2.id)).toEqual(fixture.v2)
+  })
+
+  it('returns a release root snapshot after the source workflow is deleted', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-release-definition-'))
+    const snapshot = definition('workflow-released', 1, 'Released snapshot')
+    const published = release(snapshot)
+    const runStore = new WorkflowRunStore(directory)
+    const run = await runStore.save(runRecord(snapshot, { releaseId: published.id, environmentId: published.environmentId }))
+    const workflowStore = new WorkflowStore(directory)
+    const service = createService(directory, workflowStore, runStore, () => published)
+
+    await expect(service.getRunDefinition(run.id)).resolves.toEqual(snapshot)
+    expect(workflowStore.get(snapshot.id)).toBeUndefined()
+  })
+
+  it('returns an exact dependency snapshot for a released child run', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-release-dependency-'))
+    const root = definition('workflow-root', 4, 'Released root')
+    const dependency = definition('workflow-child', 7, 'Released child')
+    const published = release(root, [dependency])
+    const runStore = new WorkflowRunStore(directory)
+    const run = await runStore.save(runRecord(dependency, { releaseId: published.id, environmentId: published.environmentId }))
+    const service = createService(directory, new WorkflowStore(directory), runStore, () => published)
+
+    await expect(service.getRunDefinition(run.id)).resolves.toEqual(dependency)
+  })
+
+  it('returns undefined for a missing release', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-missing-release-'))
+    const snapshot = definition('workflow-missing-release', 1, 'Missing release')
+    const runStore = new WorkflowRunStore(directory)
+    const run = await runStore.save(runRecord(snapshot, { releaseId: 'release-missing' }))
+    const service = createService(directory, new WorkflowStore(directory), runStore, () => undefined)
+
+    await expect(service.getRunDefinition(run.id)).resolves.toBeUndefined()
+  })
+
+  it('returns undefined for a tampered release', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-tampered-release-'))
+    const snapshot = definition('workflow-tampered-release', 1, 'Original release')
+    const published = release(snapshot)
+    const tampered = { ...published, workflowSnapshot: { ...published.workflowSnapshot, name: 'Tampered release' } }
+    const runStore = new WorkflowRunStore(directory)
+    const run = await runStore.save(runRecord(snapshot, { releaseId: published.id }))
+    const service = createService(directory, new WorkflowStore(directory), runStore, () => tampered)
+
+    await expect(service.getRunDefinition(run.id)).resolves.toBeUndefined()
+  })
+
+  it('returns undefined when a release has no exact workflow revision match', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-release-mismatch-'))
+    const snapshot = definition('workflow-release-mismatch', 1, 'Release v1')
+    const published = release(snapshot)
+    const mismatchedRun = runRecord({ ...snapshot, revision: 2 }, { releaseId: published.id })
+    const runStore = new WorkflowRunStore(directory)
+    await runStore.save(mismatchedRun)
+    const service = createService(directory, new WorkflowStore(directory), runStore, () => published)
+
+    await expect(service.getRunDefinition(mismatchedRun.id)).resolves.toBeUndefined()
+  })
+
+  it('returns undefined for an integrity-valid but invalid workflow definition', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-invalid-definition-'))
+    const invalid = definition('workflow-invalid-release', 1, 'Invalid release')
+    invalid.nodes = invalid.nodes.filter((node) => node.id !== 'output')
+    invalid.edges = invalid.edges.filter((edge) => edge.target !== 'output')
+    const published = release(invalid)
+    const runStore = new WorkflowRunStore(directory)
+    const run = await runStore.save(runRecord(invalid, { releaseId: published.id }))
+    const service = createService(directory, new WorkflowStore(directory), runStore, () => published)
+
+    await expect(service.getRunDefinition(run.id)).resolves.toBeUndefined()
+  })
+
+  it('returns a fresh sanitized clone that cannot mutate stored history', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-sanitized-definition-'))
+    const snapshot = definition('workflow-sanitized-release', 1, 'Sanitized release')
+    const snapshotWithSecrets = Object.assign(snapshot, {
+      credential: 'secret-token',
+      observations: [{ output: 'private output' }],
+      input: { private: true },
+      output: { private: true },
+    })
+    const published = release(snapshotWithSecrets)
+    const runStore = new WorkflowRunStore(directory)
+    const run = await runStore.save(runRecord(snapshot, { releaseId: published.id, environmentId: published.environmentId }))
+    const service = createService(directory, new WorkflowStore(directory), runStore, () => published)
+
+    const first = await service.getRunDefinition(run.id)
+    expect(first).not.toHaveProperty('credential')
+    expect(first).not.toHaveProperty('observations')
+    expect(first).not.toHaveProperty('input')
+    expect(first).not.toHaveProperty('output')
+    expect(first).not.toHaveProperty('connectorGrants')
+    expect(first).not.toHaveProperty('environmentId')
+    if (first !== undefined) {
+      first.name = 'Caller mutation'
+      first.nodes[1]!.label = 'Caller mutation'
+      first.edges.splice(0)
+    }
+
+    const second = await service.getRunDefinition(run.id)
+    expect(second).toEqual(definition(snapshot.id, snapshot.revision, 'Sanitized release'))
+  })
+
+  it('returns undefined for a missing run and rejects invalid ids', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-run-definition-input-'))
+    const service = createService(directory, new WorkflowStore(directory), new WorkflowRunStore(directory))
+
+    await expect(service.getRunDefinition('run-missing')).resolves.toBeUndefined()
+    await expect(service.getRunDefinition('   ')).rejects.toThrow(/Invalid workflow run ID/u)
+    await expect(service.getRunDefinition(null as never)).rejects.toThrow(/Invalid workflow run ID/u)
+  })
+})
+
+describe('run definition IPC contract', () => {
+  it('exposes the preload bridge on the workflow-runs:get-definition channel', async () => {
+    const expected = definition('workflow-bridge', 1, 'Bridge definition')
+    preloadElectron.invoke.mockResolvedValue({ ok: true, data: expected })
+    await import('../../src/preload/index.js')
+    const bridge = preloadElectron.exposeInMainWorld.mock.calls.find(([name]) => name === 'EzDSH')?.[1] as EzDSHBridge | undefined
+
+    await expect(bridge?.workflows.getRunDefinition('run-bridge')).resolves.toEqual(expected)
+    expect(preloadElectron.invoke).toHaveBeenCalledWith('workflow-runs:get-definition', 'run-bridge')
+  })
+
+  it('wraps the Main handler result in the existing success and failure contract', async () => {
+    const source = await readFile(new URL('../../src/main/index.ts', import.meta.url), 'utf8')
+    const handler = source.match(/ipcMain\.handle\('workflow-runs:get-definition'[\s\S]*?(?=\n  ipcMain\.handle\()/u)?.[0]
+
+    expect(handler).toContain('return success(await workflowRunService.getRunDefinition(runId))')
+    expect(handler).toContain('return failure(error)')
+  })
+})

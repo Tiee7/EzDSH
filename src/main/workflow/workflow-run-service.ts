@@ -52,7 +52,7 @@ import type { WorkflowMcpClient } from './workflow-mcp-client.js'
 import { WorkflowInternalSessionStore, type WorkflowInternalSessionKind } from './workflow-internal-session-store.js'
 import { planWorkflowRetry } from './workflow-retry.js'
 import type { WorkflowConnectorRequest, WorkflowConnectorService } from './workflow-connector-service.js'
-import { restrictConnectorGrantsToEnvironment, type WorkflowCustomerEnvironment, type WorkflowRelease } from '../../shared/workflow-operations.js'
+import { normalizeWorkflowRelease, restrictConnectorGrantsToEnvironment, type WorkflowCustomerEnvironment, type WorkflowRelease } from '../../shared/workflow-operations.js'
 import { verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
 
 export interface WorkflowRunServiceOptions {
@@ -185,6 +185,27 @@ export class WorkflowRunService {
 
   get(runId: string): WorkflowRunRecord | undefined {
     return this.options.runStore.get(runId)
+  }
+
+  async getRunDefinition(runId: string): Promise<WorkflowDefinition | undefined> {
+    await this.initialize()
+    if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
+    const record = this.options.runStore.get(runId)
+    if (record === undefined) return undefined
+
+    let rawDefinition: WorkflowDefinition | undefined
+    if (record.releaseId === undefined) {
+      rawDefinition = this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision)
+    } else {
+      const release = normalizeWorkflowRelease(this.options.resolveReleasedWorkflow?.(record.releaseId))
+      if (release === undefined || release.id !== record.releaseId || !verifyWorkflowReleaseIntegrity(release)) return undefined
+      rawDefinition = this.resolveReleasedDefinition(release, record.workflowId, record.workflowRevision)
+    }
+
+    const definition = normalizeWorkflow(rawDefinition)
+    if (definition === undefined || definition.id !== record.workflowId || definition.revision !== record.workflowRevision) return undefined
+    if (!validateWorkflow(definition).valid) return undefined
+    return cloneWorkflow(definition)
   }
 
   async remove(runId: string): Promise<void> {

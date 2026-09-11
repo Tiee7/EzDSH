@@ -185,6 +185,7 @@ const bridge: EzDSHBridge = {
     importEmployee: (employeeId: string) => invoke<WorkflowDefinition>('workflows:import-employee', employeeId),
     listRuns: (workflowId?: string) => invoke<WorkflowRunRecord[]>('workflow-runs:list', workflowId),
     getRun: (runId: string) => invoke<WorkflowRunRecord | undefined>('workflow-runs:get', runId),
+    getRunDefinition: (runId: string) => invoke<WorkflowDefinition | undefined>('workflow-runs:get-definition', runId),
     removeRun: (runId: string) => invoke<void>('workflow-runs:remove', runId),
     start: (workflowId: string, input: WorkflowValue, options?: WorkflowRunOptions) => invoke<WorkflowRunRecord>('workflow-runs:start', workflowId, input, options ?? {}),
     resume: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:resume', runId),

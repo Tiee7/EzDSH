@@ -179,6 +179,7 @@ export interface EzDSHBridge {
     importEmployee(employeeId: string): Promise<WorkflowDefinition>
     listRuns(workflowId?: string): Promise<WorkflowRunRecord[]>
     getRun(runId: string): Promise<WorkflowRunRecord | undefined>
+    getRunDefinition(runId: string): Promise<WorkflowDefinition | undefined>
     removeRun(runId: string): Promise<void>
     start(workflowId: string, input: WorkflowValue, options?: WorkflowRunOptions): Promise<WorkflowRunRecord>
     resume(runId: string): Promise<WorkflowRunRecord>

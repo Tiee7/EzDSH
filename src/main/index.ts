@@ -1998,6 +1998,14 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('workflow-runs:get-definition', async (_event, runId: string): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['getRunDefinition']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      return success(await workflowRunService.getRunDefinition(runId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('workflow-runs:remove', async (_event, runId: string): Promise<IpcResult<void>> => {
     try {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
