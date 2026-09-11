@@ -114,6 +114,13 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
   const [error, setError] = useState('')
   const releaseDataGenerationRef = useRef(0)
   const selectedWorkflow = workflow ?? workflows.find((item) => item.id === workflowId)
+  const releaseTargetRef = useRef({ workflowId: selectedWorkflow?.id, environmentId })
+  releaseTargetRef.current = { workflowId: selectedWorkflow?.id, environmentId }
+
+  const ownsReleaseTarget = useCallback((targetWorkflowId: string, targetEnvironmentId: string): boolean => {
+    const current = releaseTargetRef.current
+    return current.workflowId === targetWorkflowId && current.environmentId === targetEnvironmentId
+  }, [])
 
   const refresh = useCallback(async (): Promise<void> => {
     const bridge = workflowBridge()
@@ -131,23 +138,24 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     const bridge = workflowBridge()
     const targetWorkflowId = selectedWorkflow?.id
     const targetEnvironmentId = environmentId
-    const generation = ++releaseDataGenerationRef.current
     if (bridge === undefined || targetWorkflowId === undefined || targetEnvironmentId === '') return
+    if (!ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
+    const generation = ++releaseDataGenerationRef.current
     try {
       const [nextReleases, nextObservations, nextHealth] = await Promise.all([
         bridge.workflowReleases.list(targetWorkflowId, targetEnvironmentId),
         bridge.workflowReleases.listObservations(targetEnvironmentId),
         bridge.workflowReleases.getHealth(targetEnvironmentId),
       ])
-      if (generation !== releaseDataGenerationRef.current) return
+      if (generation !== releaseDataGenerationRef.current || !ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
       setReleases(nextReleases)
       setObservations(nextObservations)
       setHealth(nextHealth)
     } catch (reason) {
-      if (generation !== releaseDataGenerationRef.current) return
+      if (generation !== releaseDataGenerationRef.current || !ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
       setError(reason instanceof Error ? reason.message : '无法读取发布状态')
     }
-  }, [environmentId, selectedWorkflow?.id])
+  }, [environmentId, ownsReleaseTarget, selectedWorkflow?.id])
 
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => {
@@ -170,7 +178,9 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     try {
       const targetEnvironmentId = environmentId || (await bridge.workflowEnvironments.list()).find((item) => item.status === 'active')?.id
       if (targetEnvironmentId === undefined) throw new Error('请先创建一个启用中的本地客户环境。')
-      await bridge.workflowReleases.publish({ workflowId: selectedWorkflow.id, environmentId: targetEnvironmentId })
+      const targetWorkflowId = selectedWorkflow.id
+      await bridge.workflowReleases.publish({ workflowId: targetWorkflowId, environmentId: targetEnvironmentId })
+      if (!ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
       await refreshReleaseData()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '发布失败')
@@ -216,9 +226,17 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
   }
   const rollback = async (releaseId: string): Promise<void> => {
     const bridge = workflowBridge()
-    if (bridge === undefined) return
+    const targetWorkflowId = selectedWorkflow?.id
+    const targetEnvironmentId = environmentId
+    if (bridge === undefined || targetWorkflowId === undefined || targetEnvironmentId === '') return
     setBusy(true); setError('')
-    try { await bridge.workflowReleases.rollback(releaseId); await refreshReleaseData() } catch (reason) { setError(reason instanceof Error ? reason.message : '回滚失败') } finally { setBusy(false) }
+    try {
+      await bridge.workflowReleases.rollback(releaseId)
+      if (!ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
+      await refreshReleaseData()
+    } catch (reason) {
+      if (ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) setError(reason instanceof Error ? reason.message : '回滚失败')
+    } finally { setBusy(false) }
   }
 
   const label = locale === 'en' ? {
@@ -1634,7 +1652,7 @@ export function getReleaseLaunchFields(fields: readonly WorkflowInputField[] | u
     label: field.label?.trim() || field.name,
     ...(field.type === undefined || field.type === 'string' ? {} : { type: field.type }),
     ...(field.defaultValue === undefined ? {} : { defaultValue: field.defaultValue }),
-    ...(field.required === undefined ? {} : { required: field.required }),
+    required: field.required !== false,
   }))
 }
 
@@ -1659,7 +1677,7 @@ export function getWorkflowLaunchFields(workflow: WorkflowDefinition): WorkflowL
           label: field.label?.trim() || configuredKey || key,
           ...(field.type === undefined || field.type === 'string' ? {} : { type: field.type }),
           ...(field.defaultValue === undefined ? {} : { defaultValue: field.defaultValue }),
-          ...(field.required === undefined ? {} : { required: field.required }),
+          required: field.required !== false,
         }
       })
     }
@@ -1670,6 +1688,7 @@ export function getWorkflowLaunchFields(workflow: WorkflowDefinition): WorkflowL
       id: node.id,
       key,
       label: node.label.trim() || key,
+      required: false,
       ...(node.config.defaultValue === undefined ? {} : { defaultValue: node.config.defaultValue }),
     }]
   })
@@ -1744,32 +1763,64 @@ export function createWorkflowLaunchValues(fields: WorkflowLaunchField[]): Recor
   return Object.fromEntries(fields.flatMap((field) => field.defaultValue === undefined ? [] : [[field.key, formatValue(field.defaultValue)]]))
 }
 
-const WORKFLOW_RUN_STATUS_FRESHNESS: Record<WorkflowRunRecord['status'], number> = {
+const WORKFLOW_RUN_STATUS_SAFETY: Record<WorkflowRunRecord['status'], number> = {
   queued: 0,
   running: 1,
-  paused: 2,
   'waiting-approval': 2,
-  completed: 3,
-  failed: 3,
-  cancelled: 3,
+  paused: 3,
+  failed: 4,
+  completed: 5,
+  cancelled: 5,
 }
 
-function workflowRunFreshness(record: WorkflowRunRecord): readonly [string, number, number] {
-  const latestTime = [record.startedAt, record.completedAt, ...record.events.map((event) => event.time)]
-    .filter((value): value is string => value !== undefined)
-    .sort()
-    .at(-1) ?? ''
-  return [latestTime, record.events.length, WORKFLOW_RUN_STATUS_FRESHNESS[record.status]]
+function workflowRunLatestValidTime(record: WorkflowRunRecord): number | undefined {
+  const times = [record.startedAt, record.completedAt, ...record.events.map((event) => event.time)]
+    .flatMap((value) => {
+      if (value === undefined) return []
+      const parsed = Date.parse(value)
+      return Number.isFinite(parsed) ? [parsed] : []
+    })
+  return times.length === 0 ? undefined : Math.max(...times)
+}
+
+function workflowRunEventsArePrefix(prefix: WorkflowRunRecord['events'], events: WorkflowRunRecord['events']): boolean {
+  return prefix.length <= events.length && prefix.every((event, index) => {
+    const candidate = events[index]
+    return candidate?.id === event.id && candidate.type === event.type
+  })
+}
+
+function workflowRunCannotRegress(record: WorkflowRunRecord): boolean {
+  return record.status === 'completed' || record.status === 'cancelled'
+}
+
+function chooseCausalWorkflowRun(current: WorkflowRunRecord, candidate: WorkflowRunRecord): WorkflowRunRecord {
+  if (workflowRunCannotRegress(current) && !workflowRunCannotRegress(candidate)) return current
+  if ((current.status === 'failed' || current.status === 'paused') && (candidate.status === 'queued' || candidate.status === 'running')) {
+    const appendedEvents = candidate.events.slice(current.events.length)
+    if (!appendedEvents.some((event) => event.type === 'run-created')) return current
+  }
+  return candidate
+}
+
+function chooseConservativeWorkflowRun(left: WorkflowRunRecord, right: WorkflowRunRecord): WorkflowRunRecord {
+  const leftSafety = WORKFLOW_RUN_STATUS_SAFETY[left.status]
+  const rightSafety = WORKFLOW_RUN_STATUS_SAFETY[right.status]
+  if (leftSafety !== rightSafety) return rightSafety > leftSafety ? right : left
+  const leftTime = workflowRunLatestValidTime(left)
+  const rightTime = workflowRunLatestValidTime(right)
+  if (leftTime === undefined) return rightTime === undefined ? left : right
+  if (rightTime === undefined) return left
+  return rightTime > leftTime ? right : left
 }
 
 /** Reconcile duplicate run snapshots without allowing an older queued response to replace observed progress. */
 export function chooseFresherWorkflowRun(left: WorkflowRunRecord, right: WorkflowRunRecord): WorkflowRunRecord {
-  const leftFreshness = workflowRunFreshness(left)
-  const rightFreshness = workflowRunFreshness(right)
-  if (rightFreshness[0] !== leftFreshness[0]) return rightFreshness[0] > leftFreshness[0] ? right : left
-  if (rightFreshness[1] !== leftFreshness[1]) return rightFreshness[1] > leftFreshness[1] ? right : left
-  if (rightFreshness[2] !== leftFreshness[2]) return rightFreshness[2] > leftFreshness[2] ? right : left
-  return right
+  const leftPrefix = workflowRunEventsArePrefix(left.events, right.events)
+  const rightPrefix = workflowRunEventsArePrefix(right.events, left.events)
+  if (leftPrefix && right.events.length > left.events.length) return chooseCausalWorkflowRun(left, right)
+  if (rightPrefix && left.events.length > right.events.length) return chooseCausalWorkflowRun(right, left)
+  return chooseConservativeWorkflowRun(left, right)
 }
 
 export function mergeWorkflowRunRecords(current: WorkflowRunRecord[], incoming: WorkflowRunRecord[]): WorkflowRunRecord[] {
@@ -1778,7 +1829,7 @@ export function mergeWorkflowRunRecords(current: WorkflowRunRecord[], incoming: 
     const existing = byId.get(record.id)
     byId.set(record.id, existing === undefined ? record : chooseFresherWorkflowRun(existing, record))
   }
-  return [...byId.values()].sort((left, right) => (right.startedAt ?? '').localeCompare(left.startedAt ?? ''))
+  return [...byId.values()].sort((left, right) => (workflowRunLatestValidTime(right) ?? -Infinity) - (workflowRunLatestValidTime(left) ?? -Infinity))
 }
 
 function McpArgumentsField({
@@ -2717,6 +2768,10 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const executionMainRef = useRef<HTMLDivElement>(null)
   const executionResizeRef = useRef<{ startY: number; startHeight: number }>()
   const currentRunRef = useRef<WorkflowRunRecord>()
+  const selectedWorkflowIdRef = useRef<string>()
+  const observedRunsRef = useRef(new Map<string, WorkflowRunRecord>())
+  const runSummaryRequestGenerationRef = useRef(new Map<string, number>())
+  const workflowPageMountedRef = useRef(true)
   const openRequestGenerationRef = useRef(0)
   const workflowsRef = useRef<WorkflowDefinition[]>([])
   const fitViewRef = useRef<(() => Promise<boolean>)>()
@@ -2728,6 +2783,13 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [workflowValidationIssues, setWorkflowValidationIssues] = useState<WorkflowValidationIssue[]>([])
+
+  selectedWorkflowIdRef.current = selected?.id
+
+  useEffect(() => {
+    workflowPageMountedRef.current = true
+    return () => { workflowPageMountedRef.current = false }
+  }, [])
 
   const rememberFitView = useCallback((fitView: (() => Promise<boolean>) | undefined): void => {
     fitViewRef.current = fitView
@@ -2776,15 +2838,19 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const list = await window.EzDSH.workflows.list()
       workflowsRef.current = list
       setWorkflows(list)
-      const summaries = await Promise.all(list.map(async (workflow) => {
+      const workflowRunLists = await Promise.all(list.map(async (workflow) => {
         try {
           const workflowRuns = await window.EzDSH.workflows.listRuns(workflow.id)
-          return [workflow.id, summarizeWorkflowRuns(workflowRuns, viewedRunIds)] as const
+          return [workflow.id, workflowRuns] as const
         } catch {
-          return [workflow.id, { count: 0, unviewedCount: 0 }] as const
+          return [workflow.id, [] as WorkflowRunRecord[]] as const
         }
       }))
-      setWorkflowRunSummaries(Object.fromEntries(summaries))
+      const summaries = workflowRunLists.map(([workflowId, workflowRuns]) => {
+        const observed = [...observedRunsRef.current.values()].filter((record) => record.workflowId === workflowId)
+        return [workflowId, summarizeWorkflowRuns(mergeWorkflowRunRecords(workflowRuns, observed), viewedRunIds)] as const
+      })
+      setWorkflowRunSummaries((current) => ({ ...current, ...Object.fromEntries(summaries) }))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.workflowLoadFailed)
     } finally {
@@ -2892,6 +2958,19 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setWorkflowRunSummaries((current) => ({ ...current, [workflowId]: summarizeWorkflowRuns(workflowRuns, viewed) }))
   }, [viewedRunIds])
 
+  const refreshUnselectedRunSummary = useCallback((record: WorkflowRunRecord): void => {
+    const generation = (runSummaryRequestGenerationRef.current.get(record.workflowId) ?? 0) + 1
+    runSummaryRequestGenerationRef.current.set(record.workflowId, generation)
+    void window.EzDSH.workflows.listRuns(record.workflowId).then((records) => {
+      if (!workflowPageMountedRef.current || runSummaryRequestGenerationRef.current.get(record.workflowId) !== generation) return
+      const observed = observedRunsRef.current.get(record.id) ?? record
+      updateRunSummary(record.workflowId, mergeWorkflowRunRecords(records.filter((candidate) => candidate.workflowId === record.workflowId), [observed]))
+    }).catch(() => {
+      if (!workflowPageMountedRef.current || runSummaryRequestGenerationRef.current.get(record.workflowId) !== generation) return
+      updateRunSummary(record.workflowId, [observedRunsRef.current.get(record.id) ?? record])
+    })
+  }, [updateRunSummary])
+
   const markRunViewed = useCallback((run: WorkflowRunRecord, knownRuns?: WorkflowRunRecord[]): void => {
     setViewedRunIds((current) => {
       if (current.has(run.id)) return current
@@ -2911,20 +2990,27 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   useEffect(() => {
     const unsubscribe = window.EzDSH.workflows.onStateChange((record) => {
+      const observed = observedRunsRef.current.get(record.id)
+      const nextObserved = observed === undefined ? record : chooseFresherWorkflowRun(observed, record)
+      observedRunsRef.current.set(record.id, nextObserved)
+      if (selectedWorkflowIdRef.current !== record.workflowId) {
+        refreshUnselectedRunSummary(nextObserved)
+        return
+      }
       setRuns((current) => {
-        const next = mergeWorkflowRunRecords(current, [record])
+        const next = mergeWorkflowRunRecords(current.filter((candidate) => candidate.workflowId === record.workflowId), [nextObserved])
         updateRunSummary(record.workflowId, next)
         return next
       })
       const inspected = currentRunRef.current
-      if (inspected?.id === record.id) {
-        const next = chooseFresherWorkflowRun(inspected, record)
+      if (inspected?.id === record.id && inspected.workflowId === record.workflowId) {
+        const next = chooseFresherWorkflowRun(inspected, nextObserved)
         currentRunRef.current = next
         setCurrentRun(next)
       }
     })
     return unsubscribe
-  }, [updateRunSummary])
+  }, [refreshUnselectedRunSummary, updateRunSummary])
 
   useEffect(() => {
     const workflowId = selected?.id
@@ -3000,6 +3086,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const open = async (workflow: WorkflowDefinition, isDraft = false, preferredRun?: WorkflowRunRecord): Promise<void> => {
     const generation = ++openRequestGenerationRef.current
     const userFacingWorkflow = { ...cloneWorkflow(workflow), description: userFacingWorkflowText(workflow.description, locale) }
+    selectedWorkflowIdRef.current = workflow.id
     setSelected(userFacingWorkflow)
     setWorkflowValidationIssues([])
     setHistory(createWorkflowHistory(userFacingWorkflow))
@@ -3011,8 +3098,10 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setContextMenu(undefined)
     setNodes(workflowFlowNodes(userFacingWorkflow, undefined, undefined, [], employees))
     setEdges(flowEdges(userFacingWorkflow))
-    currentRunRef.current = preferredRun
-    setCurrentRun(preferredRun)
+    const observedPreferred = preferredRun === undefined ? undefined : observedRunsRef.current.get(preferredRun.id)
+    const initialPreferred = observedPreferred === undefined || preferredRun === undefined ? preferredRun : chooseFresherWorkflowRun(preferredRun, observedPreferred)
+    currentRunRef.current = initialPreferred
+    setCurrentRun(initialPreferred)
     setSelectedRunNodeId(undefined)
     if (isDraft) {
       setRuns([])
@@ -3020,9 +3109,10 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     }
     setRuns((current) => {
       const scoped = current.filter((record) => record.workflowId === workflow.id)
-      const next = preferredRun === undefined ? scoped : mergeWorkflowRunRecords(scoped, [preferredRun])
-      if (preferredRun !== undefined) {
-        const exact = next.find((record) => record.id === preferredRun.id) ?? preferredRun
+      const observed = [...observedRunsRef.current.values()].filter((record) => record.workflowId === workflow.id)
+      const next = mergeWorkflowRunRecords(scoped, [...observed, ...(initialPreferred === undefined ? [] : [initialPreferred])])
+      if (initialPreferred !== undefined) {
+        const exact = next.find((record) => record.id === initialPreferred.id) ?? initialPreferred
         currentRunRef.current = exact
         setCurrentRun(exact)
       }
@@ -3030,23 +3120,27 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     })
     try {
       const workflowRuns = await window.EzDSH.workflows.listRuns(workflow.id)
-      if (generation !== openRequestGenerationRef.current) return
-      if (preferredRun !== undefined) {
-        const liveRun = currentRunRef.current?.id === preferredRun.id ? currentRunRef.current : preferredRun
-        const fetchedRun = workflowRuns.find((record) => record.id === preferredRun.id)
+      if (generation !== openRequestGenerationRef.current || selectedWorkflowIdRef.current !== workflow.id) return
+      if (initialPreferred !== undefined) {
+        const liveRun = currentRunRef.current?.id === initialPreferred.id ? currentRunRef.current : initialPreferred
+        const fetchedRun = workflowRuns.find((record) => record.id === initialPreferred.id)
         const exact = fetchedRun === undefined ? liveRun : chooseFresherWorkflowRun(liveRun, fetchedRun)
         currentRunRef.current = exact
         setCurrentRun(exact)
       }
       setRuns((current) => {
-        const next = mergeWorkflowRunRecords(current, workflowRuns)
+        const scoped = current.filter((record) => record.workflowId === workflow.id)
+        const observed = [...observedRunsRef.current.values()].filter((record) => record.workflowId === workflow.id)
+        const next = mergeWorkflowRunRecords(scoped, [...workflowRuns, ...observed])
         updateRunSummary(workflow.id, next)
         return next
       })
     } catch {
-      if (generation !== openRequestGenerationRef.current) return
+      if (generation !== openRequestGenerationRef.current || selectedWorkflowIdRef.current !== workflow.id) return
       setRuns((current) => {
-        const next = preferredRun === undefined ? current : mergeWorkflowRunRecords(current, [preferredRun])
+        const scoped = current.filter((record) => record.workflowId === workflow.id)
+        const observed = [...observedRunsRef.current.values()].filter((record) => record.workflowId === workflow.id)
+        const next = mergeWorkflowRunRecords(scoped, [...observed, ...(initialPreferred === undefined ? [] : [initialPreferred])])
         updateRunSummary(workflow.id, next)
         return next
       })
@@ -3068,6 +3162,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const exitWorkspace = (): void => {
     openRequestGenerationRef.current += 1
+    selectedWorkflowIdRef.current = undefined
     setShowGenerationPage(false)
     setShowModifyDialog(false)
     setShowModificationHistory(false)
@@ -3094,6 +3189,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setMessage('')
     setShowModifyDialog(false)
     setShowModificationHistory(false)
+    selectedWorkflowIdRef.current = undefined
     setSelected(undefined)
     setDraft(false)
     setHistory(undefined)
@@ -3315,6 +3411,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const remaining = workflows.filter((item) => item.id !== selected.id)
       setWorkflows(remaining)
       setDeletedWorkflow(cloneWorkflow(removedWorkflow))
+      selectedWorkflowIdRef.current = undefined
       setSelected(undefined)
       setNodes([])
       setEdges([])
