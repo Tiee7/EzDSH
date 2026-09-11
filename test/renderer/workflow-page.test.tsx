@@ -231,6 +231,18 @@ describe('WorkflowPage regressions', () => {
     expect(markup).toContain('发布到客户环境')
   })
 
+  it('localizes release-summary boundaries and selector placeholders in English', () => {
+    const markup = renderToStaticMarkup(<workflowPage.WorkflowReleasePanel
+      copy={getAppCopy('en')}
+      locale="en"
+      workflows={[createDefaultWorkflow('English workflow')]}
+    />)
+
+    expect(markup).toContain('The release summary excludes run input and output, credentials, and request headers.')
+    expect(markup).toContain('Select workflow')
+    expect(markup).not.toContain('Renderer 只接收')
+  })
+
   it('opens a frozen typed release form and starts with parsed default-applied input only', async () => {
     const workflow = createDefaultWorkflow('编辑中的 v2')
     const record: WorkflowRunRecord = { id: 'run-frozen-v1', workflowId: workflow.id, workflowRevision: 1, releaseId: 'release-v1', environmentId: 'customer-acme-prod', status: 'queued', input: {}, allowShellFile: false, nodeStates: [], events: [] }
@@ -289,10 +301,10 @@ describe('WorkflowPage regressions', () => {
     }
   })
 
-  it('keeps an invalid typed release input in the dialog without calling Main', async () => {
+  it('keeps a missing required-by-default release input in the dialog without calling Main', async () => {
     const workflow = createDefaultWorkflow('发布校验')
     const environment: WorkflowCustomerEnvironment = { id: 'customer-acme-prod', customerName: 'Acme', name: 'Production', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false, createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z' }
-    const release: WorkflowReleaseSummary = { id: 'release-invalid', environmentId: environment.id, workflowId: workflow.id, workflowRevision: 1, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt, launchFields: [{ name: 'count', label: '数量', type: 'number', required: true }] }
+    const release: WorkflowReleaseSummary = { id: 'release-invalid', environmentId: environment.id, workflowId: workflow.id, workflowRevision: 1, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt, launchFields: [{ name: 'title', label: '标题', type: 'string' }] }
     const start = vi.fn()
     const previousGlobals = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, HTMLElement: globalThis.HTMLElement, Element: globalThis.Element, Node: globalThis.Node, Event: globalThis.Event, MouseEvent: globalThis.MouseEvent, KeyboardEvent: globalThis.KeyboardEvent, CustomEvent: globalThis.CustomEvent, getComputedStyle: globalThis.getComputedStyle, EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH }
     const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
@@ -307,13 +319,99 @@ describe('WorkflowPage regressions', () => {
       const openButton = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '启动发布') as HTMLButtonElement
       await act(async () => { openButton.click() })
       const dialog = domWindow.document.querySelector('[role="dialog"]') as HTMLElement
-      const count = dialog.querySelector('textarea[aria-label="数量"]') as HTMLTextAreaElement
-      await act(async () => { Simulate.change(count, { target: { value: 'not-a-number' } }) })
+      const title = dialog.querySelector('textarea[aria-label="标题"]') as HTMLTextAreaElement
+      expect(title.getAttribute('aria-required')).toBe('true')
       const submit = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowStartRun) as HTMLButtonElement
       await act(async () => { submit.click(); await Promise.resolve() })
       expect(start).not.toHaveBeenCalled()
-      expect(dialog.textContent).toContain('“数量”必须是有效数字。')
+      expect(dialog.textContent).toContain('“标题”为必填项。')
     } finally {
+      await act(async () => { root.unmount() })
+      delete (globalThis as { EzDSH?: unknown }).EzDSH
+      const { navigator: previousNavigator, ...rest } = previousGlobals
+      Object.assign(globalThis, rest)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    }
+  })
+
+  it('waits for an async workflow selection before exposing a matching release start', async () => {
+    const workflowA = createDefaultWorkflow('工作流 A')
+    const workflowB = createDefaultWorkflow('工作流 B')
+    const environment: WorkflowCustomerEnvironment = { id: 'environment-a', customerName: 'Acme', name: 'A', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false, createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z' }
+    const releaseA: WorkflowReleaseSummary = { id: 'release-a', environmentId: environment.id, workflowId: workflowA.id, workflowRevision: 1, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt, launchFields: [] }
+    const previousGlobals = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, HTMLElement: globalThis.HTMLElement, Element: globalThis.Element, Node: globalThis.Node, Event: globalThis.Event, MouseEvent: globalThis.MouseEvent, KeyboardEvent: globalThis.KeyboardEvent, CustomEvent: globalThis.CustomEvent, getComputedStyle: globalThis.getComputedStyle, EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH }
+    const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+    Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow) })
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() }, workflowReleases: { list: vi.fn(async () => [releaseA]), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) } }
+    ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
+    ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
+    const root = createRoot(domWindow.document.getElementById('root')!)
+    try {
+      await act(async () => { root.render(<workflowPage.WorkflowReleasePanel copy={getAppCopy('zh')} workflows={[]} />); await new Promise((resolve) => setTimeout(resolve, 0)); await new Promise((resolve) => setTimeout(resolve, 0)) })
+      expect(Array.from(domWindow.document.querySelectorAll('button')).some((button) => button.textContent === '启动发布')).toBe(false)
+
+      await act(async () => { root.render(<workflowPage.WorkflowReleasePanel copy={getAppCopy('zh')} workflows={[workflowA, workflowB]} />); await new Promise((resolve) => setTimeout(resolve, 0)); await new Promise((resolve) => setTimeout(resolve, 0)) })
+      const workflowSelect = domWindow.document.querySelector('.workflow-release-panel select') as HTMLSelectElement
+      expect(workflowSelect).not.toBeNull()
+      expect(bridge.workflowReleases.list).toHaveBeenCalledWith(workflowA.id, environment.id)
+      expect(Array.from(domWindow.document.querySelectorAll('button')).some((button) => button.textContent === '启动发布')).toBe(true)
+    } finally {
+      await act(async () => { root.unmount() })
+      delete (globalThis as { EzDSH?: unknown }).EzDSH
+      const { navigator: previousNavigator, ...rest } = previousGlobals
+      Object.assign(globalThis, rest)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    }
+  })
+
+  it('ignores out-of-order release data across workflow and environment target changes', async () => {
+    const workflowA = createDefaultWorkflow('工作流 A')
+    const workflowB = createDefaultWorkflow('工作流 B')
+    const environmentA: WorkflowCustomerEnvironment = { id: 'environment-a', customerName: 'Acme', name: 'A', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false, createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z' }
+    const environmentB: WorkflowCustomerEnvironment = { ...environmentA, id: 'environment-b', name: 'B' }
+    const releaseA: WorkflowReleaseSummary = { id: 'release-a', environmentId: environmentA.id, workflowId: workflowA.id, workflowRevision: 1, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environmentA.createdAt, publishedAt: environmentA.createdAt, launchFields: [{ name: 'input-a', label: 'A 输入' }] }
+    const releaseB: WorkflowReleaseSummary = { ...releaseA, id: 'release-b', environmentId: environmentB.id, workflowId: workflowB.id, contentSha256: 'b'.repeat(64), launchFields: [{ name: 'input-b', label: 'B 输入' }] }
+    let resolveReleaseA!: (releases: WorkflowReleaseSummary[]) => void
+    const staleReleaseA = new Promise<WorkflowReleaseSummary[]>((resolve) => { resolveReleaseA = resolve })
+    const list = vi.fn((workflowId?: string, environmentId?: string) => {
+      if (workflowId === workflowA.id && environmentId === environmentA.id) return staleReleaseA
+      if (workflowId === workflowB.id && environmentId === environmentB.id) return Promise.resolve([releaseB])
+      return Promise.resolve([])
+    })
+    const start = vi.fn(async () => ({ id: 'run-b', workflowId: workflowB.id, workflowRevision: 1, releaseId: releaseB.id, environmentId: environmentB.id, status: 'queued' as const, input: {}, allowShellFile: false, nodeStates: [], events: [] }))
+    const previousGlobals = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, HTMLElement: globalThis.HTMLElement, Element: globalThis.Element, Node: globalThis.Node, Event: globalThis.Event, MouseEvent: globalThis.MouseEvent, KeyboardEvent: globalThis.KeyboardEvent, CustomEvent: globalThis.CustomEvent, getComputedStyle: globalThis.getComputedStyle, EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH }
+    const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+    Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow) })
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environmentA, environmentB]), upsert: vi.fn() }, workflowReleases: { list, publish: vi.fn(), start, rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) } }
+    ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
+    ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
+    const root = createRoot(domWindow.document.getElementById('root')!)
+    try {
+      await act(async () => { root.render(<workflowPage.WorkflowReleasePanel copy={getAppCopy('zh')} workflows={[workflowA, workflowB]} />); await new Promise((resolve) => setTimeout(resolve, 0)); await new Promise((resolve) => setTimeout(resolve, 0)) })
+      const selects = domWindow.document.querySelectorAll('.workflow-release-panel select')
+      expect(selects).toHaveLength(2)
+      await act(async () => {
+        Simulate.change(selects[0]!, { target: { value: workflowB.id } })
+        Simulate.change(selects[1]!, { target: { value: environmentB.id } })
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      expect(domWindow.document.body.textContent).toContain('bbbbbbbbbbbb')
+
+      await act(async () => { resolveReleaseA([releaseA]); await staleReleaseA; await Promise.resolve() })
+      expect(domWindow.document.body.textContent).toContain('bbbbbbbbbbbb')
+      expect(domWindow.document.body.textContent).not.toContain('aaaaaaaaaaaa')
+
+      const openButton = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '启动发布') as HTMLButtonElement
+      await act(async () => { openButton.click() })
+      expect(domWindow.document.querySelector('[role="dialog"]')?.textContent).toContain('B 输入')
+      await act(async () => { Simulate.change(selects[0]!, { target: { value: workflowA.id } }); await Promise.resolve() })
+      expect(domWindow.document.querySelector('[role="dialog"]')).toBeFalsy()
+      expect(Array.from(domWindow.document.querySelectorAll('button')).some((button) => button.textContent === '启动发布')).toBe(false)
+    } finally {
+      resolveReleaseA([])
       await act(async () => { root.unmount() })
       delete (globalThis as { EzDSH?: unknown }).EzDSH
       const { navigator: previousNavigator, ...rest } = previousGlobals
@@ -327,6 +425,9 @@ describe('WorkflowPage regressions', () => {
     const environment: WorkflowCustomerEnvironment = { id: 'customer-acme-prod', customerName: 'Acme', name: 'Production', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false, createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z' }
     const release: WorkflowReleaseSummary = { id: 'release-direct-run', environmentId: environment.id, workflowId: workflow.id, workflowRevision: workflow.revision, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt, launchFields: [] }
     const record: WorkflowRunRecord = { id: 'run-returned-exactly', workflowId: workflow.id, workflowRevision: workflow.revision, releaseId: release.id, environmentId: environment.id, status: 'queued', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const completedRecord: WorkflowRunRecord = { ...record, status: 'completed', startedAt: '2026-09-12T01:00:00.000Z', completedAt: '2026-09-12T01:00:03.000Z', events: [{ id: 'run-completed', time: '2026-09-12T01:00:03.000Z', type: 'run-completed' }] }
+    const runningEventRecord: WorkflowRunRecord = { ...record, status: 'running', startedAt: '2026-09-12T01:00:01.000Z', events: [{ id: 'run-started', time: '2026-09-12T01:00:01.000Z', type: 'run-started' }] }
+    let emitRunState!: (next: WorkflowRunRecord) => void
     let resolveStaleRuns!: (runs: WorkflowRunRecord[]) => void
     const staleRuns = new Promise<WorkflowRunRecord[]>((resolve) => { resolveStaleRuns = resolve })
     let listRunsCalls = 0
@@ -346,7 +447,7 @@ describe('WorkflowPage regressions', () => {
     Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
     const bridge = {
-      workflows: { list: vi.fn(async () => [workflow]), listRuns, onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
+      workflows: { list: vi.fn(async () => [workflow]), listRuns, onStateChange: vi.fn((listener: (next: WorkflowRunRecord) => void) => { emitRunState = listener; return () => {} }), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
       employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
       workflowCredentials: { list: vi.fn(async () => []) },
       workflowConnectors: { list: vi.fn(async () => []) },
@@ -368,9 +469,13 @@ describe('WorkflowPage regressions', () => {
       expect(domWindow.document.querySelector('button[role="tab"][aria-selected="true"]')?.textContent).toBe(getAppCopy('zh').workflowExecutions)
       expect(domWindow.document.body.textContent).toContain(record.id)
 
-      await act(async () => { resolveStaleRuns([]); await staleRuns; await Promise.resolve() })
+      await act(async () => { emitRunState(runningEventRecord); await Promise.resolve() })
+      expect(domWindow.document.querySelector('.workflow-run-item-active strong')?.textContent).toBe(getAppCopy('zh').workflowRunning)
+
+      await act(async () => { resolveStaleRuns([completedRecord]); await staleRuns; await Promise.resolve() })
       expect(domWindow.document.body.textContent).toContain(record.id)
       expect(domWindow.document.querySelector('.workflow-run-item-active')?.textContent).toContain(record.id.slice(-12))
+      expect(domWindow.document.querySelector('.workflow-run-item-active strong')?.textContent).toBe(getAppCopy('zh').workflowRunCompleted)
     } finally {
       resolveStaleRuns([])
       await act(async () => { root.unmount() })
@@ -381,7 +486,66 @@ describe('WorkflowPage regressions', () => {
     }
   })
 
+  it('does not let a late workflow-open response pollute a subsequently opened workflow', async () => {
+    const workflowA = createDefaultWorkflow('切换工作流 A')
+    const workflowB = createDefaultWorkflow('切换工作流 B')
+    const runA: WorkflowRunRecord = { id: 'run-workflow-a', workflowId: workflowA.id, workflowRevision: workflowA.revision, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const runB: WorkflowRunRecord = { id: 'run-workflow-b', workflowId: workflowB.id, workflowRevision: workflowB.revision, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    let resolveRunA!: (runs: WorkflowRunRecord[]) => void
+    const lateRunA = new Promise<WorkflowRunRecord[]>((resolve) => { resolveRunA = resolve })
+    const runCalls = new Map<string, number>()
+    const listRuns = vi.fn((workflowId: string) => {
+      const count = (runCalls.get(workflowId) ?? 0) + 1
+      runCalls.set(workflowId, count)
+      if (count === 1) return Promise.resolve([])
+      if (workflowId === workflowA.id) return lateRunA
+      return Promise.resolve([runB])
+    })
+    const previousGlobals = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, HTMLElement: globalThis.HTMLElement, Element: globalThis.Element, Node: globalThis.Node, Event: globalThis.Event, MouseEvent: globalThis.MouseEvent, KeyboardEvent: globalThis.KeyboardEvent, CustomEvent: globalThis.CustomEvent, getComputedStyle: globalThis.getComputedStyle, ResizeObserver: globalThis.ResizeObserver, requestAnimationFrame: globalThis.requestAnimationFrame, cancelAnimationFrame: globalThis.cancelAnimationFrame, EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH }
+    const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+    class TestResizeObserver { observe(): void {} unobserve(): void {} disconnect(): void {} }
+    const requestAnimationFrame = (_callback: FrameRequestCallback): number => 0
+    const cancelAnimationFrame = (_id: number): void => {}
+    Object.defineProperty(domWindow.HTMLElement.prototype, 'getBoundingClientRect', { configurable: true, value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 960, bottom: 640, width: 960, height: 640, toJSON: () => ({}) }) })
+    Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow), ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
+    Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+    const bridge = {
+      workflows: { list: vi.fn(async () => [workflowA, workflowB]), listRuns, onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
+      employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
+      workflowCredentials: { list: vi.fn(async () => []) }, workflowConnectors: { list: vi.fn(async () => []) },
+      workflowEnvironments: { list: vi.fn(async () => []), upsert: vi.fn() },
+      workflowReleases: { list: vi.fn(async () => []), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+    }
+    ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
+    ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
+    const root = createRoot(domWindow.document.getElementById('root')!)
+    try {
+      await act(async () => { root.render(<workflowPage.WorkflowPage copy={getAppCopy('zh')} locale="zh" />); await new Promise((resolve) => setTimeout(resolve, 0)); await new Promise((resolve) => setTimeout(resolve, 0)) })
+      const cards = domWindow.document.querySelectorAll('.workflow-file-card-main')
+      await act(async () => { (cards[0] as HTMLButtonElement).click(); await Promise.resolve() })
+      await act(async () => { (domWindow.document.querySelector('.workflow-back-button') as HTMLButtonElement).click(); await Promise.resolve() })
+      const nextCards = domWindow.document.querySelectorAll('.workflow-file-card-main')
+      await act(async () => { (nextCards[1] as HTMLButtonElement).click(); await Promise.resolve(); await Promise.resolve() })
+      await act(async () => { resolveRunA([runA]); await lateRunA; await Promise.resolve() })
+
+      expect(domWindow.document.querySelector('.workflow-workspace-title-row')?.textContent).toContain(workflowB.name)
+      const executions = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      expect(domWindow.document.body.textContent).toContain(runB.id.slice(-12))
+      expect(domWindow.document.body.textContent).not.toContain(runA.id.slice(-12))
+    } finally {
+      resolveRunA([])
+      await act(async () => { root.unmount() })
+      delete (globalThis as { EzDSH?: unknown }).EzDSH
+      const { navigator: previousNavigator, ...rest } = previousGlobals
+      Object.assign(globalThis, rest)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    }
+  })
+
   it('keeps the returned run identity visible when its source workflow is unavailable', async () => {
+    const sourceWorkflow = { ...createDefaultWorkflow('即将删除的源工作流'), id: 'deleted-source' }
     const environment: WorkflowCustomerEnvironment = { id: 'customer-acme-prod', customerName: 'Acme', name: 'Production', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false, createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z' }
     const release: WorkflowReleaseSummary = { id: 'release-deleted-source', environmentId: environment.id, workflowId: 'deleted-source', workflowRevision: 1, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt, launchFields: [] }
     const record: WorkflowRunRecord = { id: 'run-deleted-source', workflowId: release.workflowId, workflowRevision: 1, releaseId: release.id, environmentId: environment.id, status: 'queued', input: {}, allowShellFile: false, nodeStates: [], events: [] }
@@ -389,13 +553,16 @@ describe('WorkflowPage regressions', () => {
     const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
     Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow) })
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+    let workflowListCalls = 0
+    let resolveStart!: (record: WorkflowRunRecord) => void
+    const pendingStart = new Promise<WorkflowRunRecord>((resolve) => { resolveStart = resolve })
     const bridge = {
-      workflows: { list: vi.fn(async () => []), listRuns: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
+      workflows: { list: vi.fn(async () => { workflowListCalls += 1; return workflowListCalls === 1 ? [sourceWorkflow] : [] }), listRuns: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
       employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
       workflowCredentials: { list: vi.fn(async () => []) },
       workflowConnectors: { list: vi.fn(async () => []) },
       workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() },
-      workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start: vi.fn(async () => record), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+      workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start: vi.fn(() => pendingStart), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
     }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
@@ -406,10 +573,14 @@ describe('WorkflowPage regressions', () => {
       await act(async () => { releaseButton.click() })
       const dialog = domWindow.document.querySelector('[role="dialog"]') as HTMLElement
       const submit = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowStartRun) as HTMLButtonElement
-      await act(async () => { submit.click(); await Promise.resolve(); await Promise.resolve() })
+      await act(async () => { submit.click(); await Promise.resolve() })
+      const refresh = domWindow.document.querySelector('.workflow-browser-heading button') as HTMLButtonElement
+      await act(async () => { refresh.click(); await Promise.resolve(); await Promise.resolve() })
+      await act(async () => { resolveStart(record); await pendingStart; await Promise.resolve() })
       expect(domWindow.document.body.textContent).toContain(record.id)
       expect(domWindow.document.body.textContent).toContain('源工作流当前不可用')
     } finally {
+      resolveStart(record)
       await act(async () => { root.unmount() })
       delete (globalThis as { EzDSH?: unknown }).EzDSH
       const { navigator: previousNavigator, ...rest } = previousGlobals
@@ -952,6 +1123,47 @@ describe('WorkflowPage regressions', () => {
       { id: 'attachments', key: 'attachments', label: '附件', type: 'file-list' as const },
     ]
     expect(workflowPage.buildWorkflowLaunchInput(fields, { document: 'docs/a.txt', attachments: 'docs/a.txt\ndocs/b.txt' })).toEqual({ document: 'docs/a.txt', attachments: ['docs/a.txt', 'docs/b.txt'] })
+  })
+
+  it('omits untouched optional launch fields while preserving explicit empty strings and defaults', () => {
+    const fields: workflowPage.WorkflowLaunchField[] = [
+      { id: 'title', key: 'title', label: '标题', required: false },
+      { id: 'count', key: 'count', label: '数量', type: 'number', required: false },
+      { id: 'enabled', key: 'enabled', label: '启用', type: 'boolean', required: false },
+      { id: 'payload', key: 'payload', label: '参数', type: 'json', required: false },
+      { id: 'document', key: 'document', label: '文档', type: 'file', required: false },
+      { id: 'attachments', key: 'attachments', label: '附件', type: 'file-list', required: false },
+      { id: 'limit', key: 'limit', label: '上限', type: 'number', required: false, defaultValue: 2 },
+    ]
+
+    expect(workflowPage.createWorkflowLaunchValues(fields)).toEqual({ limit: '2' })
+    expect(workflowPage.buildWorkflowLaunchInput(fields, {})).toEqual({ limit: 2 })
+    expect(workflowPage.buildWorkflowLaunchInput(fields, { title: '' })).toEqual({ title: '', limit: 2 })
+    expect(workflowPage.buildWorkflowLaunchInput(fields, {
+      count: '', enabled: ' ', payload: '', document: '', attachments: '',
+    })).toEqual({ limit: 2 })
+  })
+
+  it('treats launch fields as required by default and rejects missing or blank string and file values', () => {
+    expect(() => workflowPage.buildWorkflowLaunchInput([
+      { id: 'title', key: 'title', label: '标题' },
+    ], {})).toThrow('“标题”为必填项。')
+    expect(() => workflowPage.buildWorkflowLaunchInput([
+      { id: 'title', key: 'title', label: '标题' },
+    ], { title: '  ' })).toThrow('“标题”为必填项。')
+    expect(() => workflowPage.buildWorkflowLaunchInput([
+      { id: 'document', key: 'document', label: '文档', type: 'file' },
+    ], { document: '' })).toThrow('“文档”为必填项。')
+  })
+
+  it('chooses the fresher same-id workflow run instead of preserving a stale queued record', () => {
+    const queued: WorkflowRunRecord = { id: 'run-freshness', workflowId: 'workflow-a', workflowRevision: 1, status: 'queued', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const completed: WorkflowRunRecord = { ...queued, status: 'completed', startedAt: '2026-09-12T01:00:00.000Z', completedAt: '2026-09-12T01:00:03.000Z', events: [{ id: 'event-completed', time: '2026-09-12T01:00:03.000Z', type: 'run-completed' }] }
+    const eventBeforeList: WorkflowRunRecord = { ...queued, status: 'running', startedAt: '2026-09-12T01:00:02.000Z', events: [{ id: 'event-running', time: '2026-09-12T01:00:02.000Z', type: 'node-started' }] }
+
+    expect(workflowPage.chooseFresherWorkflowRun(queued, completed)).toBe(completed)
+    expect(workflowPage.chooseFresherWorkflowRun(completed, queued)).toBe(completed)
+    expect(workflowPage.mergeWorkflowRunRecords([eventBeforeList], [queued])).toEqual([eventBeforeList])
   })
 
   it('preserves JSON value types entered in a condition setting', () => {

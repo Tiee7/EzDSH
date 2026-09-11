@@ -109,9 +109,10 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
   const [health, setHealth] = useState<WorkflowOperationsHealth>()
   const [environmentId, setEnvironmentId] = useState('')
   const [workflowId, setWorkflowId] = useState(workflow?.id ?? workflows[0]?.id ?? '')
-  const [releaseSetup, setReleaseSetup] = useState<{ releaseId: string; fields: WorkflowLaunchField[]; values: Record<string, string> }>()
+  const [releaseSetup, setReleaseSetup] = useState<{ releaseId: string; workflowId: string; environmentId: string; fields: WorkflowLaunchField[]; values: Record<string, string> }>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const releaseDataGenerationRef = useRef(0)
   const selectedWorkflow = workflow ?? workflows.find((item) => item.id === workflowId)
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -128,23 +129,39 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
 
   const refreshReleaseData = useCallback(async (): Promise<void> => {
     const bridge = workflowBridge()
-    if (bridge === undefined || environmentId === '') return
+    const targetWorkflowId = selectedWorkflow?.id
+    const targetEnvironmentId = environmentId
+    const generation = ++releaseDataGenerationRef.current
+    if (bridge === undefined || targetWorkflowId === undefined || targetEnvironmentId === '') return
     try {
       const [nextReleases, nextObservations, nextHealth] = await Promise.all([
-        bridge.workflowReleases.list(selectedWorkflow?.id, environmentId),
-        bridge.workflowReleases.listObservations(environmentId),
-        bridge.workflowReleases.getHealth(environmentId),
+        bridge.workflowReleases.list(targetWorkflowId, targetEnvironmentId),
+        bridge.workflowReleases.listObservations(targetEnvironmentId),
+        bridge.workflowReleases.getHealth(targetEnvironmentId),
       ])
+      if (generation !== releaseDataGenerationRef.current) return
       setReleases(nextReleases)
       setObservations(nextObservations)
       setHealth(nextHealth)
     } catch (reason) {
+      if (generation !== releaseDataGenerationRef.current) return
       setError(reason instanceof Error ? reason.message : '无法读取发布状态')
     }
   }, [environmentId, selectedWorkflow?.id])
 
   useEffect(() => { void refresh() }, [refresh])
-  useEffect(() => { void refreshReleaseData() }, [refreshReleaseData])
+  useEffect(() => {
+    const nextWorkflowId = workflow?.id ?? (workflows.some((item) => item.id === workflowId) ? workflowId : workflows[0]?.id ?? '')
+    if (nextWorkflowId !== workflowId) setWorkflowId(nextWorkflowId)
+  }, [workflow?.id, workflowId, workflows])
+  useEffect(() => {
+    setReleaseSetup(undefined)
+    setReleases([])
+    setObservations([])
+    setHealth(undefined)
+    void refreshReleaseData()
+    return () => { releaseDataGenerationRef.current += 1 }
+  }, [refreshReleaseData])
 
   const publish = async (): Promise<void> => {
     const bridge = workflowBridge()
@@ -174,16 +191,21 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     } finally { setBusy(false) }
   }
 
-  const activeRelease = releases.find((release) => release.status === 'published')
+  const activeRelease = selectedWorkflow === undefined || environmentId === '' ? undefined : releases.find((release) => release.status === 'published' && release.workflowId === selectedWorkflow.id && release.environmentId === environmentId)
   const openReleaseSetup = (): void => {
-    if (activeRelease === undefined) return
+    if (activeRelease === undefined || selectedWorkflow === undefined || environmentId === '') return
     const fields = getReleaseLaunchFields(activeRelease.launchFields)
     setError('')
-    setReleaseSetup({ releaseId: activeRelease.id, fields, values: createWorkflowLaunchValues(fields) })
+    setReleaseSetup({ releaseId: activeRelease.id, workflowId: selectedWorkflow.id, environmentId, fields, values: createWorkflowLaunchValues(fields) })
   }
   const startRelease = async (): Promise<void> => {
     const bridge = workflowBridge()
     if (bridge === undefined || releaseSetup === undefined) return
+    if (activeRelease?.id !== releaseSetup.releaseId || selectedWorkflow?.id !== releaseSetup.workflowId || environmentId !== releaseSetup.environmentId) {
+      setReleaseSetup(undefined)
+      setError(locale === 'en' ? 'The release target changed. Open the launch form again.' : '发布目标已变化，请重新打开启动表单。')
+      return
+    }
     setBusy(true); setError('')
     try {
       const record = await bridge.workflowReleases.start(releaseSetup.releaseId, buildWorkflowLaunchInput(releaseSetup.fields, releaseSetup.values))
@@ -200,16 +222,17 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
   }
 
   const label = locale === 'en' ? {
-    title: 'Release & customer environment',
-    workflow: 'Workflow', environment: 'Environment', publish: 'Publish to customer environment', create: 'Create local environment', noEnv: 'Create an active local customer environment first.', health: 'Health', events: 'Redacted observations', start: 'Start release', rollback: 'Rollback', empty: 'No release yet.',
+    title: 'Release & customer environment', summaryHint: 'Main keeps the complete immutable release definition. The release summary excludes run input and output, credentials, and request headers.',
+    workflow: 'Workflow', selectWorkflow: 'Select workflow', environment: 'Environment', selectEnvironment: 'Select customer environment', publish: 'Publish to customer environment', create: 'Create local environment', noEnv: 'Create an active local customer environment first.', health: 'Health', events: 'Redacted observations', start: 'Start release', rollback: 'Rollback', empty: 'No release yet.',
   } : {
-    title: '发布与客户环境', workflow: '工作流', environment: '客户环境', publish: '发布到客户环境', create: '创建本地环境', noEnv: '请先创建一个启用中的本地客户环境。', health: '健康状态', events: '脱敏观测', start: '启动发布', rollback: '回滚', empty: '暂无发布记录。',
+    title: '发布与客户环境', summaryHint: 'Main 保存完整的不可变发布定义；发布摘要不包含运行输入、输出、凭证或请求头。',
+    workflow: '工作流', selectWorkflow: '选择工作流', environment: '客户环境', selectEnvironment: '选择客户环境', publish: '发布到客户环境', create: '创建本地环境', noEnv: '请先创建一个启用中的本地客户环境。', health: '健康状态', events: '脱敏观测', start: '启动发布', rollback: '回滚', empty: '暂无发布记录。',
   }
 
   return <><section className="workflow-tool-card workflow-release-panel" aria-label={label.title}>
-    <div className="workflow-panel-heading"><div><span className="workflow-kicker">{label.title}</span><h3>{label.title}</h3><p>Main 保存完整的不可变发布定义；Renderer 只接收安全启动摘要，不接收运行输入、输出、凭证或请求头。</p></div></div>
-    {selectedWorkflow === undefined && workflows.length > 0 ? <label>{label.workflow}<select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}><option value="">选择工作流</option>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label> : null}
-    <label>{label.environment}<select value={environmentId} onChange={(event) => setEnvironmentId(event.target.value)} disabled={environments.length === 0}><option value="">{environments.length === 0 ? label.noEnv : '选择客户环境'}</option>{environments.map((item) => <option key={item.id} value={item.id}>{item.customerName} · {item.name}</option>)}</select></label>
+    <div className="workflow-panel-heading"><div><span className="workflow-kicker">{label.title}</span><h3>{label.title}</h3><p>{label.summaryHint}</p></div></div>
+    {workflow === undefined && workflows.length > 0 ? <label>{label.workflow}<select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}><option value="">{label.selectWorkflow}</option>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label> : null}
+    <label>{label.environment}<select value={environmentId} onChange={(event) => setEnvironmentId(event.target.value)} disabled={environments.length === 0}><option value="">{environments.length === 0 ? label.noEnv : label.selectEnvironment}</option>{environments.map((item) => <option key={item.id} value={item.id}>{item.customerName} · {item.name}</option>)}</select></label>
     <div className="workflow-release-actions">
       <button type="button" className="workflow-button-primary" onClick={() => void publish()} disabled={busy || selectedWorkflow === undefined}>{label.publish}</button>
       <button type="button" onClick={() => void createEnvironment()} disabled={busy}>{label.create}</button>
@@ -1659,10 +1682,23 @@ function workflowInputFieldNames(fields: WorkflowInputField[] | undefined): stri
 
 /** Keep the launch payload JSON-safe while using the configured Input-node names as keys. */
 export function buildWorkflowLaunchInput(fields: WorkflowLaunchField[], values: Record<string, string>): Record<string, WorkflowValue> {
-  return Object.fromEntries(fields.map((field) => {
-    const value = values[field.key] ?? formatValue(field.defaultValue)
-    return [field.key, parseWorkflowLaunchValue(field, value)]
-  })) as Record<string, WorkflowValue>
+  const entries: Array<[string, WorkflowValue]> = []
+  for (const field of fields) {
+    const hasValue = Object.prototype.hasOwnProperty.call(values, field.key)
+    const value = hasValue ? values[field.key]! : field.defaultValue === undefined ? undefined : formatValue(field.defaultValue)
+    const required = field.required !== false
+    if (value === undefined) {
+      if (required) throw new Error(`“${field.label}”为必填项。`)
+      continue
+    }
+    const type = field.type ?? 'string'
+    if (value.trim() === '') {
+      if (required) throw new Error(`“${field.label}”为必填项。`)
+      if (type !== 'string') continue
+    }
+    entries.push([field.key, parseWorkflowLaunchValue(field, value)])
+  }
+  return Object.fromEntries(entries) as Record<string, WorkflowValue>
 }
 
 function parseWorkflowLaunchValue(field: WorkflowLaunchField, value: string): WorkflowValue {
@@ -1704,8 +1740,45 @@ function parseWorkflowLaunchValue(field: WorkflowLaunchField, value: string): Wo
   }
 }
 
-function createWorkflowLaunchValues(fields: WorkflowLaunchField[]): Record<string, string> {
-  return Object.fromEntries(fields.map((field) => [field.key, formatValue(field.defaultValue)]))
+export function createWorkflowLaunchValues(fields: WorkflowLaunchField[]): Record<string, string> {
+  return Object.fromEntries(fields.flatMap((field) => field.defaultValue === undefined ? [] : [[field.key, formatValue(field.defaultValue)]]))
+}
+
+const WORKFLOW_RUN_STATUS_FRESHNESS: Record<WorkflowRunRecord['status'], number> = {
+  queued: 0,
+  running: 1,
+  paused: 2,
+  'waiting-approval': 2,
+  completed: 3,
+  failed: 3,
+  cancelled: 3,
+}
+
+function workflowRunFreshness(record: WorkflowRunRecord): readonly [string, number, number] {
+  const latestTime = [record.startedAt, record.completedAt, ...record.events.map((event) => event.time)]
+    .filter((value): value is string => value !== undefined)
+    .sort()
+    .at(-1) ?? ''
+  return [latestTime, record.events.length, WORKFLOW_RUN_STATUS_FRESHNESS[record.status]]
+}
+
+/** Reconcile duplicate run snapshots without allowing an older queued response to replace observed progress. */
+export function chooseFresherWorkflowRun(left: WorkflowRunRecord, right: WorkflowRunRecord): WorkflowRunRecord {
+  const leftFreshness = workflowRunFreshness(left)
+  const rightFreshness = workflowRunFreshness(right)
+  if (rightFreshness[0] !== leftFreshness[0]) return rightFreshness[0] > leftFreshness[0] ? right : left
+  if (rightFreshness[1] !== leftFreshness[1]) return rightFreshness[1] > leftFreshness[1] ? right : left
+  if (rightFreshness[2] !== leftFreshness[2]) return rightFreshness[2] > leftFreshness[2] ? right : left
+  return right
+}
+
+export function mergeWorkflowRunRecords(current: WorkflowRunRecord[], incoming: WorkflowRunRecord[]): WorkflowRunRecord[] {
+  const byId = new Map(current.map((record) => [record.id, record]))
+  for (const record of incoming) {
+    const existing = byId.get(record.id)
+    byId.set(record.id, existing === undefined ? record : chooseFresherWorkflowRun(existing, record))
+  }
+  return [...byId.values()].sort((left, right) => (right.startedAt ?? '').localeCompare(left.startedAt ?? ''))
 }
 
 function McpArgumentsField({
@@ -2379,7 +2452,7 @@ export function WorkflowRunLaunchDialog({
         <button type="button" className="workflow-button-quiet" onClick={onClose} disabled={busy}>{copy.workflowCancelSetup}</button>
       </div>
       <div className="workflow-launch-fields">
-        {fields.length === 0 ? <p className="workflow-muted">{copy.workflowNoLaunchInputs}</p> : fields.map((field) => <label key={field.id} className="workflow-launch-field"><span>{field.label}{field.required === true ? ' *' : ''}{field.type === 'file' ? '（文件路径）' : field.type === 'file-list' ? '（每行一个路径）' : ''}</span><textarea aria-label={field.label} aria-required={field.required === true} value={values[field.key] ?? ''} onChange={(event) => onChangeValue(field.key, event.target.value)} placeholder={field.defaultValue === undefined ? copy.workflowInputHint : undefined} /></label>)}
+        {fields.length === 0 ? <p className="workflow-muted">{copy.workflowNoLaunchInputs}</p> : fields.map((field) => <label key={field.id} className="workflow-launch-field"><span>{field.label}{field.required !== false ? ' *' : ''}{field.type === 'file' ? '（文件路径）' : field.type === 'file-list' ? '（每行一个路径）' : ''}</span><textarea aria-label={field.label} aria-required={field.required !== false} value={values[field.key] ?? ''} onChange={(event) => onChangeValue(field.key, event.target.value)} placeholder={field.defaultValue === undefined ? copy.workflowInputHint : undefined} /></label>)}
         {showRunOptions ? <>
           <label className="workflow-launch-field"><span>{copy.workflowModel}</span><div className="workflow-model-control"><select value={modelSelection === undefined ? '' : workflowModelOptionKey(modelSelection)} onChange={(event) => onChangeModel(modelOptions.find((option) => workflowModelOptionKey(option) === event.target.value))}><option value="">{copy.workflowUseDefaultModel}</option>{modelOptions.map((option) => <option key={workflowModelOptionKey(option)} value={workflowModelOptionKey(option)}>{option.providerName} · {option.modelName ?? option.modelId}</option>)}</select><button type="button" className="workflow-button-quiet workflow-model-refresh" onClick={onRefreshModels} disabled={busy || modelLoading}>{modelLoading ? copy.workflowRefreshingModels : copy.workflowRefreshModels}</button></div><small className="workflow-launch-note">{modelOptions.length === 0 ? copy.workflowNoModels : copy.workflowModelHint}</small></label>
           {connectorOptions.length > 0 ? <fieldset className="workflow-launch-connector-grants"><legend>{copy.workflowRunConnectorGrants}</legend><p className="workflow-launch-note">{copy.workflowRunConnectorGrantsHint}</p>{connectorOptions.map((option) => { const granted = connectorGrants.find((grant) => grant.connectorId === option.connectorId); return <div key={option.connectorId} className="workflow-launch-connector-grant"><div><strong>{option.connector?.name ?? option.connectorId}</strong><small>{option.connector?.baseUrl ?? copy.workflowConnectorMissing}</small></div><div className="workflow-permission-options">{option.operations.map((operation) => { const policyAllowed = option.policyOperations.includes(operation); return <label key={operation} className="workflow-checkbox"><input type="checkbox" checked={granted?.operations.includes(operation) === true} disabled={!policyAllowed || onChangeConnectorGrants === undefined} onChange={(event) => onChangeConnectorGrants?.(toggleWorkflowConnectorGrant(connectorGrants, option.connectorId, operation, event.target.checked))} />{operation === 'read' ? copy.workflowConnectorRead : copy.workflowConnectorWrite}{!policyAllowed ? `（${copy.workflowPermissionNotDeclared}）` : ''}</label> })}</div></div> })}</fieldset> : null}
@@ -2644,6 +2717,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const executionMainRef = useRef<HTMLDivElement>(null)
   const executionResizeRef = useRef<{ startY: number; startHeight: number }>()
   const currentRunRef = useRef<WorkflowRunRecord>()
+  const openRequestGenerationRef = useRef(0)
+  const workflowsRef = useRef<WorkflowDefinition[]>([])
   const fitViewRef = useRef<(() => Promise<boolean>)>()
   const screenToFlowPositionRef = useRef<((position: XYPosition) => XYPosition)>()
   const copiedWorkflowNodesRef = useRef<WorkflowNode[]>([])
@@ -2699,6 +2774,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setError('')
     try {
       const list = await window.EzDSH.workflows.list()
+      workflowsRef.current = list
       setWorkflows(list)
       const summaries = await Promise.all(list.map(async (workflow) => {
         try {
@@ -2836,14 +2912,19 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   useEffect(() => {
     const unsubscribe = window.EzDSH.workflows.onStateChange((record) => {
       setRuns((current) => {
-        const next = [record, ...current.filter((item) => item.id !== record.id)]
+        const next = mergeWorkflowRunRecords(current, [record])
         updateRunSummary(record.workflowId, next)
-        return next.sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))
+        return next
       })
-      if (currentRun?.id === record.id) setCurrentRun(record)
+      const inspected = currentRunRef.current
+      if (inspected?.id === record.id) {
+        const next = chooseFresherWorkflowRun(inspected, record)
+        currentRunRef.current = next
+        setCurrentRun(next)
+      }
     })
     return unsubscribe
-  }, [currentRun?.id, updateRunSummary])
+  }, [updateRunSummary])
 
   useEffect(() => {
     const workflowId = selected?.id
@@ -2917,6 +2998,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }
 
   const open = async (workflow: WorkflowDefinition, isDraft = false, preferredRun?: WorkflowRunRecord): Promise<void> => {
+    const generation = ++openRequestGenerationRef.current
     const userFacingWorkflow = { ...cloneWorkflow(workflow), description: userFacingWorkflowText(workflow.description, locale) }
     setSelected(userFacingWorkflow)
     setWorkflowValidationIssues([])
@@ -2936,36 +3018,43 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       setRuns([])
       return
     }
-    if (preferredRun !== undefined) setRuns([preferredRun])
+    setRuns((current) => {
+      const scoped = current.filter((record) => record.workflowId === workflow.id)
+      const next = preferredRun === undefined ? scoped : mergeWorkflowRunRecords(scoped, [preferredRun])
+      if (preferredRun !== undefined) {
+        const exact = next.find((record) => record.id === preferredRun.id) ?? preferredRun
+        currentRunRef.current = exact
+        setCurrentRun(exact)
+      }
+      return next
+    })
     try {
       const workflowRuns = await window.EzDSH.workflows.listRuns(workflow.id)
-      if (preferredRun === undefined) {
-        setRuns(workflowRuns)
-        updateRunSummary(workflow.id, workflowRuns)
-      } else {
-        setRuns((current) => {
-          const exact = current.find((record) => record.id === preferredRun.id) ?? preferredRun
-          const merged = [exact, ...workflowRuns.filter((record) => record.id !== exact.id)]
-          updateRunSummary(workflow.id, merged)
-          return merged
-        })
+      if (generation !== openRequestGenerationRef.current) return
+      if (preferredRun !== undefined) {
+        const liveRun = currentRunRef.current?.id === preferredRun.id ? currentRunRef.current : preferredRun
+        const fetchedRun = workflowRuns.find((record) => record.id === preferredRun.id)
+        const exact = fetchedRun === undefined ? liveRun : chooseFresherWorkflowRun(liveRun, fetchedRun)
+        currentRunRef.current = exact
+        setCurrentRun(exact)
       }
+      setRuns((current) => {
+        const next = mergeWorkflowRunRecords(current, workflowRuns)
+        updateRunSummary(workflow.id, next)
+        return next
+      })
     } catch {
-      if (preferredRun === undefined) {
-        setRuns([])
-        updateRunSummary(workflow.id, [])
-      } else {
-        setRuns((current) => {
-          const exact = current.find((record) => record.id === preferredRun.id) ?? preferredRun
-          updateRunSummary(workflow.id, [exact])
-          return [exact]
-        })
-      }
+      if (generation !== openRequestGenerationRef.current) return
+      setRuns((current) => {
+        const next = preferredRun === undefined ? current : mergeWorkflowRunRecords(current, [preferredRun])
+        updateRunSummary(workflow.id, next)
+        return next
+      })
     }
   }
 
   const openReleasedRun = (record: WorkflowRunRecord): void => {
-    const source = workflows.find((workflow) => workflow.id === record.workflowId)
+    const source = workflowsRef.current.find((workflow) => workflow.id === record.workflowId)
     if (source === undefined) {
       currentRunRef.current = record
       setCurrentRun(record)
@@ -2978,6 +3067,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }
 
   const exitWorkspace = (): void => {
+    openRequestGenerationRef.current += 1
     setShowGenerationPage(false)
     setShowModifyDialog(false)
     setShowModificationHistory(false)
@@ -3918,7 +4008,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       {metadataDraft ? <WorkflowMetadataDialog copy={copy} name={metadataDraft.name} description={metadataDraft.description} generationPrompt={metadataDraft.generationPrompt} onChangeName={(name) => setMetadataDraft((current) => current === undefined ? current : { ...current, name })} onChangeDescription={(description) => setMetadataDraft((current) => current === undefined ? current : { ...current, description })} onChangeGenerationPrompt={(generationPrompt) => setMetadataDraft((current) => current === undefined ? current : { ...current, generationPrompt })} onClose={() => setMetadataDraft(undefined)} onSave={saveWorkflowMetadata} /> : null}
       {showModifyDialog && selected ? <WorkflowModifyDialog copy={copy} workflow={currentDefinition() ?? selected} onClose={() => setShowModifyDialog(false)} onOpenHistory={() => openModificationHistory()} onApply={(workflow) => { applyDefinition(workflow); setMessage(copy.workflowAiModifyApplied) }} /> : null}
       {showModificationHistory && selected ? <WorkflowModificationHistoryDialog copy={copy} records={modificationHistory} initialRecordId={modificationHistoryFocusId} onClose={() => setShowModificationHistory(false)} onApply={applyModification} /> : null}
-      {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} connectorOptions={runSetup.connectorOptions} connectorGrants={runSetup.connectorGrants} allowShellFile={runSetup.allowShellFile} allowCode={runSetup.allowCode} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onChangeConnectorGrants={(connectorGrants) => setRunSetup((current) => current === undefined ? current : { ...current, connectorGrants })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeAllowCode={(allowCode) => setRunSetup((current) => current === undefined ? current : { ...current, allowCode })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
+      {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} connectorOptions={runSetup.connectorOptions} connectorGrants={runSetup.connectorGrants} allowShellFile={runSetup.allowShellFile} allowCode={runSetup.allowCode} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} error={error} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onChangeConnectorGrants={(connectorGrants) => setRunSetup((current) => current === undefined ? current : { ...current, connectorGrants })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeAllowCode={(allowCode) => setRunSetup((current) => current === undefined ? current : { ...current, allowCode })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
       {showPermissionDialog && selected ? <WorkflowPermissionPolicyDialog copy={copy} workflow={currentDefinition() ?? selected} connectors={workflowConnectors} onChange={(workflow) => applyDefinition(workflow)} onClose={() => setShowPermissionDialog(false)} /> : null}
       {contextMenu ? <WorkflowContextMenu copy={copy} target={contextMenu.target} x={contextMenu.x} y={contextMenu.y} selectedNodeCount={(contextMenu.target === 'canvas' || contextMenu.target === 'selection' || (contextMenu.nodeId !== undefined && nodes.some((node) => node.id === contextMenu.nodeId && node.selected === true))) ? nodes.filter((node) => node.selected === true).length : 0} canUndo={(history?.past.length ?? 0) > 0} canRedo={(history?.future.length ?? 0) > 0} busy={busy} runDisabled={currentRun?.status === 'running'} cancelLabel={draft ? copy.workflowCancelCreate : copy.workflowCancelEdit} onUndo={() => { dismissContextMenu(); undo(); focusWorkflowCanvas() }} onRedo={() => { dismissContextMenu(); redo(); focusWorkflowCanvas() }} onCopy={() => { copySelectedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} onPaste={() => { pasteCopiedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} canPaste={copiedWorkflowNodesRef.current.length > 0} onDelete={deleteContextMenuSelection} onAlign={alignSelectedNodes} onFitView={fitViewFromContextMenu} onSave={saveFromContextMenu} onRun={runFromContextMenu} onCancel={() => { dismissContextMenu(); exitWorkspace() }} /> : null}
       {message || error ? <div className="workflow-notification-stack">
