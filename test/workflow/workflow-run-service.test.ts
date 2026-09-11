@@ -773,6 +773,55 @@ describe('ordinary run revision boundaries', () => {
       expect(fetchImpl).not.toHaveBeenCalled()
     } finally { await service.stop() }
   })
+
+  it.each([
+    ['environment-only', { environmentId: 'customer-a' }],
+    ['trace-only', { traceId: 'trace-a' }],
+    ['conflicting-environment', { releaseId: 'release-a', environmentId: 'customer-b', traceId: 'trace-a' }],
+  ] as const)('rejects %s released-shaped compensation before record mutation or external dispatch', async (_case, identity) => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-released-compensation-identity-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: `released-compensation-${_case}`, name: 'Released compensation boundary', description: '',
+      nodes: currentWriteNodes, edges,
+    })
+    const runStore = new WorkflowRunStore(dir)
+    const record: WorkflowRunRecord = {
+      id: `run-released-compensation-${_case}`, workflowId: workflow.id, workflowRevision: workflow.revision,
+      ...identity,
+      status: 'failed', input: 'payload', allowShellFile: false,
+      connectorGrants: [{ connectorId: 'crm', operations: ['write'] }],
+      nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'completed', output: 'payload' })), events: [], error: 'source failed',
+      compensationStack: [{
+        sourceNodeId: 'first', action: { type: 'workflow', workflowId: workflow.id, workflowRevision: workflow.revision },
+        status: 'pending', effectState: 'none',
+      }],
+    }
+    await runStore.save(record)
+    const mcpCall = vi.fn(async () => 'written')
+    const connectorRequest = vi.fn(async () => ({ status: 200, ok: true, headers: {}, body: {} }))
+    const executeSubWorkflow = vi.fn(async () => 'undone')
+    const release = {
+      id: 'release-a', environmentId: 'customer-a', workflowId: workflow.id, workflowRevision: workflow.revision,
+      contentSha256: computeWorkflowDefinitionSha256(workflow), workflowSnapshot: workflow,
+      status: 'published' as const, connectorGrants: [], createdAt: new Date().toISOString(), publishedAt: new Date().toISOString(),
+    }
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      mcpClient: { call: mcpCall }, connectorService: { request: connectorRequest }, executeSubWorkflow,
+      resolveReleasedWorkflow: (releaseId) => releaseId === release.id ? release : undefined,
+    })
+    try {
+      await service.initialize()
+      const before = service.get(record.id)
+      await expect(service.compensate(record.id)).rejects.toThrow(/Workflow|revision|release|发布|身份|不可用/u)
+      expect(service.get(record.id)).toEqual(before)
+      expect(executeSubWorkflow).not.toHaveBeenCalled()
+      expect(mcpCall).not.toHaveBeenCalled()
+      expect(connectorRequest).not.toHaveBeenCalled()
+    } finally { await service.stop() }
+  })
 })
 
 async function createReleasedAccessFixture(node?: WorkflowNode, execution?: {

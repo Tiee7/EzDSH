@@ -732,6 +732,7 @@ export class WorkflowRunService {
       const current = this.options.runStore.get(runId)
       if (current === undefined) throw new Error(`Workflow run not found: ${runId}`)
       if (current.status === 'queued' || current.status === 'running' || current.status === 'waiting-approval') throw new Error('运行尚未结束，不能执行补偿')
+      if ([current.releaseId, current.environmentId, current.traceId].some((value) => value !== undefined)) this.requireWorkflowForRecord(current)
       this.revalidateReleasedAccess(current)
       record = current
     } catch (error) {
