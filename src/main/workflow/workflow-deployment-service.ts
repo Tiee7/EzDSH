@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { computeWorkflowReleaseSha256, verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
 import { WorkflowEnvironmentStore } from './workflow-environment-store.js'
-import { WorkflowReleaseStore } from './workflow-release-store.js'
+import { WorkflowReleaseStore, type WorkflowReleaseRollbackResult } from './workflow-release-store.js'
 import { WorkflowRunService } from './workflow-run-service.js'
 import { WorkflowStore } from './workflow-store.js'
 import { assertValidWorkflow } from './workflow-validator.js'
@@ -73,7 +73,7 @@ export class WorkflowDeploymentService {
     })
   }
 
-  async rollback(releaseId: string): Promise<WorkflowRelease> {
+  async rollback(releaseId: string): Promise<WorkflowReleaseRollbackResult> {
     await this.options.environmentStore.initialize()
     await this.options.releaseStore.initialize()
     const release = this.requireVerifiedRelease(releaseId)

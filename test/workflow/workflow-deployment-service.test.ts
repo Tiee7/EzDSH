@@ -99,6 +99,36 @@ function updateTransformNode(workflow: WorkflowDefinition, text: string): Workfl
 }
 
 describe('WorkflowDeploymentService', () => {
+  it('returns both rollback identities without changing another environment current release', async () => {
+    const { workflowStore, environmentStore, releaseStore, deploymentService } = await createFixture()
+    await environmentStore.upsert(createEnvironment())
+    await environmentStore.upsert(createEnvironment({ id: 'customer-other-production', customerName: 'Other', name: '生产', kind: 'production' }))
+    const workflow = await workflowStore.create(createWorkflowInput({ name: 'Rollback v1' }))
+    const first = await deploymentService.publish({ workflowId: workflow.id, environmentId: 'customer-acme-staging' })
+    const updated = await workflowStore.update(workflow.id, { ...workflow, name: 'Rollback v2' })
+    const second = await deploymentService.publish({ workflowId: updated.id, workflowRevision: updated.revision, environmentId: 'customer-acme-staging' })
+    const other = await deploymentService.publish({ workflowId: updated.id, workflowRevision: updated.revision, environmentId: 'customer-other-production' })
+
+    const result = await deploymentService.rollback(first.id)
+
+    expect(result.restored).toMatchObject({ id: first.id, environmentId: 'customer-acme-staging', status: 'published' })
+    expect(result.rolledBack).toMatchObject({ id: second.id, environmentId: 'customer-acme-staging', status: 'rolled-back' })
+    expect(releaseStore.get(other.id)).toMatchObject({ environmentId: 'customer-other-production', status: 'published' })
+  })
+
+  it('still rejects an invalid rollback target or a disabled target environment', async () => {
+    const { workflowStore, environmentStore, deploymentService } = await createFixture()
+    const environment = await environmentStore.upsert(createEnvironment())
+    const workflow = await workflowStore.create(createWorkflowInput({ name: 'Rollback boundary v1' }))
+    const first = await deploymentService.publish({ workflowId: workflow.id, environmentId: environment.id })
+    const updated = await workflowStore.update(workflow.id, { ...workflow, name: 'Rollback boundary v2' })
+    const second = await deploymentService.publish({ workflowId: updated.id, workflowRevision: updated.revision, environmentId: environment.id })
+
+    await expect(deploymentService.rollback(second.id)).rejects.toThrow(/superseded/u)
+    await environmentStore.upsert({ ...environment, status: 'disabled' })
+    await expect(deploymentService.rollback(first.id)).rejects.toThrow(/active/u)
+  })
+
   it.each([{ connectorGrants: undefined }, { connectorGrants: [{ connectorId: 'crm', operations: ['write' as const] }] }])('drops connectors removed after publishing with requested grants %j', async ({ connectorGrants }) => {
     const { workflowStore, environmentStore, releaseStore, deploymentService, runService } = await createFixture()
     await environmentStore.upsert(createEnvironment())

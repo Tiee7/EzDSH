@@ -105,6 +105,7 @@ import { WorkflowConnectorService } from './workflow/workflow-connector-service.
 import { WorkflowEnvironmentStore } from './workflow/workflow-environment-store.js'
 import { WorkflowReleaseStore } from './workflow/workflow-release-store.js'
 import { WorkflowDeploymentService } from './workflow/workflow-deployment-service.js'
+import { registerWorkflowReleaseRollbackIpc } from './workflow/workflow-release-rollback-ipc.js'
 import { WorkflowObservationStore } from './workflow/workflow-observation-store.js'
 import { WorkflowObservabilityService } from './workflow/workflow-observability-service.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
@@ -1149,6 +1150,7 @@ function requireDeveloperModeFeature(): void {
 
 function registerIpcHandlers(): void {
   registerWorkflowRunDefinitionIpc(ipcMain, () => workflowRunService)
+  registerWorkflowReleaseRollbackIpc(ipcMain, () => workflowDeploymentService, () => workflowObservabilityService)
   ipcMain.handle('runtime:get-status', (): IpcResult<RuntimeSnapshot> => {
     if (runtimeManager === undefined) return failure(new Error('Runtime manager is not ready'))
     return success(runtimeManager.snapshot())
@@ -1888,16 +1890,6 @@ function registerIpcHandlers(): void {
     try {
       if (workflowDeploymentService === undefined) throw new Error('Workflow deployment service is not ready')
       return success(await workflowDeploymentService.start(releaseId, input, options))
-    } catch (error) {
-      return failure(error)
-    }
-  })
-  ipcMain.handle('workflow-releases:rollback', async (_event, releaseId: string): Promise<IpcResult<ReturnType<typeof workflowReleaseSummary>>> => {
-    try {
-      if (workflowDeploymentService === undefined || workflowObservabilityService === undefined) throw new Error('Workflow deployment service is not ready')
-      const target = await workflowDeploymentService.rollback(releaseId)
-      await workflowObservabilityService.recordDeployment({ environmentId: target.environmentId, releaseId, action: 'release-rolled-back' })
-      return success(workflowReleaseSummary(target))
     } catch (error) {
       return failure(error)
     }

@@ -11,6 +11,11 @@ export interface WorkflowReleaseStoreOptions {
   now?: () => string
 }
 
+export interface WorkflowReleaseRollbackResult {
+  restored: WorkflowRelease
+  rolledBack: WorkflowRelease
+}
+
 function isNotFound(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
 }
@@ -146,7 +151,7 @@ export class WorkflowReleaseStore {
     })
   }
 
-  async rollback(id: string): Promise<WorkflowRelease> {
+  async rollback(id: string): Promise<WorkflowReleaseRollbackResult> {
     await this.initialize()
     return this.mutate(async () => {
       const target = this.releases.get(id)
@@ -165,7 +170,10 @@ export class WorkflowReleaseStore {
       current.status = 'rolled-back'
       target.status = 'published'
       await this.persist()
-      return cloneRelease(target)
+      return {
+        restored: cloneRelease(target),
+        rolledBack: cloneRelease(current),
+      }
     })
   }
 

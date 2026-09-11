@@ -144,8 +144,10 @@ describe('workflow production-candidate acceptance', () => {
     await observations.recordDeployment(second, '2026-09-04T01:02:00.000Z')
     expect(releaseStore.get(first.id)?.status).toBe('superseded')
 
-    const restored = await deployments.rollback(first.id)
+    const rollbackResult = await deployments.rollback(first.id)
+    const { restored, rolledBack } = rollbackResult
     expect(restored).toMatchObject({ id: first.id, status: 'published' })
+    expect(rolledBack).toMatchObject({ id: second.id, status: 'rolled-back' })
     expect(releaseStore.get(second.id)?.status).toBe('rolled-back')
     await observations.recordDeployment({
       environmentId: 'customer-acme-production',

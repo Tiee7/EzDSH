@@ -168,11 +168,18 @@ describe('WorkflowReleaseStore', () => {
     await store.publish(createRelease('release-1', { workflowSnapshot, workflowId: workflowSnapshot.id, workflowRevision: workflowSnapshot.revision }))
     await store.publish(createRelease('release-2', { workflowSnapshot, workflowId: workflowSnapshot.id, workflowRevision: workflowSnapshot.revision }))
 
-    const restored = await store.rollback('release-1')
-    expect(restored.status).toBe('published')
+    const result = await store.rollback('release-1')
+    expect(result.restored).toMatchObject({ id: 'release-1', status: 'published' })
+    expect(result.rolledBack).toMatchObject({ id: 'release-2', status: 'rolled-back' })
     expect(store.get('release-1')?.status).toBe('published')
     expect(store.get('release-2')?.status).toBe('rolled-back')
     expect(store.list().map((release) => `${release.id}:${release.status}`)).toEqual([
+      'release-1:published',
+      'release-2:rolled-back',
+    ])
+    const reloaded = new WorkflowReleaseStore(dir)
+    await reloaded.initialize()
+    expect(reloaded.list().map((release) => `${release.id}:${release.status}`)).toEqual([
       'release-1:published',
       'release-2:rolled-back',
     ])
