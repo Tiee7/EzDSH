@@ -27,6 +27,7 @@ export class WorkflowRunWorker {
   private started = false
   private stopping = false
   private consecutiveClaimFailures = 0
+  private retryNotBefore: number | undefined
   private drainPromise: Promise<void> | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
 
@@ -48,6 +49,12 @@ export class WorkflowRunWorker {
 
   wake(): void {
     if (!this.started || this.stopping || this.drainPromise !== undefined) return
+    const retryDelay = this.retryNotBefore === undefined ? 0 : this.retryNotBefore - Date.now()
+    if (retryDelay > 0) {
+      this.scheduleWake(retryDelay)
+      return
+    }
+    this.retryNotBefore = undefined
     if (this.timer !== undefined) {
       clearTimeout(this.timer)
       this.timer = undefined
@@ -74,6 +81,7 @@ export class WorkflowRunWorker {
       try {
         claimed = await this.options.store.claimNextDue(this.ownerId, this.leaseMs)
         this.consecutiveClaimFailures = 0
+        this.retryNotBefore = undefined
       } catch (error) {
         this.consecutiveClaimFailures += 1
         try {
@@ -81,7 +89,9 @@ export class WorkflowRunWorker {
         } catch {
           // An observer/error hook must not stop Worker polling recovery.
         }
+        if (!this.started || this.stopping) return
         const retryDelay = Math.min(30_000, this.pollIntervalMs * 2 ** Math.min(this.consecutiveClaimFailures - 1, 5))
+        this.retryNotBefore = Date.now() + retryDelay
         this.scheduleWake(retryDelay)
         return
       }

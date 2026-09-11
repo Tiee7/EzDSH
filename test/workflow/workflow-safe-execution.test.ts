@@ -534,6 +534,140 @@ describe('workflow safe execution store', () => {
     }
   })
 
+  it('does not let repeated external wakes bypass claim failure backoff', async () => {
+    vi.useFakeTimers()
+    const claimNextDue = vi.fn()
+      .mockRejectedValueOnce(new Error('claim failure'))
+      .mockResolvedValue(undefined)
+    const store = {
+      claimNextDue,
+      nextDueAt: vi.fn(() => undefined),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({
+      store,
+      ownerId: 'backoff-worker',
+      pollIntervalMs: 100,
+      executeClaimedRun: vi.fn(),
+    })
+
+    try {
+      await worker.start()
+      await vi.advanceTimersByTimeAsync(10)
+      worker.wake()
+      worker.wake()
+      await vi.advanceTimersByTimeAsync(89)
+      worker.wake()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(claimNextDue).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(claimNextDue).toHaveBeenCalledTimes(2)
+    } finally {
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('grows consecutive claim backoff by 1x, 2x, and 4x before capping at 30 seconds', async () => {
+    vi.useFakeTimers()
+    const startedAt = Date.now()
+    const claimTimes: number[] = []
+    const claimNextDue = vi.fn(async () => {
+      claimTimes.push(Date.now() - startedAt)
+      throw new Error('persistent claim failure')
+    })
+    const store = {
+      claimNextDue,
+      nextDueAt: vi.fn(() => undefined),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({
+      store,
+      ownerId: 'bounded-backoff-worker',
+      pollIntervalMs: 1_000,
+      executeClaimedRun: vi.fn(),
+    })
+
+    try {
+      await worker.start()
+      await vi.advanceTimersByTimeAsync(91_000)
+
+      expect(claimTimes).toEqual([0, 1_000, 3_000, 7_000, 15_000, 31_000, 61_000, 91_000])
+    } finally {
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not schedule a retry when stopped while claim is pending', async () => {
+    vi.useFakeTimers()
+    let rejectClaim: ((error: unknown) => void) | undefined
+    const claimNextDue = vi.fn(() => new Promise<WorkflowRunRecord | undefined>((_resolve, reject) => {
+      rejectClaim = reject
+    }))
+    const store = {
+      claimNextDue,
+      nextDueAt: vi.fn(() => undefined),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({
+      store,
+      ownerId: 'pending-claim-worker',
+      pollIntervalMs: 25,
+      executeClaimedRun: vi.fn(),
+    })
+
+    try {
+      await worker.start()
+      await vi.advanceTimersByTimeAsync(0)
+      const stopPromise = worker.stop()
+      rejectClaim?.(new Error('claim failed during stop'))
+      await stopPromise
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(claimNextDue).toHaveBeenCalledOnce()
+    } finally {
+      rejectClaim?.(new Error('test cleanup'))
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not schedule a retry when stopped while onWorkerError is pending', async () => {
+    vi.useFakeTimers()
+    let resolveWorkerError: (() => void) | undefined
+    const claimNextDue = vi.fn().mockRejectedValue(new Error('claim failed before stop'))
+    const onWorkerError = vi.fn(() => new Promise<void>((resolve) => {
+      resolveWorkerError = resolve
+    }))
+    const store = {
+      claimNextDue,
+      nextDueAt: vi.fn(() => undefined),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({
+      store,
+      ownerId: 'pending-observer-worker',
+      pollIntervalMs: 25,
+      executeClaimedRun: vi.fn(),
+      onWorkerError,
+    })
+
+    try {
+      await worker.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onWorkerError).toHaveBeenCalledOnce()
+      const stopPromise = worker.stop()
+      resolveWorkerError?.()
+      await stopPromise
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(claimNextDue).toHaveBeenCalledOnce()
+    } finally {
+      resolveWorkerError?.()
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
   it('aborts a claimed execution when lease renewal is lost', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-safe-execution-'))
     const store = new WorkflowRunStore(directory)
