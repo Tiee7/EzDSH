@@ -1805,7 +1805,16 @@ describe('workflow run service', () => {
     const { service, workflowId } = await createNodeService({ node: { id: 'transform', type: 'transform', label: 'Transform', config: { template: 'identity' }, position: { x: 200, y: 0 } } })
     const completed = await eventually(service, (await service.start(workflowId, 'delete with workflow')).id)
 
-    expect(await service.removeForWorkflow(workflowId)).toBe(1)
+    let removed = 0
+    for (let attempt = 0; attempt < 50 && removed === 0; attempt += 1) {
+      try {
+        removed = await service.removeForWorkflow(workflowId)
+      } catch (error) {
+        if (!(error instanceof Error) || !/完成收尾前不能删除/u.test(error.message)) throw error
+        await new Promise((resolve) => setTimeout(resolve, 2))
+      }
+    }
+    expect(removed).toBe(1)
     expect(service.get(completed.id)).toBeUndefined()
 
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-active-delete-workflow-'))
@@ -1818,6 +1827,64 @@ describe('workflow run service', () => {
 
     await expect(activeService.removeForWorkflow('workflow-branch')).rejects.toThrow('运行中的记录')
     expect(runStore.get('run-active-workflow')).toBeDefined()
+  })
+
+  it('rejects workflow deletion after run completion is saved until markLastRun and active cleanup finish', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-delete-completion-window-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({ ...graph(), id: 'delete-completion-window' })
+    const runStore = new WorkflowRunStore(dir)
+    const service = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    const originalMarkLastRun = workflowStore.markLastRun.bind(workflowStore)
+    let allowMarkLastRun!: () => void
+    const markLastRunGate = new Promise<void>((resolve) => { allowMarkLastRun = resolve })
+    let markLastRunEntered!: () => void
+    const markingLastRun = new Promise<void>((resolve) => { markLastRunEntered = resolve })
+    let markLastRunFinished!: () => void
+    const markedLastRun = new Promise<void>((resolve) => { markLastRunFinished = resolve })
+    vi.spyOn(workflowStore, 'markLastRun').mockImplementation(async (workflowId, runId) => {
+      markLastRunEntered()
+      await markLastRunGate
+      try { await originalMarkLastRun(workflowId, runId) } finally { markLastRunFinished() }
+    })
+
+    const started = await service.start(workflow.id, 'yes')
+    try {
+      await markingLastRun
+      expect(runStore.get(started.id)?.status).toBe('completed')
+      await expect(service.removeWorkflow(workflow.id)).rejects.toThrow(/仍在执行|运行中/u)
+      expect(workflowStore.get(workflow.id)).toBeDefined()
+      expect(runStore.get(started.id)).toBeDefined()
+
+      allowMarkLastRun()
+      await markedLastRun
+      let removed = false
+      for (let attempt = 0; attempt < 50 && !removed; attempt += 1) {
+        try {
+          await service.removeWorkflow(workflow.id)
+          removed = true
+        } catch (error) {
+          if (!(error instanceof Error) || !/仍在执行/u.test(error.message)) throw error
+          await new Promise((resolve) => setTimeout(resolve, 2))
+        }
+      }
+      expect(removed).toBe(true)
+      expect(workflowStore.get(workflow.id)).toBeUndefined()
+      expect(runStore.list(workflow.id)).toHaveLength(0)
+
+      const reloadedWorkflowStore = new WorkflowStore(dir)
+      const reloadedRunStore = new WorkflowRunStore(dir)
+      await reloadedWorkflowStore.initialize()
+      await reloadedRunStore.initialize()
+      expect(reloadedWorkflowStore.get(workflow.id)).toBeUndefined()
+      expect(reloadedRunStore.list(workflow.id)).toHaveLength(0)
+    } finally {
+      allowMarkLastRun()
+      await markedLastRun.catch(() => undefined)
+      await service.stop()
+    }
   })
 
   it('serializes workflow definition deletion with a top-level start so no orphan run is enqueued', async () => {

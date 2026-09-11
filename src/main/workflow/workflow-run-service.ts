@@ -189,9 +189,9 @@ export class WorkflowRunService {
 
   async remove(runId: string): Promise<void> {
     await this.initialize()
-    this.assertRunMutationAvailable(runId)
+    this.assertRunAdministrationAvailable(runId)
     const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
-    try { this.assertRunMutationAvailable(runId) } catch (error) { releaseMutation(); throw error }
+    try { this.assertRunAdministrationAvailable(runId) } catch (error) { releaseMutation(); throw error }
     this.administrativeActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -226,13 +226,13 @@ export class WorkflowRunService {
     let administrativeRecords: WorkflowRunRecord[] = []
     try {
       const initialRecords = this.options.runStore.list(workflowId)
-      for (const record of initialRecords) this.assertRunMutationAvailable(record.id)
+      for (const record of initialRecords) this.assertRunAdministrationAvailable(record.id)
       for (const runId of initialRecords.map((record) => record.id).sort()) releases.push(await this.acquireKeyedMutex(this.runMutationTails, runId))
       const releaseWorkflow = await this.acquireKeyedMutex(this.workflowMutationTails, workflowId)
       try {
         if (removeDefinition && this.options.workflowStore.get(workflowId) === undefined) throw new Error(`Workflow not found: ${workflowId}`)
         administrativeRecords = this.options.runStore.list(workflowId)
-        for (const record of administrativeRecords) this.assertRunMutationAvailable(record.id)
+        for (const record of administrativeRecords) this.assertRunAdministrationAvailable(record.id)
         const active = administrativeRecords.find((record) => record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval')
         if (active !== undefined) throw new Error('工作流仍有运行中的记录，请先取消运行后再删除工作流')
         for (const record of administrativeRecords) this.administrativeActive.add(record.id)
@@ -290,6 +290,11 @@ export class WorkflowRunService {
     if (activelyExecuting || this.reconciliationActive.has(runId) || this.compensationActive.has(runId) || this.administrativeActive.has(runId)) {
       throw new Error('该运行仍在执行，或人工核对、补偿、其他变更正在进行。')
     }
+  }
+
+  private assertRunAdministrationAvailable(runId: string): void {
+    this.assertRunMutationAvailable(runId)
+    if (this.active.has(runId)) throw new Error('该运行仍在执行，完成收尾前不能删除。')
   }
 
   async stop(): Promise<void> {
