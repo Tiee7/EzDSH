@@ -40,7 +40,7 @@ import type {
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
-import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, validateWorkflowCompensationEffectReconcileRequest, validateWorkflowEffectReconcileRequest, workflowAllNodeRunStates, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
+import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, normalizeWorkflowLaunchInput, resolveWorkflowValuePath, validateWorkflow, validateWorkflowCompensationEffectReconcileRequest, validateWorkflowEffectReconcileRequest, workflowAllNodeRunStates, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
@@ -323,7 +323,8 @@ export class WorkflowRunService {
       const workflow = options.workflowRevision === undefined ? this.options.workflowStore.get(workflowId) : this.options.workflowStore.getRevision(workflowId, options.workflowRevision)
       if (workflow === undefined) throw new Error(`Workflow not found: ${workflowId}`)
       assertValidWorkflow(workflow, '启动运行')
-      const record = this.createRecord(workflow, input, options)
+      const effectiveInput = normalizeWorkflowLaunchInput(workflow, input)
+      const record = this.createRecord(workflow, effectiveInput, options)
       const enqueued = await this.enqueue(record, '运行已排队')
       this.worker.wake()
       return cloneWorkflow(enqueued)
@@ -367,7 +368,8 @@ export class WorkflowRunService {
       assertValidWorkflow(workflow, '启动子工作流')
       parentActive = parentRunId === undefined ? undefined : this.active.get(parentRunId)
       throwIfAborted(parentActive?.abortController.signal)
-      child = this.createRecord(workflow, input, options)
+      const effectiveInput = normalizeWorkflowLaunchInput(workflow, input)
+      child = this.createRecord(workflow, effectiveInput, options)
       if (parent !== undefined) {
         child.parentRunId = parent.id
         child.workflowAncestry = [...lineage]
@@ -1227,7 +1229,8 @@ export class WorkflowRunService {
     if (!allowHistoricalRelease && release.status !== 'published') throw new Error('只能启动已发布的 workflow release')
     const workflow = this.resolveReleasedDefinitionOrThrow(release, definition.id, definition.revision)
     assertValidWorkflow(workflow, '启动发布工作流')
-    const record = this.createRecord(workflow, input, options, release)
+    const effectiveInput = normalizeWorkflowLaunchInput(workflow, input)
+    const record = this.createRecord(workflow, effectiveInput, options, release)
     this.revalidateReleasedAccess(record)
     const enqueued = await this.enqueue(record, '发布运行已排队')
     if (wakeWorker) this.worker.wake()

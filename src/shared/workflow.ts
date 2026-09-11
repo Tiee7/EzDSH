@@ -867,6 +867,55 @@ export function cloneWorkflow<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+function structuredWorkflowInputFields(workflow: WorkflowDefinition): WorkflowInputField[] {
+  return workflow.nodes.flatMap((node) => node.type === 'input' && (node.config.fields?.length ?? 0) > 0
+    ? node.config.fields as WorkflowInputField[]
+    : [])
+}
+
+/** Derive the renderer-safe portion of structured launch configuration. */
+export function deriveWorkflowLaunchFields(workflow: WorkflowDefinition): WorkflowInputField[] {
+  return structuredWorkflowInputFields(workflow).map((field) => ({
+    name: field.name,
+    ...(field.label === undefined ? {} : { label: field.label }),
+    ...(field.type === undefined ? {} : { type: field.type }),
+    ...(field.required === undefined ? {} : { required: field.required }),
+    ...(field.defaultValue === undefined ? {} : { defaultValue: cloneWorkflow(field.defaultValue) }),
+  }))
+}
+
+function isValidWorkflowInputFieldValue(field: WorkflowInputField, value: unknown): value is WorkflowValue {
+  switch (field.type ?? 'string') {
+    case 'string': return typeof value === 'string' && (field.required !== true || value.trim() !== '')
+    case 'number': return typeof value === 'number' && Number.isFinite(value)
+    case 'boolean': return typeof value === 'boolean'
+    case 'json': return isWorkflowValue(value)
+    case 'file': return typeof value === 'string' && value.trim() !== ''
+    case 'file-list': return Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string' && item.trim() !== '')
+  }
+}
+
+/** Validate a launch payload and return the exact default-applied value to persist. */
+export function normalizeWorkflowLaunchInput(workflow: WorkflowDefinition, input: WorkflowValue): WorkflowValue {
+  if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
+  const fields = structuredWorkflowInputFields(workflow)
+  if (fields.length === 0) return cloneWorkflow(input)
+  if (!isRecord(input)) throw new Error('结构化 Workflow 输入必须是对象。')
+  const effective = cloneWorkflow(input) as Record<string, WorkflowValue>
+  for (const field of fields) {
+    const label = field.label?.trim() || field.name
+    if (!Object.prototype.hasOwnProperty.call(effective, field.name)) {
+      if (field.defaultValue !== undefined) effective[field.name] = cloneWorkflow(field.defaultValue)
+      else if (field.required === true) throw new Error(`Workflow 输入字段「${label}」为必填项。`)
+      else continue
+    }
+    if (!isValidWorkflowInputFieldValue(field, effective[field.name])) {
+      throw new Error(`Workflow 输入字段「${label}」的值不符合 ${field.type ?? 'string'} 类型要求。`)
+    }
+  }
+  return effective
+}
+
 function newId(prefix: string): string {
   const entropy = typeof globalThis.crypto?.randomUUID === 'function'
     ? globalThis.crypto.randomUUID().slice(0, 8)
@@ -935,7 +984,7 @@ function readStringArray(value: unknown): string[] {
 function readInputFields(value: unknown): WorkflowInputField[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.flatMap((item) => {
-    if (!isRecord(item) || typeof item.name !== 'string' || item.name.trim() === '') return []
+    if (!isRecord(item) || typeof item.name !== 'string') return []
     const type: WorkflowInputFieldType = item.type === 'number' || item.type === 'boolean' || item.type === 'json' || item.type === 'file' || item.type === 'file-list' ? item.type : 'string'
     return [{
       name: item.name.trim(),
@@ -1323,11 +1372,23 @@ export function validateWorkflow(workflow: WorkflowDefinition): WorkflowValidati
   }
 
   const nodeIds = new Set<string>()
+  const structuredInputFieldNames = new Set<string>()
   for (const [index, node] of workflow.nodes.entries()) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(node.id)) issues.push({ path: `nodes.${index}.id`, message: '节点 ID 只能包含字母、数字、点、下划线和短横线。' })
     if (nodeIds.has(node.id)) issues.push({ path: `nodes.${index}.id`, message: '节点 ID 重复。' })
     nodeIds.add(node.id)
     if (node.label.trim() === '') issues.push({ path: `nodes.${index}.label`, message: '节点名称不能为空。' })
+    if (node.type === 'input' && (node.config.fields?.length ?? 0) > 0) {
+      for (const [fieldIndex, field] of node.config.fields!.entries()) {
+        const fieldPath = `nodes.${index}.config.fields.${fieldIndex}`
+        const name = field.name.trim()
+        if (name === '') issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名不能为空。' })
+        else if (structuredInputFieldNames.has(name)) issues.push({ path: `${fieldPath}.name`, message: '结构化输入字段名不能重复。' })
+        else structuredInputFieldNames.add(name)
+        if (!['string', 'number', 'boolean', 'json', 'file', 'file-list'].includes(field.type ?? 'string')) issues.push({ path: `${fieldPath}.type`, message: '结构化输入字段类型无效。' })
+        if (field.defaultValue !== undefined && !isValidWorkflowInputFieldValue(field, field.defaultValue)) issues.push({ path: `${fieldPath}.defaultValue`, message: '结构化输入字段默认值与字段类型不兼容。' })
+      }
+    }
     validateNodeBindings(node, `nodes.${index}`, issues)
     validateNodeConfig(node, `nodes.${index}.config`, issues)
   }
