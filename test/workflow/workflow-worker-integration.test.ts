@@ -157,6 +157,82 @@ describe('unpublished child workflows in the single Worker', () => {
     } finally { await service.stop() }
   })
 
+  it('keeps parentless synchronous retries exclusively under the Worker with exactly two attempts', async () => {
+    let attempts = 0
+    const leased: boolean[] = []
+    const { service, child, createWorkflow } = await liveChildFixture({
+      childNode: { id: 'ai', type: 'ai-task', label: 'Compensation retry', config: { instruction: 'retry', mode: 'single', skillIds: [], outputMode: 'text' }, retryPolicy: { maxAttempts: 2, baseDelayMs: 50, maxDelayMs: 50, jitterRatio: 0 }, position: { x: 200, y: 0 } },
+      lightweightClient: { complete: async () => {
+        attempts += 1
+        leased.push(service.list(child.id)[0]?.queue?.lease !== undefined)
+        if (attempts === 1) throw new Error('temporary provider failure')
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        return 'compensated'
+      } },
+    })
+    const unrelated = await createWorkflow('unrelated', [])
+    try {
+      const output = service.executeSubWorkflow(child.id, 'hello', true).then((value) => ({ value }), (error: unknown) => ({ error }))
+      await eventually(() => service.list(child.id)[0], (run) => run.status === 'queued' && run.events.some((event) => event.type === 'node-retry'))
+      // Wake the real Worker while the child is due for retry. The public
+      // compensation entry must never compete with it using inline execution.
+      await service.start(unrelated.id, null)
+      expect(await output).toEqual({ value: 'compensated' })
+      expect(attempts).toBe(2)
+      expect(leased).toEqual([true, true])
+      expect(service.list(child.id)).toHaveLength(1)
+    } finally { await service.stop() }
+  })
+
+  it('ends the parent wait promptly when the inline child is cancelled directly during retry delay', async () => {
+    let attempts = 0
+    const { service, parent, child } = await liveChildFixture({
+      childNode: { id: 'ai', type: 'ai-task', label: 'Delayed retry', config: { instruction: 'retry', mode: 'single', skillIds: [], outputMode: 'text' }, retryPolicy: { maxAttempts: 2, baseDelayMs: 10_000, maxDelayMs: 10_000, jitterRatio: 0 }, position: { x: 200, y: 0 } },
+      lightweightClient: { complete: async () => { attempts += 1; throw new Error('temporary provider failure') } },
+    })
+    try {
+      const started = await service.start(parent.id, 'hello')
+      const retry = await eventually(() => service.list(child.id)[0], (run) => run.status === 'queued' && run.events.some((event) => event.type === 'node-retry'))
+      await service.cancel(retry.id)
+      await eventually(() => service.get(started.id), (run) => ['paused', 'failed', 'cancelled'].includes(run.status))
+      expect(service.get(retry.id)?.status).toBe('cancelled')
+      expect(service.get(retry.id)?.events.filter((event) => event.type === 'run-started')).toHaveLength(1)
+      expect(attempts).toBe(1)
+    } finally { await service.stop() }
+  })
+
+  it('releases lineage after a failed child finishes', async () => {
+    const { service, child } = await liveChildFixture({
+      childNode: { id: 'ai', type: 'ai-task', label: 'Failure', config: { instruction: 'fail', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 0 } },
+      lightweightClient: { complete: async () => { throw new Error('permanent failure') } },
+    })
+    const lineages = (service as unknown as { liveLineages: Map<string, readonly string[]> }).liveLineages
+    try {
+      await service.executeSubWorkflow(child.id, null, false)
+      const failed = await eventually(() => service.list(child.id)[0], (run) => run.status === 'failed')
+      await eventually(() => lineages.has(failed.id), (present) => !present)
+    } finally { await service.stop() }
+  })
+
+  it('keeps queued async lineage until execution or cancellation', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const { service, parent, child } = await liveChildFixture({
+      wait: false,
+      afterChild: { id: 'hold', type: 'ai-task', label: 'Hold parent', config: { instruction: 'hold', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 400, y: 0 } },
+      lightweightClient: { complete: async () => { await gate; return 'done' } },
+    })
+    const lineages = (service as unknown as { liveLineages: Map<string, readonly string[]> }).liveLineages
+    try {
+      const started = await service.start(parent.id, null)
+      await eventually(() => service.get(started.id), (run) => run.nodeStates.some((state) => state.nodeId === 'hold' && state.status === 'running'))
+      const queued = service.list(child.id)[0]!
+      expect(lineages.has(queued.id)).toBe(true)
+      await service.cancel(queued.id)
+      expect(lineages.has(queued.id)).toBe(false)
+    } finally { release(); await service.stop() }
+  })
+
   it.each([false, true])('rejects recursive lineage before creating the repeated run (indirect: %s)', async (indirect) => {
     const { service, parent, child, workflowStore } = await liveChildFixture()
     const recursive = indirect ? child : parent

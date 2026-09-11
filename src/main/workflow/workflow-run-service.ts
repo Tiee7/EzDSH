@@ -252,10 +252,16 @@ export class WorkflowRunService {
     throwIfAborted(parentActive?.abortController.signal)
     const child = this.createRecord(workflow, input, options)
     this.liveLineages.set(child.id, [...lineage, workflow.id])
-    if (!waitForCompletion) {
+    if (!waitForCompletion || parentActive === undefined) {
       const enqueued = await this.enqueue(child, '子运行已排队')
+      if (enqueued.id !== child.id) this.liveLineages.delete(child.id)
       this.worker.wake()
-      return { runId: enqueued.id }
+      if (!waitForCompletion) return { runId: enqueued.id }
+      // Compensation and other parentless calls have no occupied Worker
+      // slot. Let the Worker own all attempts instead of racing its polling.
+      const settled = await this.waitForChildRun(enqueued.id)
+      if (settled.status !== 'completed') throw new Error(settled.error ?? '子工作流执行失败。')
+      return settled.output ?? null
     }
     // Persist as running so even an idle Worker's polling cannot claim this
     // inline run while its caller is saving the creation event.
@@ -269,17 +275,45 @@ export class WorkflowRunService {
       if (settled.status !== 'queued') throw new Error(settled.error ?? '子工作流执行失败。')
       // A retry yields the child, but the parent's Worker slot still belongs
       // to this call. Resume the same run when due instead of queueing behind it.
-      const delayMs = Math.max(0, Date.parse(settled.queue?.availableAt ?? '') - Date.now())
       try {
-        const signal = parentActive?.abortController.signal ?? new AbortController().signal
-        throwIfAborted(signal)
-        await waitForWorkflowDuration(delayMs, signal)
-        throwIfAborted(signal)
+        const current = await this.waitForChildRun(child.id, parentActive.abortController.signal, settled.queue?.availableAt)
+        if (current.status !== 'queued') throw new Error(current.error ?? '子工作流执行失败。')
       } catch (error) {
-        await this.cancel(child.id)
+        if (parentActive.abortController.signal.aborted) await this.cancel(child.id)
         throw error
       }
     }
+  }
+
+  /** Wait for a child to settle, or for an inline retry's due time. */
+  private waitForChildRun(runId: string, signal?: AbortSignal, dueAt?: string): Promise<WorkflowRunRecord> {
+    return new Promise((resolvePromise, reject) => {
+      let finished = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let unwatch = (): void => {}
+      const finish = (error?: Error): void => {
+        if (finished) return
+        finished = true
+        unwatch()
+        if (timer !== undefined) clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+        const current = this.options.runStore.get(runId)
+        if (error !== undefined) reject(error)
+        else if (current === undefined) reject(new Error(`Workflow run not found: ${runId}`))
+        else resolvePromise(current)
+      }
+      const onAbort = (): void => finish(new Error('子工作流等待已取消。'))
+      const observe = (record: WorkflowRunRecord): void => {
+        if (record.id === runId && record.status !== 'queued' && record.status !== 'running') finish()
+      }
+      unwatch = this.watch(observe)
+      if (signal?.aborted === true) onAbort()
+      else signal?.addEventListener('abort', onAbort, { once: true })
+      const current = this.options.runStore.get(runId)
+      if (current === undefined) finish()
+      else observe(current)
+      if (!finished && dueAt !== undefined) timer = setTimeout(() => finish(), Math.max(0, Date.parse(dueAt) - Date.now()))
+    })
   }
 
   async resume(runId: string): Promise<WorkflowRunRecord> {
@@ -377,7 +411,10 @@ export class WorkflowRunService {
       await this.cancelInternalSessions(active)
     }
     await this.options.runStore.requestCancellation(runId)
-    return this.options.runStore.get(runId) ?? record
+    const cancelled = this.options.runStore.get(runId) ?? record
+    if (cancelled.status === 'cancelled') this.liveLineages.delete(runId)
+    for (const listener of this.listeners) listener(cloneWorkflow(cancelled))
+    return cancelled
   }
 
   /**
@@ -986,7 +1023,7 @@ export class WorkflowRunService {
       await this.archiveInternalSessions(runId, active).catch(() => undefined)
       this.active.delete(runId)
       const status = this.options.runStore.get(runId)?.status
-      if (status === 'completed' || status === 'cancelled') this.liveLineages.delete(runId)
+      if (status === 'completed' || status === 'cancelled' || status === 'failed') this.liveLineages.delete(runId)
     }
   }
 
