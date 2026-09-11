@@ -222,6 +222,46 @@ describe('WorkflowObservabilityService', () => {
     expect(rejectedObservation).toMatchObject({ action: 'approval-rejected', severity: 'warning', outcome: 'failed' })
   })
 
+  it('restores healthy when a later same-release completion supersedes a recent failure', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-recent-recovery-'))
+    const store = new WorkflowObservationStore(dir)
+    const service = new WorkflowObservabilityService({
+      store,
+      now: () => '2026-09-03T10:00:00.000Z',
+      recentFailureWindowMs: 60_000,
+    })
+
+    await service.observeRun(createRunRecord({
+      id: 'run-failed-release-a',
+      releaseId: 'release-a',
+      events: [{ id: 'event-failed-release-a', time: '2026-09-03T09:59:10.000Z', type: 'run-failed' }],
+    }))
+    await service.observeRun(createRunRecord({
+      id: 'run-completed-release-a',
+      releaseId: 'release-a',
+      events: [{ id: 'event-completed-release-a', time: '2026-09-03T09:59:30.000Z', type: 'run-completed' }],
+    }))
+
+    expect(service.health('customer-acme-prod')).toMatchObject({ status: 'healthy', reason: 'healthy' })
+  })
+
+  it('keeps old approval rejections degraded', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-approval-rejection-health-'))
+    const store = new WorkflowObservationStore(dir)
+    const service = new WorkflowObservabilityService({
+      store,
+      now: () => '2026-09-03T12:00:00.000Z',
+      recentFailureWindowMs: 60_000,
+    })
+
+    await service.observeRun(createRunRecord({
+      releaseId: 'release-a',
+      events: [{ id: 'event-old-approval-rejected', time: '2026-09-03T08:00:00.000Z', type: 'approval-rejected', nodeId: 'approval' }],
+    }))
+
+    expect(service.health('customer-acme-prod')).toMatchObject({ status: 'degraded', reason: 'latest-run-failed' })
+  })
+
   it('keeps failed releases degraded until a later success for the same release', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-sticky-failure-'))
     const store = new WorkflowObservationStore(dir)

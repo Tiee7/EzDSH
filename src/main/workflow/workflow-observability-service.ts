@@ -109,14 +109,9 @@ export class WorkflowObservabilityService {
       }
     }
 
+    const latestTerminalSignals = latestTerminalSignalsByRelease(observations)
     const nowMs = Date.parse(observedAt)
-    const hasRecentFailure = observations.some((event) => (
-      event.severity === 'error'
-      && !Number.isNaN(Date.parse(event.time))
-      && nowMs - Date.parse(event.time) >= 0
-      && nowMs - Date.parse(event.time) < this.recentFailureWindowMs
-    ))
-    if (hasRecentFailure) {
+    if (hasRecentUnresolvedFailure(observations, latestTerminalSignals, nowMs, this.recentFailureWindowMs)) {
       return {
         environmentId,
         status: 'degraded',
@@ -125,7 +120,7 @@ export class WorkflowObservabilityService {
       }
     }
 
-    if (hasLatestRunFailure(observations)) {
+    if (latestTerminalSignals.some(isTerminalFailure)) {
       return {
         environmentId,
         status: 'degraded',
@@ -251,14 +246,41 @@ function outcomeForAction(action: WorkflowObservationAction): WorkflowObservatio
   }
 }
 
-function hasLatestRunFailure(observations: readonly WorkflowObservationEvent[]): boolean {
+function latestTerminalSignalsByRelease(observations: readonly WorkflowObservationEvent[]): WorkflowObservationEvent[] {
   const latestByRelease = new Map<string, WorkflowObservationEvent>()
   const terminalSignals = observations
-    .filter((event) => event.action === 'run-completed' || event.action === 'run-failed')
+    .filter(isTerminalSignal)
     .sort(compareObservations)
   for (const signal of terminalSignals) {
-    const group = signal.releaseId === undefined ? 'legacy' : `release:${signal.releaseId}`
-    latestByRelease.set(group, signal)
+    latestByRelease.set(releaseGroup(signal), signal)
   }
-  return [...latestByRelease.values()].some((signal) => signal.action === 'run-failed')
+  return [...latestByRelease.values()]
+}
+
+function hasRecentUnresolvedFailure(
+  observations: readonly WorkflowObservationEvent[],
+  latestTerminalSignals: readonly WorkflowObservationEvent[],
+  nowMs: number,
+  recentFailureWindowMs: number,
+): boolean {
+  const latestByRelease = new Map(latestTerminalSignals.map((signal) => [releaseGroup(signal), signal]))
+  return observations.some((event) => (
+    event.severity === 'error'
+    && !Number.isNaN(Date.parse(event.time))
+    && nowMs - Date.parse(event.time) >= 0
+    && nowMs - Date.parse(event.time) < recentFailureWindowMs
+    && (latestByRelease.get(releaseGroup(event)) === undefined || isTerminalFailure(latestByRelease.get(releaseGroup(event))!))
+  ))
+}
+
+function releaseGroup(event: WorkflowObservationEvent): string {
+  return event.releaseId === undefined ? 'legacy' : `release:${event.releaseId}`
+}
+
+function isTerminalSignal(event: WorkflowObservationEvent): boolean {
+  return event.action === 'run-completed' || event.action === 'run-failed' || event.action === 'approval-rejected'
+}
+
+function isTerminalFailure(event: WorkflowObservationEvent): boolean {
+  return event.action === 'run-failed' || event.action === 'approval-rejected'
 }

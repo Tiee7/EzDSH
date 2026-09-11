@@ -1666,7 +1666,8 @@ describe('workflow run service', () => {
     const waiting = await eventually(service, initial.id)
     expect(waiting.status).toBe('waiting-approval')
     expect(waiting.waitingApprovalNodeId).toBe('approval')
-    await service.approve(initial.id, true)
+    const approved = await service.approve(initial.id, true)
+    expect(approved.events.at(-1)?.type).toBe('approval-approved')
     expect((await eventually(service, initial.id)).status).toBe('completed')
   })
 
