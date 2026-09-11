@@ -2779,7 +2779,7 @@ describe('WorkflowPage regressions', () => {
     const updatedRunA: WorkflowRunRecord = {
       ...runA,
       status: resultStatus,
-      events: [...runA.events, { id: `action-result-${bridgeKey}`, time: '2026-09-12T08:00:00.000Z', type: resultStatus === 'cancelled' ? 'run-cancelled' : 'run-resumed' }],
+      events: [...runA.events, { id: `action-result-${bridgeKey}`, time: '2026-09-12T08:00:00.000Z', type: resultStatus === 'cancelled' ? 'run-cancelled' : resultStatus === 'queued' ? 'run-created' : 'run-failed' }],
     }
     let resolveAction!: (record: WorkflowRunRecord) => void
     const actionResult = new Promise<WorkflowRunRecord>((resolve) => { resolveAction = resolve })
@@ -2852,6 +2852,168 @@ describe('WorkflowPage regressions', () => {
       rejectCancel(new Error('cleanup'))
       await mounted.cleanup()
     }
+  })
+
+  it('keeps a fresher live terminal run when an older action response arrives', async () => {
+    const workflow = createDefaultWorkflow('异步动作新鲜度')
+    const startedEvent = { id: 'fresh-action-started', time: '2026-09-12T08:00:00.000Z', type: 'run-started' as const }
+    const run: WorkflowRunRecord = { id: 'run-action-freshness', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'running', input: {}, allowShellFile: false, nodeStates: [], events: [startedEvent] }
+    const liveCompleted: WorkflowRunRecord = { ...run, status: 'completed', output: 'fresh live output', completedAt: '2026-09-12T08:01:00.000Z', events: [...run.events, { id: 'fresh-action-completed', time: '2026-09-12T08:01:00.000Z', type: 'run-completed' }] }
+    const staleActionResponse: WorkflowRunRecord = { ...run, status: 'queued' }
+    let emitRunState!: (record: WorkflowRunRecord) => void
+    let resolveCancel!: (record: WorkflowRunRecord) => void
+    const cancelResult = new Promise<WorkflowRunRecord>((resolve) => { resolveCancel = resolve })
+    const getRunDefinition = vi.fn(async () => workflow)
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(async () => [run]),
+      getRunDefinition,
+      cancel: vi.fn(() => cancelResult),
+      onStateChange: vi.fn((listener: (record: WorkflowRunRecord) => void) => { emitRunState = listener; return () => {} }),
+      listModificationHistory: vi.fn(async () => []),
+      onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-run-item-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const cancelButton = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowCancel) as HTMLButtonElement
+      await act(async () => { cancelButton.click(); await Promise.resolve() })
+      await act(async () => { emitRunState(liveCompleted); await mounted.settle() })
+      await act(async () => { resolveCancel(staleActionResponse); await cancelResult; await mounted.settle() })
+
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity .workflow-status-pill')?.textContent).toBe(getAppCopy('zh').workflowRunCompleted)
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-detail')?.textContent).toContain('fresh live output')
+      expect(mounted.domWindow.document.querySelector('.workflow-run-item strong')?.textContent).toBe(getAppCopy('zh').workflowRunCompleted)
+      expect(getRunDefinition.mock.calls.map(([runId]) => runId)).toEqual([run.id])
+    } finally {
+      resolveCancel(staleActionResponse)
+      await mounted.cleanup()
+    }
+  })
+
+  it('keeps a deferred run A response out of workflow B and retains it when workflow A is reopened', async () => {
+    const workflowA = createDefaultWorkflow('异步动作跨工作流 A')
+    const workflowB = createDefaultWorkflow('异步动作跨工作流 B')
+    const runA: WorkflowRunRecord = { id: 'run-cross-workflow-action-a', workflowId: workflowA.id, workflowRevision: workflowA.revision, status: 'running', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const updatedRunA: WorkflowRunRecord = { ...runA, status: 'cancelled', completedAt: '2026-09-12T08:03:00.000Z', events: [{ id: 'cross-a-cancelled', time: '2026-09-12T08:03:00.000Z', type: 'run-cancelled' }] }
+    const runB: WorkflowRunRecord = { id: 'run-cross-workflow-action-b', workflowId: workflowB.id, workflowRevision: workflowB.revision, status: 'completed', input: {}, output: 'workflow B output', allowShellFile: false, nodeStates: [], events: [] }
+    let resolveCancel!: (record: WorkflowRunRecord) => void
+    const cancelResult = new Promise<WorkflowRunRecord>((resolve) => { resolveCancel = resolve })
+    const never = new Promise<WorkflowRunRecord[]>(() => {})
+    const calls = new Map<string, number>()
+    const getRunDefinition = vi.fn(async (runId: string) => runId === runA.id ? workflowA : workflowB)
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflowA, workflowB]),
+      listRuns: vi.fn((workflowId: string) => {
+        const count = (calls.get(workflowId) ?? 0) + 1
+        calls.set(workflowId, count)
+        if (workflowId === workflowA.id) return count >= 3 ? never : Promise.resolve([runA])
+        return Promise.resolve([runB])
+      }),
+      getRunDefinition,
+      cancel: vi.fn(() => cancelResult),
+      onStateChange: vi.fn(() => () => {}),
+      listModificationHistory: vi.fn(async () => []),
+      onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      const workflowCard = (name: string): HTMLButtonElement => Array.from(mounted.domWindow.document.querySelectorAll('.workflow-file-card-main')).find((card) => card.textContent?.includes(name)) as HTMLButtonElement
+      const executionsButton = (): HTMLButtonElement => Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { workflowCard(workflowA.name).click(); await mounted.settle() })
+      await act(async () => { executionsButton().click(); await Promise.resolve() })
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-run-item-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const cancelButton = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowCancel) as HTMLButtonElement
+      await act(async () => { cancelButton.click(); await Promise.resolve() })
+
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-back-button') as HTMLButtonElement).click(); await Promise.resolve() })
+      await act(async () => { workflowCard(workflowB.name).click(); await mounted.settle() })
+      await act(async () => { executionsButton().click(); await Promise.resolve() })
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-run-item-main') as HTMLButtonElement).click(); await mounted.settle() })
+      await act(async () => { resolveCancel(updatedRunA); await cancelResult; await mounted.settle() })
+
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity')?.textContent).toContain(runB.id)
+      expect(mounted.domWindow.document.body.textContent).not.toContain(runA.id.slice(-12))
+      expect(getRunDefinition.mock.calls.map(([runId]) => runId)).toEqual([runA.id, runB.id])
+
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-back-button') as HTMLButtonElement).click(); await Promise.resolve() })
+      await act(async () => { workflowCard(workflowA.name).click(); await mounted.settle() })
+      await act(async () => { executionsButton().click(); await Promise.resolve() })
+      const reopenedRunA = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item')).find((item) => item.textContent?.includes(runA.id.slice(-12)))
+      expect(reopenedRunA?.querySelector('strong')?.textContent).toBe(getAppCopy('zh').workflowRunCancelled)
+      expect(mounted.domWindow.document.body.textContent).not.toContain(runB.id.slice(-12))
+    } finally {
+      resolveCancel(updatedRunA)
+      await mounted.cleanup()
+    }
+  })
+
+  it('keeps both deferred compensation reconciliation responses owned by run A after selecting run B', async () => {
+    const workflow = createDefaultWorkflow('补偿核对异步所有权')
+    const occurrenceId = 'run-compensation-owner-a:compensation:write:ordinary'
+    const runA: WorkflowRunRecord = {
+      id: 'run-compensation-owner-a', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'failed', input: {}, allowShellFile: false, nodeStates: [], events: [],
+      compensationStack: [{ sourceNodeId: 'write', action: { type: 'workflow', workflowId: 'rollback' }, status: 'failed', effectState: 'unknown', occurrenceId }],
+    }
+    const runB: WorkflowRunRecord = { id: 'run-compensation-owner-b', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'completed', input: {}, output: 'run B compensation-safe', allowShellFile: false, nodeStates: [], events: [] }
+    const reconciledRunA: WorkflowRunRecord = {
+      ...runA,
+      compensationStack: [{ sourceNodeId: 'write', action: { type: 'workflow', workflowId: 'rollback' }, status: 'pending', effectState: 'none', occurrenceId }],
+    }
+    const compensatedRunA: WorkflowRunRecord = {
+      ...runA,
+      compensationStack: [{ sourceNodeId: 'write', action: { type: 'workflow', workflowId: 'rollback' }, status: 'completed', effectState: 'none', occurrenceId }],
+    }
+    let resolveReconciliation!: (record: WorkflowRunRecord) => void
+    let resolveCompensation!: (record: WorkflowRunRecord) => void
+    const reconciliationResult = new Promise<WorkflowRunRecord>((resolve) => { resolveReconciliation = resolve })
+    const compensationResult = new Promise<WorkflowRunRecord>((resolve) => { resolveCompensation = resolve })
+    const compensate = vi.fn(() => compensationResult)
+    const getRunDefinition = vi.fn(async () => workflow)
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(async () => [runA, runB]),
+      getRunDefinition,
+      reconcileCompensation: vi.fn(() => reconciliationResult),
+      compensate,
+      onStateChange: vi.fn(() => () => {}),
+      listModificationHistory: vi.fn(async () => []),
+      onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      const runButton = (runId: string): HTMLButtonElement => Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item-main')).find((button) => button.textContent?.includes(runId.slice(-12))) as HTMLButtonElement
+      await act(async () => { runButton(runA.id).click(); await mounted.settle() })
+      const textarea = mounted.domWindow.document.querySelector('.workflow-compensation-effect-review textarea') as HTMLTextAreaElement
+      await act(async () => { Simulate.change(textarea, { target: { value: 'provider confirms absent' } }) })
+      const reconcileButton = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowCompensationEffectNotDispatched) as HTMLButtonElement
+      await act(async () => { reconcileButton.click(); await Promise.resolve() })
+      await act(async () => { runButton(runB.id).click(); await mounted.settle() })
+
+      await act(async () => { resolveReconciliation(reconciledRunA); await reconciliationResult; await mounted.settle() })
+      expect(compensate).toHaveBeenCalledWith(runA.id)
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity')?.textContent).toContain(runB.id)
+
+      await act(async () => { resolveCompensation(compensatedRunA); await compensationResult; await mounted.settle() })
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity')?.textContent).toContain(runB.id)
+      expect(mounted.domWindow.document.querySelector('.workflow-run-item-active')?.textContent).toContain(runB.id.slice(-12))
+      expect(getRunDefinition.mock.calls.map(([runId]) => runId)).toEqual([runA.id, runB.id])
+    } finally {
+      resolveReconciliation(reconciledRunA)
+      resolveCompensation(compensatedRunA)
+      await mounted.cleanup()
+    }
+  })
+
+  it('rejects a run action response whose identity differs from the submitted run', async () => {
+    const apply = vi.fn()
+    const mismatched: WorkflowRunRecord = { id: 'run-response-b', workflowId: 'workflow', workflowRevision: 1, status: 'failed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+
+    await expect(workflowPage.applyWorkflowRunActionRequest('run-submitted-a', async () => mismatched, () => 'run-submitted-a', apply)).rejects.toThrow(/identity mismatch/u)
+    expect(apply).not.toHaveBeenCalled()
   })
 
   it('labels reconciliation controls with the node and loop iteration identity', () => {

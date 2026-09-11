@@ -751,9 +751,11 @@ export function workflowReconciliationErrorMessage(copy: AppCopy): string {
 }
 
 /** Keep an asynchronous run action attached to the run that submitted it. */
-export async function applyWorkflowRunActionRequest(runId: string, bridge: () => Promise<WorkflowRunRecord>, selectedRunId: () => string | undefined, apply: (record: WorkflowRunRecord, replaceDetail: boolean) => void): Promise<void> {
+export async function applyWorkflowRunActionRequest(runId: string, bridge: () => Promise<WorkflowRunRecord>, selectedRunId: () => string | undefined, apply: (record: WorkflowRunRecord, replaceDetail: boolean) => void): Promise<WorkflowRunRecord> {
   const record = await bridge()
-  apply(record, record.id === runId && selectedRunId() === runId)
+  if (record.id !== runId) throw new Error('Workflow run response identity mismatch')
+  apply(record, selectedRunId() === runId)
+  return record
 }
 
 /** Apply an asynchronous reconciliation result without replacing a newer run selection. */
@@ -3827,20 +3829,25 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const applyRunRecord = (record: WorkflowRunRecord, replaceDetail = true): void => {
     const knownRuns = recordLiveWorkflowRun(record)
-    if (replaceDetail && currentRunRef.current?.id !== record.id) inspectRun(record)
+    const authoritativeRecord = knownRuns.find((candidate) => candidate.id === record.id)
+    if (authoritativeRecord === undefined) {
+      updateRunSummary(record.workflowId, knownRuns)
+      return
+    }
+    if (replaceDetail && currentRunRef.current?.id !== authoritativeRecord.id) inspectRun(authoritativeRecord)
     else if (replaceDetail) {
-      currentRunRef.current = record
-      setCurrentRun(record)
+      currentRunRef.current = authoritativeRecord
+      setCurrentRun(authoritativeRecord)
     }
     const visibleWorkflowId = selectedWorkflowIdRef.current ?? currentRunRef.current?.workflowId
-    if (replaceDetail || visibleWorkflowId === record.workflowId) {
+    if (replaceDetail || visibleWorkflowId === authoritativeRecord.workflowId) {
       setRuns((current) => {
-        const next = [record, ...current.filter((item) => item.id !== record.id)]
-        updateRunSummary(record.workflowId, knownRuns)
+        const next = [authoritativeRecord, ...current.filter((item) => item.id !== authoritativeRecord.id)]
+        updateRunSummary(authoritativeRecord.workflowId, knownRuns)
         return next
       })
     } else {
-      updateRunSummary(record.workflowId, knownRuns)
+      updateRunSummary(authoritativeRecord.workflowId, knownRuns)
     }
   }
 
@@ -4016,11 +4023,22 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setBusy(true)
     setError('')
     try {
-      const reconciled = await window.EzDSH.workflows.reconcileCompensation(submittedRunId, request)
+      const reconciled = await applyWorkflowRunActionRequest(
+        submittedRunId,
+        () => window.EzDSH.workflows.reconcileCompensation(submittedRunId, request),
+        () => currentRunRef.current?.id,
+        applyRunRecord,
+      )
       const shouldContinue = !(reconciled.compensationStack ?? []).some((entry) => entry.effectState === 'unknown')
         && (reconciled.compensationStack ?? []).some((entry) => entry.status === 'pending')
-      applyRunRecord(reconciled, currentRunRef.current?.id === submittedRunId)
-      if (shouldContinue) applyRunRecord(await window.EzDSH.workflows.compensate(submittedRunId), currentRunRef.current?.id === submittedRunId)
+      if (shouldContinue) {
+        await applyWorkflowRunActionRequest(
+          submittedRunId,
+          () => window.EzDSH.workflows.compensate(submittedRunId),
+          () => currentRunRef.current?.id,
+          applyRunRecord,
+        )
+      }
       return true
     } catch {
       if (currentRunRef.current?.id === submittedRunId) setError(workflowReconciliationErrorMessage(copy))
