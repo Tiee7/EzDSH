@@ -334,6 +334,18 @@ describe('WorkflowObservabilityService', () => {
     expect(service.health('customer-acme-prod')).toMatchObject({ status: 'healthy', reason: 'healthy' })
   })
 
+  it('treats a same-millisecond run completion after a recent node failure as healthy', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-recent-tie-'))
+    const store = new WorkflowObservationStore(dir)
+    const time = '2026-09-03T11:59:59.999Z'
+    const service = new WorkflowObservabilityService({ store, now: () => '2026-09-03T12:00:00.000Z', recentFailureWindowMs: 60_000 })
+    await service.observeRun(createRunRecord({ events: [
+      { id: 'node-failed-first', time, type: 'node-failed', nodeId: 'write' },
+      { id: 'run-completed-later', time, type: 'run-completed' },
+    ] }))
+    expect(service.health('customer-acme-prod')).toMatchObject({ status: 'healthy', reason: 'healthy' })
+  })
+
   it('records each release lifecycle event with a unique observation id and the supplied lifecycle time', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-release-'))
     const store = new WorkflowObservationStore(dir)

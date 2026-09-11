@@ -7,6 +7,7 @@ import * as workflowPage from '../../src/renderer/workflow/WorkflowPage.js'
 import { getAppCopy } from '../../src/shared/locale.js'
 import { createDefaultWorkflow, type WorkflowDefinition, type WorkflowNodeType, type WorkflowRunRecord } from '../../src/shared/workflow.js'
 import { ReactFlow, type Edge, type Node } from '@xyflow/react'
+import type { ComponentType } from 'react'
 
 function graphWithRemovedNode(): WorkflowDefinition {
   const workflow = createDefaultWorkflow('Graph')
@@ -28,12 +29,17 @@ function workflowWithUnknownLoopEffect(): { workflow: WorkflowDefinition; run: W
   const run: WorkflowRunRecord = {
     id: 'run-effect-acceptance', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'paused', input: { task: 'send receipts' }, events: [], allowShellFile: false,
     nodeStates: [{ nodeId: loop.id, status: 'cancelled', loopIterations: [{ iterationId: 'iteration-0', iterationIndex: 0, input: { recipient: 'Ada' }, status: 'running', nodeStates: [{ nodeId: body.id, status: 'cancelled', effectState: 'unknown', input: { recipient: 'Ada', receipt: 'R-42' } }] }] }],
+    effectReconciliationTargets: [{ key: 'run-effect-acceptance:iteration-0', nodeId: body.id, nodeLabel: body.label, iterationId: 'iteration-0', iterationIndex: 0, loopNodeLabel: loop.label, input: { recipient: 'Ada', receipt: 'R-42' } }],
   }
   return { workflow, run, bodyNodeId: body.id }
 }
 
-async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffect: (runId: string, request: unknown) => Promise<WorkflowRunRecord>): Promise<{ domWindow: ReturnType<typeof createWindow>; cleanup: () => Promise<void>; workflow: WorkflowDefinition; run: WorkflowRunRecord; bodyNodeId: string }> {
+async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffect: (runId: string, request: unknown) => Promise<WorkflowRunRecord>, reconcileCompensation?: (runId: string, request: unknown) => Promise<WorkflowRunRecord>, compensationMode = false): Promise<{ domWindow: ReturnType<typeof createWindow>; cleanup: () => Promise<void>; workflow: WorkflowDefinition; run: WorkflowRunRecord; bodyNodeId: string }> {
   const { workflow, run, bodyNodeId } = workflowWithUnknownLoopEffect()
+  if (compensationMode) {
+    run.effectReconciliationTargets = []
+    run.compensationStack = [{ sourceNodeId: 'charge', action: { type: 'workflow', workflowId: 'refund' }, status: 'failed', effectState: 'unknown', occurrenceId: 'run-effect-acceptance:compensation:charge:ordinary' }]
+  }
   const previousGlobals = {
     window: globalThis.window,
     document: globalThis.document,
@@ -88,7 +94,7 @@ async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffec
       listModificationHistory: vi.fn(async () => []),
       onModificationStateChange: vi.fn(() => () => {}),
     },
-    workflowRuns: { reconcileEffect },
+    workflowRuns: { reconcileEffect, reconcileCompensation: reconcileCompensation ?? (async () => run) },
     employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
     workflowCredentials: { list: vi.fn(async () => []) },
     workflowConnectors: { list: vi.fn(async () => []) },
@@ -894,6 +900,7 @@ describe('WorkflowPage regressions', () => {
         { nodeId: node.id, status: 'completed', input: { long: '上游节点输出' }, output: { result: '节点结果' } },
       ],
       events: [],
+      effectReconciliationTargets: [{ key: 'ordinary-effect', nodeId: node.id, nodeLabel: node.label, input: { recipient: 'Ada', receipt: 'R-42' } }],
       allowShellFile: false,
     }
 
@@ -1391,6 +1398,7 @@ describe('WorkflowPage regressions', () => {
         { nodeId: node.id, status: 'cancelled', effectState: 'unknown', input: { recipient: 'Ada', receipt: 'R-42' } },
         { nodeId: workflow.nodes.find((candidate) => candidate.type === 'output')!.id, status: 'cancelled', effectState: 'dispatched' },
       ],
+      effectReconciliationTargets: [{ key: 'run-unknown-effect:ordinary', nodeId: node.id, nodeLabel: node.label, input: { recipient: 'Ada', receipt: 'R-42' } }],
       events: [],
       allowShellFile: false,
     }
@@ -1415,6 +1423,7 @@ describe('WorkflowPage regressions', () => {
     const run: WorkflowRunRecord = {
       id: 'run-loop-unknown-effect', workflowId: definition.id, workflowRevision: definition.revision, status: 'paused', input: {}, events: [], allowShellFile: false,
       nodeStates: [{ nodeId: loop.id, status: 'cancelled', loopIterations: [{ iterationId: 'iteration-7', iterationIndex: 7, input: { recipient: 'Grace' }, status: 'running', nodeStates: [{ nodeId: body.id, status: 'cancelled', effectState: 'unknown', input: { recipient: 'Grace', receipt: 'R-7' } }] }] }],
+      effectReconciliationTargets: [{ key: `run-loop-unknown-effect:iteration-7:${body.id}:0:0:no-effect-event`, nodeId: body.id, nodeLabel: body.label, iterationId: 'iteration-7', iterationIndex: 7, loopNodeLabel: '逐项发送', input: { recipient: 'Grace', receipt: 'R-7' } }],
     }
 
     expect(workflowPage.workflowUnknownEffectTargets(definition, run)).toEqual([{
@@ -1426,6 +1435,54 @@ describe('WorkflowPage regressions', () => {
       loopNodeLabel: '逐项发送',
       input: { recipient: 'Grace', receipt: 'R-7' },
     }])
+  })
+
+  it('does not expose an actionable node-effect fallback when Main omitted exact targets', () => {
+    const workflow = createDefaultWorkflow('No fallback')
+    const node = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
+    const run: WorkflowRunRecord = { id: 'legacy-no-target', workflowId: workflow.id, workflowRevision: 1, status: 'paused', input: null, allowShellFile: false, events: [], nodeStates: [{ nodeId: node.id, status: 'pending', effectState: 'unknown' }] }
+    expect(workflowPage.workflowUnknownEffectTargets(workflow, run)).toEqual([])
+  })
+
+  it('renders compensation review as a distinct surface with an exact occurrence identity', () => {
+    const module = workflowPage as unknown as {
+      workflowCompensationUnknownTargets?: (run: WorkflowRunRecord) => Array<{ key: string; occurrenceId: string; sourceNodeId: string }>
+      WorkflowCompensationReconciliationPanel?: ComponentType<{ copy: ReturnType<typeof getAppCopy>; targets: Array<{ key: string; occurrenceId: string; sourceNodeId: string }>; onReconcile: (request: unknown) => void }>
+    }
+    expect(module.workflowCompensationUnknownTargets).toBeTypeOf('function')
+    expect(module.WorkflowCompensationReconciliationPanel).toBeTypeOf('function')
+    if (module.workflowCompensationUnknownTargets === undefined || module.WorkflowCompensationReconciliationPanel === undefined) return
+    const run: WorkflowRunRecord = {
+      id: 'comp-review', workflowId: 'workflow', workflowRevision: 1, status: 'failed', input: null, allowShellFile: false, nodeStates: [], events: [],
+      compensationStack: [{ sourceNodeId: 'charge', action: { type: 'workflow', workflowId: 'refund' }, status: 'failed', effectState: 'unknown', occurrenceId: 'comp-review:compensation:charge:ordinary' }],
+    }
+    const Panel = module.WorkflowCompensationReconciliationPanel
+    const markup = renderToStaticMarkup(<Panel copy={getAppCopy('zh')} targets={module.workflowCompensationUnknownTargets(run)} onReconcile={vi.fn()} />)
+    expect(markup).toContain('补偿副作用人工核对')
+    expect(markup).toContain('charge')
+    expect(markup).toContain('comp-review:compensation:charge:ordinary')
+    expect(markup).toContain('确认补偿未派发并重试')
+    expect(markup).toContain('确认补偿已派发')
+    expect(markup).not.toContain('确认未发送并重试')
+  })
+
+  it('sends the exact compensation occurrence through the WorkflowPage bridge', async () => {
+    const reconcileCompensation = vi.fn(async () => {
+      const { run } = workflowWithUnknownLoopEffect()
+      run.effectReconciliationTargets = []
+      run.compensationStack = [{ sourceNodeId: 'charge', action: { type: 'workflow', workflowId: 'refund' }, status: 'pending', effectState: 'none', occurrenceId: 'run-effect-acceptance:compensation:charge:ordinary' }]
+      return run
+    })
+    const page = await mountWorkflowEffectReviewPage('zh', vi.fn(), reconcileCompensation, true)
+    try {
+      const textarea = page.domWindow.document.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => { Simulate.change(textarea, { target: { value: '  provider confirms absent  ' } }) })
+      const action = Array.from(page.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '确认补偿未派发并重试') as HTMLButtonElement
+      await act(async () => { action.click(); await Promise.resolve() })
+      expect(reconcileCompensation).toHaveBeenCalledWith(page.run.id, {
+        occurrenceId: 'run-effect-acceptance:compensation:charge:ordinary', outcome: 'not-dispatched', note: 'provider confirms absent',
+      })
+    } finally { await page.cleanup() }
   })
 
   it('requires a note and a second confirmation before reconciling a dispatched effect', async () => {
@@ -1473,6 +1530,19 @@ describe('WorkflowPage regressions', () => {
       const confirm = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '我确认已经发送，继续') as HTMLButtonElement
       await act(async () => { confirm.click(); await Promise.resolve() })
       expect(reconcile).toHaveBeenCalledWith({ nodeId: 'write', iterationId: 'iteration-2', outcome: 'dispatched', note: '核对了发送日志' })
+
+      reconcile.mockClear()
+      await act(async () => {
+        root.render(<workflowPage.WorkflowCompensationReconciliationPanel copy={getAppCopy('zh')} onReconcile={reconcile} targets={[{ key: 'comp-occurrence', occurrenceId: 'comp-occurrence', sourceNodeId: 'write' }]} />)
+      })
+      const compensationNote = domWindow.document.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => { Simulate.change(compensationNote, { target: { value: '  核对了补偿日志  ' } }) })
+      const compensationDispatched = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '确认补偿已派发') as HTMLButtonElement
+      await act(async () => { compensationDispatched.click() })
+      expect(reconcile).not.toHaveBeenCalled()
+      const compensationConfirm = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '我确认已经发送，继续') as HTMLButtonElement
+      await act(async () => { compensationConfirm.click(); await Promise.resolve() })
+      expect(reconcile).toHaveBeenCalledWith({ occurrenceId: 'comp-occurrence', outcome: 'dispatched', note: '核对了补偿日志' })
     } finally {
       const { navigator: previousNavigator, ...previousGlobalsWithoutNavigator } = previousGlobals
       Object.assign(globalThis, previousGlobalsWithoutNavigator)
@@ -1480,12 +1550,13 @@ describe('WorkflowPage regressions', () => {
     }
   })
 
-  it('gives each unknown-effect occurrence a run-bound key', () => {
+  it('preserves each Main-provided unknown-effect occurrence key', () => {
     const workflow = createDefaultWorkflow('Occurrence keys')
     const node = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
     const createRun = (id: string, attempt: number): WorkflowRunRecord => ({
       id, workflowId: workflow.id, workflowRevision: workflow.revision, status: 'paused', input: {}, events: [], allowShellFile: false,
       nodeStates: [{ nodeId: node.id, status: 'cancelled', effectState: 'unknown', attempt }],
+      effectReconciliationTargets: [{ key: `${id}:${attempt}`, nodeId: node.id, nodeLabel: node.label }],
     })
 
     const runA = workflowPage.workflowUnknownEffectTargets(workflow, createRun('run-a', 1))[0]!
@@ -1512,6 +1583,7 @@ describe('WorkflowPage regressions', () => {
         { nodeId: body.id, status: 'cancelled', effectState: 'unknown', input: 'projection only' },
         { nodeId: loop.id, status: 'cancelled', loopIterations: [{ iterationId: 'iteration-1', iterationIndex: 1, input: 'durable input', status: 'running', nodeStates: [{ nodeId: body.id, status: 'cancelled', effectState: 'unknown', input: 'durable state' }] }] },
       ],
+      effectReconciliationTargets: [{ key: 'nested', nodeId: body.id, nodeLabel: body.label, iterationId: 'iteration-1', iterationIndex: 1, loopNodeLabel: '逐项发送', input: 'durable state' }],
     }
 
     expect(workflowPage.workflowUnknownEffectTargets(definition, run)).toMatchObject([{ nodeId: body.id, iterationId: 'iteration-1', input: 'durable state' }])
@@ -1538,6 +1610,7 @@ describe('WorkflowPage regressions', () => {
     expect(workflowPage.workflowUnknownEffectTargets(current, run)).toEqual([
       { key: 'ordinary-key', nodeId: body.id, nodeLabel: 'Historical ordinary write', input: 'ordinary-input' },
     ])
+    expect(workflowPage.workflowUnknownEffectTargets(undefined, run)).toEqual(run.effectReconciliationTargets)
   })
 
   it('uses persisted Main reconciliation targets when a loop body became ordinary later', () => {

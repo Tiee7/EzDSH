@@ -59,6 +59,7 @@ import type {
 } from './employees.js'
 import type {
   WorkflowCreateInput,
+  WorkflowCompensationEffectReconcileRequest,
   WorkflowEffectReconcileRequest,
   WorkflowDefinition,
   WorkflowGenerateRequest,
@@ -184,6 +185,7 @@ export interface EzDSHBridge {
     cancel(runId: string): Promise<WorkflowRunRecord>
     approve(runId: string, approved: boolean): Promise<WorkflowRunRecord>
     compensate(runId: string): Promise<WorkflowRunRecord>
+    reconcileCompensation(runId: string, request: WorkflowCompensationEffectReconcileRequest): Promise<WorkflowRunRecord>
     reconcileEffect(runId: string, request: WorkflowEffectReconcileRequest): Promise<WorkflowRunRecord>
     onStateChange(listener: (record: WorkflowRunRecord) => void): () => void
   }

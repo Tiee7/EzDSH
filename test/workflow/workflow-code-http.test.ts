@@ -75,7 +75,7 @@ describe('workflow HTTP and code nodes', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('cancels an authorized shell child instead of leaving it running', async () => {
+  it('stops an authorized shell child and pauses its unknown effect for review', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-shell-cancel-'))
     const workflowStore = new WorkflowStore(directory)
     const workflow = await workflowStore.create({
@@ -97,8 +97,8 @@ describe('workflow HTTP and code nodes', () => {
     await service.cancel(run.id)
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const current = service.get(run.id)
-      if (current?.status === 'cancelled') {
-        expect(current.nodeStates.find((state) => state.nodeId === 'shell')?.status).toBe('cancelled')
+      if (current?.status === 'paused') {
+        expect(current.nodeStates.find((state) => state.nodeId === 'shell')).toMatchObject({ status: 'pending', effectState: 'unknown' })
         await service.stop()
         return
       }

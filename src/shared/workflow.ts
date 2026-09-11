@@ -102,6 +102,9 @@ export interface WorkflowCompensationEntry {
   occurrenceId?: string
   /** Durable dispatch journal for the compensation child/effect boundary. */
   effectState?: WorkflowNodeEffectState
+  /** Latest manual decision, mirrored from the append-only private audit below. */
+  effectReconciliation?: WorkflowCompensationEffectReconciliation
+  effectReconciliationHistory?: WorkflowCompensationEffectReconciliation[]
   startedAt?: string
   completedAt?: string
   error?: string
@@ -493,6 +496,28 @@ export interface WorkflowEffectReconciliation {
   resolvedAt: string
 }
 
+export interface WorkflowCompensationEffectReconcileRequest {
+  occurrenceId: string
+  outcome: 'not-dispatched' | 'dispatched'
+  note: string
+}
+
+export interface WorkflowCompensationEffectReconciliation {
+  outcome: WorkflowCompensationEffectReconcileRequest['outcome']
+  note: string
+  resolvedAt: string
+}
+
+/** Validate at both the IPC boundary and the service's direct-call boundary. */
+export function validateWorkflowCompensationEffectReconcileRequest(value: unknown): WorkflowCompensationEffectReconcileRequest {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid workflow compensation reconciliation request')
+  const request = value as Record<string, unknown>
+  if (typeof request.occurrenceId !== 'string' || request.occurrenceId.trim() === '') throw new Error('Invalid compensation occurrence ID')
+  if (request.outcome !== 'not-dispatched' && request.outcome !== 'dispatched') throw new Error('Invalid reconciliation outcome')
+  if (typeof request.note !== 'string' || request.note.trim().length < 1 || request.note.trim().length > 500) throw new Error('核对说明去除首尾空白后须为 1–500 字符')
+  return { occurrenceId: request.occurrenceId.trim(), outcome: request.outcome, note: request.note.trim() }
+}
+
 /** Main-derived immutable identity for one unknown effect shown to an operator. */
 export interface WorkflowEffectReconciliationTarget {
   key: string
@@ -570,7 +595,7 @@ export interface WorkflowNodeRunState {
   error?: string
 }
 
-export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-effect-reconciled-not-dispatched' | 'node-effect-reconciled-dispatched' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-effect-prepared' | 'compensation-effect-dispatched' | 'compensation-effect-confirmed' | 'compensation-effect-unknown' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
+export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-effect-reconciled-not-dispatched' | 'node-effect-reconciled-dispatched' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-effect-prepared' | 'compensation-effect-dispatched' | 'compensation-effect-confirmed' | 'compensation-effect-unknown' | 'compensation-effect-reconciled-not-dispatched' | 'compensation-effect-reconciled-dispatched' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
 
 export interface WorkflowRunEvent {
   id: string

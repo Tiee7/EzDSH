@@ -2,9 +2,11 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, normalize, relative, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type {
   WorkflowDefinition,
+  WorkflowCompensationEffectReconcileRequest,
+  WorkflowCompensationEffectReconciliation,
   WorkflowEffectReconcileRequest,
   WorkflowEffectReconciliation,
   WorkflowEdge,
@@ -38,7 +40,7 @@ import type {
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
-import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, validateWorkflowEffectReconcileRequest, workflowAllNodeRunStates, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
+import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, validateWorkflowCompensationEffectReconcileRequest, validateWorkflowEffectReconcileRequest, workflowAllNodeRunStates, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
@@ -146,18 +148,16 @@ export class WorkflowRunService {
       await this.options.workflowStore.initialize()
       await this.options.runStore.initialize()
       await this.internalSessionStore.initialize()
+      await this.recoverLegacyChildLineages()
       // A new service instance is a new process boundary: any persisted lease
       // belongs to a process that no longer exists, even if its expiry is in
       // the future. Reconcile it before starting the fresh Worker.
-      const recovered = await this.options.runStore.recoverInterruptedRuns(new Date(), true)
+      await this.options.runStore.recoverInterruptedRuns(new Date(), true)
       await this.options.runStore.recoverInterruptedCompensations()
-      for (const record of recovered) {
-        this.syncEffectReconciliationTargets(record)
-        await this.options.runStore.save(record)
-      }
       // Records written before the durable queue existed have no lease and
       // retain the previous startup-pause behaviour.
       await this.options.runStore.pauseActiveRuns()
+      await this.backfillLegacyEffectReconciliationTargets()
       await this.options.runStore.pruneExpired()
       this.initialized = true
       await this.worker.start()
@@ -374,21 +374,15 @@ export class WorkflowRunService {
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
       if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以人工核对副作用')
+      if (record.effectReconciliationTargets === undefined) this.syncEffectReconciliationTargets(record)
       let scope: WorkflowExecutionScope | undefined
       let state: WorkflowNodeRunState | undefined
       if (request.iterationId === undefined) {
         const persistedTarget = record.effectReconciliationTargets?.find((candidate) => candidate.nodeId === request.nodeId && candidate.iterationId === undefined)
-        if (record.effectReconciliationTargets !== undefined) {
-          if (persistedTarget !== undefined) state = record.nodeStates.find((candidate) => candidate.nodeId === request.nodeId && candidate.executionScope === undefined)
-        } else {
-          // Legacy records without exact targets retain topology-based filtering.
-          const workflow = this.workflowForRecord(record)
-          const isLoopBody = workflow?.nodes.some((node) => node.type === 'loop' && workflowLoopBodyNodeIds(workflow, node.id).includes(request.nodeId)) === true
-          if (!isLoopBody) state = record.nodeStates.find((candidate) => candidate.nodeId === request.nodeId && candidate.executionScope === undefined)
-        }
+        if (persistedTarget !== undefined) state = record.nodeStates.find((candidate) => candidate.nodeId === request.nodeId && candidate.executionScope === undefined)
       } else {
         const persistedTarget = record.effectReconciliationTargets?.find((candidate) => candidate.nodeId === request.nodeId && candidate.iterationId === request.iterationId)
-        if (record.effectReconciliationTargets === undefined || persistedTarget !== undefined) {
+        if (persistedTarget !== undefined) {
           for (const owner of record.nodeStates) {
             const iteration = owner.loopIterations?.find((candidate) => candidate.iterationId === request.iterationId)
             if (iteration === undefined || iteration.status === 'completed') continue
@@ -441,6 +435,45 @@ export class WorkflowRunService {
       if (request.outcome === 'dispatched') await this.saveFailure(record, reconcileType, reconcileMessage, request.nodeId, scope)
       else await this.save(record, reconcileType, reconcileMessage, request.nodeId, scope)
       if (canRequeue) this.worker.wake()
+      return this.options.runStore.get(runId) ?? cloneWorkflow(record)
+    } finally {
+      this.reconciliationActive.delete(runId)
+    }
+  }
+
+  async reconcileCompensation(runId: string, input: WorkflowCompensationEffectReconcileRequest): Promise<WorkflowRunRecord> {
+    if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
+    const request = validateWorkflowCompensationEffectReconcileRequest(input)
+    await this.initialize()
+    if (this.active.has(runId) || this.reconciliationActive.has(runId) || this.compensationActive.has(runId)) throw new Error('该运行的执行、人工核对或补偿正在进行。')
+    this.reconciliationActive.add(runId)
+    try {
+      const record = this.options.runStore.get(runId)
+      if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') throw new Error('运行尚未结束，不能核对补偿副作用')
+      const entry = record.compensationStack?.find((candidate) => candidate.occurrenceId === request.occurrenceId)
+      if (entry === undefined || entry.status !== 'failed' || entry.effectState !== 'unknown') throw new Error('指定补偿 occurrence 不存在或不再需要人工核对')
+      const resolvedAt = new Date().toISOString()
+      appendCompensationEffectReconciliation(entry, { outcome: request.outcome, note: request.note, resolvedAt })
+      if (request.outcome === 'dispatched') {
+        entry.status = 'completed'
+        entry.effectState = 'confirmed'
+        entry.completedAt = resolvedAt
+        entry.error = undefined
+      } else {
+        this.revalidateReleasedAccess(record)
+        entry.status = 'pending'
+        entry.effectState = 'none'
+        entry.startedAt = undefined
+        entry.completedAt = undefined
+        entry.error = undefined
+      }
+      if (!(record.compensationStack ?? []).some((candidate) => candidate.effectState === 'unknown')) record.error = undefined
+      const type: WorkflowRunEvent['type'] = `compensation-effect-reconciled-${request.outcome}`
+      const message = request.outcome === 'dispatched'
+        ? `人工确认补偿副作用已派发：${entry.sourceNodeId}`
+        : `人工确认补偿副作用未派发：${entry.sourceNodeId}`
+      await this.save(record, type, message, entry.sourceNodeId, entry.executionScope)
       return this.options.runStore.get(runId) ?? cloneWorkflow(record)
     } finally {
       this.reconciliationActive.delete(runId)
@@ -899,6 +932,61 @@ export class WorkflowRunService {
     return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision) ?? this.options.workflowStore.get(record.workflowId)
   }
 
+  /** Historical recovery must never project state through the current editable graph. */
+  private immutableWorkflowForRecord(record: WorkflowRunRecord): WorkflowDefinition | undefined {
+    if (record.releaseId !== undefined) {
+      const release = this.options.resolveReleasedWorkflow?.(record.releaseId)
+      if (release === undefined || !verifyWorkflowReleaseIntegrity(release)) return undefined
+      return this.resolveReleasedDefinition(release, record.workflowId, record.workflowRevision)
+    }
+    return this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision)
+  }
+
+  private async backfillLegacyEffectReconciliationTargets(): Promise<void> {
+    for (const record of this.options.runStore.list()) {
+      if (record.effectReconciliationTargets !== undefined) continue
+      if (record.status !== 'paused' && record.status !== 'failed' && record.status !== 'cancelled') continue
+      if (!workflowAllNodeRunStates(record.nodeStates).some((state) => state.effectState === 'unknown')) continue
+      this.syncEffectReconciliationTargets(record)
+      await this.options.runStore.save(record)
+    }
+  }
+
+  /** Upgrade queued pre-lineage children before the Worker can claim them. */
+  private async recoverLegacyChildLineages(): Promise<void> {
+    const records = new Map(this.options.runStore.list().map((record) => [record.id, record]))
+    for (const record of records.values()) {
+      if (record.status !== 'queued' || record.parentRunId === undefined || record.workflowAncestry !== undefined) continue
+      const ancestry: string[] = []
+      const seenRuns = new Set([record.id])
+      let parentRunId: string | undefined = record.parentRunId
+      let reliable = true
+      while (parentRunId !== undefined) {
+        if (seenRuns.has(parentRunId)) { reliable = false; break }
+        seenRuns.add(parentRunId)
+        const parent = records.get(parentRunId)
+        if (parent === undefined) { reliable = false; break }
+        if (parent.workflowAncestry !== undefined) {
+          ancestry.unshift(...parent.workflowAncestry, parent.workflowId)
+          parentRunId = undefined
+          break
+        }
+        ancestry.unshift(parent.workflowId)
+        parentRunId = parent.parentRunId
+      }
+      if (new Set(ancestry).size !== ancestry.length) reliable = false
+      if (reliable) {
+        record.workflowAncestry = ancestry
+      } else {
+        record.status = 'paused'
+        record.error = '旧版子运行缺少可验证的父级链路，已暂停以避免递归执行。'
+        record.completedAt = new Date().toISOString()
+        record.events.push(this.createEvent('run-paused', record.error))
+      }
+      await this.options.runStore.save(record)
+    }
+  }
+
   private revalidateReleasedAccess(record: WorkflowRunRecord): void {
     if (record.releaseId === undefined || this.options.resolveWorkflowEnvironment === undefined) return
     const release = this.resolveReleasedWorkflowOrThrow(record.releaseId)
@@ -1027,6 +1115,25 @@ export class WorkflowRunService {
       if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
       assertValidWorkflow(workflow, '运行工作流')
       this.revalidateReleasedAccess(record)
+      const lineage = new Set([...(record.workflowAncestry ?? []), record.workflowId])
+      const recursiveNode = workflow.nodes.find((node) => {
+        if (node.type !== 'sub-workflow') return false
+        return lineage.has(node.config.workflowId)
+      })
+      if (recursiveNode?.type === 'sub-workflow') {
+        const error = new WorkflowRecursiveCallError([...(record.workflowAncestry ?? []), record.workflowId, recursiveNode.config.workflowId])
+        const state = record.nodeStates.find((candidate) => candidate.nodeId === recursiveNode.id)
+        if (state !== undefined) {
+          state.status = 'failed'
+          state.error = error.message
+          state.completedAt = new Date().toISOString()
+        }
+        record.status = 'failed'
+        record.error = error.message
+        record.completedAt = new Date().toISOString()
+        await this.saveFailure(record, 'node-failed', error.message, recursiveNode.id)
+        return
+      }
       if (this.hasUncheckpointedLoopEffects(record)) {
         record.status = 'paused'
         record.error = '旧版循环缺少逐迭代副作用记录，请先人工核对，未自动重放。'
@@ -1227,18 +1334,17 @@ export class WorkflowRunService {
         return 'stopped'
       }
       if (state.effectState === 'prepared' || state.effectState === 'dispatched' || state.effectState === 'confirmed') {
-        const cancelledWriteNeedsReconciliation = active.cancelled && (node.type === 'mcp' || node.type === 'http' && node.config.method !== 'GET')
         state.effectState = 'unknown'
-        state.status = cancelledWriteNeedsReconciliation || !active.cancelled ? 'pending' : 'cancelled'
+        state.status = 'pending'
         state.error = error instanceof Error ? error.message : String(error)
         state.completedAt = new Date().toISOString()
         state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
-        record.status = cancelledWriteNeedsReconciliation || !active.cancelled ? 'paused' : 'cancelled'
-        record.error = cancelledWriteNeedsReconciliation
+        record.status = 'paused'
+        record.error = active.cancelled
           ? `运行取消时节点“${node.label}”的外部副作用状态未知，已暂停等待人工核对。`
-          : active.cancelled ? '用户取消了运行' : `节点“${node.label}”的外部副作用状态未知，已暂停以避免重复执行。`
+          : `节点“${node.label}”的外部副作用状态未知，已暂停以避免重复执行。`
         record.completedAt = new Date().toISOString()
-        await this.save(record, record.status === 'paused' ? 'run-paused' : 'run-cancelled', record.error, node.id, state.executionScope)
+        await this.save(record, 'run-paused', record.error, node.id, state.executionScope)
         return 'stopped'
       }
       state.status = active.pauseRequested ? 'pending' : active.cancelled ? 'cancelled' : 'failed'
@@ -1799,12 +1905,25 @@ export class WorkflowRunService {
       body: config.body,
       responseMode: config.responseMode,
       timeoutMs: config.timeoutMs,
-      // A stable run/node key makes retries and lease recovery deduplicable at
-      // the remote API when it supports Idempotency-Key.
-      ...(config.method === 'GET' ? {} : { idempotencyKey: scope === undefined ? `${record.id}:${node.id}` : `${record.id}:loop:${scope.loopNodeId}:iteration:${scope.iterationIndex}:node:${node.id}` }),
+      // Compensation children inherit their durable parent occurrence instead
+      // of exposing a newly generated child run id at the remote boundary.
+      ...(config.method === 'GET' ? {} : { idempotencyKey: this.managedEffectIdempotencyKey(record, node.id, scope) }),
       workflowPolicy: this.workflowForRecord(record)?.permissionPolicy,
       runGrant: record.connectorGrants,
     }
+  }
+
+  private managedEffectIdempotencyKey(record: WorkflowRunRecord, nodeId: string, scope?: WorkflowExecutionScope): string {
+    const occurrence = scope === undefined
+      ? `node:${nodeId}`
+      : `loop:${scope.loopNodeId}:iteration:${scope.iterationIndex}:node:${nodeId}`
+    if (record.idempotencyKey === undefined) return scope === undefined
+      ? `${record.id}:${nodeId}`
+      : `${record.id}:loop:${scope?.loopNodeId}:iteration:${scope?.iterationIndex}:node:${nodeId}`
+    const base = record.idempotencyKey
+    const suffix = createHash('sha256').update(occurrence).digest('hex').slice(0, 16)
+    const key = `${base}:effect:${suffix}`
+    return key.length <= 240 ? key : `workflow-effect:${createHash('sha256').update(key).digest('hex')}`
   }
 
   private async executeLightweight(
@@ -2015,7 +2134,11 @@ export class WorkflowRunService {
   }
 
   private syncEffectReconciliationTargets(record: WorkflowRunRecord): void {
-    const workflow = this.workflowForRecord(record)
+    const workflow = this.immutableWorkflowForRecord(record)
+    if (workflow === undefined) {
+      record.effectReconciliationTargets = []
+      return
+    }
     const nodeLabels = new Map(workflow?.nodes.map((node) => [node.id, node.label]) ?? [])
     const loopBodyNodeIds = new Set(workflow?.nodes.filter((node) => node.type === 'loop').flatMap((node) => workflowLoopBodyNodeIds(workflow, node.id)) ?? [])
     const targets: WorkflowEffectReconciliationTarget[] = []
@@ -2089,6 +2212,12 @@ function appendEffectReconciliation(state: WorkflowNodeRunState, decision: Workf
   const history = state.effectReconciliationHistory ?? (state.effectReconciliationHistory = state.effectReconciliation === undefined ? [] : [cloneWorkflow(state.effectReconciliation)])
   history.push(cloneWorkflow(decision))
   state.effectReconciliation = cloneWorkflow(decision)
+}
+
+function appendCompensationEffectReconciliation(entry: WorkflowCompensationEntry, decision: WorkflowCompensationEffectReconciliation): void {
+  const history = entry.effectReconciliationHistory ?? (entry.effectReconciliationHistory = entry.effectReconciliation === undefined ? [] : [cloneWorkflow(entry.effectReconciliation)])
+  history.push(cloneWorkflow(decision))
+  entry.effectReconciliation = cloneWorkflow(decision)
 }
 
 /** Final reconciliation also restores safe branches left in-flight at a crash. */

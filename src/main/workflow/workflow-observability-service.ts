@@ -110,8 +110,9 @@ export class WorkflowObservabilityService {
     }
 
     const latestTerminalSignals = latestTerminalSignalsByRelease(observations)
+    const appendOrder = new Map(observations.map((event, index) => [event.id, index]))
     const nowMs = Date.parse(observedAt)
-    if (hasRecentUnresolvedFailure(observations, latestTerminalSignals, nowMs, this.recentFailureWindowMs)) {
+    if (hasRecentUnresolvedFailure(observations, latestTerminalSignals, appendOrder, nowMs, this.recentFailureWindowMs)) {
       return {
         environmentId,
         status: 'degraded',
@@ -176,6 +177,8 @@ function kindForRunEvent(type: WorkflowRunEventType): WorkflowObservationEvent['
     case 'compensation-effect-dispatched':
     case 'compensation-effect-confirmed':
     case 'compensation-effect-unknown':
+    case 'compensation-effect-reconciled-not-dispatched':
+    case 'compensation-effect-reconciled-dispatched':
       return 'effect'
     case 'node-started':
     case 'node-retry':
@@ -233,6 +236,8 @@ function outcomeForAction(action: WorkflowObservationAction): WorkflowObservatio
     case 'compensation-effect-confirmed':
     case 'node-effect-reconciled-not-dispatched':
     case 'node-effect-reconciled-dispatched':
+    case 'compensation-effect-reconciled-not-dispatched':
+    case 'compensation-effect-reconciled-dispatched':
     case 'compensation-completed':
     case 'approval-approved':
     case 'run-completed':
@@ -262,10 +267,8 @@ function outcomeForAction(action: WorkflowObservationAction): WorkflowObservatio
 
 function latestTerminalSignalsByRelease(observations: readonly WorkflowObservationEvent[]): WorkflowObservationEvent[] {
   const latestByRelease = new Map<string, WorkflowObservationEvent>()
-  const terminalSignals = observations
-    .filter(isTerminalSignal)
-    .sort(compareObservations)
-  for (const signal of terminalSignals) {
+  // Store.list() is already ordered by time and then durable append order.
+  for (const signal of observations.filter(isTerminalSignal)) {
     latestByRelease.set(releaseGroup(signal), signal)
   }
   return [...latestByRelease.values()]
@@ -274,6 +277,7 @@ function latestTerminalSignalsByRelease(observations: readonly WorkflowObservati
 function hasRecentUnresolvedFailure(
   observations: readonly WorkflowObservationEvent[],
   latestTerminalSignals: readonly WorkflowObservationEvent[],
+  appendOrder: ReadonlyMap<string, number>,
   nowMs: number,
   recentFailureWindowMs: number,
 ): boolean {
@@ -283,7 +287,7 @@ function hasRecentUnresolvedFailure(
     && !Number.isNaN(Date.parse(event.time))
     && nowMs - Date.parse(event.time) >= 0
     && nowMs - Date.parse(event.time) < recentFailureWindowMs
-    && !isSuccessfulTerminalAfter(latestByRelease.get(releaseGroup(event)), event)
+    && !isSuccessfulTerminalAfter(latestByRelease.get(releaseGroup(event)), event, appendOrder)
   ))
 }
 
@@ -299,6 +303,9 @@ function isTerminalFailure(event: WorkflowObservationEvent): boolean {
   return event.action === 'run-failed' || event.action === 'approval-rejected'
 }
 
-function isSuccessfulTerminalAfter(terminal: WorkflowObservationEvent | undefined, event: WorkflowObservationEvent): boolean {
-  return terminal?.action === 'run-completed' && compareObservations(terminal, event) > 0
+function isSuccessfulTerminalAfter(terminal: WorkflowObservationEvent | undefined, event: WorkflowObservationEvent, appendOrder: ReadonlyMap<string, number>): boolean {
+  if (terminal?.action !== 'run-completed') return false
+  const byTime = terminal.time.localeCompare(event.time)
+  if (byTime !== 0) return byTime > 0
+  return (appendOrder.get(terminal.id) ?? -1) > (appendOrder.get(event.id) ?? -1)
 }

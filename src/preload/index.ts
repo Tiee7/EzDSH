@@ -36,6 +36,7 @@ import type {
 } from '../shared/employees.js'
 import type {
   WorkflowCreateInput,
+  WorkflowCompensationEffectReconcileRequest,
   WorkflowEffectReconcileRequest,
   WorkflowDefinition,
   WorkflowGenerateRequest,
@@ -190,6 +191,7 @@ const bridge: EzDSHBridge = {
     cancel: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:cancel', runId),
     approve: (runId: string, approved: boolean) => invoke<WorkflowRunRecord>('workflow-runs:approve', runId, approved),
     compensate: (runId: string) => invoke<WorkflowRunRecord>('workflow-runs:compensate', runId),
+    reconcileCompensation: (runId: string, request: WorkflowCompensationEffectReconcileRequest) => invoke<WorkflowRunRecord>('workflow-runs:reconcile-compensation', runId, request),
     reconcileEffect: (runId: string, request: WorkflowEffectReconcileRequest) => invoke<WorkflowRunRecord>('workflow-runs:reconcile-effect', runId, request),
     onStateChange: (listener: (record: WorkflowRunRecord) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, record: WorkflowRunRecord) => listener(record)

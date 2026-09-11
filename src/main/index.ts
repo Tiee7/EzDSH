@@ -108,7 +108,7 @@ import { WorkflowObservationStore } from './workflow/workflow-observation-store.
 import { WorkflowObservabilityService } from './workflow/workflow-observability-service.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
 import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowModifyRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue, WorkflowCredentialUpsertInput, WorkflowHttpConnector } from '../shared/workflow.js'
-import { validateWorkflowEffectReconcileRequest } from '../shared/workflow.js'
+import { validateWorkflowCompensationEffectReconcileRequest, validateWorkflowEffectReconcileRequest } from '../shared/workflow.js'
 import { workflowReleaseSummary, type WorkflowCustomerEnvironment, type WorkflowReleasePublishInput } from '../shared/workflow-operations.js'
 import { bindWindowClosedCleanup } from './window-lifecycle.js'
 import { shutdownExternalServicesFirst } from './shutdown.js'
@@ -2063,6 +2063,15 @@ function registerIpcHandlers(): void {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
       if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
       return success(await workflowRunService.reconcileEffect(runId, validateWorkflowEffectReconcileRequest(request)))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workflow-runs:reconcile-compensation', async (_event, runId: string, request: unknown): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['reconcileCompensation']>>>> => {
+    try {
+      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
+      if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
+      return success(await workflowRunService.reconcileCompensation(runId, validateWorkflowCompensationEffectReconcileRequest(request)))
     } catch (error) {
       return failure(error)
     }

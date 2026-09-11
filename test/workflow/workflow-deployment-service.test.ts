@@ -423,6 +423,53 @@ describe('WorkflowDeploymentService', () => {
     }
   })
 
+  it('derives the real compensation connector Idempotency-Key from the parent occurrence', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-key-'))
+    const workflowStore = new WorkflowStore(dir)
+    const environmentStore = new WorkflowEnvironmentStore(dir)
+    const releaseStore = new WorkflowReleaseStore(dir)
+    const connectorStore = new WorkflowConnectorStore(dir)
+    const credentialStore = new WorkflowCredentialStore(dir)
+    await connectorStore.upsert({ id: 'api', name: 'API', kind: 'http', baseUrl: 'https://api.example.test/', allowedPathPrefixes: ['/undo'] })
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const connectorService = new WorkflowConnectorService({ connectors: connectorStore, credentials: credentialStore, resolveHost: async () => [{ address: '93.184.216.34' }] })
+    const runService = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      mcpClient: { call: async () => 'published' }, connectorService, allowLegacyHttp: false,
+      resolveReleasedWorkflow: (id) => releaseStore.get(id), resolveWorkflowEnvironment: (id) => environmentStore.get(id),
+    })
+    const deploymentService = new WorkflowDeploymentService({ workflowStore, environmentStore, releaseStore, runService })
+    const environment = await environmentStore.upsert(createEnvironment({ connectorIds: ['api'] }))
+    const undo = await workflowStore.create(createWorkflowInput({
+      id: 'connector-undo', name: 'Connector undo', permissionPolicy: { connectors: [{ connectorId: 'api', operations: ['write'] }] },
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'undo-write', type: 'http', label: 'Undo write', config: { method: 'POST', connectorId: 'api', connectorPath: '/undo', url: '', headers: {}, responseMode: 'json' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ], edges: [{ id: 'a', source: 'input', target: 'undo-write' }, { id: 'b', source: 'undo-write', target: 'output' }],
+    }))
+    const parent = await workflowStore.create(createWorkflowInput({
+      id: 'connector-parent', name: 'Connector parent',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'effect', type: 'mcp', label: 'Effect', config: { tool: 'publish', arguments: {} }, compensation: { type: 'workflow', workflowId: undo.id }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ], edges: [{ id: 'a', source: 'input', target: 'effect' }, { id: 'b', source: 'effect', target: 'output' }],
+    }))
+    try {
+      const release = await deploymentService.publish({ workflowId: parent.id, environmentId: environment.id })
+      const completed = await eventually(runService, (await deploymentService.start(release.id, null)).id)
+      const occurrenceId = completed.compensationStack?.[0]?.occurrenceId
+      expect(occurrenceId).toEqual(expect.any(String))
+      await runService.compensate(completed.id)
+      const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>
+      expect(headers['Idempotency-Key']).toMatch(new RegExp(`^${occurrenceId}:effect:[a-f0-9]+$`, 'u'))
+      expect(headers['Idempotency-Key']).not.toContain(runService.list(undo.id)[0]!.id)
+    } finally { await runService.stop() }
+  })
+
   it('rejects publish when a sub-workflow dependency is missing or cyclic', async () => {
     const { workflowStore, environmentStore, deploymentService } = await createFixture()
     await environmentStore.upsert(createEnvironment())

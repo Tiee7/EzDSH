@@ -98,7 +98,7 @@ describe('unpublished child workflows in the single Worker', () => {
     } finally { release(); await service.stop() }
   })
 
-  it('propagates parent cancellation to an executing inline child', async () => {
+  it('pauses a cancelled synchronous child effect as unknown and permits node reconciliation', async () => {
     let childSignal: AbortSignal | undefined
     const { service, parent, child } = await liveChildFixture({
       childNode: { id: 'ai', type: 'ai-task', label: 'Await cancellation', config: { instruction: 'wait', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 0 } },
@@ -116,7 +116,11 @@ describe('unpublished child workflows in the single Worker', () => {
       await service.cancel(started.id)
       expect(childSignal?.aborted).toBe(true)
       expect((await eventually(() => service.list(child.id)[0], (run) => run.status === 'cancelled')).status).toBe('cancelled')
-      expect((await eventually(() => service.get(started.id), (run) => run.status === 'cancelled')).status).toBe('cancelled')
+      const paused = await eventually(() => service.get(started.id), (run) => run.status === 'paused')
+      expect(paused.nodeStates.find((state) => state.nodeId === 'sub')).toMatchObject({ status: 'pending', effectState: 'unknown' })
+      const resumed = await service.reconcileEffect(started.id, { nodeId: 'sub', outcome: 'not-dispatched', note: 'child was cancelled before completion' })
+      expect(['queued', 'running']).toContain(resumed.status)
+      expect(resumed.events.some((event) => event.type === 'node-effect-reconciled-not-dispatched')).toBe(true)
     } finally { await service.stop() }
   })
 
@@ -140,7 +144,7 @@ describe('unpublished child workflows in the single Worker', () => {
     } finally { await service.stop() }
   })
 
-  it('cancels a queued inline child while its parent waits for the retry deadline', async () => {
+  it('cancels a queued inline child but pauses the dispatched parent sub-workflow effect for review', async () => {
     let attempts = 0
     const { service, parent, child } = await liveChildFixture({
       childNode: { id: 'ai', type: 'ai-task', label: 'Delayed retry', config: { instruction: 'retry', mode: 'single', skillIds: [], outputMode: 'text' }, retryPolicy: { maxAttempts: 2, baseDelayMs: 10_000, maxDelayMs: 10_000, jitterRatio: 0 }, position: { x: 200, y: 0 } },
@@ -152,7 +156,8 @@ describe('unpublished child workflows in the single Worker', () => {
       await service.cancel(started.id)
       const cancelled = await eventually(() => service.get(retry.id), (run) => run.status === 'cancelled')
       expect(cancelled.status).toBe('cancelled')
-      expect((await eventually(() => service.get(started.id), (run) => run.status === 'cancelled')).status).toBe('cancelled')
+      const paused = await eventually(() => service.get(started.id), (run) => run.status === 'paused')
+      expect(paused.nodeStates.find((state) => state.nodeId === 'sub')).toMatchObject({ status: 'pending', effectState: 'unknown' })
       expect(attempts).toBe(1)
     } finally { await service.stop() }
   })
@@ -309,6 +314,67 @@ describe('unpublished child workflows in the single Worker', () => {
       expect(restarted.list(parent.id)).toHaveLength(1)
       expect(effects).toBe(1)
     } finally { await restarted.stop() }
+  })
+
+  it('rebuilds a legacy queued child ancestry before execution and blocks its preceding side effect', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-live-child-legacy-lineage-'))
+    const workflowStore = new WorkflowStore(directory)
+    const runStore = new WorkflowRunStore(directory)
+    const parent = await workflowStore.create({ id: 'legacy-lineage-a', name: 'A', description: '', nodes: [{ id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } }, { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 200, y: 0 } }], edges: [{ id: 'a', source: 'input', target: 'output' }] })
+    const child = await workflowStore.create({
+      id: 'legacy-lineage-b', name: 'B', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'write-before-recursion', type: 'mcp', label: 'Must not write', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } },
+        { id: 'back-to-a', type: 'sub-workflow', label: 'Back to A', config: { workflowId: parent.id, waitForCompletion: true }, position: { x: 400, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 600, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'write-before-recursion' }, { id: 'b', source: 'write-before-recursion', target: 'back-to-a' }, { id: 'c', source: 'back-to-a', target: 'output' }],
+    })
+    await runStore.enqueue({ id: 'legacy-parent-run', workflowId: parent.id, workflowRevision: parent.revision, status: 'completed', input: null, output: null, allowShellFile: false, nodeStates: [], events: [] })
+    await runStore.enqueue({
+      id: 'legacy-child-run', workflowId: child.id, workflowRevision: child.revision, parentRunId: 'legacy-parent-run', status: 'queued', input: null, allowShellFile: false,
+      nodeStates: child.nodes.map((node) => ({ nodeId: node.id, status: 'pending' as const })), events: [],
+    })
+    let childEffects = 0
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(directory), workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined, mcpClient: { call: async () => { childEffects += 1; return 'written' } },
+    })
+    try {
+      await service.initialize()
+      const stopped = await eventually(() => service.get('legacy-child-run'), (run) => run.status === 'failed' || run.status === 'paused')
+      expect(stopped.workflowAncestry).toEqual([parent.id])
+      expect(stopped.error).toMatch(/递归|recursive/iu)
+      expect(childEffects).toBe(0)
+    } finally { await service.stop() }
+  })
+
+  it('pauses a legacy queued child when its parent chain cannot be reconstructed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-live-child-missing-lineage-'))
+    const workflowStore = new WorkflowStore(directory)
+    const workflow = await workflowStore.create({
+      id: 'orphan-child', name: 'Orphan child', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'write', type: 'mcp', label: 'Must not write', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }],
+    })
+    const runStore = new WorkflowRunStore(directory)
+    await runStore.enqueue({ id: 'orphan-run', workflowId: workflow.id, workflowRevision: workflow.revision, parentRunId: 'missing-parent', status: 'queued', input: null, allowShellFile: false, nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending' as const })), events: [] })
+    let effects = 0
+    const service = new WorkflowRunService({ workflowStore, runStore: new WorkflowRunStore(directory), workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      mcpClient: { call: async () => { effects += 1; return 'written' } },
+    })
+    try {
+      await service.initialize()
+      expect(service.get('orphan-run')).toMatchObject({ status: 'paused', parentRunId: 'missing-parent', error: expect.stringMatching(/父级链路|递归/u) })
+      expect(effects).toBe(0)
+    } finally { await service.stop() }
   })
 })
 

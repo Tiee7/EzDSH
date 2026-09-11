@@ -540,6 +540,13 @@ export interface AppCopy {
   workflowEffectCancelConfirm: string
   workflowEffectReconciling: string
   workflowEffectReviewFailed: string
+  workflowCompensationEffectReview: string
+  workflowCompensationEffectReviewHint: string
+  workflowCompensationEffectOccurrence: string
+  workflowCompensationEffectSource: string
+  workflowCompensationEffectNotDispatched: string
+  workflowCompensationEffectDispatched: string
+  workflowCompensationEffectDispatchedWarning: string
   workflowImportEmployee: string
   workflowSelectEmployee: string
   workflowImportedEmployee: string
@@ -1442,6 +1449,13 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowEffectCancelConfirm: '取消',
     workflowEffectReconciling: '核对中…',
     workflowEffectReviewFailed: '副作用核对失败，请重试或检查运行状态。',
+    workflowCompensationEffectReview: '补偿副作用人工核对',
+    workflowCompensationEffectReviewHint: '仅处理状态未知的补偿 occurrence；请依据外部系统记录核查。',
+    workflowCompensationEffectOccurrence: '补偿 occurrence',
+    workflowCompensationEffectSource: '来源节点',
+    workflowCompensationEffectNotDispatched: '确认补偿未派发并重试',
+    workflowCompensationEffectDispatched: '确认补偿已派发',
+    workflowCompensationEffectDispatchedWarning: '确认后该补偿将被视为已完成，且不会伪造输出。请再次确认外部记录。',
     workflowImportEmployee: '为员工创建工作流',
     workflowSelectEmployee: '选择员工',
     workflowImportedEmployee: '已创建员工工作流',
@@ -2369,6 +2383,13 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowEffectCancelConfirm: 'Cancel',
     workflowEffectReconciling: 'Reviewing…',
     workflowEffectReviewFailed: 'Unable to reconcile this effect. Try again or check the run state.',
+    workflowCompensationEffectReview: 'Manual compensation effect review',
+    workflowCompensationEffectReviewHint: 'Only unknown compensation occurrences are actionable. Verify against the external system.',
+    workflowCompensationEffectOccurrence: 'Compensation occurrence',
+    workflowCompensationEffectSource: 'Source node',
+    workflowCompensationEffectNotDispatched: 'Confirm compensation was not dispatched and retry',
+    workflowCompensationEffectDispatched: 'Confirm compensation was dispatched',
+    workflowCompensationEffectDispatchedWarning: 'This marks the compensation completed without inventing output. Confirm the external record again.',
     workflowImportEmployee: 'Create workflow for employee',
     workflowSelectEmployee: 'Select employee',
     workflowImportedEmployee: 'Employee workflow created',

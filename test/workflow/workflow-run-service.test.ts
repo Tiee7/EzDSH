@@ -2279,3 +2279,106 @@ describe('cancelled write reconciliation', () => {
     } finally { await service.stop() }
   })
 })
+
+describe('compensation effect reconciliation', () => {
+  async function fixture() {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-reconcile-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const workflow = await workflowStore.create({ name: 'Compensation review', description: '', nodes: [graph().nodes[0]!, graph().nodes[4]!], edges: [{ id: 'direct', source: 'input', target: 'output' }] })
+    const run = await runStore.enqueue({
+      id: 'run-compensation-review', workflowId: workflow.id, workflowRevision: workflow.revision,
+      status: 'completed', input: null, output: null, allowShellFile: false, nodeStates: [], events: [],
+      compensationStack: [{
+        sourceNodeId: 'write', action: { type: 'workflow', workflowId: 'undo' }, status: 'failed', effectState: 'unknown',
+        occurrenceId: 'run-compensation-review:compensation:write:ordinary', error: '人工核对',
+      }],
+    } as WorkflowRunRecord)
+    const executeSubWorkflow = vi.fn(async () => 'undone')
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined, executeSubWorkflow,
+    })
+    const reconcile = (request: { occurrenceId: string; outcome: 'dispatched' | 'not-dispatched'; note: string }) => (
+      (service as unknown as { reconcileCompensation(runId: string, request: typeof request): Promise<WorkflowRunRecord> }).reconcileCompensation(run.id, request)
+    )
+    return { service, run, runStore, executeSubWorkflow, reconcile }
+  }
+
+  it('atomically restores an exact unknown occurrence to pending and permits compensation to continue', async () => {
+    const { service, run, reconcile, executeSubWorkflow } = await fixture()
+    try {
+      const reconciled = await reconcile({ occurrenceId: 'run-compensation-review:compensation:write:ordinary', outcome: 'not-dispatched', note: '  provider confirms absent  ' })
+      expect(reconciled.compensationStack?.[0]).toMatchObject({
+        status: 'pending', effectState: 'none',
+        effectReconciliation: { outcome: 'not-dispatched', note: 'provider confirms absent', resolvedAt: expect.any(String) },
+        effectReconciliationHistory: [{ outcome: 'not-dispatched', note: 'provider confirms absent', resolvedAt: expect.any(String) }],
+      })
+      expect(reconciled.events.at(-1)).toMatchObject({ type: 'compensation-effect-reconciled-not-dispatched', message: expect.not.stringContaining('provider confirms absent') })
+      expect((await service.compensate(run.id)).compensationStack?.[0]).toMatchObject({ status: 'completed', effectState: 'confirmed' })
+      expect(executeSubWorkflow).toHaveBeenCalledOnce()
+    } finally { await service.stop() }
+  })
+
+  it('confirms an exact dispatched occurrence without inventing output and rejects bad or concurrent decisions', async () => {
+    const { service, reconcile, executeSubWorkflow } = await fixture()
+    try {
+      await expect(reconcile({ occurrenceId: 'missing', outcome: 'dispatched', note: 'checked' })).rejects.toThrow()
+      await expect(reconcile({ occurrenceId: 'run-compensation-review:compensation:write:ordinary', outcome: 'dispatched', note: ' ' })).rejects.toThrow()
+      const [first, second] = await Promise.allSettled([
+        reconcile({ occurrenceId: 'run-compensation-review:compensation:write:ordinary', outcome: 'dispatched', note: 'receipt found' }),
+        reconcile({ occurrenceId: 'run-compensation-review:compensation:write:ordinary', outcome: 'not-dispatched', note: 'absent' }),
+      ])
+      expect([first, second].filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      const record = service.get('run-compensation-review')!
+      expect(record.compensationStack?.[0]).toMatchObject({ status: 'completed', effectState: 'confirmed', effectReconciliation: { outcome: 'dispatched', note: 'receipt found' } })
+      expect(record.compensationStack?.[0]).not.toHaveProperty('output')
+      expect(record.events.filter((event) => event.type.startsWith('compensation-effect-reconciled-'))).toHaveLength(1)
+      expect(executeSubWorkflow).not.toHaveBeenCalled()
+    } finally { await service.stop() }
+  })
+})
+
+describe('legacy reconciliation target backfill', () => {
+  it.each(['ordinary-to-loop', 'loop-to-ordinary'] as const)('uses the immutable run revision for %s topology drift', async (direction) => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-target-backfill-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const ordinaryNodes: WorkflowNode[] = [
+      { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+      { id: 'write', type: 'mcp', label: 'Historical write', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } },
+      { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+    ]
+    const loopNodes: WorkflowNode[] = [
+      { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+      { id: 'loop', type: 'loop', label: 'Historical loop', config: { maxIterations: 2 }, position: { x: 200, y: 0 } },
+      { id: 'write', type: 'mcp', label: 'Historical write', config: { tool: 'write', arguments: {} }, position: { x: 400, y: 0 } },
+      { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 600, y: 0 } },
+    ]
+    const initialNodes = direction === 'ordinary-to-loop' ? ordinaryNodes : loopNodes
+    const initialEdges = direction === 'ordinary-to-loop'
+      ? [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }]
+      : [{ id: 'a', source: 'input', target: 'loop' }, { id: 'b', source: 'loop', sourcePort: 'loop-body' as const, target: 'write' }, { id: 'c', source: 'loop', target: 'output' }]
+    const workflow = await workflowStore.create({ id: `legacy-${direction}`, name: direction, description: '', nodes: initialNodes, edges: initialEdges })
+    const legacy: WorkflowRunRecord = {
+      id: `run-${direction}`, workflowId: workflow.id, workflowRevision: workflow.revision, status: 'paused', input: 'payload', allowShellFile: false, events: [],
+      nodeStates: direction === 'ordinary-to-loop'
+        ? [{ nodeId: 'write', status: 'pending', effectState: 'unknown', input: 'ordinary-input' }]
+        : [{ nodeId: 'loop', status: 'cancelled', loopIterations: [{ iterationId: 'iteration-0', iterationIndex: 0, input: 'loop-input', status: 'running', nodeStates: [{ nodeId: 'write', status: 'pending', effectState: 'unknown', input: 'loop-input' }] }] }],
+    }
+    await runStore.enqueue(legacy)
+    await workflowStore.update(workflow.id, { ...workflow, nodes: direction === 'ordinary-to-loop' ? loopNodes : ordinaryNodes, edges: direction === 'ordinary-to-loop'
+      ? [{ id: 'a', source: 'input', target: 'loop' }, { id: 'b', source: 'loop', sourcePort: 'loop-body', target: 'write' }, { id: 'c', source: 'loop', target: 'output' }]
+      : [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }] })
+    const service = new WorkflowRunService({ workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir, createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined })
+    try {
+      await service.initialize()
+      const targets = service.get(legacy.id)?.effectReconciliationTargets
+      expect(targets).toHaveLength(1)
+      expect(targets?.[0]).toMatchObject(direction === 'ordinary-to-loop'
+        ? { nodeId: 'write', nodeLabel: 'Historical write', input: 'ordinary-input' }
+        : { nodeId: 'write', nodeLabel: 'Historical write', iterationId: 'iteration-0', loopNodeLabel: 'Historical loop', input: 'loop-input' })
+    } finally { await service.stop() }
+  })
+})

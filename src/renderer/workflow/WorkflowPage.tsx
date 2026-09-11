@@ -46,6 +46,7 @@ import {
   type WorkflowInputFieldType,
   type TransformTemplate,
   type WorkflowDefinition,
+  type WorkflowCompensationEffectReconcileRequest,
   type WorkflowEffectReconcileRequest,
   type WorkflowEffectReconciliationTarget,
   type WorkflowExportDocument,
@@ -638,38 +639,20 @@ export interface WorkflowNodeRunDetail {
 export type WorkflowUnknownEffectTarget = WorkflowEffectReconciliationTarget
 
 /** Unknown effects can only be reconciled from their durable journal entry. */
-export function workflowUnknownEffectTargets(workflow: WorkflowDefinition, run: WorkflowRunRecord): WorkflowUnknownEffectTarget[] {
-  if (run.effectReconciliationTargets !== undefined) return cloneWorkflow(run.effectReconciliationTargets)
-  const nodeLabels = new Map(workflow.nodes.map((node) => [node.id, node.label]))
-  const loopBodyNodeIds = new Set(workflow.nodes.filter((node) => node.type === 'loop').flatMap((node) => workflowLoopBodyNodeIds(workflow, node.id)))
-  const targets: WorkflowUnknownEffectTarget[] = []
-  const visit = (states: WorkflowNodeRunState[], loop?: { nodeLabel: string; iterationId: string; iterationIndex: number; input: WorkflowValue }): void => {
-    for (const state of states) {
-      if (state.effectState === 'unknown' && (loop !== undefined || !loopBodyNodeIds.has(state.nodeId))) {
-        const iterationId = loop?.iterationId
-        const latestEffectEvent = [...run.events].reverse().find((event) => event.nodeId === state.nodeId
-          && event.executionScope?.iterationId === iterationId
-          && event.type.startsWith('node-effect-'))
-        targets.push({
-          key: `${run.id}:${iterationId ?? 'ordinary'}:${state.nodeId}:${state.attempt ?? 0}:${state.effectReconciliationHistory?.length ?? 0}:${latestEffectEvent?.id ?? 'no-effect-event'}`,
-          nodeId: state.nodeId,
-          nodeLabel: nodeLabels.get(state.nodeId) ?? state.nodeId,
-          ...(iterationId === undefined ? {} : { iterationId, iterationIndex: loop?.iterationIndex, loopNodeLabel: loop?.nodeLabel }),
-          ...(state.input === undefined && loop === undefined ? {} : { input: state.input ?? loop?.input }),
-        })
-      }
-      for (const iteration of state.loopIterations ?? []) {
-        visit(iteration.nodeStates, {
-          nodeLabel: nodeLabels.get(state.nodeId) ?? state.nodeId,
-          iterationId: iteration.iterationId,
-          iterationIndex: iteration.iterationIndex,
-          input: iteration.input,
-        })
-      }
-    }
-  }
-  visit(run.nodeStates)
-  return targets
+export function workflowUnknownEffectTargets(_workflow: WorkflowDefinition | undefined, run: WorkflowRunRecord): WorkflowUnknownEffectTarget[] {
+  return cloneWorkflow(run.effectReconciliationTargets ?? [])
+}
+
+export interface WorkflowCompensationUnknownTarget {
+  key: string
+  occurrenceId: string
+  sourceNodeId: string
+}
+
+export function workflowCompensationUnknownTargets(run: WorkflowRunRecord): WorkflowCompensationUnknownTarget[] {
+  return (run.compensationStack ?? []).flatMap((entry) => entry.status === 'failed' && entry.effectState === 'unknown' && entry.occurrenceId !== undefined
+    ? [{ key: entry.occurrenceId, occurrenceId: entry.occurrenceId, sourceNodeId: entry.sourceNodeId }]
+    : [])
 }
 
 export function workflowEffectTargetIdentity(copy: AppCopy, target: WorkflowUnknownEffectTarget): string {
@@ -2379,6 +2362,7 @@ interface WorkflowExecutionReviewProps {
   onIncreaseOutputFont?: () => void
   onDecreaseOutputFont?: () => void
   onReconcileEffect?: (request: WorkflowEffectReconcileRequest) => boolean | void | Promise<boolean | void>
+  onReconcileCompensation?: (request: WorkflowCompensationEffectReconcileRequest) => boolean | void | Promise<boolean | void>
   reconciliationBusy?: boolean
 }
 
@@ -2445,12 +2429,46 @@ export function WorkflowEffectReconciliationPanel({ copy, targets, busy = false,
   </section>
 }
 
+interface WorkflowCompensationReconciliationPanelProps {
+  copy: AppCopy
+  targets: WorkflowCompensationUnknownTarget[]
+  busy?: boolean
+  onReconcile?: (request: WorkflowCompensationEffectReconcileRequest) => boolean | void | Promise<boolean | void>
+}
+
+/** Separate surface: compensation occurrence decisions never masquerade as node-effect decisions. */
+export function WorkflowCompensationReconciliationPanel({ copy, targets, busy = false, onReconcile }: WorkflowCompensationReconciliationPanelProps): JSX.Element | null {
+  const [notes, setNotes] = useState<Record<string, string>>({})
+  const [confirming, setConfirming] = useState<string>()
+  if (targets.length === 0) return null
+  const submit = async (target: WorkflowCompensationUnknownTarget, outcome: WorkflowCompensationEffectReconcileRequest['outcome']): Promise<void> => {
+    const note = notes[target.key]?.trim() ?? ''
+    if (note.length < 1 || note.length > 500 || onReconcile === undefined) return
+    const reconciled = await onReconcile({ occurrenceId: target.occurrenceId, outcome, note })
+    if (reconciled !== false) setConfirming(undefined)
+  }
+  return <section className="workflow-effect-review workflow-compensation-effect-review" aria-busy={busy}>
+    <div className="workflow-panel-heading"><div><span className="workflow-kicker">{copy.workflowCompensationEffectReview}</span><h2>{copy.workflowCompensationEffectReview}</h2><p>{copy.workflowCompensationEffectReviewHint}</p></div></div>
+    <div className="workflow-effect-review-list">{targets.map((target) => {
+      const note = notes[target.key] ?? ''
+      const valid = note.trim().length >= 1 && note.trim().length <= 500
+      return <div key={target.key} className="workflow-effect-review-target">
+        <div className="workflow-node-result-meta"><span>{copy.workflowCompensationEffectSource}: {target.sourceNodeId}</span><span>{copy.workflowCompensationEffectOccurrence}: {target.occurrenceId}</span></div>
+        <label>{copy.workflowEffectNote}<textarea aria-label={`${copy.workflowEffectNote}: ${target.occurrenceId}`} value={note} maxLength={500} disabled={busy} onChange={(event) => setNotes((current) => ({ ...current, [target.key]: event.target.value }))} /><small>{copy.workflowEffectNoteHint}</small></label>
+        <div className="workflow-execution-actions"><button type="button" className="workflow-button-primary" disabled={busy || !valid || onReconcile === undefined} onClick={() => void submit(target, 'not-dispatched')}>{copy.workflowCompensationEffectNotDispatched}</button><button type="button" className="workflow-danger-button" disabled={busy || !valid || onReconcile === undefined} onClick={() => setConfirming(target.key)}>{copy.workflowCompensationEffectDispatched}</button></div>
+        {confirming === target.key ? <div className="workflow-effect-review-confirm" role="alert"><p>{copy.workflowCompensationEffectDispatchedWarning}</p><div className="workflow-execution-actions"><button type="button" className="workflow-danger-button" disabled={busy || !valid || onReconcile === undefined} onClick={() => void submit(target, 'dispatched')}>{copy.workflowEffectDispatchedConfirm}</button><button type="button" className="workflow-button-quiet" disabled={busy} onClick={() => setConfirming(undefined)}>{copy.workflowEffectCancelConfirm}</button></div></div> : null}
+      </div>
+    })}</div>
+  </section>
+}
+
 /** Read-only run-history inspector. All launch configuration stays in WorkflowRunLaunchDialog. */
-export function WorkflowExecutionReview({ copy, workflow, run, nodeDetail, selectedNode, statusLabel, onCancel, onApprove, onReject, onResume, onSelectNode, onMarkUnread, onDelete, canMarkUnread = false, canDelete = false, onCopyOutput, onOpenOutputWindow, outputFontScale = 1, onIncreaseOutputFont, onDecreaseOutputFont, onReconcileEffect, reconciliationBusy = false }: WorkflowExecutionReviewProps): JSX.Element {
+export function WorkflowExecutionReview({ copy, workflow, run, nodeDetail, selectedNode, statusLabel, onCancel, onApprove, onReject, onResume, onSelectNode, onMarkUnread, onDelete, canMarkUnread = false, canDelete = false, onCopyOutput, onOpenOutputWindow, outputFontScale = 1, onIncreaseOutputFont, onDecreaseOutputFont, onReconcileEffect, onReconcileCompensation, reconciliationBusy = false }: WorkflowExecutionReviewProps): JSX.Element {
   const inspectedNode = nodeDetail?.node ?? selectedNode
   const inspectedState = nodeDetail?.state ?? (selectedNode === undefined ? undefined : { nodeId: selectedNode.id, status: 'pending' as const })
   const inspectedEvents = nodeDetail?.events ?? []
-  const unknownEffectTargets = run === undefined || workflow === undefined ? [] : workflowUnknownEffectTargets(workflow, run)
+  const unknownEffectTargets = run === undefined ? [] : workflowUnknownEffectTargets(workflow, run)
+  const unknownCompensationTargets = run === undefined ? [] : workflowCompensationUnknownTargets(run)
   const outputViewerProps = (key: string, title: string, value: WorkflowValue): WorkflowOutputViewerProps => ({
     copy,
     value,
@@ -2470,6 +2488,7 @@ export function WorkflowExecutionReview({ copy, workflow, run, nodeDetail, selec
         {run.status === 'paused' || run.status === 'failed' ? <button type="button" onClick={onResume}>{copy.workflowResume}</button> : null}
       </div>
       <WorkflowEffectReconciliationPanel copy={copy} targets={unknownEffectTargets} busy={reconciliationBusy} onReconcile={onReconcileEffect} />
+      <WorkflowCompensationReconciliationPanel copy={copy} targets={unknownCompensationTargets} busy={reconciliationBusy} onReconcile={onReconcileCompensation} />
       {inspectedNode === undefined || inspectedState === undefined ? <>
         <WorkflowOutputViewer {...outputViewerProps('input', copy.workflowInput, run.input)} />
         {run.output !== undefined ? <WorkflowOutputViewer {...outputViewerProps('final', copy.workflowOutput, run.output)} /> : null}
@@ -3538,6 +3557,23 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     }
   }
 
+  const reconcileCompensation = async (request: WorkflowCompensationEffectReconcileRequest): Promise<boolean> => {
+    if (currentRun === undefined) return false
+    const submittedRunId = currentRun.id
+    setBusy(true)
+    setError('')
+    try {
+      const record = await window.EzDSH.workflowRuns.reconcileCompensation(submittedRunId, request)
+      applyRunRecord(record, currentRunRef.current?.id === submittedRunId)
+      return true
+    } catch {
+      setError(workflowReconciliationErrorMessage(copy))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const approve = async (approved: boolean): Promise<void> => {
     if (currentRun === undefined) return
     try { applyRunRecord(await window.EzDSH.workflows.approve(currentRun.id, approved)) } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) }
@@ -3773,7 +3809,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             }}>
               <div className="workflow-execution-canvas"><ReactFlow key={executionLayoutKey ?? selected.id} {...WORKFLOW_EXECUTION_CANVAS_INTERACTION_PROPS} nodes={executionCanvasNodes} edges={workflowExecutionEdges(selected, currentRun)} nodeTypes={nodeTypes} onNodesChange={onExecutionNodesChange} onNodeClick={(_event, node) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(node.id) }} onPaneClick={() => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(undefined) }} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
               <div className="workflow-execution-resize-handle" role="separator" aria-orientation="horizontal" aria-label={copy.workflowResizeExecutionPanel} onPointerDown={beginExecutionResize}><span /></div>
-              <WorkflowExecutionReview copy={copy} workflow={selected} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => { markRunViewedAfterInteraction(currentRun); void cancel() }} onApprove={() => { markRunViewedAfterInteraction(currentRun); void approve(true) }} onReject={() => { markRunViewedAfterInteraction(currentRun); void approve(false) }} onResume={() => { markRunViewedAfterInteraction(currentRun); void resume() }} onReconcileEffect={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileEffect(request) }} reconciliationBusy={busy} onSelectNode={(nodeId) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(nodeId) }} onMarkUnread={currentRun === undefined ? undefined : () => markRunUnread(currentRun)} onDelete={currentRun === undefined ? undefined : () => void deleteRun(currentRun)} canMarkUnread={currentRun !== undefined && viewedRunIds.has(currentRun.id) && !busy} canDelete={currentRun !== undefined && workflowRunCanDelete(currentRun.status) && !busy} onCopyOutput={() => { markRunViewedAfterInteraction(currentRun); copyOutput() }} onOpenOutputWindow={(key, title, value) => { markRunViewedAfterInteraction(currentRun); openOutputWindow(key, title, value) }} outputFontScale={outputFontScale} onIncreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1)))) }} onDecreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1)))) }} />
+              <WorkflowExecutionReview copy={copy} workflow={selected} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => { markRunViewedAfterInteraction(currentRun); void cancel() }} onApprove={() => { markRunViewedAfterInteraction(currentRun); void approve(true) }} onReject={() => { markRunViewedAfterInteraction(currentRun); void approve(false) }} onResume={() => { markRunViewedAfterInteraction(currentRun); void resume() }} onReconcileEffect={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileEffect(request) }} onReconcileCompensation={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileCompensation(request) }} reconciliationBusy={busy} onSelectNode={(nodeId) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(nodeId) }} onMarkUnread={currentRun === undefined ? undefined : () => markRunUnread(currentRun)} onDelete={currentRun === undefined ? undefined : () => void deleteRun(currentRun)} canMarkUnread={currentRun !== undefined && viewedRunIds.has(currentRun.id) && !busy} canDelete={currentRun !== undefined && workflowRunCanDelete(currentRun.status) && !busy} onCopyOutput={() => { markRunViewedAfterInteraction(currentRun); copyOutput() }} onOpenOutputWindow={(key, title, value) => { markRunViewedAfterInteraction(currentRun); openOutputWindow(key, title, value) }} outputFontScale={outputFontScale} onIncreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1)))) }} onDecreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1)))) }} />
             </div>
           </section>}
         </div>
