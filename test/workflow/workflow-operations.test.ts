@@ -59,9 +59,47 @@ describe('workflow operations contracts', () => {
     expect(release?.workflowSnapshot.name).toBe('发布快照')
     expect(workflowReleaseSummary(release!)).toEqual({
       id: raw.id, environmentId: raw.environmentId, workflowId: raw.workflowId, workflowRevision: raw.workflowRevision,
-      contentSha256: raw.contentSha256, status: 'published', createdAt: raw.createdAt, publishedAt: raw.publishedAt,
+      contentSha256: raw.contentSha256, status: 'published', createdAt: raw.createdAt, publishedAt: raw.publishedAt, launchFields: [],
     })
     expect(normalizeWorkflowRelease({ ...raw, contentSha256: 'not-a-digest' })).toBeUndefined()
+  })
+
+  it('derives frozen launch fields without changing or leaking the persisted release', () => {
+    const workflowSnapshot = createDefaultWorkflow('发布快照 v1')
+    const input = workflowSnapshot.nodes.find((node) => node.type === 'input')!
+    if (input.type !== 'input') throw new Error('expected input node')
+    input.config.fields = [
+      { name: 'topic', label: 'v1 主题', type: 'string', required: true },
+      { name: 'count', label: '数量', type: 'number', required: false, defaultValue: 2 },
+    ]
+    const contentSha256 = computeWorkflowDefinitionSha256(workflowSnapshot)
+    const release = normalizeWorkflowRelease({
+      id: 'release-frozen-fields', environmentId: 'customer-acme-prod', workflowId: workflowSnapshot.id,
+      workflowRevision: workflowSnapshot.revision, workflowSnapshot, contentSha256, status: 'published',
+      connectorGrants: [], createdAt: '2026-09-03T00:00:00.000Z', publishedAt: '2026-09-03T00:00:00.000Z',
+    })!
+    const persistedBefore = JSON.stringify(release)
+
+    const editableV2 = createDefaultWorkflow('编辑中的 v2')
+    editableV2.id = workflowSnapshot.id
+    const editableInput = editableV2.nodes.find((node) => node.type === 'input')!
+    if (editableInput.type !== 'input') throw new Error('expected input node')
+    editableInput.config.fields = [{ name: 'audience', label: 'v2 受众', type: 'string', required: true }]
+
+    const summary = workflowReleaseSummary(release)
+
+    expect(summary.launchFields).toEqual([
+      { name: 'topic', label: 'v1 主题', type: 'string', required: true },
+      { name: 'count', label: '数量', type: 'number', required: false, defaultValue: 2 },
+    ])
+    expect(summary.launchFields).not.toEqual(editableInput.config.fields)
+    expect(Object.keys(summary).sort()).toEqual([
+      'contentSha256', 'createdAt', 'environmentId', 'id', 'launchFields', 'publishedAt', 'status', 'workflowId', 'workflowRevision',
+    ])
+    expect(JSON.stringify(summary)).not.toMatch(/workflowSnapshot|connectorGrants|headers|credential|input|output/u)
+    expect(JSON.stringify(release)).toBe(persistedBefore)
+    expect(computeWorkflowDefinitionSha256(release.workflowSnapshot)).toBe(contentSha256)
+    expect('launchFields' in release).toBe(false)
   })
 
   it('rejects release grants that exceed the snapshot connector policy', () => {

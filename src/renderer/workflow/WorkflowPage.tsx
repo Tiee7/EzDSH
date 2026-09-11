@@ -94,6 +94,7 @@ interface WorkflowReleasePanelProps {
   workflow?: WorkflowDefinition
   workflows?: WorkflowDefinition[]
   locale?: AppLocale
+  onRunStarted?: (record: WorkflowRunRecord) => void
 }
 
 function workflowBridge(): EzDSHBridge | undefined {
@@ -101,13 +102,14 @@ function workflowBridge(): EzDSHBridge | undefined {
 }
 
 /** Renderer-only release controls. It receives summaries and never a release snapshot. */
-export function WorkflowReleasePanel({ copy: _copy, workflow, workflows = [], locale = 'zh' }: WorkflowReleasePanelProps): JSX.Element {
+export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 'zh', onRunStarted }: WorkflowReleasePanelProps): JSX.Element {
   const [environments, setEnvironments] = useState<WorkflowCustomerEnvironment[]>([])
   const [releases, setReleases] = useState<WorkflowReleaseSummary[]>([])
   const [observations, setObservations] = useState<WorkflowObservationEvent[]>([])
   const [health, setHealth] = useState<WorkflowOperationsHealth>()
   const [environmentId, setEnvironmentId] = useState('')
   const [workflowId, setWorkflowId] = useState(workflow?.id ?? workflows[0]?.id ?? '')
+  const [releaseSetup, setReleaseSetup] = useState<{ releaseId: string; fields: WorkflowLaunchField[]; values: Record<string, string> }>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const selectedWorkflow = workflow ?? workflows.find((item) => item.id === workflowId)
@@ -173,11 +175,22 @@ export function WorkflowReleasePanel({ copy: _copy, workflow, workflows = [], lo
   }
 
   const activeRelease = releases.find((release) => release.status === 'published')
-  const start = async (): Promise<void> => {
+  const openReleaseSetup = (): void => {
+    if (activeRelease === undefined) return
+    const fields = getReleaseLaunchFields(activeRelease.launchFields)
+    setError('')
+    setReleaseSetup({ releaseId: activeRelease.id, fields, values: createWorkflowLaunchValues(fields) })
+  }
+  const startRelease = async (): Promise<void> => {
     const bridge = workflowBridge()
-    if (bridge === undefined || activeRelease === undefined) return
+    if (bridge === undefined || releaseSetup === undefined) return
     setBusy(true); setError('')
-    try { await bridge.workflowReleases.start(activeRelease.id, {}) } catch (reason) { setError(reason instanceof Error ? reason.message : '启动失败') } finally { setBusy(false) }
+    try {
+      const record = await bridge.workflowReleases.start(releaseSetup.releaseId, buildWorkflowLaunchInput(releaseSetup.fields, releaseSetup.values))
+      setReleaseSetup(undefined)
+      setBusy(false)
+      onRunStarted?.(record)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '启动失败'); setBusy(false) }
   }
   const rollback = async (releaseId: string): Promise<void> => {
     const bridge = workflowBridge()
@@ -193,20 +206,42 @@ export function WorkflowReleasePanel({ copy: _copy, workflow, workflows = [], lo
     title: '发布与客户环境', workflow: '工作流', environment: '客户环境', publish: '发布到客户环境', create: '创建本地环境', noEnv: '请先创建一个启用中的本地客户环境。', health: '健康状态', events: '脱敏观测', start: '启动发布', rollback: '回滚', empty: '暂无发布记录。',
   }
 
-  return <section className="workflow-tool-card workflow-release-panel" aria-label={label.title}>
-    <div className="workflow-panel-heading"><div><span className="workflow-kicker">{label.title}</span><h3>{label.title}</h3><p>Release 只保存静态定义摘要；运行输入、输出、凭证和请求头不会进入 Renderer。</p></div></div>
+  return <><section className="workflow-tool-card workflow-release-panel" aria-label={label.title}>
+    <div className="workflow-panel-heading"><div><span className="workflow-kicker">{label.title}</span><h3>{label.title}</h3><p>Main 保存完整的不可变发布定义；Renderer 只接收安全启动摘要，不接收运行输入、输出、凭证或请求头。</p></div></div>
     {selectedWorkflow === undefined && workflows.length > 0 ? <label>{label.workflow}<select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}><option value="">选择工作流</option>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label> : null}
     <label>{label.environment}<select value={environmentId} onChange={(event) => setEnvironmentId(event.target.value)} disabled={environments.length === 0}><option value="">{environments.length === 0 ? label.noEnv : '选择客户环境'}</option>{environments.map((item) => <option key={item.id} value={item.id}>{item.customerName} · {item.name}</option>)}</select></label>
     <div className="workflow-release-actions">
       <button type="button" className="workflow-button-primary" onClick={() => void publish()} disabled={busy || selectedWorkflow === undefined}>{label.publish}</button>
       <button type="button" onClick={() => void createEnvironment()} disabled={busy}>{label.create}</button>
-      {activeRelease !== undefined ? <button type="button" onClick={() => void start()} disabled={busy}>{label.start}</button> : null}
+      {activeRelease !== undefined ? <button type="button" onClick={openReleaseSetup} disabled={busy}>{label.start}</button> : null}
     </div>
     {error !== '' ? <p className="workflow-error">{error}</p> : null}
     <div className="workflow-release-summary"><strong>{label.health}: {health?.status ?? '—'}</strong><span>{health?.reason ?? ''}</span></div>
     <div className="workflow-release-list">{releases.length === 0 ? <span className="workflow-muted">{label.empty}</span> : releases.map((release) => <div className="workflow-release-row" key={release.id}><span><strong>v{release.workflowRevision}</strong> · {release.status} · {release.contentSha256.slice(0, 12)}</span>{release.status === 'superseded' ? <button type="button" onClick={() => void rollback(release.id)} disabled={busy}>{label.rollback}</button> : null}</div>)}</div>
     <div className="workflow-observation-list">{observations.slice(-8).map((event) => <div key={event.id}><span>{event.time}</span><strong>{event.action}</strong><em>{event.severity}</em></div>)}</div>
   </section>
+  {releaseSetup !== undefined ? <WorkflowRunLaunchDialog
+    copy={copy}
+    fields={releaseSetup.fields}
+    values={releaseSetup.values}
+    modelOptions={[]}
+    modelSelection={undefined}
+    allowShellFile={false}
+    allowCode={false}
+    debug={false}
+    busy={busy}
+    modelLoading={false}
+    error={error}
+    showRunOptions={false}
+    onChangeValue={(key, value) => setReleaseSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })}
+    onChangeModel={() => undefined}
+    onRefreshModels={() => undefined}
+    onChangeAllowShellFile={() => undefined}
+    onChangeAllowCode={() => undefined}
+    onChangeDebug={() => undefined}
+    onClose={() => setReleaseSetup(undefined)}
+    onStart={() => void startRelease()}
+  /> : null}</>
 }
 
 type FlowNode = Node<{ label: string; nodeType: WorkflowNodeType; employeeName?: string; inputVariables?: string[]; outputVariables?: string[]; switchCases?: Array<{ id: string; label?: string }>; status?: WorkflowNodeRunStatus; duration?: string; isRunning?: boolean }>
@@ -1568,6 +1603,18 @@ export interface WorkflowLaunchField {
   required?: boolean
 }
 
+/** Adapt the already-redacted frozen release fields to the shared launch form. */
+export function getReleaseLaunchFields(fields: readonly WorkflowInputField[] | undefined): WorkflowLaunchField[] {
+  return (fields ?? []).map((field, index) => ({
+    id: `release-field-${index + 1}`,
+    key: field.name,
+    label: field.label?.trim() || field.name,
+    ...(field.type === undefined || field.type === 'string' ? {} : { type: field.type }),
+    ...(field.defaultValue === undefined ? {} : { defaultValue: field.defaultValue }),
+    ...(field.required === undefined ? {} : { required: field.required }),
+  }))
+}
+
 function workflowModelOptionKey(option: WorkflowModelSelection): string {
   return `${option.providerId}\u0000${option.modelId}`
 }
@@ -2287,6 +2334,8 @@ interface WorkflowRunLaunchDialogProps {
   debug: boolean
   busy: boolean
   modelLoading: boolean
+  error?: string
+  showRunOptions?: boolean
   onChangeValue: (key: string, value: string) => void
   onChangeModel: (value: WorkflowModelSelection | undefined) => void
   onChangeConnectorGrants?: (value: WorkflowConnectorGrant[]) => void
@@ -2311,6 +2360,8 @@ export function WorkflowRunLaunchDialog({
   debug,
   busy,
   modelLoading,
+  error = '',
+  showRunOptions = true,
   onChangeValue,
   onChangeModel,
   onChangeConnectorGrants,
@@ -2328,12 +2379,15 @@ export function WorkflowRunLaunchDialog({
         <button type="button" className="workflow-button-quiet" onClick={onClose} disabled={busy}>{copy.workflowCancelSetup}</button>
       </div>
       <div className="workflow-launch-fields">
-        {fields.length === 0 ? <p className="workflow-muted">{copy.workflowNoLaunchInputs}</p> : fields.map((field) => <label key={field.id} className="workflow-launch-field"><span>{field.label}{field.type === 'file' ? '（文件路径）' : field.type === 'file-list' ? '（每行一个路径）' : ''}</span><textarea aria-label={field.label} value={values[field.key] ?? ''} onChange={(event) => onChangeValue(field.key, event.target.value)} placeholder={field.defaultValue === undefined ? copy.workflowInputHint : undefined} /></label>)}
-        <label className="workflow-launch-field"><span>{copy.workflowModel}</span><div className="workflow-model-control"><select value={modelSelection === undefined ? '' : workflowModelOptionKey(modelSelection)} onChange={(event) => onChangeModel(modelOptions.find((option) => workflowModelOptionKey(option) === event.target.value))}><option value="">{copy.workflowUseDefaultModel}</option>{modelOptions.map((option) => <option key={workflowModelOptionKey(option)} value={workflowModelOptionKey(option)}>{option.providerName} · {option.modelName ?? option.modelId}</option>)}</select><button type="button" className="workflow-button-quiet workflow-model-refresh" onClick={onRefreshModels} disabled={busy || modelLoading}>{modelLoading ? copy.workflowRefreshingModels : copy.workflowRefreshModels}</button></div><small className="workflow-launch-note">{modelOptions.length === 0 ? copy.workflowNoModels : copy.workflowModelHint}</small></label>
-        {connectorOptions.length > 0 ? <fieldset className="workflow-launch-connector-grants"><legend>{copy.workflowRunConnectorGrants}</legend><p className="workflow-launch-note">{copy.workflowRunConnectorGrantsHint}</p>{connectorOptions.map((option) => { const granted = connectorGrants.find((grant) => grant.connectorId === option.connectorId); return <div key={option.connectorId} className="workflow-launch-connector-grant"><div><strong>{option.connector?.name ?? option.connectorId}</strong><small>{option.connector?.baseUrl ?? copy.workflowConnectorMissing}</small></div><div className="workflow-permission-options">{option.operations.map((operation) => { const policyAllowed = option.policyOperations.includes(operation); return <label key={operation} className="workflow-checkbox"><input type="checkbox" checked={granted?.operations.includes(operation) === true} disabled={!policyAllowed || onChangeConnectorGrants === undefined} onChange={(event) => onChangeConnectorGrants?.(toggleWorkflowConnectorGrant(connectorGrants, option.connectorId, operation, event.target.checked))} />{operation === 'read' ? copy.workflowConnectorRead : copy.workflowConnectorWrite}{!policyAllowed ? `（${copy.workflowPermissionNotDeclared}）` : ''}</label> })}</div></div> })}</fieldset> : null}
-        <label className="workflow-checkbox"><input type="checkbox" checked={allowShellFile} onChange={(event) => onChangeAllowShellFile(event.target.checked)} /> <span>{copy.workflowAllowShellFile}<small className="workflow-launch-note">{copy.workflowAllowShellFileHint}</small></span></label>
-        <label className="workflow-checkbox"><input type="checkbox" checked={allowCode} onChange={(event) => onChangeAllowCode(event.target.checked)} /> <span>{copy.workflowAllowCode}<small className="workflow-launch-note">{copy.workflowAllowCodeHint}</small></span></label>
-        <label className="workflow-checkbox"><input type="checkbox" checked={debug} onChange={(event) => onChangeDebug(event.target.checked)} /> <span>{copy.workflowDebugRun}<small className="workflow-launch-note">{copy.workflowDebugRunHint}</small></span></label>
+        {fields.length === 0 ? <p className="workflow-muted">{copy.workflowNoLaunchInputs}</p> : fields.map((field) => <label key={field.id} className="workflow-launch-field"><span>{field.label}{field.required === true ? ' *' : ''}{field.type === 'file' ? '（文件路径）' : field.type === 'file-list' ? '（每行一个路径）' : ''}</span><textarea aria-label={field.label} aria-required={field.required === true} value={values[field.key] ?? ''} onChange={(event) => onChangeValue(field.key, event.target.value)} placeholder={field.defaultValue === undefined ? copy.workflowInputHint : undefined} /></label>)}
+        {showRunOptions ? <>
+          <label className="workflow-launch-field"><span>{copy.workflowModel}</span><div className="workflow-model-control"><select value={modelSelection === undefined ? '' : workflowModelOptionKey(modelSelection)} onChange={(event) => onChangeModel(modelOptions.find((option) => workflowModelOptionKey(option) === event.target.value))}><option value="">{copy.workflowUseDefaultModel}</option>{modelOptions.map((option) => <option key={workflowModelOptionKey(option)} value={workflowModelOptionKey(option)}>{option.providerName} · {option.modelName ?? option.modelId}</option>)}</select><button type="button" className="workflow-button-quiet workflow-model-refresh" onClick={onRefreshModels} disabled={busy || modelLoading}>{modelLoading ? copy.workflowRefreshingModels : copy.workflowRefreshModels}</button></div><small className="workflow-launch-note">{modelOptions.length === 0 ? copy.workflowNoModels : copy.workflowModelHint}</small></label>
+          {connectorOptions.length > 0 ? <fieldset className="workflow-launch-connector-grants"><legend>{copy.workflowRunConnectorGrants}</legend><p className="workflow-launch-note">{copy.workflowRunConnectorGrantsHint}</p>{connectorOptions.map((option) => { const granted = connectorGrants.find((grant) => grant.connectorId === option.connectorId); return <div key={option.connectorId} className="workflow-launch-connector-grant"><div><strong>{option.connector?.name ?? option.connectorId}</strong><small>{option.connector?.baseUrl ?? copy.workflowConnectorMissing}</small></div><div className="workflow-permission-options">{option.operations.map((operation) => { const policyAllowed = option.policyOperations.includes(operation); return <label key={operation} className="workflow-checkbox"><input type="checkbox" checked={granted?.operations.includes(operation) === true} disabled={!policyAllowed || onChangeConnectorGrants === undefined} onChange={(event) => onChangeConnectorGrants?.(toggleWorkflowConnectorGrant(connectorGrants, option.connectorId, operation, event.target.checked))} />{operation === 'read' ? copy.workflowConnectorRead : copy.workflowConnectorWrite}{!policyAllowed ? `（${copy.workflowPermissionNotDeclared}）` : ''}</label> })}</div></div> })}</fieldset> : null}
+          <label className="workflow-checkbox"><input type="checkbox" checked={allowShellFile} onChange={(event) => onChangeAllowShellFile(event.target.checked)} /> <span>{copy.workflowAllowShellFile}<small className="workflow-launch-note">{copy.workflowAllowShellFileHint}</small></span></label>
+          <label className="workflow-checkbox"><input type="checkbox" checked={allowCode} onChange={(event) => onChangeAllowCode(event.target.checked)} /> <span>{copy.workflowAllowCode}<small className="workflow-launch-note">{copy.workflowAllowCodeHint}</small></span></label>
+          <label className="workflow-checkbox"><input type="checkbox" checked={debug} onChange={(event) => onChangeDebug(event.target.checked)} /> <span>{copy.workflowDebugRun}<small className="workflow-launch-note">{copy.workflowDebugRunHint}</small></span></label>
+        </> : null}
+        {error !== '' ? <div className="workflow-error" role="alert">{error}</div> : null}
       </div>
       <div className="workflow-launch-dialog-actions"><button type="button" className="workflow-button-quiet" onClick={onClose} disabled={busy}>{copy.workflowCancelSetup}</button><button type="button" className="workflow-button-primary" onClick={onStart} disabled={busy}>{busy ? copy.workflowRunning : copy.workflowStartRun}</button></div>
     </section>
@@ -2862,33 +2916,65 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setSelectedEdgeId((current) => next.edges.some((edge) => edge.id === current) ? current : undefined)
   }
 
-  const open = async (workflow: WorkflowDefinition, isDraft = false): Promise<void> => {
+  const open = async (workflow: WorkflowDefinition, isDraft = false, preferredRun?: WorkflowRunRecord): Promise<void> => {
     const userFacingWorkflow = { ...cloneWorkflow(workflow), description: userFacingWorkflowText(workflow.description, locale) }
     setSelected(userFacingWorkflow)
     setWorkflowValidationIssues([])
     setHistory(createWorkflowHistory(userFacingWorkflow))
     setDraft(isDraft)
-    setWorkspaceView('editor')
+    setWorkspaceView(preferredRun === undefined ? 'editor' : 'executions')
     onWorkspaceModeChange?.(true)
     setSelectedNodeId(undefined)
     setSelectedEdgeId(undefined)
     setContextMenu(undefined)
     setNodes(workflowFlowNodes(userFacingWorkflow, undefined, undefined, [], employees))
     setEdges(flowEdges(userFacingWorkflow))
-    setCurrentRun(undefined)
+    currentRunRef.current = preferredRun
+    setCurrentRun(preferredRun)
     setSelectedRunNodeId(undefined)
     if (isDraft) {
       setRuns([])
       return
     }
+    if (preferredRun !== undefined) setRuns([preferredRun])
     try {
       const workflowRuns = await window.EzDSH.workflows.listRuns(workflow.id)
-      setRuns(workflowRuns)
-      updateRunSummary(workflow.id, workflowRuns)
+      if (preferredRun === undefined) {
+        setRuns(workflowRuns)
+        updateRunSummary(workflow.id, workflowRuns)
+      } else {
+        setRuns((current) => {
+          const exact = current.find((record) => record.id === preferredRun.id) ?? preferredRun
+          const merged = [exact, ...workflowRuns.filter((record) => record.id !== exact.id)]
+          updateRunSummary(workflow.id, merged)
+          return merged
+        })
+      }
     } catch {
-      setRuns([])
-      updateRunSummary(workflow.id, [])
+      if (preferredRun === undefined) {
+        setRuns([])
+        updateRunSummary(workflow.id, [])
+      } else {
+        setRuns((current) => {
+          const exact = current.find((record) => record.id === preferredRun.id) ?? preferredRun
+          updateRunSummary(workflow.id, [exact])
+          return [exact]
+        })
+      }
     }
+  }
+
+  const openReleasedRun = (record: WorkflowRunRecord): void => {
+    const source = workflows.find((workflow) => workflow.id === record.workflowId)
+    if (source === undefined) {
+      currentRunRef.current = record
+      setCurrentRun(record)
+      setRuns((current) => [record, ...current.filter((candidate) => candidate.id !== record.id)])
+      updateRunSummary(record.workflowId, [record])
+      setError(`发布运行 ${record.id} 已启动，但源工作流当前不可用。`)
+      return
+    }
+    void open(source, false, record)
   }
 
   const exitWorkspace = (): void => {
@@ -3670,7 +3756,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             </article>
           })}</div> : null}
           <div className="workflow-browser-tools">
-            <WorkflowReleasePanel copy={copy} locale={locale} workflows={workflows} />
+            <WorkflowReleasePanel copy={copy} locale={locale} workflows={workflows} onRunStarted={openReleasedRun} />
             <section className="workflow-tool-card workflow-browser-tool-wide">
               <div><span className="workflow-kicker">{copy.workflowImportEmployee}</span><h3>{copy.workflowImportEmployee}</h3><p>把一个专业员工快速转换为可编辑的工作流。</p></div>
               <div className="workflow-import-row"><select id="workflow-employee-select" className="workflow-employee-select" aria-label={copy.workflowImportEmployee} value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} disabled={busy || employees.length === 0}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employeeDisplayLabel(employee)} · {employee.id}</option>)}</select><button type="button" onClick={() => void importEmployee()} disabled={busy || employeeId === ''}>{copy.workflowImportEmployee}</button></div>

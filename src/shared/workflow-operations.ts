@@ -1,4 +1,4 @@
-import { cloneWorkflow, normalizeWorkflow, type WorkflowConnectorGrant, type WorkflowDefinition, type WorkflowRunEventType } from './workflow.js'
+import { cloneWorkflow, deriveWorkflowLaunchFields, normalizeWorkflow, type WorkflowConnectorGrant, type WorkflowDefinition, type WorkflowInputField, type WorkflowRunEventType } from './workflow.js'
 
 export type WorkflowEnvironmentKind = 'development' | 'staging' | 'production'
 
@@ -39,6 +39,7 @@ export interface WorkflowReleaseSummary {
   status: WorkflowRelease['status']
   createdAt: string
   publishedAt: string
+  launchFields?: WorkflowInputField[]
 }
 
 export interface WorkflowObservationEvent {
@@ -236,6 +237,7 @@ export function workflowReleaseSummary(release: WorkflowRelease): WorkflowReleas
     status: release.status,
     createdAt: release.createdAt,
     publishedAt: release.publishedAt,
+    launchFields: deriveWorkflowLaunchFields(release.workflowSnapshot),
   }
 }
 
