@@ -91,6 +91,7 @@ import type { EmployeeCreateInput, EmployeeGenerateRequest, EmployeeProjectSumma
 import { WorkflowStore } from './workflow/workflow-store.js'
 import { WorkflowRunStore } from './workflow/workflow-run-store.js'
 import { WorkflowRunService } from './workflow/workflow-run-service.js'
+import { registerWorkflowRunDefinitionIpc } from './workflow/workflow-run-definition-ipc.js'
 import { WorkflowGenerationService } from './workflow/workflow-generation-service.js'
 import { WorkflowModificationService } from './workflow/workflow-modification-service.js'
 import { WorkflowLightweightClient } from './workflow/workflow-lightweight-client.js'
@@ -1147,6 +1148,7 @@ function requireDeveloperModeFeature(): void {
 }
 
 function registerIpcHandlers(): void {
+  registerWorkflowRunDefinitionIpc(ipcMain, () => workflowRunService)
   ipcMain.handle('runtime:get-status', (): IpcResult<RuntimeSnapshot> => {
     if (runtimeManager === undefined) return failure(new Error('Runtime manager is not ready'))
     return success(runtimeManager.snapshot())
@@ -1994,14 +1996,6 @@ function registerIpcHandlers(): void {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
       if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
       return success(workflowRunService.get(runId))
-    } catch (error) {
-      return failure(error)
-    }
-  })
-  ipcMain.handle('workflow-runs:get-definition', async (_event, runId: string): Promise<IpcResult<Awaited<ReturnType<WorkflowRunService['getRunDefinition']>>>> => {
-    try {
-      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
-      return success(await workflowRunService.getRunDefinition(runId))
     } catch (error) {
       return failure(error)
     }

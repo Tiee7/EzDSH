@@ -194,17 +194,22 @@ export class WorkflowRunService {
     if (record === undefined) return undefined
 
     let rawDefinition: WorkflowDefinition | undefined
-    if (record.releaseId === undefined) {
+    const { releaseId, environmentId, traceId } = record
+    const releaseIdentity = [releaseId, environmentId, traceId]
+    const isReleasedRun = releaseIdentity.some((value) => value !== undefined)
+    if (!isReleasedRun) {
       rawDefinition = this.options.workflowStore.getRevision(record.workflowId, record.workflowRevision)
     } else {
-      const release = normalizeWorkflowRelease(this.options.resolveReleasedWorkflow?.(record.releaseId))
-      if (release === undefined || release.id !== record.releaseId || !verifyWorkflowReleaseIntegrity(release)) return undefined
+      if (typeof releaseId !== 'string' || releaseId.trim() === '' || typeof environmentId !== 'string' || environmentId.trim() === '' || typeof traceId !== 'string' || traceId.trim() === '') return undefined
+      const release = normalizeWorkflowRelease(this.options.resolveReleasedWorkflow?.(releaseId))
+      if (release === undefined || release.id !== releaseId || release.environmentId !== environmentId || !verifyWorkflowReleaseIntegrity(release)) return undefined
       rawDefinition = this.resolveReleasedDefinition(release, record.workflowId, record.workflowRevision)
     }
 
     const definition = normalizeWorkflow(rawDefinition)
     if (definition === undefined || definition.id !== record.workflowId || definition.revision !== record.workflowRevision) return undefined
     if (!validateWorkflow(definition).valid) return undefined
+    delete definition.lastRunId
     return cloneWorkflow(definition)
   }
 
