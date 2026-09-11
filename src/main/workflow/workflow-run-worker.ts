@@ -10,6 +10,7 @@ export interface WorkflowRunWorkerOptions {
   /** The third argument is aborted when the persisted lease can no longer be renewed. */
   executeClaimedRun: (runId: string, lease: WorkflowRunLease, leaseSignal?: AbortSignal) => Promise<void>
   onExecutionError?: (runId: string, error: unknown) => Promise<void> | void
+  onWorkerError?: (error: unknown) => Promise<void> | void
 }
 
 /**
@@ -22,8 +23,10 @@ export class WorkflowRunWorker {
   private readonly pollIntervalMs: number
   private readonly executeClaimedRun: WorkflowRunWorkerOptions['executeClaimedRun']
   private readonly onExecutionError: NonNullable<WorkflowRunWorkerOptions['onExecutionError']> | undefined
+  private readonly onWorkerError: NonNullable<WorkflowRunWorkerOptions['onWorkerError']> | undefined
   private started = false
   private stopping = false
+  private consecutiveClaimFailures = 0
   private drainPromise: Promise<void> | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
 
@@ -33,6 +36,7 @@ export class WorkflowRunWorker {
     this.pollIntervalMs = Math.max(25, options.pollIntervalMs ?? 1_000)
     this.executeClaimedRun = options.executeClaimedRun
     this.onExecutionError = options.onExecutionError
+    this.onWorkerError = options.onWorkerError
   }
 
   async start(): Promise<void> {
@@ -44,6 +48,10 @@ export class WorkflowRunWorker {
 
   wake(): void {
     if (!this.started || this.stopping || this.drainPromise !== undefined) return
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer)
+      this.timer = undefined
+    }
     this.drainPromise = this.drain().finally(() => {
       this.drainPromise = undefined
     })
@@ -62,7 +70,21 @@ export class WorkflowRunWorker {
 
   private async drain(): Promise<void> {
     while (this.started && !this.stopping) {
-      const claimed = await this.options.store.claimNextDue(this.ownerId, this.leaseMs)
+      let claimed
+      try {
+        claimed = await this.options.store.claimNextDue(this.ownerId, this.leaseMs)
+        this.consecutiveClaimFailures = 0
+      } catch (error) {
+        this.consecutiveClaimFailures += 1
+        try {
+          await this.onWorkerError?.(error)
+        } catch {
+          // An observer/error hook must not stop Worker polling recovery.
+        }
+        const retryDelay = Math.min(30_000, this.pollIntervalMs * 2 ** Math.min(this.consecutiveClaimFailures - 1, 5))
+        this.scheduleWake(retryDelay)
+        return
+      }
       if (claimed === undefined) {
         this.scheduleWake()
         return
@@ -101,10 +123,10 @@ export class WorkflowRunWorker {
     }
   }
 
-  private scheduleWake(): void {
+  private scheduleWake(delay?: number): void {
     if (!this.started || this.stopping || this.timer !== undefined) return
-    const nextDueAt = this.options.store.nextDueAt()
-    const dueDelay = nextDueAt === undefined ? this.pollIntervalMs : Math.max(25, Date.parse(nextDueAt) - Date.now())
+    const nextDueAt = delay === undefined ? this.options.store.nextDueAt() : undefined
+    const dueDelay = delay ?? (nextDueAt === undefined ? this.pollIntervalMs : Math.max(25, Date.parse(nextDueAt) - Date.now()))
     this.timer = setTimeout(() => {
       this.timer = undefined
       this.wake()
