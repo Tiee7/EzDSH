@@ -155,6 +155,17 @@ describe('@ezdsh/chat-search browser half', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' })
   })
 
+  it('recognizes macOS and Windows/Linux find shortcuts and wraps navigation', async () => {
+    const exports = await boot()
+    const isFindShortcut = exports.isFindShortcut as (event: Record<string, unknown>) => boolean
+    const wrapIndex = exports.wrapIndex as (index: number, length: number) => number
+    expect(isFindShortcut({ metaKey: true, ctrlKey: false, altKey: false, key: 'f' })).toBe(true)
+    expect(isFindShortcut({ metaKey: false, ctrlKey: true, altKey: false, key: 'F' })).toBe(true)
+    expect(isFindShortcut({ metaKey: true, ctrlKey: false, altKey: true, key: 'f' })).toBe(false)
+    expect(wrapIndex(-1, 3)).toBe(2)
+    expect(wrapIndex(3, 3)).toBe(0)
+  })
+
   it('escapes Chat node keys for an exact DOM selector', async () => {
     const exports = await boot()
     const selector = exports.selectorForNodeKey as (key: string) => string

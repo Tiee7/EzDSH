@@ -222,6 +222,16 @@ window.__ModuleLoader__.load({
       return new Promise((resolve) => requestAnimationFrame(() => resolve()))
     }
 
+    function isFindShortcut(event) {
+      return (event.metaKey || event.ctrlKey)
+        && !event.altKey
+        && event.key.toLocaleLowerCase() === 'f'
+    }
+
+    function wrapIndex(index, length) {
+      return length > 0 ? (index + length) % length : -1
+    }
+
     async function locateNode(nodeKey) {
       const selector = selectorForNodeKey(nodeKey)
       for (let attempt = 0; attempt < 24; attempt += 1) {
@@ -269,7 +279,7 @@ window.__ModuleLoader__.load({
       const activate = useCallback((index) => {
         const matches = itemsRef.current
         if (matches.length === 0) return
-        const normalized = (index + matches.length) % matches.length
+        const normalized = wrapIndex(index, matches.length)
         setActive(normalized)
         setError(null)
         void focusHit(sessionId, matches[normalized], queryRef.current).catch(() => {
@@ -279,10 +289,7 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         const onKeyDown = (event) => {
-          const find = (event.metaKey || event.ctrlKey)
-            && !event.altKey
-            && event.key.toLocaleLowerCase() === 'f'
-          if (find) {
+          if (isFindShortcut(event)) {
             event.preventDefault()
             event.stopPropagation()
             show()
@@ -464,8 +471,10 @@ window.__ModuleLoader__.load({
     exports.apply = apply
     exports.inject = inject
     exports.clearHighlight = clearHighlight
+    exports.isFindShortcut = isFindShortcut
     exports.selectorForNodeKey = selectorForNodeKey
     exports.textRanges = textRanges
+    exports.wrapIndex = wrapIndex
     return module.exports
   },
 })
