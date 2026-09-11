@@ -15,6 +15,114 @@ function graphWithRemovedNode(): WorkflowDefinition {
   return workflow
 }
 
+function workflowWithUnknownLoopEffect(): { workflow: WorkflowDefinition; run: WorkflowRunRecord; bodyNodeId: string } {
+  const source = createDefaultWorkflow('Effect acceptance')
+  const originalLoop = source.nodes.find((node) => node.type === 'ai-task')!
+  const body = source.nodes.find((node) => node.type === 'output')!
+  const loop = { ...originalLoop, type: 'loop', label: 'Receipt loop', config: { maxIterations: 3 } } as never
+  const workflow = {
+    ...source,
+    nodes: source.nodes.map((node) => node.id === originalLoop.id ? loop : node),
+    edges: [{ id: 'loop-body', source: loop.id, target: body.id, sourcePort: 'loop-body' }],
+  }
+  const run: WorkflowRunRecord = {
+    id: 'run-effect-acceptance', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'paused', input: { task: 'send receipts' }, events: [], allowShellFile: false,
+    nodeStates: [{ nodeId: loop.id, status: 'cancelled', loopIterations: [{ iterationId: 'iteration-0', iterationIndex: 0, input: { recipient: 'Ada' }, status: 'running', nodeStates: [{ nodeId: body.id, status: 'cancelled', effectState: 'unknown', input: { recipient: 'Ada', receipt: 'R-42' } }] }] }],
+  }
+  return { workflow, run, bodyNodeId: body.id }
+}
+
+async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffect: (runId: string, request: unknown) => Promise<WorkflowRunRecord>): Promise<{ domWindow: ReturnType<typeof createWindow>; cleanup: () => Promise<void>; workflow: WorkflowDefinition; run: WorkflowRunRecord; bodyNodeId: string }> {
+  const { workflow, run, bodyNodeId } = workflowWithUnknownLoopEffect()
+  const previousGlobals = {
+    window: globalThis.window,
+    document: globalThis.document,
+    navigator: globalThis.navigator,
+    HTMLElement: globalThis.HTMLElement,
+    Element: globalThis.Element,
+    Node: globalThis.Node,
+    Event: globalThis.Event,
+    MouseEvent: globalThis.MouseEvent,
+    KeyboardEvent: globalThis.KeyboardEvent,
+    CustomEvent: globalThis.CustomEvent,
+    getComputedStyle: globalThis.getComputedStyle,
+    ResizeObserver: globalThis.ResizeObserver,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+    EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH,
+  }
+  const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+  class TestResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  const requestAnimationFrame = (_callback: FrameRequestCallback): number => 0
+  const cancelAnimationFrame = (_id: number): void => {}
+  Object.defineProperty(domWindow.HTMLElement.prototype, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 960, bottom: 640, width: 960, height: 640, toJSON: () => ({}) }),
+  })
+  Object.assign(globalThis, {
+    window: domWindow,
+    document: domWindow.document,
+    HTMLElement: domWindow.HTMLElement,
+    Element: domWindow.Element,
+    Node: domWindow.Node,
+    Event: domWindow.Event,
+    MouseEvent: domWindow.MouseEvent,
+    KeyboardEvent: domWindow.KeyboardEvent,
+    CustomEvent: domWindow.CustomEvent,
+    getComputedStyle: domWindow.getComputedStyle.bind(domWindow),
+    ResizeObserver: TestResizeObserver,
+    requestAnimationFrame,
+    cancelAnimationFrame,
+  })
+  Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+  const bridge = {
+    workflows: {
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(async () => [run]),
+      onStateChange: vi.fn(() => () => {}),
+      listModificationHistory: vi.fn(async () => []),
+      onModificationStateChange: vi.fn(() => () => {}),
+    },
+    workflowRuns: { reconcileEffect },
+    employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
+    workflowCredentials: { list: vi.fn(async () => []) },
+    workflowConnectors: { list: vi.fn(async () => []) },
+    workflowEnvironments: { list: vi.fn(async () => []) },
+    workflowReleases: { list: vi.fn(async () => []), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+  }
+  ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
+  ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
+  const root = createRoot(domWindow.document.getElementById('root')!)
+  await act(async () => {
+    root.render(<workflowPage.WorkflowPage copy={getAppCopy(locale)} locale={locale} />)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  const open = domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement
+  await act(async () => { open.click(); await Promise.resolve() })
+  const executions = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy(locale).workflowExecutions) as HTMLButtonElement
+  await act(async () => { executions.click(); await Promise.resolve() })
+  const runButton = domWindow.document.querySelector('.workflow-run-item-main') as HTMLButtonElement
+  await act(async () => { runButton.click(); await Promise.resolve() })
+  return {
+    domWindow,
+    workflow,
+    run,
+    bodyNodeId,
+    cleanup: async () => {
+      await act(async () => { root.unmount() })
+      delete (globalThis as { EzDSH?: unknown }).EzDSH
+      const { navigator: previousNavigator, ...previousGlobalsWithoutNavigator } = previousGlobals
+      Object.assign(globalThis, previousGlobalsWithoutNavigator)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    },
+  }
+}
+
 describe('WorkflowPage regressions', () => {
   it('publishes the selected workflow revision into a selected customer environment', async () => {
     const workflow = createDefaultWorkflow('发布控制')
@@ -1441,5 +1549,43 @@ describe('WorkflowPage regressions', () => {
     expect(errorMessage).toBeTypeOf('function')
     if (errorMessage === undefined) return
     expect(errorMessage(getAppCopy('en'))).toBe('Unable to reconcile this effect. Try again or check the run state.')
+  })
+
+  it('sends the current loop target and refreshes both workflow-page run surfaces after reconciliation', async () => {
+    const reconciled: WorkflowRunRecord = { ...workflowWithUnknownLoopEffect().run, status: 'failed', output: 'reconciled result', error: 'reviewed', nodeStates: [] }
+    const reconcileEffect = vi.fn(async () => reconciled)
+    const page = await mountWorkflowEffectReviewPage('zh', reconcileEffect)
+    try {
+      const textarea = page.domWindow.document.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => { Simulate.change(textarea, { target: { value: '  checked delivery log  ' } }) })
+      const action = Array.from(page.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '确认未发送并重试') as HTMLButtonElement
+      await act(async () => { action.click(); await Promise.resolve() })
+
+      expect(reconcileEffect).toHaveBeenCalledWith(page.run.id, { nodeId: page.bodyNodeId, iterationId: 'iteration-0', outcome: 'not-dispatched', note: 'checked delivery log' })
+      expect(page.domWindow.document.querySelector('.workflow-execution-detail')?.textContent).toContain('reconciled result')
+      expect(page.domWindow.document.querySelector('.workflow-run-item strong')?.textContent).toContain('运行失败')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('keeps the dispatched confirmation and note when the WorkflowPage bridge rejects', async () => {
+    const reconcileEffect = vi.fn(async () => { throw new Error('后端失败') })
+    const page = await mountWorkflowEffectReviewPage('en', reconcileEffect)
+    try {
+      const textarea = page.domWindow.document.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => { Simulate.change(textarea, { target: { value: '  checked delivery log  ' } }) })
+      const dispatched = Array.from(page.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === 'Confirm already sent') as HTMLButtonElement
+      await act(async () => { dispatched.click() })
+      const confirm = Array.from(page.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === 'I confirm it was sent, continue') as HTMLButtonElement
+      await act(async () => { confirm.click(); await Promise.resolve() })
+
+      expect(reconcileEffect).toHaveBeenCalledOnce()
+      expect(page.domWindow.document.body.textContent).toContain('Unable to reconcile this effect. Try again or check the run state.')
+      expect((page.domWindow.document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('  checked delivery log  ')
+      expect(Array.from(page.domWindow.document.querySelectorAll('button')).some((button) => button.textContent === 'I confirm it was sent, continue')).toBe(true)
+    } finally {
+      await page.cleanup()
+    }
   })
 })
