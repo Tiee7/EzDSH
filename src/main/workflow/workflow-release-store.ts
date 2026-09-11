@@ -16,6 +16,10 @@ export interface WorkflowReleaseRollbackResult {
   rolledBack: WorkflowRelease
 }
 
+/** Store-owned fields remain optional for callers and are always replaced by the trusted store clock. */
+export type WorkflowReleasePublishRecord = Omit<WorkflowRelease, 'activation' | 'createdAt' | 'publishedAt'>
+  & Partial<Pick<WorkflowRelease, 'activation' | 'createdAt' | 'publishedAt'>>
+
 function isNotFound(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
 }
@@ -41,6 +45,7 @@ function cloneRelease(release: WorkflowRelease): WorkflowRelease {
     connectorGrants: release.connectorGrants.map((grant) => ({ connectorId: grant.connectorId, operations: [...grant.operations] })),
     createdAt: release.createdAt,
     publishedAt: release.publishedAt,
+    ...(release.activation === undefined ? {} : { activation: { ...release.activation } }),
   }
 }
 
@@ -126,18 +131,19 @@ export class WorkflowReleaseStore {
     return release === undefined ? undefined : cloneRelease(release)
   }
 
-  async publish(input: WorkflowRelease): Promise<WorkflowRelease> {
+  async publish(input: WorkflowReleasePublishRecord): Promise<WorkflowRelease> {
     await this.initialize()
     if (input.status !== 'published') throw new Error('Workflow release publish input must have published status')
-    const timestamp = this.now()
-    const normalized = normalizeVerifiedRelease({
-      ...input,
-      status: 'published',
-      createdAt: timestamp,
-      publishedAt: timestamp,
-    })
-    if (normalized === undefined) throw new Error('Invalid workflow release or failed integrity verification')
     return this.mutate(async () => {
+      const timestamp = this.now()
+      const normalized = normalizeVerifiedRelease({
+        ...input,
+        status: 'published',
+        createdAt: timestamp,
+        publishedAt: timestamp,
+        activation: { kind: 'publish', at: timestamp },
+      })
+      if (normalized === undefined) throw new Error('Invalid workflow release or failed integrity verification')
       if (this.releases.has(normalized.id)) throw new Error('Workflow release id already exists')
       for (const release of this.releases.values()) {
         if (release.id === normalized.id) continue
@@ -167,12 +173,20 @@ export class WorkflowReleaseStore {
         && release.status === 'published')
       if (current === undefined) throw new Error('Rollback requires a current published workflow release')
 
-      current.status = 'rolled-back'
-      target.status = 'published'
+      const timestamp = this.now()
+      const restored = normalizeVerifiedRelease({
+        ...target,
+        status: 'published',
+        activation: { kind: 'rollback', at: timestamp, previousReleaseId: current.id },
+      })
+      const rolledBack = normalizeVerifiedRelease({ ...current, status: 'rolled-back' })
+      if (restored === undefined || rolledBack === undefined) throw new Error('Invalid workflow release activation or failed integrity verification')
+      this.releases.set(restored.id, cloneRelease(restored))
+      this.releases.set(rolledBack.id, cloneRelease(rolledBack))
       await this.persist()
       return {
-        restored: cloneRelease(target),
-        rolledBack: cloneRelease(current),
+        restored: cloneRelease(restored),
+        rolledBack: cloneRelease(rolledBack),
       }
     })
   }

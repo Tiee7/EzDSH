@@ -64,6 +64,48 @@ describe('workflow operations contracts', () => {
     expect(normalizeWorkflowRelease({ ...raw, contentSha256: 'not-a-digest' })).toBeUndefined()
   })
 
+  it('normalizes optional release activation evidence while accepting legacy releases', () => {
+    const workflowSnapshot = createDefaultWorkflow('激活证据')
+    const base = {
+      id: 'release-activation', environmentId: 'customer-acme-prod', workflowId: workflowSnapshot.id,
+      workflowRevision: workflowSnapshot.revision, workflowSnapshot,
+      contentSha256: computeWorkflowDefinitionSha256(workflowSnapshot), status: 'published', connectorGrants: [],
+      createdAt: '2026-09-03T00:00:00.000Z', publishedAt: '2026-09-03T00:00:00.000Z',
+    }
+
+    expect(normalizeWorkflowRelease(base)?.activation).toBeUndefined()
+    expect(normalizeWorkflowRelease({
+      ...base,
+      activation: { kind: 'rollback', at: '2026-09-03T01:00:00.000Z', previousReleaseId: 'release-current' },
+    })?.activation).toEqual({ kind: 'rollback', at: '2026-09-03T01:00:00.000Z', previousReleaseId: 'release-current' })
+
+    for (const activation of [
+      null,
+      { kind: 'deploy', at: '2026-09-03T01:00:00.000Z' },
+      { kind: 'publish', at: 'not-a-date' },
+      { kind: 'rollback', at: '2026-09-03T01:00:00.000Z', previousReleaseId: '' },
+    ]) {
+      expect(normalizeWorkflowRelease({ ...base, activation })).toBeUndefined()
+    }
+  })
+
+  it('keeps mutable activation evidence outside the immutable execution digest', () => {
+    const workflowSnapshot = createDefaultWorkflow('激活不进入摘要')
+    const contentSha256 = computeWorkflowDefinitionSha256(workflowSnapshot)
+    const release = normalizeWorkflowRelease({
+      id: 'release-activation-integrity', environmentId: 'customer-acme-prod', workflowId: workflowSnapshot.id,
+      workflowRevision: workflowSnapshot.revision, workflowSnapshot, contentSha256, status: 'published', connectorGrants: [],
+      createdAt: '2026-09-03T00:00:00.000Z', publishedAt: '2026-09-03T00:00:00.000Z',
+      activation: { kind: 'publish', at: '2026-09-03T00:00:00.000Z' },
+    })!
+
+    expect(verifyWorkflowReleaseIntegrity(release)).toBe(true)
+    release.activation = { kind: 'rollback', at: '2026-09-03T02:00:00.000Z', previousReleaseId: 'release-newer' }
+    expect(verifyWorkflowReleaseIntegrity(release)).toBe(true)
+    release.workflowSnapshot.name = '执行内容被篡改'
+    expect(verifyWorkflowReleaseIntegrity(release)).toBe(false)
+  })
+
   it('derives frozen launch fields without changing or leaking the persisted release', () => {
     const workflowSnapshot = createDefaultWorkflow('发布快照 v1')
     const input = workflowSnapshot.nodes.find((node) => node.type === 'input')!

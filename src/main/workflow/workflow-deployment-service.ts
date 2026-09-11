@@ -49,8 +49,6 @@ export class WorkflowDeploymentService {
       ...(releasePlan.workflowDependencies.length === 0 ? {} : { workflowDependencies: releasePlan.workflowDependencies }),
       status: 'published',
       connectorGrants: releasePlan.connectorGrants,
-      createdAt: new Date().toISOString(),
-      publishedAt: new Date().toISOString(),
     })
   }
 

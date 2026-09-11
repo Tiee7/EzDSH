@@ -99,6 +99,25 @@ function updateTransformNode(workflow: WorkflowDefinition, text: string): Workfl
 }
 
 describe('WorkflowDeploymentService', () => {
+  it('leaves activation and persisted timestamps to the release store trusted clock', async () => {
+    const { workflowStore, environmentStore, releaseStore, deploymentService } = await createFixture()
+    await environmentStore.upsert(createEnvironment())
+    const workflow = await workflowStore.create(createWorkflowInput({ name: 'Store-owned activation' }))
+    const publish = vi.spyOn(releaseStore, 'publish')
+
+    const release = await deploymentService.publish({ workflowId: workflow.id, environmentId: 'customer-acme-staging' })
+
+    const delegatedKeys = Object.keys(publish.mock.calls[0]![0])
+    expect(delegatedKeys).not.toContain('activation')
+    expect(delegatedKeys).not.toContain('createdAt')
+    expect(delegatedKeys).not.toContain('publishedAt')
+    expect(release).toMatchObject({
+      createdAt: '2026-09-03T09:00:00.000Z',
+      publishedAt: '2026-09-03T09:00:00.000Z',
+      activation: { kind: 'publish', at: '2026-09-03T09:00:00.000Z' },
+    })
+  })
+
   it('returns both rollback identities without changing another environment current release', async () => {
     const { workflowStore, environmentStore, releaseStore, deploymentService } = await createFixture()
     await environmentStore.upsert(createEnvironment())
@@ -111,7 +130,11 @@ describe('WorkflowDeploymentService', () => {
 
     const result = await deploymentService.rollback(first.id)
 
+    expect(first.activation).toEqual({ kind: 'publish', at: '2026-09-03T09:00:00.000Z' })
     expect(result.restored).toMatchObject({ id: first.id, environmentId: 'customer-acme-staging', status: 'published' })
+    expect(result.restored.activation).toEqual({
+      kind: 'rollback', at: '2026-09-03T09:00:00.000Z', previousReleaseId: second.id,
+    })
     expect(result.rolledBack).toMatchObject({ id: second.id, environmentId: 'customer-acme-staging', status: 'rolled-back' })
     expect(releaseStore.get(other.id)).toMatchObject({ environmentId: 'customer-other-production', status: 'published' })
   })

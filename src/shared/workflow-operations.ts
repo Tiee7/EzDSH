@@ -27,6 +27,14 @@ export interface WorkflowRelease {
   connectorGrants: WorkflowConnectorGrant[]
   createdAt: string
   publishedAt: string
+  activation?: WorkflowReleaseActivation
+}
+
+/** Mutable control-plane evidence for the action that most recently activated a release. */
+export interface WorkflowReleaseActivation {
+  kind: 'publish' | 'rollback'
+  at: string
+  previousReleaseId?: string
 }
 
 /** Renderer-safe release metadata. The immutable definition remains Main-only. */
@@ -108,6 +116,23 @@ function normalizeConnectorGrants(value: unknown): WorkflowConnectorGrant[] | un
     grants.set(connectorId, operations)
   }
   return [...grants.entries()].map(([connectorId, operations]) => ({ connectorId, operations: [...operations] }))
+}
+
+function normalizeWorkflowReleaseActivation(value: unknown): WorkflowReleaseActivation | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const input = value as Record<string, unknown>
+  if (Object.keys(input).some((key) => key !== 'kind' && key !== 'at' && key !== 'previousReleaseId')) return undefined
+  if (input.kind !== 'publish' && input.kind !== 'rollback') return undefined
+  const at = normalizeDate(input.at)
+  const previousReleaseId = normalizeRequiredString(input.previousReleaseId)
+  if (at === undefined) return undefined
+  if (input.previousReleaseId !== undefined && (previousReleaseId === undefined || !environmentIdPattern.test(previousReleaseId))) return undefined
+  if (input.kind === 'publish' && previousReleaseId !== undefined) return undefined
+  return {
+    kind: input.kind,
+    at,
+    ...(previousReleaseId === undefined ? {} : { previousReleaseId }),
+  }
 }
 
 function buildReleasePolicyMap(
@@ -209,7 +234,8 @@ export function normalizeWorkflowRelease(value: unknown): WorkflowRelease | unde
     ? undefined
     : normalizeWorkflowDependencies(input.workflowDependencies, workflowSnapshot.id, workflowRevision)
   const connectorGrants = normalizeConnectorGrants(input.connectorGrants)
-  if (id === undefined || !environmentIdPattern.test(id) || environmentId === undefined || !environmentIdPattern.test(environmentId) || workflowId === undefined || !environmentIdPattern.test(workflowId) || contentSha256 === undefined || !sha256Pattern.test(contentSha256) || createdAt === undefined || publishedAt === undefined || workflowSnapshot === undefined || workflowDependencies === undefined || connectorGrants === undefined) return undefined
+  const activation = input.activation === undefined ? undefined : normalizeWorkflowReleaseActivation(input.activation)
+  if (id === undefined || !environmentIdPattern.test(id) || environmentId === undefined || !environmentIdPattern.test(environmentId) || workflowId === undefined || !environmentIdPattern.test(workflowId) || contentSha256 === undefined || !sha256Pattern.test(contentSha256) || createdAt === undefined || publishedAt === undefined || workflowSnapshot === undefined || workflowDependencies === undefined || connectorGrants === undefined || (input.activation !== undefined && activation === undefined)) return undefined
   if (typeof workflowRevision !== 'number' || !Number.isInteger(workflowRevision) || workflowRevision < 1 || workflowId !== workflowSnapshot.id || workflowRevision !== workflowSnapshot.revision || workflowSnapshotHasStaticHttpHeaders(workflowSnapshot) || !workflowConnectorGrantsAreSubsetOfPolicy(workflowSnapshot, connectorGrants, workflowDependencies)) return undefined
   if (input.status !== 'published' && input.status !== 'superseded' && input.status !== 'rolled-back') return undefined
   return {
@@ -224,6 +250,7 @@ export function normalizeWorkflowRelease(value: unknown): WorkflowRelease | unde
     connectorGrants,
     createdAt,
     publishedAt,
+    ...(activation === undefined ? {} : { activation }),
   }
 }
 

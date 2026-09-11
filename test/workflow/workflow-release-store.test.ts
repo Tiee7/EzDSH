@@ -45,6 +45,7 @@ describe('WorkflowReleaseStore', () => {
       status: 'published',
       createdAt: '2026-09-03T09:00:00.000Z',
       publishedAt: '2026-09-03T09:00:00.000Z',
+      activation: { kind: 'publish', at: '2026-09-03T09:00:00.000Z' },
     })
     expect(await readFile(join(dir, 'workflow-releases.json'), 'utf8')).not.toContain('unexpectedSecret')
     expect((await stat(dir)).mode & 0o777).toBe(0o700)
@@ -141,10 +142,12 @@ describe('WorkflowReleaseStore', () => {
     const saved = await store.publish(createRelease('release-time', {
       createdAt: '2020-01-01T00:00:00.000Z',
       publishedAt: '2020-01-01T00:00:00.000Z',
+      activation: { kind: 'rollback', at: '2020-01-01T00:00:00.000Z', previousReleaseId: 'untrusted' },
     }))
 
     expect(saved.createdAt).toBe('2026-09-03T10:15:00.000Z')
     expect(saved.publishedAt).toBe('2026-09-03T10:15:00.000Z')
+    expect(saved.activation).toEqual({ kind: 'publish', at: '2026-09-03T10:15:00.000Z' })
     expect(store.get('release-time')?.createdAt).toBe('2026-09-03T10:15:00.000Z')
     expect(store.get('release-time')?.publishedAt).toBe('2026-09-03T10:15:00.000Z')
   })
@@ -157,20 +160,33 @@ describe('WorkflowReleaseStore', () => {
     const second = await store.publish(createRelease('release-2', { workflowSnapshot, workflowId: workflowSnapshot.id, workflowRevision: workflowSnapshot.revision }))
 
     expect(store.get(first.id)?.status).toBe('superseded')
+    expect(store.get(first.id)?.activation?.kind).toBe('publish')
     expect(store.get(second.id)?.status).toBe('published')
+    expect(store.get(second.id)?.activation?.kind).toBe('publish')
     expect(store.list().map((release) => release.id)).toEqual(['release-2', 'release-1'])
   })
 
   it('rolls back to a superseded release without deleting history', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-releases-rollback-'))
-    const store = new WorkflowReleaseStore(dir)
+    let now = '2026-09-03T09:00:00.000Z'
+    const store = new WorkflowReleaseStore(dir, { now: () => now })
     const workflowSnapshot = createWorkflowSnapshot('回滚工作流')
     await store.publish(createRelease('release-1', { workflowSnapshot, workflowId: workflowSnapshot.id, workflowRevision: workflowSnapshot.revision }))
+    now = '2026-09-03T10:00:00.000Z'
     await store.publish(createRelease('release-2', { workflowSnapshot, workflowId: workflowSnapshot.id, workflowRevision: workflowSnapshot.revision }))
 
+    now = '2026-09-03T11:00:00.000Z'
     const result = await store.rollback('release-1')
-    expect(result.restored).toMatchObject({ id: 'release-1', status: 'published' })
-    expect(result.rolledBack).toMatchObject({ id: 'release-2', status: 'rolled-back' })
+    expect(result.restored).toMatchObject({
+      id: 'release-1',
+      status: 'published',
+      activation: { kind: 'rollback', at: '2026-09-03T11:00:00.000Z', previousReleaseId: 'release-2' },
+    })
+    expect(result.rolledBack).toMatchObject({
+      id: 'release-2',
+      status: 'rolled-back',
+      activation: { kind: 'publish', at: '2026-09-03T10:00:00.000Z' },
+    })
     expect(store.get('release-1')?.status).toBe('published')
     expect(store.get('release-2')?.status).toBe('rolled-back')
     expect(store.list().map((release) => `${release.id}:${release.status}`)).toEqual([
@@ -183,6 +199,44 @@ describe('WorkflowReleaseStore', () => {
       'release-1:published',
       'release-2:rolled-back',
     ])
+    expect(reloaded.get('release-1')?.activation).toEqual({
+      kind: 'rollback', at: '2026-09-03T11:00:00.000Z', previousReleaseId: 'release-2',
+    })
+  })
+
+  it('accepts legacy persisted releases but skips invalid activation evidence', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-releases-activation-validation-'))
+    const legacy = createRelease('release-legacy')
+    const valid = createRelease('release-valid-activation', {
+      activation: { kind: 'publish', at: '2026-09-03T00:00:00.000Z' },
+      status: 'superseded',
+    })
+    const invalid = {
+      ...createRelease('release-invalid-activation', { status: 'rolled-back' }),
+      activation: { kind: 'rollback', at: 'invalid', previousReleaseId: 'release-current' },
+    }
+    await writeFile(join(dir, 'workflow-releases.json'), JSON.stringify([legacy, valid, invalid]))
+
+    const store = new WorkflowReleaseStore(dir)
+    await store.initialize()
+
+    expect(store.get('release-legacy')?.activation).toBeUndefined()
+    expect(store.get('release-valid-activation')?.activation).toEqual({ kind: 'publish', at: '2026-09-03T00:00:00.000Z' })
+    expect(store.get('release-invalid-activation')).toBeUndefined()
+  })
+
+  it('rejects an invalid trusted rollback time before changing release state', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-releases-invalid-rollback-time-'))
+    let now = '2026-09-03T09:00:00.000Z'
+    const store = new WorkflowReleaseStore(dir, { now: () => now })
+    const workflowSnapshot = createWorkflowSnapshot('回滚时钟校验')
+    await store.publish(createRelease('release-1', { workflowSnapshot }))
+    await store.publish(createRelease('release-2', { workflowSnapshot }))
+
+    now = 'invalid-time'
+    await expect(store.rollback('release-1')).rejects.toThrow(/release|activation|time|invalid/i)
+    expect(store.get('release-1')?.status).toBe('superseded')
+    expect(store.get('release-2')?.status).toBe('published')
   })
 
   it('serializes concurrent publish calls so no release is lost', async () => {
