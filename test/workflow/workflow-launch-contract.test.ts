@@ -221,17 +221,17 @@ describe('WorkflowStore structured launch validation', () => {
   })
 })
 
-async function serviceFixture() {
+async function serviceFixture(fields: WorkflowInputField[] = [
+  { name: 'title', type: 'string', required: true },
+  { name: 'count', type: 'number', defaultValue: 2 },
+  { name: '__proto__', type: 'json', defaultValue: { safe: true } },
+  { name: 'constructor', type: 'string', defaultValue: 'safe-constructor' },
+]) {
   const dir = await mkdtemp(join(tmpdir(), 'ezdsh-launch-contract-'))
   const workflowStore = new WorkflowStore(dir)
   const runStore = new WorkflowRunStore(dir)
   const workflow = await workflowStore.create({
-    ...definition([
-      { name: 'title', type: 'string', required: true },
-      { name: 'count', type: 'number', defaultValue: 2 },
-      { name: '__proto__', type: 'json', defaultValue: { safe: true } },
-      { name: 'constructor', type: 'string', defaultValue: 'safe-constructor' },
-    ]),
+    ...definition(fields),
   })
   const release: WorkflowRelease = {
     id: 'release-launch-contract',
@@ -336,6 +336,38 @@ describe('WorkflowRunService launch contract', () => {
 
     expect(runStore.get(run.id)?.input).toEqual(run.input)
     expect(runStore.list()).toHaveLength(1)
+  })
+
+  it.each(['normal', 'released'] as const)('rejects %s defaults whose effective input exceeds the persistence depth', async (kind) => {
+    const deepDefault = nestedObject(256)
+    const fields: WorkflowInputField[] = [{ name: 'payload', type: 'json', defaultValue: deepDefault }]
+    expect(validateWorkflow(definition(fields))).toMatchObject({ valid: true, issues: [] })
+    const { service, workflow, release, runStore } = await serviceFixture(fields)
+
+    const start = (input: WorkflowValue) => kind === 'normal'
+      ? service.start(workflow.id, input)
+      : service.startReleased(release.id, input)
+
+    await expect(start({})).rejects.toThrow(/JSON-safe.*256|嵌套深度.*256/u)
+    await expect(start({ payload: deepDefault })).rejects.toThrow(/JSON-safe/u)
+    expect(runStore.list()).toEqual([])
+  })
+
+  it.each(['normal', 'released'] as const)('persists %s defaults whose effective input is at the persistence depth', async (kind) => {
+    const deepDefault = nestedObject(255)
+    const fields: WorkflowInputField[] = [{ name: 'payload', type: 'json', defaultValue: deepDefault }]
+    const { service, workflow, release, runStore } = await serviceFixture(fields)
+    const start = (input: WorkflowValue) => kind === 'normal'
+      ? service.start(workflow.id, input)
+      : service.startReleased(release.id, input)
+
+    const injected = await start({})
+    const explicit = await start({ payload: deepDefault })
+
+    expect(injected.input).toEqual(explicit.input)
+    expect(runStore.get(injected.id)?.input).toEqual(injected.input)
+    expect(runStore.get(explicit.id)?.input).toEqual(explicit.input)
+    expect(runStore.list()).toHaveLength(2)
   })
 
   it('preserves arbitrary legacy input in direct service starts', async () => {

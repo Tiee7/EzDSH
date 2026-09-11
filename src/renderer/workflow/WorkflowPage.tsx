@@ -1708,12 +1708,17 @@ function workflowInputFieldNames(fields: WorkflowInputField[] | undefined): stri
   return names.length > 0 ? names : ['input']
 }
 
+function formatWorkflowLaunchDefault(field: WorkflowLaunchField): string | undefined {
+  if (field.defaultValue === undefined) return undefined
+  return (field.type ?? 'string') === 'json' ? JSON.stringify(field.defaultValue) : formatValue(field.defaultValue)
+}
+
 /** Keep the launch payload JSON-safe while using the configured Input-node names as keys. */
 export function buildWorkflowLaunchInput(fields: WorkflowLaunchField[], values: Record<string, string>): Record<string, WorkflowValue> {
   const entries: Array<[string, WorkflowValue]> = []
   for (const field of fields) {
     const hasValue = Object.prototype.hasOwnProperty.call(values, field.key)
-    const value = hasValue ? values[field.key]! : field.defaultValue === undefined ? undefined : formatValue(field.defaultValue)
+    const value = hasValue ? values[field.key]! : formatWorkflowLaunchDefault(field)
     const required = field.required !== false
     if (value === undefined) {
       if (required) throw new Error(`“${field.label}”为必填项。`)
@@ -1769,7 +1774,10 @@ function parseWorkflowLaunchValue(field: WorkflowLaunchField, value: string): Wo
 }
 
 export function createWorkflowLaunchValues(fields: WorkflowLaunchField[]): Record<string, string> {
-  return Object.fromEntries(fields.flatMap((field) => field.defaultValue === undefined ? [] : [[field.key, formatValue(field.defaultValue)]]))
+  return Object.fromEntries(fields.flatMap((field) => {
+    const value = formatWorkflowLaunchDefault(field)
+    return value === undefined ? [] : [[field.key, value]]
+  }))
 }
 
 const WORKFLOW_RUN_STATUS_SAFETY: Record<WorkflowRunRecord['status'], number> = {

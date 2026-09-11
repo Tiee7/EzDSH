@@ -1459,6 +1459,51 @@ describe('WorkflowPage regressions', () => {
     })).toEqual({ count: 3, enabled: false, items: ['A', 'B'] })
   })
 
+  it('formats JSON launch defaults without changing string value types', () => {
+    const fields: workflowPage.WorkflowLaunchField[] = [
+      { id: 'json-text', key: 'jsonText', label: 'JSON 文本', type: 'json', defaultValue: 'hello' },
+      { id: 'json-false-text', key: 'jsonFalseText', label: 'JSON false 文本', type: 'json', defaultValue: 'false' },
+      { id: 'json-number-text', key: 'jsonNumberText', label: 'JSON 数字文本', type: 'json', defaultValue: '42' },
+      { id: 'json-null-text', key: 'jsonNullText', label: 'JSON null 文本', type: 'json', defaultValue: 'null' },
+      { id: 'json-empty-text', key: 'jsonEmptyText', label: 'JSON 空文本', type: 'json', defaultValue: '' },
+      { id: 'json-object', key: 'jsonObject', label: 'JSON 对象', type: 'json', defaultValue: { ok: true } },
+      { id: 'json-array', key: 'jsonArray', label: 'JSON 数组', type: 'json', defaultValue: [1, 'two'] },
+      { id: 'json-number', key: 'jsonNumber', label: 'JSON 数字', type: 'json', defaultValue: 7 },
+      { id: 'json-boolean', key: 'jsonBoolean', label: 'JSON 布尔', type: 'json', defaultValue: false },
+      { id: 'json-null', key: 'jsonNull', label: 'JSON null', type: 'json', defaultValue: null },
+      { id: 'string', key: 'string', label: '文本', defaultValue: 'plain' },
+      { id: 'file', key: 'file', label: '文件', type: 'file', defaultValue: 'docs/a.txt' },
+    ]
+    const expectedInput = {
+      jsonText: 'hello', jsonFalseText: 'false', jsonNumberText: '42', jsonNullText: 'null', jsonEmptyText: '',
+      jsonObject: { ok: true }, jsonArray: [1, 'two'], jsonNumber: 7, jsonBoolean: false, jsonNull: null,
+      string: 'plain', file: 'docs/a.txt',
+    }
+    const values = workflowPage.createWorkflowLaunchValues(fields)
+
+    expect(values).toEqual({
+      jsonText: '"hello"', jsonFalseText: '"false"', jsonNumberText: '"42"', jsonNullText: '"null"', jsonEmptyText: '""',
+      jsonObject: '{"ok":true}', jsonArray: '[1,"two"]', jsonNumber: '7', jsonBoolean: 'false', jsonNull: 'null',
+      string: 'plain', file: 'docs/a.txt',
+    })
+    expect(workflowPage.buildWorkflowLaunchInput(fields, values)).toEqual(expectedInput)
+  })
+
+  it('uses the same type-aware JSON formatting when launch values omit configured defaults', () => {
+    const fields: workflowPage.WorkflowLaunchField[] = [
+      { id: 'text', key: 'text', label: '文本', type: 'json', defaultValue: 'false' },
+      { id: 'empty', key: 'empty', label: '空文本', type: 'json', defaultValue: '' },
+      { id: 'object', key: 'object', label: '对象', type: 'json', defaultValue: { count: 2 } },
+      { id: 'number', key: 'number', label: '数字', type: 'json', defaultValue: 42 },
+      { id: 'boolean', key: 'boolean', label: '布尔', type: 'json', defaultValue: true },
+      { id: 'null', key: 'null', label: 'null', type: 'json', defaultValue: null },
+    ]
+
+    expect(workflowPage.buildWorkflowLaunchInput(fields, {})).toEqual({
+      text: 'false', empty: '', object: { count: 2 }, number: 42, boolean: true, null: null,
+    })
+  })
+
   it('parses workspace file and file-list launch fields', () => {
     const fields = [
       { id: 'document', key: 'document', label: '文档', type: 'file' as const },

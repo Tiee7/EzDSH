@@ -1019,6 +1019,7 @@ export function normalizeWorkflowLaunchInput(workflow: WorkflowDefinition, input
       throw new Error(`Workflow 输入字段「${label}」的值不符合 ${field.type ?? 'string'} 类型要求。`)
     }
   }
+  if (!isWorkflowValue(effective)) throw new Error(`Workflow 输入必须是 JSON-safe 值，且嵌套深度不能超过 ${WORKFLOW_VALUE_MAX_DEPTH} 层。`)
   return effective
 }
 
