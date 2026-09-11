@@ -65,6 +65,31 @@ const loopWriteNode: WorkflowNode = {
 }
 
 describe('durable loop execution identity', () => {
+  it.each([{ name: 'last of two items', items: ['A', 'B'] }, { name: 'only item', items: ['B'] }])('completes a continue loop when its final item fails ($name)', async ({ items }) => {
+    const fixture = await loopSafetyFixture({ ...loopWriteNode, config: { ...loopWriteNode.config, method: 'GET' } }, {
+      request: async (_request, _input, previous) => { if (previous === 'B') throw new Error('last read failed'); return loopResponse(previous) },
+    }, 'continue')
+    const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, items)).id)
+    expect(run.status).toBe('completed')
+    expect(run.output).toEqual([...items.slice(0, -1).map((item) => loopResponse(item)), { error: 'last read failed', index: items.length }])
+    const failedIteration = run.nodeStates.find((state) => state.nodeId === 'loop')?.loopIterations?.at(-1)
+    expect(failedIteration).toMatchObject({ status: 'completed', output: { error: 'last read failed', index: items.length }, nodeStates: [{ nodeId: 'body', status: 'failed', error: 'last read failed' }] })
+    expect(run.nodeStates.find((state) => state.nodeId === 'body')?.status).toBe('failed')
+    expect(run.events).toContainEqual(expect.objectContaining({ type: 'node-failed', nodeId: 'body', executionScope: expect.objectContaining({ iterationIndex: items.length - 1 }) }))
+    await fixture.service.stop()
+  })
+
+  it('still fails a stop loop when its final item fails', async () => {
+    const fixture = await loopSafetyFixture({ ...loopWriteNode, config: { ...loopWriteNode.config, method: 'GET' } }, {
+      request: async () => { throw new Error('unhandled read failed') },
+    })
+    const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, ['B'])).id)
+    expect(run.status).toBe('failed')
+    expect(run.nodeStates.find((state) => state.nodeId === 'loop')?.status).not.toBe('completed')
+    expect(run.error).toBe('unhandled read failed')
+    await fixture.service.stop()
+  })
+
   it('continues past a failed read without losing the queue lease or replaying the failed item', async () => {
     let calls = 0
     const fixture = await loopSafetyFixture({ ...loopWriteNode, config: { ...loopWriteNode.config, method: 'GET' } }, { request: async () => { calls += 1; if (calls === 1) throw new Error('read failed'); return loopResponse() } }, 'continue')

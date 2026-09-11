@@ -889,7 +889,14 @@ export class WorkflowRunService {
         await this.save(record, active.pauseRequested ? 'run-paused' : 'run-cancelled', record.error)
         return
       }
-      const hasFailure = record.nodeStates.some((state) => state.status === 'failed')
+      // Completed continue-loops have already converted handled body failures
+      // into iteration results. Keep their failed inspection states without
+      // treating those projections as unhandled top-level failures.
+      const handledLoopBodyIds = new Set(workflow.nodes.flatMap((node) => (
+        node.type === 'loop' && node.config.failureStrategy === 'continue' && stateMap.get(node.id)?.status === 'completed'
+          ? workflowLoopBodyNodeIds(workflow, node.id) : []
+      )))
+      const hasFailure = record.nodeStates.some((state) => state.status === 'failed' && !handledLoopBodyIds.has(state.nodeId))
       if (hasFailure) {
         record.status = 'failed'
         record.completedAt = new Date().toISOString()
