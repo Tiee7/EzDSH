@@ -352,6 +352,7 @@ export class WorkflowRunService {
     if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
     const request = validateWorkflowEffectReconcileRequest(input)
     await this.initialize()
+    if (this.active.has(runId)) throw new Error('该运行仍在执行，请等待所有分支停止后再人工核对。')
     if (this.reconciliationActive.has(runId) || this.compensationActive.has(runId)) throw new Error('该运行的人工核对或补偿正在执行。')
     this.reconciliationActive.add(runId)
     try {
@@ -401,6 +402,7 @@ export class WorkflowRunService {
         state.input = undefined
         state.output = undefined
         if (canRequeue) {
+          resetInterruptedSafeNodeStates(record.nodeStates)
           record.error = undefined
           record.completedAt = undefined
           record.retentionExpiresAt = undefined
@@ -1928,6 +1930,27 @@ function appendEffectReconciliation(state: WorkflowNodeRunState, decision: Workf
   const history = state.effectReconciliationHistory ?? (state.effectReconciliationHistory = state.effectReconciliation === undefined ? [] : [cloneWorkflow(state.effectReconciliation)])
   history.push(cloneWorkflow(decision))
   state.effectReconciliation = cloneWorkflow(decision)
+}
+
+/** Final reconciliation also restores safe branches left in-flight at a crash. */
+function resetInterruptedSafeNodeStates(states: WorkflowNodeRunState[]): void {
+  for (const state of states) {
+    if (state.status === 'completed') continue
+    const safe = state.effectState === undefined || state.effectState === 'none'
+    if (safe && (state.status === 'running' || state.status === 'failed' || state.status === 'cancelled')) {
+      state.status = 'pending'
+      state.error = undefined
+      state.startedAt = undefined
+      state.completedAt = undefined
+      state.elapsedMs = undefined
+      state.nextAttemptAt = undefined
+      state.input = undefined
+      state.output = undefined
+    }
+    for (const iteration of state.loopIterations ?? []) {
+      if (iteration.status !== 'completed') resetInterruptedSafeNodeStates(iteration.nodeStates)
+    }
+  }
 }
 
 class WorkflowLoopStopped extends Error {}

@@ -65,6 +65,29 @@ const loopWriteNode: WorkflowNode = {
 }
 
 describe('effect reconciliation', () => {
+  async function parallelFixture(loop: boolean, complete: () => Promise<string> = async () => 'pure done', request: NonNullable<WorkflowRunServiceOptions['connectorService']>['request'] = async () => loopResponse()) {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-reconcile-parallel-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const pure: WorkflowNode = { id: 'pure', type: 'ai-task', label: 'Pure', config: { instruction: 'answer', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 200 } }
+    const workflow = await workflowStore.create({
+      name: 'Parallel reconciliation', description: '',
+      nodes: [graph().nodes[0]!, ...(loop ? [{ id: 'loop', type: 'loop' as const, label: 'Loop', config: { maxIterations: 10 }, position: { x: 200, y: 0 } }] : []), loopWriteNode, pure, graph().nodes[4]!],
+      edges: [
+        { id: 'input-write', source: 'input', target: loop ? 'loop' : 'body' },
+        ...(loop ? [{ id: 'body', source: 'loop', target: 'body', sourcePort: 'loop-body' as const }] : []),
+        { id: 'input-pure', source: 'input', target: 'pure' },
+        { id: 'write-output', source: loop ? 'loop' : 'body', target: 'output', ...(loop ? { sourcePort: 'loop-next' as const } : {}) },
+        { id: 'pure-output', source: 'pure', target: 'output' },
+      ],
+    })
+    const createService = (store = runStore) => new WorkflowRunService({ workflowStore, runStore: store, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      lightweightClient: { complete }, connectorService: { request },
+    })
+    return { dir, workflow, runStore, createService, service: createService() }
+  }
+
   async function ordinary() {
     const fixture = await createReleasedAccessFixture(loopWriteNode)
     const run = await fixture.service.startReleased(fixture.release.id, 'item')
@@ -137,12 +160,16 @@ describe('effect reconciliation', () => {
     const fixture = await ordinary()
     // Durable imported runs may carry more than one uncertain external effect.
     fixture.run.nodeStates.push({ nodeId: 'second', status: 'pending', effectState: 'unknown' })
+    fixture.run.nodeStates.find((state) => state.nodeId === 'input')!.status = 'running'
     await fixture.runStore.save(fixture.run)
     const first = await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'first checked' })
     expect(first.status).toBe('paused')
+    expect(first.nodeStates.find((state) => state.nodeId === 'input')?.status).toBe('running')
     expect(first.nodeStates.find((state) => state.nodeId === 'second')).toEqual({ nodeId: 'second', status: 'pending', effectState: 'unknown' })
     expect(first.nodeStates.find((state) => state.nodeId === 'body')).toMatchObject({ effectState: 'none', effectReconciliation: { outcome: 'not-dispatched' } })
-    expect((await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'second', outcome: 'not-dispatched', note: 'second checked' })).status).toBe('queued')
+    const final = await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'second', outcome: 'not-dispatched', note: 'second checked' })
+    expect(final.status).toBe('queued')
+    expect(final.nodeStates.find((state) => state.nodeId === 'input')?.status).toBe('pending')
   })
 
   it('accepts only one concurrent decision for an unknown target', async () => {
@@ -171,6 +198,61 @@ describe('effect reconciliation', () => {
     const reloaded = new WorkflowRunStore(fixture.dir)
     await reloaded.initialize()
     expect(reloaded.get(first.id)?.nodeStates.find((candidate) => candidate.nodeId === 'body')?.effectReconciliationHistory).toEqual(state.effectReconciliationHistory)
+  })
+
+  it.each(['running', 'failed', 'cancelled'] as const)('resumes interrupted safe %s branches after crash recovery and exact loop reconciliation', async (pureStatus) => {
+    const writes: WorkflowValue[] = []
+    let pureCalls = 0
+    const fixture = await parallelFixture(true, async () => { pureCalls += 1; return 'pure done' }, async (_request, _input, previous) => { writes.push(previous); return loopResponse(previous) })
+    await fixture.service.initialize()
+    await fixture.service.stop()
+    const queued = await fixture.service.start(fixture.workflow.id, ['A', 'B'])
+    const checkpoint = (await fixture.runStore.claimNextDue('crashed-worker', 60_000))!
+    expect(checkpoint.id).toBe(queued.id)
+    Object.assign(checkpoint.nodeStates.find((state) => state.nodeId === 'input')!, { status: 'completed', output: ['A', 'B'] })
+    Object.assign(checkpoint.nodeStates.find((state) => state.nodeId === 'pure')!, { status: pureStatus, startedAt: new Date().toISOString(), error: 'interrupted' })
+    const iterationId = `${checkpoint.id}:loop:loop:iteration:1`
+    const completed = { iterationIndex: 0, iterationId: `${checkpoint.id}:loop:loop:iteration:0`, input: 'A', status: 'completed' as const, output: 'saved-A', nodeStates: [{ nodeId: 'body', status: 'completed' as const, effectState: 'confirmed' as const, output: 'saved-A' }] }
+    Object.assign(checkpoint.nodeStates.find((state) => state.nodeId === 'loop')!, { status: 'running', loopIterations: [completed, { iterationIndex: 1, iterationId, input: 'B', status: 'running', nodeStates: [{ nodeId: 'body', status: 'running', effectState: 'dispatched' }] }] })
+    await fixture.runStore.save(checkpoint)
+    const restoredStore = new WorkflowRunStore(fixture.dir)
+    const restarted = fixture.createService(restoredStore)
+    try {
+      await restarted.initialize()
+      const recovered = restarted.get(checkpoint.id)!
+      expect(recovered.status).toBe('paused')
+      expect(recovered.nodeStates.find((state) => state.nodeId === 'pure')?.status).toBe(pureStatus)
+      expect(recovered.nodeStates.find((state) => state.nodeId === 'loop')?.loopIterations?.[1]?.nodeStates[0]).toMatchObject({ effectState: 'unknown', status: 'cancelled' })
+      const reconciled = await restarted.reconcileEffect(checkpoint.id, { nodeId: 'body', iterationId, outcome: 'not-dispatched', note: 'checked absent' })
+      expect(reconciled.nodeStates.find((state) => state.nodeId === 'pure')).toMatchObject({ status: 'pending' })
+      expect(reconciled.nodeStates.find((state) => state.nodeId === 'loop')?.loopIterations?.[0]).toEqual(completed)
+      const result = await eventually(restarted, checkpoint.id)
+      expect(result.status, result.error).toBe('completed')
+      expect(result.nodeStates.find((state) => state.nodeId === 'pure')?.output).toBe('pure done')
+      expect(writes).toEqual(['B'])
+      expect(pureCalls).toBe(1)
+      expect(result.nodeStates.find((state) => state.nodeId === 'loop')?.loopIterations?.[0]).toEqual(completed)
+    } finally { await restarted.stop() }
+  })
+
+  it.each(['dispatched', 'not-dispatched'] as const)('rejects %s reconciliation while a parallel branch is still active, then permits it after execution settles', async (outcome) => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let pureStarted!: () => void
+    const started = new Promise<void>((resolve) => { pureStarted = resolve })
+    const fixture = await parallelFixture(false, async () => { pureStarted(); await gate; return 'pure done' }, async () => { await started; throw new Error('response lost') })
+    try {
+      const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, 'item')).id)
+      expect(run.status).toBe('paused')
+      expect(run.nodeStates.find((state) => state.nodeId === 'pure')?.status).toBe('running')
+      const before = fixture.service.get(run.id)
+      await expect(fixture.service.reconcileEffect(run.id, { nodeId: 'body', outcome, note: 'verified' })).rejects.toThrow(/仍在执行/u)
+      expect(fixture.service.get(run.id)).toEqual(before)
+      release()
+      // stop waits for actual worker execution cleanup; no private active-map manipulation.
+      await fixture.service.stop()
+      expect(await fixture.service.reconcileEffect(run.id, { nodeId: 'body', outcome, note: 'verified after settling' })).toMatchObject({ status: outcome === 'dispatched' ? 'failed' : 'queued' })
+    } finally { release(); await fixture.service.stop() }
   })
 
   it('revalidates current environment before requeue and preserves an unresolved decision if disabled', async () => {
