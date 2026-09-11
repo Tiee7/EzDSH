@@ -3259,8 +3259,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const knownRuns = applyWorkflowRunSnapshot(snapshotRequest, workflowRuns)
       if (knownRuns === undefined) return
       if (generation !== openRequestGenerationRef.current || selectedWorkflowIdRef.current !== workflow.id) return
-      if (initialPreferred !== undefined) {
-        const liveRun = currentRunRef.current?.id === initialPreferred.id ? currentRunRef.current : initialPreferred
+      if (initialPreferred !== undefined && currentRunRef.current?.id === initialPreferred.id) {
+        const liveRun = currentRunRef.current
         const fetchedRun = knownRuns.find((record) => record.id === initialPreferred.id)
         const exact = fetchedRun === undefined ? liveRun : chooseFresherWorkflowRun(liveRun, fetchedRun)
         currentRunRef.current = exact
@@ -3882,7 +3882,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
         return next
       })
       setOutputWindows((current) => current.filter((item) => !item.id.startsWith(`${record.id}:`)))
-      if (currentRun?.id === record.id) {
+      if (currentRunRef.current?.id === record.id) {
         inspectRun(undefined)
       }
       setMessage(copy.workflowRunDeleted)
@@ -3903,9 +3903,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }
 
   const openWorkflowUnreadRun = async (workflow: WorkflowDefinition, run: WorkflowRunRecord): Promise<void> => {
-    await open(workflow)
-    inspectRun(run)
-    setWorkspaceView('executions')
+    await open(workflow, false, run)
     markRunViewed(run)
   }
 
@@ -4051,9 +4049,9 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const selectedNodeFieldClass = (...fields: string[]): string | undefined => selectedNodeIndex < 0 ? undefined : workflowValidationFieldClass(workflowValidationIssues, selectedNodeIndex, ...fields)
   const selectedNodeConfigHasError = selectedNodeIndex >= 0 && workflowValidationConfigIssue(workflowValidationIssues, selectedNodeIndex)
   const workspaceActive = selected !== undefined || (workspaceView === 'executions' && currentRun !== undefined)
-  const workspaceIdentityDefinition = selected ?? executionDefinition
-  const workspaceTitle = workspaceIdentityDefinition?.name ?? currentRun?.workflowId ?? copy.workflowTitle
-  const workspaceRevision = workspaceIdentityDefinition?.revision ?? currentRun?.workflowRevision
+  const executionIdentityActive = workspaceView === 'executions' && currentRun !== undefined
+  const workspaceTitle = executionIdentityActive ? executionDefinition?.name ?? currentRun.workflowId : selected?.name ?? copy.workflowTitle
+  const workspaceRevision = executionIdentityActive ? currentRun.workflowRevision : selected?.revision
 
   return (
     <div ref={workflowPageRef} className={`workflow-page ${workspaceActive ? 'workflow-page-workspace' : 'workflow-page-browser'}`}>

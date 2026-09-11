@@ -889,7 +889,7 @@ describe('WorkflowPage regressions', () => {
       revision: 1,
       nodes: historicalSource.nodes.map((node, index) => ({ ...node, label: `Historic V1 Node ${index + 1}` })),
     }
-    const run: WorkflowRunRecord = { id: 'run-historic-v1', workflowId: editable.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: historical.nodes.map((node) => ({ nodeId: node.id, status: 'completed' as const, elapsedMs: 1 })), events: [] }
+    const run: WorkflowRunRecord = { id: 'run-historic-v1', workflowId: editable.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: historical.nodes.map((node, index) => ({ nodeId: node.id, status: 'completed' as const, elapsedMs: 1, ...(index === 1 ? { input: { historical: true } } : {}) })), events: [] }
     const getRunDefinition = vi.fn(async () => historical)
     const mounted = await mountWorkflowRunCachePage({
       list: vi.fn(async () => [editable]), listRuns: vi.fn(async () => [run]), getRunDefinition,
@@ -901,7 +901,15 @@ describe('WorkflowPage regressions', () => {
       await act(async () => { executions.click(); await Promise.resolve() })
       await act(async () => { (mounted.domWindow.document.querySelector('.workflow-run-item-main') as HTMLButtonElement).click(); await mounted.settle() })
       expect(mounted.domWindow.document.body.textContent).toContain('Historic V1 Node 1')
+      expect(mounted.domWindow.document.querySelector('.workflow-workspace-title-row')?.textContent).toContain('Historic V1')
+      expect(mounted.domWindow.document.querySelector('.workflow-workspace-identity')?.textContent).toContain('v1')
       expect(mounted.domWindow.document.body.textContent).not.toContain('该次运行的工作流定义不可用')
+      const historicalTaskNode = Array.from(mounted.domWindow.document.querySelectorAll('.react-flow__node')).find((node) => node.textContent?.includes('Historic V1 Node 2')) as HTMLElement
+      await act(async () => { historicalTaskNode.click(); await Promise.resolve() })
+      expect(mounted.domWindow.document.querySelector('.workflow-node-result')?.textContent).toContain('Historic V1 Node 2')
+      const upstream = mounted.domWindow.document.querySelector('.workflow-upstream-actions button') as HTMLButtonElement
+      await act(async () => { upstream.click(); await Promise.resolve() })
+      expect(mounted.domWindow.document.querySelector('.workflow-node-result')?.textContent).toContain('Historic V1 Node 1')
       const editor = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowEditor) as HTMLButtonElement
       await act(async () => { editor.click(); await Promise.resolve() })
       expect(mounted.domWindow.document.querySelector('.workflow-workspace-title-row')?.textContent).toContain('Current V2')
@@ -931,6 +939,8 @@ describe('WorkflowPage regressions', () => {
       expect(mounted.domWindow.document.querySelector('.workflow-execution-definition-state')?.textContent).toContain('工作流定义不可用')
       expect(mounted.domWindow.document.body.textContent).not.toContain('V2-only node 1')
       expect(mounted.domWindow.document.body.textContent).toContain(run.id)
+      expect(mounted.domWindow.document.querySelector('.workflow-workspace-title-row')?.textContent).toContain(editable.id)
+      expect(mounted.domWindow.document.querySelector('.workflow-workspace-identity')?.textContent).toContain('v1')
     } finally { await mounted.cleanup() }
   })
 
@@ -968,6 +978,90 @@ describe('WorkflowPage regressions', () => {
       resolveA(definitionA); resolveB(definitionB)
       await mounted.cleanup()
     }
+  })
+
+  it('keeps a later selected run when the preferred-run list refresh resolves late', async () => {
+    const workflow = createDefaultWorkflow('Preferred refresh ownership')
+    const runA: WorkflowRunRecord = { id: 'run-preferred-refresh-a', workflowId: workflow.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const runB: WorkflowRunRecord = { ...runA, id: 'run-preferred-refresh-b' }
+    let resolveOpen!: (runs: WorkflowRunRecord[]) => void
+    const pendingOpen = new Promise<WorkflowRunRecord[]>((resolve) => { resolveOpen = resolve })
+    let calls = 0
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(() => { calls += 1; return calls === 1 ? Promise.resolve([runA, runB]) : pendingOpen }),
+      getRunDefinition: vi.fn(async () => workflow), onStateChange: vi.fn(() => () => {}),
+      listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      const unread = mounted.domWindow.document.querySelector('.workflow-unviewed-run-button') as HTMLButtonElement
+      await act(async () => { unread.click(); await mounted.settle() })
+      const runBButton = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item-main')).find((button) => button.textContent?.includes(runB.id.slice(-12))) as HTMLButtonElement
+      await act(async () => { runBButton.click(); await mounted.settle() })
+      await act(async () => { resolveOpen([runA, runB]); await pendingOpen; await mounted.settle() })
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity')?.textContent).toContain(runB.id)
+    } finally { resolveOpen([]); await mounted.cleanup() }
+  })
+
+  it('does not reopen an unread run after a newer workflow open owns the workspace', async () => {
+    const workflowA = createDefaultWorkflow('Unread A')
+    const workflowB = createDefaultWorkflow('Newer B')
+    const runA: WorkflowRunRecord = { id: 'run-unread-a-delayed', workflowId: workflowA.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    let resolveOpenA!: (runs: WorkflowRunRecord[]) => void
+    const pendingOpenA = new Promise<WorkflowRunRecord[]>((resolve) => { resolveOpenA = resolve })
+    let callsA = 0
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflowA, workflowB]),
+      listRuns: vi.fn((workflowId: string) => {
+        if (workflowId === workflowA.id) { callsA += 1; return callsA === 1 ? Promise.resolve([runA]) : pendingOpenA }
+        return Promise.resolve([])
+      }),
+      getRunDefinition: vi.fn(async () => workflowA), onStateChange: vi.fn(() => () => {}),
+      listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      const unread = mounted.domWindow.document.querySelector('.workflow-unviewed-run-button') as HTMLButtonElement
+      await act(async () => { unread.click(); await Promise.resolve() })
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-back-button') as HTMLButtonElement).click(); await Promise.resolve() })
+      const workflowBCard = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-file-card-main')).find((button) => button.textContent?.includes(workflowB.name)) as HTMLButtonElement
+      await act(async () => { workflowBCard.click(); await mounted.settle() })
+      await act(async () => { resolveOpenA([runA]); await pendingOpenA; await mounted.settle() })
+      expect(mounted.domWindow.document.querySelector('.workflow-workspace-title-row')?.textContent).toContain(workflowB.name)
+      expect(mounted.domWindow.document.body.textContent).not.toContain(runA.id)
+    } finally { resolveOpenA([]); await mounted.cleanup() }
+  })
+
+  it('keeps a later selected run when deleting an earlier run finishes late', async () => {
+    const workflow = createDefaultWorkflow('Delete ownership')
+    const definitionA = { ...workflow, nodes: workflow.nodes.map((node) => ({ ...node, label: `Delete A ${node.label}` })) }
+    const definitionB = { ...workflow, nodes: workflow.nodes.map((node) => ({ ...node, label: `Delete B ${node.label}` })) }
+    const runA: WorkflowRunRecord = { id: 'run-delete-pending-a', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const runB: WorkflowRunRecord = { ...runA, id: 'run-delete-selected-b' }
+    let resolveDefinitionA!: (definition: WorkflowDefinition) => void
+    const pendingDefinitionA = new Promise<WorkflowDefinition>((resolve) => { resolveDefinitionA = resolve })
+    let resolveRemove!: () => void
+    const pendingRemove = new Promise<void>((resolve) => { resolveRemove = resolve })
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]), listRuns: vi.fn(async () => [runA, runB]), removeRun: vi.fn(() => pendingRemove),
+      getRunDefinition: vi.fn((runId: string) => runId === runA.id ? pendingDefinitionA : Promise.resolve(definitionB)),
+      onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      const runAButton = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item-main')).find((button) => button.textContent?.includes(runA.id.slice(-12))) as HTMLButtonElement
+      await act(async () => { runAButton.click(); await Promise.resolve() })
+      const deleteA = runAButton.parentElement?.querySelector('.workflow-run-item-actions button') as HTMLButtonElement
+      await act(async () => { deleteA.click(); await Promise.resolve() })
+      const runBButton = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item-main')).find((button) => button.textContent?.includes(runB.id.slice(-12))) as HTMLButtonElement
+      await act(async () => { runBButton.click(); await mounted.settle() })
+      await act(async () => { resolveRemove(); await pendingRemove; await mounted.settle() })
+      await act(async () => { resolveDefinitionA(definitionA); await pendingDefinitionA; await mounted.settle() })
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity')?.textContent).toContain(runB.id)
+      expect(mounted.domWindow.document.body.textContent).toContain('Delete B')
+      expect(mounted.domWindow.document.body.textContent).not.toContain('Delete A')
+    } finally { resolveDefinitionA(definitionA); resolveRemove(); await mounted.cleanup() }
   })
 
   it('shows the saved AI generation prompt in workflow metadata', () => {
