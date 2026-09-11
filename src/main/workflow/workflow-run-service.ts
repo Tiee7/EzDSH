@@ -39,7 +39,7 @@ import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
 import { WorkflowRunStore } from './workflow-run-store.js'
 import { WorkflowRunWorker } from './workflow-run-worker.js'
-import { DshWorkflowAdapter, buildNodePrompt, extractJsonDocument, parseWorkflowJson, type WorkflowSessionClient } from './dsh-workflow-adapter.js'
+import { DshWorkflowAdapter, WorkflowNodeOutputError, buildNodePrompt, extractJsonDocument, invalidWorkflowJsonOutputError, parseWorkflowJson, type WorkflowSessionClient } from './dsh-workflow-adapter.js'
 import type { WorkflowLightweightClient, WorkflowLightweightRequest } from './workflow-lightweight-client.js'
 import type { WorkflowMcpClient } from './workflow-mcp-client.js'
 import { WorkflowInternalSessionStore, type WorkflowInternalSessionKind } from './workflow-internal-session-store.js'
@@ -908,6 +908,17 @@ export class WorkflowRunService {
     } catch (error) {
       if (active.leaseLost) return 'stopped'
       if (error instanceof WorkflowRetryScheduled) return 'stopped'
+      if (error instanceof WorkflowNodeOutputError && !active.cancelled && !active.pauseRequested) {
+        state.status = 'failed'
+        state.error = error.message
+        state.completedAt = new Date().toISOString()
+        state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
+        record.status = 'failed'
+        record.error = error.message
+        record.completedAt = new Date().toISOString()
+        await this.save(record, 'node-failed', error.message, node.id)
+        return 'stopped'
+      }
       if (error instanceof WorkflowApprovalRequired) {
         state.status = 'pending'
         state.startedAt = undefined
@@ -982,6 +993,11 @@ export class WorkflowRunService {
         // response after its effect was dispatched; replaying it after the
         // user cancelled would violate the run's cancellation contract.
         if (active.cancelled || record.queue?.cancellationRequestedAt !== undefined) throw error
+        if (error instanceof WorkflowNodeOutputError) {
+          state.output = cloneWorkflow(error.output)
+          await this.markEffect(record, state, node, 'confirmed')
+          throw error
+        }
         const plan = planWorkflowRetry(node, state, error)
         if (plan.decision === 'retry') {
           state.error = error instanceof Error ? error.message : String(error)
@@ -1455,7 +1471,7 @@ export class WorkflowRunService {
       const parsed = parseWorkflowJson(text)
       if (outputSchema !== undefined && !matchesWorkflowJsonSchema(parsed, outputSchema)) throw new Error('JSON 不符合 outputSchema')
       return parsed
-    } catch {
+    } catch (initialError) {
       const repair = await this.lightweightClient.complete({
         prompt: [
           '上一次输出不是有效的 JSON。请修复格式并只输出一个有效 JSON 文档，不要解释，不要使用 Markdown 代码围栏。',
@@ -1471,8 +1487,11 @@ export class WorkflowRunService {
         const parsed = parseWorkflowJson(repair)
         if (outputSchema !== undefined && !matchesWorkflowJsonSchema(parsed, outputSchema)) throw new Error('JSON 不符合 outputSchema')
         return parsed
-      } catch {
-        throw new Error(`节点“${node.label}”未返回有效 JSON`)
+      } catch (repairError) {
+        throw invalidWorkflowJsonOutputError(node.label, initialError, repairError, {
+          originalResponse: text,
+          repairResponse: repair,
+        })
       }
     }
   }

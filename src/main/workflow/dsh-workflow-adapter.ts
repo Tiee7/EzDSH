@@ -29,6 +29,17 @@ export class WorkflowJsonParseError extends Error {
   }
 }
 
+/** A node failed validation after returning data that should remain inspectable. */
+export class WorkflowNodeOutputError extends Error {
+  readonly output: WorkflowValue
+
+  constructor(message: string, output: WorkflowValue) {
+    super(message)
+    this.name = 'WorkflowNodeOutputError'
+    this.output = output
+  }
+}
+
 interface InstructionNode {
   id: string
   label: string
@@ -109,7 +120,7 @@ export class DshWorkflowAdapter {
     if (outputMode === 'text') return result.text.trim()
     try {
       return parseWorkflowJson(result.text)
-    } catch {
+    } catch (initialError) {
       const repair = await client.sendPrompt(sessionId, [
         '上一次输出不是有效的 JSON。请修复格式并只输出一个有效 JSON 文档，不要解释，不要使用 Markdown 代码围栏。',
         '需要修复的输出：',
@@ -117,11 +128,31 @@ export class DshWorkflowAdapter {
       ].join('\n\n'))
       try {
         return parseWorkflowJson(repair.text)
-      } catch {
-        throw new Error(`节点“${node.label}”未返回有效 JSON`)
+      } catch (repairError) {
+        throw invalidWorkflowJsonOutputError(node.label, initialError, repairError, {
+          originalResponse: result.text,
+          repairResponse: repair.text,
+        })
       }
     }
   }
+}
+
+export function invalidWorkflowJsonOutputError(
+  nodeLabel: string,
+  initialError: unknown,
+  repairError: unknown,
+  output: WorkflowValue,
+): WorkflowNodeOutputError {
+  return new WorkflowNodeOutputError(
+    `节点“${nodeLabel}”未返回有效 JSON。首次返回解析失败：${workflowJsonParseFailureMessage(initialError)}；格式修复返回解析失败：${workflowJsonParseFailureMessage(repairError)}。已保留两次原始返回。`,
+    output,
+  )
+}
+
+function workflowJsonParseFailureMessage(error: unknown): string {
+  if (error instanceof WorkflowJsonParseError && error.causeError instanceof Error) return error.causeError.message
+  return error instanceof Error ? error.message : String(error)
 }
 
 export function buildNodePrompt(

@@ -681,6 +681,60 @@ describe('workflow run service', () => {
     expect(sendPrompt).not.toHaveBeenCalled()
   })
 
+  it('preserves invalid employee JSON responses and explains both parse failures', async () => {
+    const { service, workflowId } = await createNodeService({
+      node: {
+        id: 'employee',
+        type: 'employee',
+        label: '主管综合研判',
+        config: { employeeId: 'content-reviewer', instruction: '综合研判', outputMode: 'json' },
+        position: { x: 200, y: 0 },
+      },
+      responses: ['{"summary": }', '{"summary": "缺少结束引号}'],
+      resolveEmployee: () => reviewer(),
+    })
+
+    const result = await eventually(service, (await service.start(workflowId, {})).id)
+    const state = result.nodeStates.find((candidate) => candidate.nodeId === 'employee')
+
+    expect(result.status).toBe('failed')
+    expect(result.error).toContain('首次返回解析失败')
+    expect(state?.effectState).toBe('confirmed')
+    expect(state?.output).toEqual({
+      originalResponse: '{"summary": }',
+      repairResponse: '{"summary": "缺少结束引号}',
+    })
+    expect(state?.error).toContain('首次返回解析失败')
+    expect(state?.error).toContain('格式修复返回解析失败')
+    expect(state?.error).toContain('已保留两次原始返回')
+    expect(result.events.some((event) => event.nodeId === 'employee' && event.type === 'node-effect-confirmed')).toBe(true)
+  })
+
+  it('preserves invalid lightweight JSON responses without sending them downstream', async () => {
+    const { service, workflowId } = await createNodeService({
+      node: {
+        id: 'ai-task',
+        type: 'ai-task',
+        label: '轻量综合研判',
+        config: { instruction: '综合研判', mode: 'single', skillIds: [], outputMode: 'json' },
+        position: { x: 200, y: 0 },
+      },
+      responses: ['不是 JSON', '仍然不是 JSON'],
+    })
+
+    const result = await eventually(service, (await service.start(workflowId, {})).id)
+    const state = result.nodeStates.find((candidate) => candidate.nodeId === 'ai-task')
+
+    expect(result.status).toBe('failed')
+    expect(result.output).toBeUndefined()
+    expect(state?.output).toEqual({
+      originalResponse: '不是 JSON',
+      repairResponse: '仍然不是 JSON',
+    })
+    expect(state?.error).toContain('首次返回解析失败')
+    expect(state?.error).toContain('格式修复返回解析失败')
+  })
+
   it('calls MCP with structured arguments and creates no DSH Session', async () => {
     const { service, workflowId, createSession, sendPrompt, mcpCall } = await createNodeService({
       node: {
