@@ -5,12 +5,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkflowRunService, type WorkflowRunServiceOptions } from '../../src/main/workflow/workflow-run-service.js'
 import type { WorkflowNode, WorkflowRunRecord, WorkflowValue } from '../../src/shared/workflow.js'
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
+import { WorkflowRunWorker } from '../../src/main/workflow/workflow-run-worker.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 import { WorkflowCredentialStore } from '../../src/main/workflow/workflow-credential-service.js'
 import { WorkflowConnectorStore } from '../../src/main/workflow/workflow-connector-store.js'
 import { WorkflowConnectorService } from '../../src/main/workflow/workflow-connector-service.js'
+import { computeWorkflowReleaseSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
+import type { WorkflowRelease } from '../../src/shared/workflow-operations.js'
 
 afterEach(() => vi.unstubAllGlobals())
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
 
 async function eventually<T>(read: () => T | undefined, predicate: (value: T) => boolean): Promise<T> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -614,5 +627,357 @@ describe('workflow durable worker integration', () => {
     expect(completed.output).toBe('done')
     expect(attempts).toBe(2)
     await service.stop()
+  })
+})
+
+describe('workflow service lifecycle', () => {
+  async function createLifecycleFixture(id = 'workflow-lifecycle') {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-lifecycle-'))
+    const authoringStore = new WorkflowStore(directory)
+    const workflow = await authoringStore.create({
+      id, name: 'Lifecycle', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'transform', type: 'transform', label: 'Transform', config: { template: 'identity' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'transform' }, { id: 'b', source: 'transform', target: 'output' }],
+    })
+    const workflowStore = new WorkflowStore(directory)
+    const runStore = new WorkflowRunStore(directory)
+    const createService = (store = runStore) => new WorkflowRunService({
+      workflowStore, runStore: store, workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+    })
+    return { directory, workflow, workflowStore, runStore, createService, service: createService() }
+  }
+
+  it('retries failed initialization instead of poisoning the service', async () => {
+    const fixture = await createLifecycleFixture('workflow-init-retry')
+    const initialize = vi.spyOn(fixture.workflowStore, 'initialize')
+    initialize.mockRejectedValueOnce(new Error('temporary store failure'))
+
+    await expect(fixture.service.initialize()).rejects.toThrow('temporary store failure')
+    const queued = await fixture.service.start(fixture.workflow.id, 'retry')
+    expect(queued.status).toBe('queued')
+    expect(initialize).toHaveBeenCalledTimes(2)
+    await fixture.service.stop()
+  })
+
+  it('retries initialization when starting the Worker fails', async () => {
+    const fixture = await createLifecycleFixture('workflow-worker-start-retry')
+    const worker = (fixture.service as unknown as { worker: WorkflowRunWorker }).worker
+    const startWorker = vi.spyOn(worker, 'start')
+      .mockRejectedValueOnce(new Error('temporary worker failure'))
+      .mockResolvedValueOnce(undefined)
+
+    await expect(fixture.service.initialize()).rejects.toThrow('temporary worker failure')
+    await fixture.service.initialize()
+    expect(startWorker).toHaveBeenCalledTimes(2)
+    expect((await fixture.service.start(fixture.workflow.id, null)).status).toBe('queued')
+    await fixture.service.stop()
+  })
+
+  it('lets stop win an initialization race and never starts the Worker', async () => {
+    const fixture = await createLifecycleFixture('workflow-init-stop-race')
+    const entered = deferred<void>()
+    const allowInitialize = deferred<void>()
+    const originalInitialize = fixture.workflowStore.initialize.bind(fixture.workflowStore)
+    vi.spyOn(fixture.workflowStore, 'initialize').mockImplementation(async () => {
+      entered.resolve()
+      await allowInitialize.promise
+      await originalInitialize()
+    })
+    const worker = (fixture.service as unknown as { worker: WorkflowRunWorker }).worker
+    const startWorker = vi.spyOn(worker, 'start')
+
+    const initializing = fixture.service.initialize()
+    await entered.promise
+    const stopping = fixture.service.stop()
+    const sameStopping = fixture.service.stop()
+    expect(sameStopping).toBe(stopping)
+    allowInitialize.resolve()
+
+    await Promise.all([initializing, stopping])
+    expect(startWorker).not.toHaveBeenCalled()
+    await expect(fixture.service.start(fixture.workflow.id, null)).rejects.toMatchObject({ code: 'WORKFLOW_RUN_SERVICE_UNAVAILABLE' })
+    expect(fixture.service.list(fixture.workflow.id)).toEqual([])
+  })
+
+  it('keeps read-only history available after stop while rejecting new durable work', async () => {
+    const fixture = await createLifecycleFixture('workflow-stopped-read-only')
+    const queued = await fixture.service.start(fixture.workflow.id, 'saved')
+    await eventually(() => fixture.service.get(queued.id), (record) => record.status === 'completed')
+    const stopping = fixture.service.stop()
+    expect(fixture.service.stop()).toBe(stopping)
+    await stopping
+
+    expect(fixture.service.get(queued.id)?.id).toBe(queued.id)
+    expect(fixture.service.list(fixture.workflow.id)).toHaveLength(1)
+    expect(await fixture.service.getRunDefinition(queued.id)).toMatchObject({ id: fixture.workflow.id, revision: fixture.workflow.revision })
+    await expect(fixture.service.start(fixture.workflow.id, 'forbidden')).rejects.toMatchObject({ code: 'WORKFLOW_RUN_SERVICE_UNAVAILABLE' })
+    expect(fixture.service.list(fixture.workflow.id)).toHaveLength(1)
+  })
+
+  it('rejects every public durable-work entry after stop before changing storage', async () => {
+    const fixture = await createLifecycleFixture('workflow-stopped-mutations')
+    await fixture.service.initialize()
+    await fixture.service.stop()
+    const unavailable = { code: 'WORKFLOW_RUN_SERVICE_UNAVAILABLE' }
+    const serviceWithPrivateEntries = fixture.service as unknown as {
+      reconcileCompensation(runId: string, input: { occurrenceId: string; outcome: 'not-dispatched'; note: string }): Promise<WorkflowRunRecord>
+      startReleasedDefinition(releaseId: string, definition: { id: string; revision: number }, input: WorkflowValue): Promise<WorkflowRunRecord>
+    }
+    const attempts: Array<() => Promise<unknown>> = [
+      () => fixture.service.start(fixture.workflow.id, null),
+      () => fixture.service.startReleased('missing-release', null),
+      () => fixture.service.executeSubWorkflow(fixture.workflow.id, null, false),
+      () => fixture.service.resume('missing-run'),
+      () => fixture.service.approve('missing-run', true),
+      () => fixture.service.reconcileEffect('missing-run', { nodeId: 'node', outcome: 'not-dispatched', note: 'checked' }),
+      () => serviceWithPrivateEntries.reconcileCompensation('missing-run', { occurrenceId: 'occurrence', outcome: 'not-dispatched', note: 'checked' }),
+      () => fixture.service.compensate('missing-run'),
+      () => serviceWithPrivateEntries.startReleasedDefinition('missing-release', { id: fixture.workflow.id, revision: fixture.workflow.revision }, null),
+    ]
+
+    for (const attempt of attempts) await expect(attempt()).rejects.toMatchObject(unavailable)
+    expect(fixture.runStore.list()).toEqual([])
+  })
+
+  it('rechecks lifecycle after a workflow lock wait and refuses to enqueue', async () => {
+    const fixture = await createLifecycleFixture('workflow-stop-lock-race')
+    await fixture.service.initialize()
+    const removing = deferred<void>()
+    const allowRemove = deferred<void>()
+    const originalRemove = fixture.workflowStore.remove.bind(fixture.workflowStore)
+    vi.spyOn(fixture.workflowStore, 'remove').mockImplementation(async (workflowId) => {
+      removing.resolve()
+      await allowRemove.promise
+      return originalRemove(workflowId)
+    })
+
+    const deletion = fixture.service.removeWorkflow(fixture.workflow.id)
+    await removing.promise
+    const starting = fixture.service.start(fixture.workflow.id, 'must not persist')
+    const rejectedStart = expect(starting).rejects.toMatchObject({ code: 'WORKFLOW_RUN_SERVICE_UNAVAILABLE' })
+    const stopping = fixture.service.stop()
+    allowRemove.resolve()
+    await Promise.all([deletion, stopping])
+
+    await rejectedStart
+    expect(fixture.runStore.list(fixture.workflow.id)).toEqual([])
+  })
+
+  it('synchronously stops Worker claims before awaiting active-run cleanup', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-lifecycle-worker-stop-'))
+    const workflowStore = new WorkflowStore(directory)
+    const activeWorkflow = await workflowStore.create({
+      id: 'lifecycle-active', name: 'Active', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'hold', type: 'ai-task', label: 'Hold', config: { instruction: 'hold', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'hold' }, { id: 'b', source: 'hold', target: 'output' }],
+    })
+    const queuedWorkflow = await workflowStore.create({
+      id: 'lifecycle-queued', name: 'Queued', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'write', type: 'mcp', label: 'Must remain queued', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }],
+    })
+    const providerEntered = deferred<void>()
+    let writes = 0
+    const runStore = new WorkflowRunStore(directory)
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      lightweightClient: { complete: async ({ signal }) => {
+        providerEntered.resolve()
+        return new Promise<string>((_resolve, reject) => {
+          if (signal?.aborted) reject(new Error('aborted'))
+          else signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+      } },
+      mcpClient: { call: async () => { writes += 1; return 'written' } },
+    })
+    await service.start(activeWorkflow.id, null)
+    await providerEntered.promise
+    await service.start(queuedWorkflow.id, null)
+    const allowCleanup = deferred<void>()
+    vi.spyOn(service as unknown as { cancelInternalSessions(): Promise<void> }, 'cancelInternalSessions')
+      .mockImplementation(async () => allowCleanup.promise)
+    const worker = (service as unknown as { worker: WorkflowRunWorker }).worker as unknown as { stopping: boolean }
+
+    const stopping = service.stop()
+    try {
+      expect(worker.stopping).toBe(true)
+    } finally {
+      allowCleanup.resolve()
+      await stopping
+    }
+    expect(writes).toBe(0)
+    expect(runStore.list(queuedWorkflow.id)).toMatchObject([{ status: 'queued' }])
+  })
+
+  it('aborts a parentless child wait on stop and leaves one durable child for a new service', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-lifecycle-child-'))
+    const workflowStore = new WorkflowStore(directory)
+    const workflow = await workflowStore.create({
+      id: 'workflow-lifecycle-child', name: 'Lifecycle child', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'write', type: 'mcp', label: 'Write once', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }],
+    })
+    const firstStore = new WorkflowRunStore(directory)
+    const claimEntered = deferred<void>()
+    const allowClaim = deferred<WorkflowRunRecord | undefined>()
+    vi.spyOn(firstStore, 'claimNextDue').mockImplementation(async () => {
+      claimEntered.resolve()
+      return allowClaim.promise
+    })
+    let writes = 0
+    const createService = (runStore: WorkflowRunStore) => new WorkflowRunService({
+      workflowStore, runStore, workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      mcpClient: { call: async () => { writes += 1; return 'written' } },
+    })
+    const first = createService(firstStore)
+    const childCreated = deferred<WorkflowRunRecord>()
+    first.watch((record) => {
+      if (record.workflowId === workflow.id && record.events.some((event) => event.type === 'run-created')) childCreated.resolve(record)
+    })
+
+    const waiting = first.executeSubWorkflow(workflow.id, 'payload', true)
+    await Promise.all([claimEntered.promise, childCreated.promise])
+    let waitSettled = false
+    void waiting.then(() => { waitSettled = true }, () => { waitSettled = true })
+    const stopping = first.stop()
+    await expect(waiting).rejects.toMatchObject({ code: 'WORKFLOW_RUN_SERVICE_UNAVAILABLE' })
+    expect(waitSettled).toBe(true)
+    expect(firstStore.list(workflow.id)).toMatchObject([{ status: 'queued' }])
+    expect(firstStore.list(workflow.id)[0]?.queue?.lease).toBeUndefined()
+    allowClaim.resolve(undefined)
+    await stopping
+
+    const restarted = createService(new WorkflowRunStore(directory))
+    try {
+      await restarted.initialize()
+      const completed = await eventually(() => restarted.list(workflow.id)[0], (record) => record.status === 'completed')
+      expect(completed.output).toBe('written')
+      expect(writes).toBe(1)
+      expect(restarted.list(workflow.id)).toHaveLength(1)
+    } finally { await restarted.stop() }
+  })
+
+  it('does not directly execute a released synchronous child enqueued across stop', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-lifecycle-release-child-'))
+    const workflowStore = new WorkflowStore(directory)
+    const child = await workflowStore.create({
+      id: 'released-stop-child', name: 'Released child', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'write', type: 'mcp', label: 'Write once', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }],
+    })
+    const parent = await workflowStore.create({
+      id: 'released-stop-parent', name: 'Released parent', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: child.id, version: child.revision, waitForCompletion: true }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'child' }, { id: 'b', source: 'child', target: 'output' }],
+    })
+    const releaseSeed = { workflowSnapshot: parent, workflowDependencies: [child] }
+    const release: WorkflowRelease = {
+      id: 'released-stop-release', environmentId: 'released-stop-environment', workflowId: parent.id, workflowRevision: parent.revision,
+      ...releaseSeed, contentSha256: computeWorkflowReleaseSha256(releaseSeed), status: 'published', connectorGrants: [],
+      createdAt: new Date().toISOString(), publishedAt: new Date().toISOString(),
+    }
+    let writes = 0
+    const childEnqueueEntered = deferred<void>()
+    const allowChildEnqueue = deferred<void>()
+    const firstStore = new WorkflowRunStore(directory)
+    const originalEnqueue = firstStore.enqueue.bind(firstStore)
+    vi.spyOn(firstStore, 'enqueue').mockImplementation(async (record) => {
+      if (record.workflowId === child.id) {
+        childEnqueueEntered.resolve()
+        await allowChildEnqueue.promise
+      }
+      return originalEnqueue(record)
+    })
+    const createService = (runStore: WorkflowRunStore) => new WorkflowRunService({
+      workflowStore, runStore, workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      resolveReleasedWorkflow: (releaseId) => releaseId === release.id ? release : undefined,
+      resolveWorkflowEnvironment: (environmentId) => environmentId === release.environmentId ? {
+        id: environmentId, customerName: 'Customer', name: 'Production', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false,
+        createdAt: release.createdAt, updatedAt: release.createdAt,
+      } : undefined,
+      mcpClient: { call: async () => { writes += 1; return 'written' } },
+    })
+    const first = createService(firstStore)
+    await first.startReleased(release.id, 'payload')
+    await childEnqueueEntered.promise
+    const stopping = first.stop()
+    allowChildEnqueue.resolve()
+    await stopping
+
+    expect(writes).toBe(0)
+    expect(firstStore.list(child.id)).toMatchObject([{ status: 'queued' }])
+    expect(firstStore.list(child.id)[0]?.queue?.lease).toBeUndefined()
+
+    const restarted = createService(new WorkflowRunStore(directory))
+    try {
+      await restarted.initialize()
+      const completed = await eventually(() => restarted.list(child.id)[0], (record) => record.status === 'completed')
+      expect(completed.output).toBe('written')
+      expect(writes).toBe(1)
+      expect(restarted.list(child.id)).toHaveLength(1)
+    } finally { await restarted.stop() }
+  })
+})
+
+describe('workflow worker stop boundary', () => {
+  it('recovers a claim that resolves after stop without executing it', async () => {
+    const claimEntered = deferred<void>()
+    const allowClaim = deferred<WorkflowRunRecord | undefined>()
+    const executeClaimedRun = vi.fn(async () => undefined)
+    const releaseLease = vi.fn(async () => true)
+    const claimedAt = new Date().toISOString()
+    const claimed: WorkflowRunRecord = {
+      id: 'late-claim', workflowId: 'workflow', workflowRevision: 1, status: 'running', input: null,
+      allowShellFile: false, nodeStates: [], events: [],
+      queue: { enqueuedAt: claimedAt, availableAt: claimedAt, lease: { ownerId: 'worker-owner', claimedAt, expiresAt: new Date(Date.now() + 60_000).toISOString() } },
+    }
+    const store = {
+      claimNextDue: vi.fn(async () => { claimEntered.resolve(); return allowClaim.promise }),
+      releaseLease,
+      renewLease: vi.fn(async () => claimed),
+      nextDueAt: vi.fn(() => undefined),
+    }
+    const worker = new WorkflowRunWorker({ store: store as unknown as WorkflowRunStore, ownerId: 'worker-owner', executeClaimedRun })
+
+    await worker.start()
+    await claimEntered.promise
+    const stopping = worker.stop()
+    allowClaim.resolve(claimed)
+    await stopping
+
+    expect(executeClaimedRun).not.toHaveBeenCalled()
+    expect(releaseLease).toHaveBeenCalledWith('late-claim', 'worker-owner', true)
   })
 })

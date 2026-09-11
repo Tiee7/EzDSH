@@ -39,6 +39,11 @@ function graph(): WorkflowDefinition {
   }
 }
 
+/** Keep race fixtures deterministic without transitioning the service itself to stopped. */
+async function stopWorkerOnly(service: WorkflowRunService): Promise<void> {
+  await (service as unknown as { worker: { stop(): Promise<void> } }).worker.stop()
+}
+
 async function stoppedApprovalFixture(prefix: string) {
   const dir = await mkdtemp(join(tmpdir(), `ezdsh-${prefix}-`))
   const workflowStore = new WorkflowStore(dir)
@@ -56,7 +61,7 @@ async function stoppedApprovalFixture(prefix: string) {
     createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
   })
   await service.initialize()
-  await service.stop()
+  await stopWorkerOnly(service)
   return { dir, workflow, workflowStore, runStore, service }
 }
 
@@ -230,7 +235,7 @@ describe('effect reconciliation', () => {
     let pureCalls = 0
     const fixture = await parallelFixture(true, async () => { pureCalls += 1; return 'pure done' }, async (_request, _input, previous) => { writes.push(previous); return loopResponse(previous) })
     await fixture.service.initialize()
-    await fixture.service.stop()
+    await stopWorkerOnly(fixture.service)
     const queued = await fixture.service.start(fixture.workflow.id, ['A', 'B'])
     const checkpoint = (await fixture.runStore.claimNextDue('crashed-worker', 60_000))!
     expect(checkpoint.id).toBe(queued.id)
@@ -275,7 +280,7 @@ describe('effect reconciliation', () => {
       expect(fixture.service.get(run.id)).toEqual(before)
       release()
       // stop waits for actual worker execution cleanup; no private active-map manipulation.
-      await fixture.service.stop()
+      await stopWorkerOnly(fixture.service)
       expect(await fixture.service.reconcileEffect(run.id, { nodeId: 'body', outcome, note: 'verified after settling' })).toMatchObject({ status: outcome === 'dispatched' ? 'failed' : 'queued' })
     } finally { release(); await fixture.service.stop() }
   })
@@ -304,7 +309,7 @@ describe('effect reconciliation', () => {
       return loopResponse(previous)
     } })
     const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, ['A', 'B'])).id)
-    await fixture.service.stop()
+    await stopWorkerOnly(fixture.service)
     const iterations = run.nodeStates.find((state) => state.nodeId === 'loop')!.loopIterations!
     for (const target of [{ nodeId: 'body' }, { nodeId: 'body', iterationId: iterations[0]!.iterationId }, { nodeId: 'output', iterationId: iterations[1]!.iterationId }]) {
       await expect(fixture.service.reconcileEffect(run.id, { ...target, outcome, note: 'checked' })).rejects.toThrow()
@@ -441,7 +446,7 @@ describe('durable loop execution identity', () => {
   it('restores completed iterations and body checkpoints from disk without reexecuting them', async () => {
     const fixture = await loopSafetyFixture({ id: 'body', type: 'transform', label: 'Body', config: { template: 'append', text: '!' }, position: { x: 200, y: 200 } })
     await fixture.service.initialize()
-    await fixture.service.stop()
+    await stopWorkerOnly(fixture.service)
     const run = await fixture.service.start(fixture.workflow.id, ['A', 'B', 'C'])
     run.status = 'paused'
     run.nodeStates.find((state) => state.nodeId === 'input')!.status = 'completed'
@@ -477,7 +482,7 @@ describe('durable loop execution identity', () => {
     let writes = 0
     const fixture = await loopSafetyFixture(loopWriteNode, { request: async () => { writes += 1; return loopResponse() } })
     await fixture.service.initialize()
-    await fixture.service.stop()
+    await stopWorkerOnly(fixture.service)
     const run = await fixture.service.start(fixture.workflow.id, ['A', 'B'])
     run.status = 'paused'
     Object.assign(run.nodeStates.find((state) => state.nodeId === 'input')!, { status: 'completed', output: ['A', 'B'] })
@@ -880,7 +885,7 @@ async function createReleasedAccessFixture(node?: WorkflowNode, execution?: {
   const service = createService()
   // Hold the real durable queue without mocking worker or persistence behavior.
   await service.initialize()
-  await service.stop()
+  await stopWorkerOnly(service)
   return { dir, service, createService, runStore, environmentStore, environment, release, fetchImpl, executeSubWorkflow }
 }
 

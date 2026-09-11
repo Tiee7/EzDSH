@@ -101,6 +101,13 @@ export class WorkflowRunWorker {
       }
       const lease = claimed.queue?.lease
       if (lease === undefined) continue
+      // stop() may run while claimNextDue is persisting ownership. A claim
+      // returned across that boundary must be handed back to durable recovery,
+      // never executed by the stopped Worker.
+      if (!this.started || this.stopping) {
+        await this.options.store.releaseLease(claimed.id, this.ownerId, true).catch(() => undefined)
+        return
+      }
       const leaseController = new AbortController()
       const heartbeatInterval = Math.max(1_000, Math.floor(this.leaseMs / 2))
       const heartbeat = setInterval(() => {

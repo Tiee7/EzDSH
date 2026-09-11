@@ -369,7 +369,11 @@ describe('workflow safe execution store', () => {
     const store = new WorkflowRunStore(directory)
     await store.enqueue(queuedRecord('run-first'))
     let executions = 0
-    const executeClaimedRun = async (): Promise<void> => { executions += 1 }
+    let executionEntered!: () => void
+    const entered = new Promise<void>((resolve) => { executionEntered = resolve })
+    let finishExecution!: () => void
+    const executionGate = new Promise<void>((resolve) => { finishExecution = resolve })
+    const executeClaimedRun = async (): Promise<void> => { executions += 1; executionEntered(); await executionGate }
     const workerPath = '../../src/main/workflow/workflow-run-worker.js'
     const workerModule = await import(/* @vite-ignore */ workerPath) as {
       WorkflowRunWorker: new (options: {
@@ -382,8 +386,10 @@ describe('workflow safe execution store', () => {
     const worker = new workerModule.WorkflowRunWorker({ store, ownerId: 'test-worker', leaseMs: 100, executeClaimedRun })
     await worker.start()
     worker.wake()
-    for (let attempt = 0; attempt < 100 && store.get('run-first')?.queue?.lease !== undefined; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 2))
-    await worker.stop()
+    await entered
+    const stopping = worker.stop()
+    finishExecution()
+    await stopping
 
     expect(executions).toBe(1)
     expect(store.get('run-first')?.queue?.lease).toBeUndefined()
