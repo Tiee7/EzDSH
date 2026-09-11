@@ -1310,7 +1310,7 @@ describe('WorkflowPage regressions', () => {
     }
 
     expect(workflowPage.workflowUnknownEffectTargets(definition, run)).toEqual([{
-      key: `iteration-7:${body.id}`,
+      key: `run-loop-unknown-effect:iteration-7:${body.id}:0:0:no-effect-event`,
       nodeId: body.id,
       nodeLabel: body.label,
       iterationId: 'iteration-7',
@@ -1370,5 +1370,76 @@ describe('WorkflowPage regressions', () => {
       Object.assign(globalThis, previousGlobalsWithoutNavigator)
       Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
     }
+  })
+
+  it('gives each unknown-effect occurrence a run-bound key', () => {
+    const workflow = createDefaultWorkflow('Occurrence keys')
+    const node = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
+    const createRun = (id: string, attempt: number): WorkflowRunRecord => ({
+      id, workflowId: workflow.id, workflowRevision: workflow.revision, status: 'paused', input: {}, events: [], allowShellFile: false,
+      nodeStates: [{ nodeId: node.id, status: 'cancelled', effectState: 'unknown', attempt }],
+    })
+
+    const runA = workflowPage.workflowUnknownEffectTargets(workflow, createRun('run-a', 1))[0]!
+    const runB = workflowPage.workflowUnknownEffectTargets(workflow, createRun('run-b', 1))[0]!
+    const retriedRunA = workflowPage.workflowUnknownEffectTargets(workflow, createRun('run-a', 2))[0]!
+
+    expect(runA.key).not.toBe(runB.key)
+    expect(runA.key).not.toBe(retriedRunA.key)
+  })
+
+  it('does not expose a top-level loop-body projection as a reconciliation target', () => {
+    const workflow = createDefaultWorkflow('Loop projection')
+    const originalLoop = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
+    const loop = { ...originalLoop, type: 'loop', label: '逐项发送', config: { maxIterations: 3 } } as never
+    const body = workflow.nodes.find((candidate) => candidate.type === 'output')!
+    const definition = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) => node.id === originalLoop.id ? loop : node),
+      edges: [{ id: 'loop-body', source: loop.id, target: body.id, sourcePort: 'loop-body' }],
+    }
+    const run: WorkflowRunRecord = {
+      id: 'run-loop-projection', workflowId: definition.id, workflowRevision: definition.revision, status: 'paused', input: {}, events: [], allowShellFile: false,
+      nodeStates: [
+        { nodeId: body.id, status: 'cancelled', effectState: 'unknown', input: 'projection only' },
+        { nodeId: loop.id, status: 'cancelled', loopIterations: [{ iterationId: 'iteration-1', iterationIndex: 1, input: 'durable input', status: 'running', nodeStates: [{ nodeId: body.id, status: 'cancelled', effectState: 'unknown', input: 'durable state' }] }] },
+      ],
+    }
+
+    expect(workflowPage.workflowUnknownEffectTargets(definition, run)).toMatchObject([{ nodeId: body.id, iterationId: 'iteration-1', input: 'durable state' }])
+    expect(workflowPage.workflowUnknownEffectTargets(definition, run)).toHaveLength(1)
+  })
+
+  it('keeps the selected run when an earlier reconciliation response resolves', async () => {
+    let resolveRecord: ((record: WorkflowRunRecord) => void) | undefined
+    const request = new Promise<WorkflowRunRecord>((resolve) => { resolveRecord = resolve })
+    let selectedRunId = 'run-a'
+    const applied: Array<{ record: WorkflowRunRecord; replaceDetail: boolean }> = []
+    const reconcile = (workflowPage as unknown as { reconcileWorkflowEffectRequest?: (runId: string, request: { nodeId: string; outcome: 'not-dispatched'; note: string }, bridge: () => Promise<WorkflowRunRecord>, selectedRunId: () => string | undefined, apply: (record: WorkflowRunRecord, replaceDetail: boolean) => void) => Promise<void> }).reconcileWorkflowEffectRequest
+    expect(reconcile).toBeTypeOf('function')
+    if (reconcile === undefined) return
+
+    const pending = reconcile('run-a', { nodeId: 'write', outcome: 'not-dispatched', note: 'checked' }, () => request, () => selectedRunId, (record, replaceDetail) => applied.push({ record, replaceDetail }))
+    selectedRunId = 'run-b'
+    const reconciled = { id: 'run-a', workflowId: 'workflow', workflowRevision: 1, status: 'paused' as const, input: {}, nodeStates: [], events: [], allowShellFile: false }
+    resolveRecord?.(reconciled)
+    await pending
+
+    expect(applied).toEqual([{ record: reconciled, replaceDetail: false }])
+  })
+
+  it('labels reconciliation controls with the node and loop iteration identity', () => {
+    const markup = renderToStaticMarkup(<workflowPage.WorkflowEffectReconciliationPanel copy={getAppCopy('zh')} targets={[{ key: 'run-a:iteration-2:write', nodeId: 'write', nodeLabel: '发送回执', iterationId: 'iteration-2', iterationIndex: 2, loopNodeLabel: '逐项发送', input: 'R-2' }]} onReconcile={vi.fn()} />)
+
+    expect(markup).toContain('aria-label="核对说明: 发送回执 · 逐项发送: 循环第 3 项 · iteration-2"')
+    expect(markup).toContain('aria-label="确认未发送并重试: 发送回执 · 逐项发送: 循环第 3 项 · iteration-2"')
+    expect(markup).toContain('aria-label="确认已经发送: 发送回执 · 逐项发送: 循环第 3 项 · iteration-2"')
+  })
+
+  it('uses localized reconciliation errors in English', () => {
+    const errorMessage = (workflowPage as unknown as { workflowReconciliationErrorMessage?: (copy: ReturnType<typeof getAppCopy>) => string }).workflowReconciliationErrorMessage
+    expect(errorMessage).toBeTypeOf('function')
+    if (errorMessage === undefined) return
+    expect(errorMessage(getAppCopy('en'))).toBe('Unable to reconcile this effect. Try again or check the run state.')
   })
 })

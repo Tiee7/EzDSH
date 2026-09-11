@@ -539,6 +539,7 @@ export interface AppCopy {
   workflowEffectDispatchedWarning: string
   workflowEffectCancelConfirm: string
   workflowEffectReconciling: string
+  workflowEffectReviewFailed: string
   workflowImportEmployee: string
   workflowSelectEmployee: string
   workflowImportedEmployee: string
@@ -1440,6 +1441,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowEffectDispatchedWarning: '该决定会使本次运行保持终止，且不会生成或补写任何输出。',
     workflowEffectCancelConfirm: '取消',
     workflowEffectReconciling: '核对中…',
+    workflowEffectReviewFailed: '副作用核对失败，请重试或检查运行状态。',
     workflowImportEmployee: '为员工创建工作流',
     workflowSelectEmployee: '选择员工',
     workflowImportedEmployee: '已创建员工工作流',
@@ -2366,6 +2368,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowEffectDispatchedWarning: 'This keeps the run terminated and does not generate or backfill any output.',
     workflowEffectCancelConfirm: 'Cancel',
     workflowEffectReconciling: 'Reviewing…',
+    workflowEffectReviewFailed: 'Unable to reconcile this effect. Try again or check the run state.',
     workflowImportEmployee: 'Create workflow for employee',
     workflowSelectEmployee: 'Select employee',
     workflowImportedEmployee: 'Employee workflow created',

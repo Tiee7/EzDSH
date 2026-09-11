@@ -38,6 +38,7 @@ import {
   isWorkflowValue,
   isWorkflowJsonSchema,
   parseWorkflowExportDocument,
+  workflowLoopBodyNodeIds,
   validateWorkflow,
   type AiExecutionMode,
   type ConditionOperator,
@@ -646,13 +647,17 @@ export interface WorkflowUnknownEffectTarget {
 /** Unknown effects can only be reconciled from their durable journal entry. */
 export function workflowUnknownEffectTargets(workflow: WorkflowDefinition, run: WorkflowRunRecord): WorkflowUnknownEffectTarget[] {
   const nodeLabels = new Map(workflow.nodes.map((node) => [node.id, node.label]))
+  const loopBodyNodeIds = new Set(workflow.nodes.filter((node) => node.type === 'loop').flatMap((node) => workflowLoopBodyNodeIds(workflow, node.id)))
   const targets: WorkflowUnknownEffectTarget[] = []
   const visit = (states: WorkflowNodeRunState[], loop?: { nodeLabel: string; iterationId: string; iterationIndex: number; input: WorkflowValue }): void => {
     for (const state of states) {
-      if (state.effectState === 'unknown') {
+      if (state.effectState === 'unknown' && (loop !== undefined || !loopBodyNodeIds.has(state.nodeId))) {
         const iterationId = loop?.iterationId
+        const latestEffectEvent = [...run.events].reverse().find((event) => event.nodeId === state.nodeId
+          && event.executionScope?.iterationId === iterationId
+          && event.type.startsWith('node-effect-'))
         targets.push({
-          key: `${loop?.iterationId ?? 'ordinary'}:${state.nodeId}`,
+          key: `${run.id}:${iterationId ?? 'ordinary'}:${state.nodeId}:${state.attempt ?? 0}:${state.effectReconciliationHistory?.length ?? 0}:${latestEffectEvent?.id ?? 'no-effect-event'}`,
           nodeId: state.nodeId,
           nodeLabel: nodeLabels.get(state.nodeId) ?? state.nodeId,
           ...(iterationId === undefined ? {} : { iterationId, iterationIndex: loop?.iterationIndex, loopNodeLabel: loop?.nodeLabel }),
@@ -671,6 +676,22 @@ export function workflowUnknownEffectTargets(workflow: WorkflowDefinition, run: 
   }
   visit(run.nodeStates)
   return targets
+}
+
+export function workflowEffectTargetIdentity(copy: AppCopy, target: WorkflowUnknownEffectTarget): string {
+  return target.iterationId === undefined
+    ? target.nodeLabel
+    : `${target.nodeLabel} · ${target.loopNodeLabel}: ${copy.workflowEffectIteration(target.iterationIndex ?? 0, target.iterationId)}`
+}
+
+export function workflowReconciliationErrorMessage(copy: AppCopy): string {
+  return copy.workflowEffectReviewFailed
+}
+
+/** Apply an asynchronous reconciliation result without replacing a newer run selection. */
+export async function reconcileWorkflowEffectRequest(runId: string, request: WorkflowEffectReconcileRequest, bridge: () => Promise<WorkflowRunRecord>, selectedRunId: () => string | undefined, apply: (record: WorkflowRunRecord, replaceDetail: boolean) => void): Promise<void> {
+  const record = await bridge()
+  apply(record, selectedRunId() === runId)
 }
 
 /** Join a selected canvas node to the output, error, and events persisted for this run. */
@@ -2415,15 +2436,16 @@ export function WorkflowEffectReconciliationPanel({ copy, targets, busy = false,
       const noteLength = note.trim().length
       const validNote = noteLength >= 1 && noteLength <= 500
       const confirmingDispatched = confirmingDispatchedKey === target.key
+      const targetIdentity = workflowEffectTargetIdentity(copy, target)
       return <div key={target.key} className="workflow-effect-review-target">
         <div className="workflow-node-result-meta"><span>{copy.workflowEffectNode}: {target.nodeLabel}</span>{target.iterationId === undefined ? null : <span>{target.loopNodeLabel}: {copy.workflowEffectIteration(target.iterationIndex ?? 0, target.iterationId)}</span>}</div>
         <div className="workflow-node-input"><div className="workflow-node-data-heading"><strong>{copy.workflowEffectSavedInput}</strong></div>{target.input === undefined ? <p className="workflow-muted">{copy.workflowEffectNoSavedInput}</p> : <pre className="workflow-node-input-preview"><code>{formatValue(target.input)}</code></pre>}</div>
-        <label>{copy.workflowEffectNote}<textarea aria-label={`${copy.workflowEffectNote}: ${target.nodeLabel}`} value={note} maxLength={500} disabled={busy} onChange={(event) => setNotes((current) => ({ ...current, [target.key]: event.target.value }))} /><small>{copy.workflowEffectNoteHint}</small>{note !== '' && !validNote ? <span className="workflow-effect-review-validation" role="alert">{copy.workflowEffectNoteInvalid}</span> : null}</label>
+        <label>{copy.workflowEffectNote}<textarea aria-label={`${copy.workflowEffectNote}: ${targetIdentity}`} value={note} maxLength={500} disabled={busy} onChange={(event) => setNotes((current) => ({ ...current, [target.key]: event.target.value }))} /><small>{copy.workflowEffectNoteHint}</small>{note !== '' && !validNote ? <span className="workflow-effect-review-validation" role="alert">{copy.workflowEffectNoteInvalid}</span> : null}</label>
         <div className="workflow-execution-actions">
-          <button type="button" className="workflow-button-primary" disabled={busy || !validNote || onReconcile === undefined} onClick={() => void submit(target, 'not-dispatched')}>{busy ? copy.workflowEffectReconciling : copy.workflowEffectNotDispatched}</button>
-          <button type="button" className="workflow-danger-button" disabled={busy || !validNote || onReconcile === undefined} onClick={() => setConfirmingDispatchedKey(target.key)}>{copy.workflowEffectDispatched}</button>
+          <button type="button" className="workflow-button-primary" aria-label={`${copy.workflowEffectNotDispatched}: ${targetIdentity}`} disabled={busy || !validNote || onReconcile === undefined} onClick={() => void submit(target, 'not-dispatched')}>{busy ? copy.workflowEffectReconciling : copy.workflowEffectNotDispatched}</button>
+          <button type="button" className="workflow-danger-button" aria-label={`${copy.workflowEffectDispatched}: ${targetIdentity}`} disabled={busy || !validNote || onReconcile === undefined} onClick={() => setConfirmingDispatchedKey(target.key)}>{copy.workflowEffectDispatched}</button>
         </div>
-        {confirmingDispatched ? <div className="workflow-effect-review-confirm" role="alert"><p>{copy.workflowEffectDispatchedWarning}</p><div className="workflow-execution-actions"><button type="button" className="workflow-danger-button" disabled={busy || !validNote || onReconcile === undefined} onClick={() => void submit(target, 'dispatched')}>{busy ? copy.workflowEffectReconciling : copy.workflowEffectDispatchedConfirm}</button><button type="button" className="workflow-button-quiet" disabled={busy} onClick={() => setConfirmingDispatchedKey(undefined)}>{copy.workflowEffectCancelConfirm}</button></div></div> : null}
+        {confirmingDispatched ? <div className="workflow-effect-review-confirm" role="alert"><p>{copy.workflowEffectDispatchedWarning}</p><div className="workflow-execution-actions"><button type="button" className="workflow-danger-button" aria-label={`${copy.workflowEffectDispatchedConfirm}: ${targetIdentity}`} disabled={busy || !validNote || onReconcile === undefined} onClick={() => void submit(target, 'dispatched')}>{busy ? copy.workflowEffectReconciling : copy.workflowEffectDispatchedConfirm}</button><button type="button" className="workflow-button-quiet" aria-label={`${copy.workflowEffectCancelConfirm}: ${targetIdentity}`} disabled={busy} onClick={() => setConfirmingDispatchedKey(undefined)}>{copy.workflowEffectCancelConfirm}</button></div></div> : null}
       </div>
     })}</div>
   </section>
@@ -2550,6 +2572,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const workflowImportInputRef = useRef<HTMLInputElement>(null)
   const executionMainRef = useRef<HTMLDivElement>(null)
   const executionResizeRef = useRef<{ startY: number; startHeight: number }>()
+  const currentRunRef = useRef<WorkflowRunRecord>()
   const fitViewRef = useRef<(() => Promise<boolean>)>()
   const screenToFlowPositionRef = useRef<((position: XYPosition) => XYPosition)>()
   const copiedWorkflowNodesRef = useRef<WorkflowNode[]>([])
@@ -2783,6 +2806,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const selectedNodeValidationIssues = useMemo(() => selectedNodeIndex < 0 ? [] : workflowValidationIssuesForNode(workflowValidationIssues, selectedNodeIndex), [selectedNodeIndex, workflowValidationIssues])
   const selectedNodeHasValidationError = selectedNodeValidationIssues.length > 0
   useEffect(() => { setNodeInspectorTab('settings') }, [selectedNodeId])
+  useEffect(() => { currentRunRef.current = currentRun }, [currentRun])
   useEffect(() => { setRunDeleteUnlocked(false) }, [selected?.id])
   const currentRunNodeDetail = useMemo(
     () => selected === undefined || currentRun === undefined ? undefined : getWorkflowNodeRunDetail(selected, currentRun, selectedRunNodeId),
@@ -3361,13 +3385,18 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) } finally { setBusy(false) }
   }
 
-  const applyRunRecord = (record: WorkflowRunRecord): void => {
-    setCurrentRun(record)
-    setRuns((current) => [record, ...current.filter((item) => item.id !== record.id)])
-    updateRunSummary(record.workflowId, [record, ...runs.filter((item) => item.id !== record.id)])
+  const applyRunRecord = (record: WorkflowRunRecord, replaceDetail = true): void => {
+    if (replaceDetail) currentRunRef.current = record
+    setCurrentRun((current) => replaceDetail ? record : current)
+    setRuns((current) => {
+      const next = [record, ...current.filter((item) => item.id !== record.id)]
+      updateRunSummary(record.workflowId, next)
+      return next
+    })
   }
 
   const selectRun = (record: WorkflowRunRecord): void => {
+    currentRunRef.current = record
     setCurrentRun(record)
     setSelectedRunNodeId(undefined)
     markRunViewed(record)
@@ -3495,14 +3524,20 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const reconcileEffect = async (request: WorkflowEffectReconcileRequest): Promise<boolean> => {
     if (currentRun === undefined) return false
+    const submittedRunId = currentRun.id
     setBusy(true)
     setError('')
     try {
-      const record = await window.EzDSH.workflowRuns.reconcileEffect(currentRun.id, request)
-      applyRunRecord(record)
+      await reconcileWorkflowEffectRequest(
+        submittedRunId,
+        request,
+        () => window.EzDSH.workflowRuns.reconcileEffect(submittedRunId, request),
+        () => currentRunRef.current?.id,
+        applyRunRecord,
+      )
       return true
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : copy.workflowRunFailed)
+      setError(workflowReconciliationErrorMessage(copy))
       return false
     } finally {
       setBusy(false)
