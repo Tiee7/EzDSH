@@ -185,7 +185,8 @@ export function SettingsPage({ copy, locale, runtime, onOpenSession, rescueOnly 
     navigation: copy.settingsTabNavigation,
     'external-services': copy.settingsExternalServices,
   }
-  const tabs = (rescueOnly ? ['recovery'] : SETTINGS_TAB_IDS).map((id) => ({ id, label: tabLabels[id] }))
+  const tabIds: readonly SettingsTab[] = rescueOnly ? ['recovery'] : SETTINGS_TAB_IDS
+  const tabs = tabIds.map((id) => ({ id, label: tabLabels[id] }))
 
   return (
     <div className={`settings-page ${rescueOnly ? 'settings-page-rescue' : ''}`}>

@@ -102,6 +102,11 @@ export interface WorkflowCompensationEntry {
   occurrenceId?: string
   /** Durable dispatch journal for the compensation child/effect boundary. */
   effectState?: WorkflowNodeEffectState
+  /** Monotonic local child attempt; the external occurrence identity never changes. */
+  attempt?: number
+  /** Latest locally-created compensation child plus append-only attempt lineage. */
+  childRunId?: string
+  childRunIds?: string[]
   /** Latest manual decision, mirrored from the append-only private audit below. */
   effectReconciliation?: WorkflowCompensationEffectReconciliation
   effectReconciliationHistory?: WorkflowCompensationEffectReconciliation[]
@@ -623,9 +628,13 @@ export interface WorkflowRunRecord {
   traceId?: string
   /** Caller-supplied de-duplication key. Omitted runs are never inferred to be equivalent. */
   idempotencyKey?: string
+  /** Stable remote-effect identity, independent from the local run attempt identity. */
+  effectIdempotencyKey?: string
   /** Persisted child lineage; optional for records created before recursion hardening. */
   parentRunId?: string
   workflowAncestry?: string[]
+  /** Explicit provenance for new records; legacy children are reconstructed from parent outputs. */
+  origin?: { kind: 'top-level' } | { kind: 'child'; parentRunId: string }
   status: WorkflowRunStatus
   /** Present for records created by the durable local queue; legacy records remain readable. */
   queue?: WorkflowRunQueueState
@@ -634,6 +643,8 @@ export interface WorkflowRunRecord {
   nodeStates: WorkflowNodeRunState[]
   events: WorkflowRunEvent[]
   compensationStack?: WorkflowCompensationEntry[]
+  /** Active compensation-only blocker; never replaces the source run terminal error. */
+  compensationBlocker?: string
   /** Exact Main-derived unknown-effect targets. Renderer must not infer topology when present. */
   effectReconciliationTargets?: WorkflowEffectReconciliationTarget[]
   allowShellFile: boolean
@@ -656,6 +667,8 @@ export interface WorkflowRunRecord {
 export interface WorkflowRunOptions {
   /** Repeated starts with the same workflow revision and this explicit key return the original run. */
   idempotencyKey?: string
+  /** Internal stable base for real connector idempotency across local attempts. */
+  effectIdempotencyKey?: string
   allowShellFile?: boolean
   allowCode?: boolean
   connectorGrants?: WorkflowConnectorGrant[]

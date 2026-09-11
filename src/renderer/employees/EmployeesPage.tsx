@@ -411,8 +411,8 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
     setError(undefined)
     try {
       const saved = editingId === 'new'
-        ? await window.EzDSH.employees.create(input)
-        : await window.EzDSH.employees.update(editingId, input)
+        ? await window.EzDSH.employees.create(input as EmployeeCreateInput)
+        : await window.EzDSH.employees.update(editingId, input as EmployeeUpdateInput)
       setEmployees((current) => {
         const index = current.findIndex((employee) => employee.id === saved.id)
         return index < 0 ? [...current, saved] : current.map((employee) => employee.id === saved.id ? saved : employee)

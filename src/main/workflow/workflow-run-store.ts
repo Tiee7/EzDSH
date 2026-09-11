@@ -19,6 +19,12 @@ function isPersistedRunRecord(value: unknown): value is WorkflowRunRecord {
   if (!record.nodeStates.every(isPersistedNodeState)) return false
   if (record.parentRunId !== undefined && (typeof record.parentRunId !== 'string' || record.parentRunId.trim() === '')) return false
   if (record.workflowAncestry !== undefined && (!Array.isArray(record.workflowAncestry) || !record.workflowAncestry.every((id) => typeof id === 'string' && id.trim() !== ''))) return false
+  if (record.effectIdempotencyKey !== undefined && (typeof record.effectIdempotencyKey !== 'string' || record.effectIdempotencyKey.trim() === '')) return false
+  if (record.origin !== undefined) {
+    if (record.origin === null || typeof record.origin !== 'object') return false
+    const origin = record.origin as Record<string, unknown>
+    if (origin.kind !== 'top-level' && (origin.kind !== 'child' || typeof origin.parentRunId !== 'string' || origin.parentRunId.trim() === '')) return false
+  }
   const queue = record.queue
   if (queue !== undefined && !isValidQueueState(queue)) return false
   return true
@@ -314,7 +320,7 @@ export class WorkflowRunStore {
           entry.effectState = 'unknown'
           entry.completedAt = nowIso
           entry.error = '补偿副作用可能已派发，必须人工核对后再决定是否重试。'
-          record.error = entry.error
+          record.compensationBlocker = entry.error
           record.events.push({
             id: randomUUID(),
             time: nowIso,

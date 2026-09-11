@@ -126,6 +126,7 @@ export class WorkflowRunService {
   private readonly worker: WorkflowRunWorker
   private readonly compensationActive = new Set<string>()
   private readonly reconciliationActive = new Set<string>()
+  private readonly administrativeActive = new Set<string>()
   private initialized = false
   private initializationPromise: Promise<void> | undefined
 
@@ -185,22 +186,42 @@ export class WorkflowRunService {
 
   async remove(runId: string): Promise<void> {
     await this.initialize()
-    const record = this.options.runStore.get(runId)
-    if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-    if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') {
-      throw new Error('运行中的记录不能删除，请先取消运行')
+    this.assertRunMutationAvailable(runId)
+    this.administrativeActive.add(runId)
+    try {
+      const record = this.options.runStore.get(runId)
+      if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') {
+        throw new Error('运行中的记录不能删除，请先取消运行')
+      }
+      const removed = await this.options.runStore.remove(runId)
+      if (!removed) throw new Error(`Workflow run not found: ${runId}`)
+    } finally {
+      this.administrativeActive.delete(runId)
     }
-    const removed = await this.options.runStore.remove(runId)
-    if (!removed) throw new Error(`Workflow run not found: ${runId}`)
   }
 
   /** Remove every non-active run record for a workflow before deleting its definition. */
   async removeForWorkflow(workflowId: string): Promise<number> {
     await this.initialize()
     const records = this.options.runStore.list(workflowId)
+    for (const record of records) this.assertRunMutationAvailable(record.id)
     const active = records.find((record) => record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval')
     if (active !== undefined) throw new Error('工作流仍有运行中的记录，请先取消运行后再删除工作流')
-    return this.options.runStore.removeForWorkflow(workflowId)
+    for (const record of records) this.administrativeActive.add(record.id)
+    try {
+      return await this.options.runStore.removeForWorkflow(workflowId)
+    } finally {
+      for (const record of records) this.administrativeActive.delete(record.id)
+    }
+  }
+
+  private assertRunMutationAvailable(runId: string): void {
+    const record = this.options.runStore.get(runId)
+    const activelyExecuting = this.active.has(runId) && (record === undefined || record.status === 'queued' || record.status === 'running' || workflowAllNodeRunStates(record.nodeStates).some((state) => state.status === 'running'))
+    if (activelyExecuting || this.reconciliationActive.has(runId) || this.compensationActive.has(runId) || this.administrativeActive.has(runId)) {
+      throw new Error('该运行仍在执行，或人工核对、补偿、其他变更正在进行。')
+    }
   }
 
   async stop(): Promise<void> {
@@ -265,6 +286,7 @@ export class WorkflowRunService {
     if (parent !== undefined) {
       child.parentRunId = parent.id
       child.workflowAncestry = [...lineage]
+      child.origin = { kind: 'child', parentRunId: parent.id }
     }
     this.liveLineages.set(child.id, [...lineage, workflow.id])
     if (!waitForCompletion || parentActive === undefined) {
@@ -333,42 +355,43 @@ export class WorkflowRunService {
 
   async resume(runId: string): Promise<WorkflowRunRecord> {
     await this.initialize()
-    if (this.reconciliationActive.has(runId)) throw new Error('该运行的人工核对正在保存。')
-    const record = this.options.runStore.get(runId)
-    if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-    if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以恢复')
-    if (this.hasUncheckpointedLoopEffects(record)) throw new Error('旧版循环缺少逐迭代副作用记录，请先人工核对，不能安全恢复')
-    if (workflowAllNodeRunStates(record.nodeStates).some((state) => state.effectState === 'prepared' || state.effectState === 'dispatched' || state.effectState === 'unknown' || state.effectState === 'confirmed' && state.status !== 'completed')) throw new Error('运行包含状态不确定的外部副作用，请先完成补偿或人工核对')
-    this.revalidateReleasedAccess(record)
-    record.status = 'queued'
-    record.error = undefined
-    record.completedAt = undefined
-    record.retentionExpiresAt = undefined
-    for (const node of workflowAllNodeRunStates(record.nodeStates)) {
-      if (node.status === 'failed' || node.status === 'running' || node.status === 'cancelled') {
-        node.status = 'pending'
-        node.error = undefined
-        node.startedAt = undefined
-        node.completedAt = undefined
-        node.input = undefined
-        node.output = undefined
+    this.assertRunMutationAvailable(runId)
+    this.administrativeActive.add(runId)
+    try {
+      const record = this.options.runStore.get(runId)
+      if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以恢复')
+      if (this.hasUncheckpointedLoopEffects(record)) throw new Error('旧版循环缺少逐迭代副作用记录，请先人工核对，不能安全恢复')
+      if (workflowAllNodeRunStates(record.nodeStates).some((state) => state.effectState === 'prepared' || state.effectState === 'dispatched' || state.effectState === 'unknown' || state.effectState === 'confirmed' && state.status !== 'completed')) throw new Error('运行包含状态不确定的外部副作用，请先完成补偿或人工核对')
+      this.revalidateReleasedAccess(record)
+      record.status = 'queued'
+      record.error = undefined
+      record.completedAt = undefined
+      record.retentionExpiresAt = undefined
+      for (const node of workflowAllNodeRunStates(record.nodeStates)) {
+        if (node.status === 'failed' || node.status === 'running' || node.status === 'cancelled') {
+          node.status = 'pending'
+          node.error = undefined
+          node.startedAt = undefined
+          node.completedAt = undefined
+          node.input = undefined
+          node.output = undefined
+        }
       }
+      this.prepareQueuedRecord(record)
+      await this.save(record, 'run-created', '运行已重新排队')
+      this.worker.wake()
+      return cloneWorkflow(record)
+    } finally {
+      this.administrativeActive.delete(runId)
     }
-    this.prepareQueuedRecord(record)
-    await this.save(record, 'run-created', '运行已重新排队')
-    this.worker.wake()
-    return cloneWorkflow(record)
   }
 
   async reconcileEffect(runId: string, input: WorkflowEffectReconcileRequest): Promise<WorkflowRunRecord> {
     if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
     const request = validateWorkflowEffectReconcileRequest(input)
     await this.initialize()
-    const activeRecord = this.options.runStore.get(runId)
-    if (this.active.has(runId) && activeRecord !== undefined && workflowAllNodeRunStates(activeRecord.nodeStates).some((state) => state.status === 'running')) {
-      throw new Error('该运行仍在执行，请等待所有分支停止后再人工核对。')
-    }
-    if (this.reconciliationActive.has(runId) || this.compensationActive.has(runId)) throw new Error('该运行的人工核对或补偿正在执行。')
+    this.assertRunMutationAvailable(runId)
     this.reconciliationActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -445,7 +468,7 @@ export class WorkflowRunService {
     if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
     const request = validateWorkflowCompensationEffectReconcileRequest(input)
     await this.initialize()
-    if (this.active.has(runId) || this.reconciliationActive.has(runId) || this.compensationActive.has(runId)) throw new Error('该运行的执行、人工核对或补偿正在进行。')
+    this.assertRunMutationAvailable(runId)
     this.reconciliationActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -468,7 +491,7 @@ export class WorkflowRunService {
         entry.completedAt = undefined
         entry.error = undefined
       }
-      if (!(record.compensationStack ?? []).some((candidate) => candidate.effectState === 'unknown')) record.error = undefined
+      if (!(record.compensationStack ?? []).some((candidate) => candidate.effectState === 'unknown')) record.compensationBlocker = undefined
       const type: WorkflowRunEvent['type'] = `compensation-effect-reconciled-${request.outcome}`
       const message = request.outcome === 'dispatched'
         ? `人工确认补偿副作用已派发：${entry.sourceNodeId}`
@@ -561,8 +584,7 @@ export class WorkflowRunService {
    */
   async compensate(runId: string): Promise<WorkflowRunRecord> {
     await this.initialize()
-    if (this.reconciliationActive.has(runId)) throw new Error('该运行的人工核对正在保存。')
-    if (this.compensationActive.has(runId)) throw new Error('该运行的补偿正在执行。')
+    this.assertRunMutationAvailable(runId)
     const record = this.options.runStore.get(runId)
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') throw new Error('运行尚未结束，不能执行补偿')
@@ -575,6 +597,7 @@ export class WorkflowRunService {
       for (const entry of [...stack].reverse()) {
         if (entry.status === 'completed') continue
         entry.occurrenceId ??= this.compensationOccurrenceId(record, entry.sourceNodeId, entry.executionScope)
+        entry.attempt = (entry.attempt ?? 0) + 1
         entry.status = 'running'
         entry.effectState = 'prepared'
         entry.startedAt = new Date().toISOString()
@@ -595,6 +618,7 @@ export class WorkflowRunService {
           entry.status = 'completed'
           entry.effectState = 'confirmed'
           entry.completedAt = new Date().toISOString()
+          if (!stack.some((candidate) => candidate.effectState === 'unknown')) record.compensationBlocker = undefined
           await this.saveEvents(record, [
             this.createEvent('compensation-effect-confirmed', `已确认补偿副作用：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope),
             this.createEvent('compensation-completed', `补偿完成：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope),
@@ -604,10 +628,10 @@ export class WorkflowRunService {
           entry.effectState = 'unknown'
           entry.completedAt = new Date().toISOString()
           entry.error = error instanceof Error ? error.message : String(error)
-          record.error = `补偿副作用状态未知，必须人工核对：${entry.error}`
+          record.compensationBlocker = `补偿副作用状态未知，必须人工核对：${entry.error}`
           await this.saveEvents(record, [
-            this.createEvent('compensation-effect-unknown', record.error, entry.sourceNodeId, entry.executionScope),
-            this.createEvent('compensation-failed', record.error, entry.sourceNodeId, entry.executionScope),
+            this.createEvent('compensation-effect-unknown', record.compensationBlocker, entry.sourceNodeId, entry.executionScope),
+            this.createEvent('compensation-failed', record.compensationBlocker, entry.sourceNodeId, entry.executionScope),
           ])
           break
         }
@@ -911,6 +935,8 @@ export class WorkflowRunService {
         traceId: `trace-${randomUUID()}`,
       }),
       ...(options.idempotencyKey?.trim() === undefined || options.idempotencyKey.trim() === '' ? {} : { idempotencyKey: options.idempotencyKey.trim() }),
+      ...(options.effectIdempotencyKey?.trim() === undefined || options.effectIdempotencyKey.trim() === '' ? {} : { effectIdempotencyKey: options.effectIdempotencyKey.trim() }),
+      origin: { kind: 'top-level' },
       status: 'queued',
       input: cloneWorkflow(input),
       nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending', elapsedMs: 0 })),
@@ -955,8 +981,43 @@ export class WorkflowRunService {
   /** Upgrade queued pre-lineage children before the Worker can claim them. */
   private async recoverLegacyChildLineages(): Promise<void> {
     const records = new Map(this.options.runStore.list().map((record) => [record.id, record]))
+    const inferredParents = new Map<string, Set<string>>()
+    const unreliableReferences = new Set<string>()
+    for (const parent of records.values()) {
+      const workflow = this.immutableWorkflowForRecord(parent)
+      for (const state of workflowAllNodeRunStates(parent.nodeStates)) {
+        const childRunId = workflowRunIdOutput(state.output)
+        if (childRunId === undefined || !records.has(childRunId)) continue
+        const node = workflow?.nodes.find((candidate) => candidate.id === state.nodeId)
+        const child = records.get(childRunId)!
+        if (node?.type !== 'sub-workflow' || node.config.waitForCompletion !== false || node.config.workflowId !== child.workflowId) {
+          unreliableReferences.add(childRunId)
+          continue
+        }
+        const candidates = inferredParents.get(childRunId) ?? new Set<string>()
+        candidates.add(parent.id)
+        inferredParents.set(childRunId, candidates)
+      }
+    }
     for (const record of records.values()) {
-      if (record.status !== 'queued' || record.parentRunId === undefined || record.workflowAncestry !== undefined) continue
+      if (record.status !== 'queued' || record.workflowAncestry !== undefined) continue
+      if (record.parentRunId === undefined) {
+        const candidates = [...(inferredParents.get(record.id) ?? [])]
+        if (candidates.length === 1 && !unreliableReferences.has(record.id)) {
+          record.parentRunId = candidates[0]
+          record.origin = { kind: 'child', parentRunId: candidates[0]! }
+        } else if (candidates.length > 1 || unreliableReferences.has(record.id) || record.origin?.kind === 'child') {
+          record.status = 'paused'
+          record.error = '旧版子运行缺少可验证的唯一父级链路，已暂停以避免递归执行。'
+          record.completedAt = new Date().toISOString()
+          record.events.push(this.createEvent('run-paused', record.error))
+          await this.options.runStore.save(record)
+          continue
+        } else {
+          // No durable child provenance: preserve legitimate legacy top-level runs.
+          continue
+        }
+      }
       const ancestry: string[] = []
       const seenRuns = new Set([record.id])
       let parentRunId: string | undefined = record.parentRunId
@@ -977,6 +1038,7 @@ export class WorkflowRunService {
       if (new Set(ancestry).size !== ancestry.length) reliable = false
       if (reliable) {
         record.workflowAncestry = ancestry
+        record.origin = { kind: 'child', parentRunId: record.parentRunId }
       } else {
         record.status = 'paused'
         record.error = '旧版子运行缺少可验证的父级链路，已暂停以避免递归执行。'
@@ -1658,44 +1720,50 @@ export class WorkflowRunService {
     entry: WorkflowCompensationEntry,
     compensationInput: WorkflowValue,
   ): Promise<WorkflowValue> {
+    const attemptKey = `${entry.occurrenceId}:attempt:${String(entry.attempt ?? 1)}`
     const runOptions: WorkflowRunOptions = {
-      idempotencyKey: entry.occurrenceId,
+      idempotencyKey: attemptKey,
+      effectIdempotencyKey: entry.occurrenceId,
       allowShellFile: record.allowShellFile,
       allowCode: record.allowCode === true,
       connectorGrants: record.connectorGrants,
       ...(record.model === undefined ? {} : { model: record.model }),
     }
-    if (record.releaseId === undefined) {
-      if (this.options.executeSubWorkflow === undefined) throw new Error('补偿 Workflow 执行器不可用。')
-      return this.options.executeSubWorkflow(
-        entry.action.workflowId,
+    try {
+      if (record.releaseId === undefined) {
+        return await (this.options.executeSubWorkflow === undefined
+          ? this.executeSubWorkflow(entry.action.workflowId, compensationInput, entry.action.waitForCompletion !== false, entry.action.workflowRevision, runOptions, record.id)
+          : this.options.executeSubWorkflow(entry.action.workflowId, compensationInput, entry.action.waitForCompletion !== false, entry.action.workflowRevision, runOptions))
+      }
+      this.revalidateReleasedAccess(record)
+      const release = this.resolveReleasedWorkflowOrThrow(record.releaseId)
+      const revision = entry.action.workflowRevision
+      if (revision === undefined) throw new Error(`发布补偿工作流缺少固定版本：${entry.action.workflowId}`)
+      const workflow = this.resolveReleasedDefinitionOrThrow(release, entry.action.workflowId, revision)
+      const waitForCompletion = entry.action.waitForCompletion !== false
+      const childRun = await this.startReleasedDefinition(
+        release.id,
+        workflow,
         compensationInput,
-        entry.action.waitForCompletion !== false,
-        entry.action.workflowRevision,
         runOptions,
+        release,
+        !waitForCompletion,
+        true,
       )
+      if (!waitForCompletion) return { runId: childRun.id }
+      await this.execute(childRun.id)
+      const settled = this.options.runStore.get(childRun.id)
+      if (settled === undefined) throw new Error(`Workflow run not found: ${childRun.id}`)
+      if (settled.status !== 'completed') throw new Error(settled.error ?? '补偿子工作流执行失败')
+      return settled.output ?? null
+    } finally {
+      const child = this.options.runStore.list(entry.action.workflowId).find((candidate) => candidate.idempotencyKey === attemptKey && candidate.releaseId === record.releaseId)
+      if (child !== undefined) {
+        entry.childRunId = child.id
+        const history = entry.childRunIds ?? (entry.childRunIds = [])
+        if (!history.includes(child.id)) history.push(child.id)
+      }
     }
-    this.revalidateReleasedAccess(record)
-    const release = this.resolveReleasedWorkflowOrThrow(record.releaseId)
-    const revision = entry.action.workflowRevision
-    if (revision === undefined) throw new Error(`发布补偿工作流缺少固定版本：${entry.action.workflowId}`)
-    const workflow = this.resolveReleasedDefinitionOrThrow(release, entry.action.workflowId, revision)
-    const waitForCompletion = entry.action.waitForCompletion !== false
-    const childRun = await this.startReleasedDefinition(
-      release.id,
-      workflow,
-      compensationInput,
-      runOptions,
-      release,
-      !waitForCompletion,
-      true,
-    )
-    if (!waitForCompletion) return { runId: childRun.id }
-    await this.execute(childRun.id)
-    const settled = this.options.runStore.get(childRun.id)
-    if (settled === undefined) throw new Error(`Workflow run not found: ${childRun.id}`)
-    if (settled.status !== 'completed') throw new Error(settled.error ?? '补偿子工作流执行失败')
-    return settled.output ?? null
   }
 
   private async executeNode(
@@ -1917,13 +1985,14 @@ export class WorkflowRunService {
     const occurrence = scope === undefined
       ? `node:${nodeId}`
       : `loop:${scope.loopNodeId}:iteration:${scope.iterationIndex}:node:${nodeId}`
-    if (record.idempotencyKey === undefined) return scope === undefined
+    const effectBase = record.effectIdempotencyKey ?? record.idempotencyKey
+    if (effectBase === undefined) return scope === undefined
       ? `${record.id}:${nodeId}`
       : `${record.id}:loop:${scope?.loopNodeId}:iteration:${scope?.iterationIndex}:node:${nodeId}`
-    const base = record.idempotencyKey
+    const base = effectBase
     const suffix = createHash('sha256').update(occurrence).digest('hex').slice(0, 16)
     const key = `${base}:effect:${suffix}`
-    return key.length <= 240 ? key : `workflow-effect:${createHash('sha256').update(key).digest('hex')}`
+    return /^[\x21-\x7e]{1,200}$/u.test(key) ? key : `workflow-effect:${createHash('sha256').update(key).digest('hex')}`
   }
 
   private async executeLightweight(
@@ -2218,6 +2287,12 @@ function appendCompensationEffectReconciliation(entry: WorkflowCompensationEntry
   const history = entry.effectReconciliationHistory ?? (entry.effectReconciliationHistory = entry.effectReconciliation === undefined ? [] : [cloneWorkflow(entry.effectReconciliation)])
   history.push(cloneWorkflow(decision))
   entry.effectReconciliation = cloneWorkflow(decision)
+}
+
+function workflowRunIdOutput(value: WorkflowValue | undefined): string | undefined {
+  if (value === null || value === undefined || Array.isArray(value) || typeof value !== 'object') return undefined
+  const runId = value.runId
+  return typeof runId === 'string' && runId.trim() !== '' ? runId : undefined
 }
 
 /** Final reconciliation also restores safe branches left in-flight at a crash. */

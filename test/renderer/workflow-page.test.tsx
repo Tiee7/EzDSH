@@ -34,7 +34,7 @@ function workflowWithUnknownLoopEffect(): { workflow: WorkflowDefinition; run: W
   return { workflow, run, bodyNodeId: body.id }
 }
 
-async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffect: (runId: string, request: unknown) => Promise<WorkflowRunRecord>, reconcileCompensation?: (runId: string, request: unknown) => Promise<WorkflowRunRecord>, compensationMode = false): Promise<{ domWindow: ReturnType<typeof createWindow>; cleanup: () => Promise<void>; workflow: WorkflowDefinition; run: WorkflowRunRecord; bodyNodeId: string }> {
+async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffect: (runId: string, request: unknown) => Promise<WorkflowRunRecord>, reconcileCompensation?: (runId: string, request: unknown) => Promise<WorkflowRunRecord>, compensationMode = false): Promise<{ domWindow: ReturnType<typeof createWindow>; cleanup: () => Promise<void>; workflow: WorkflowDefinition; run: WorkflowRunRecord; bodyNodeId: string; compensate: ReturnType<typeof vi.fn> }> {
   const { workflow, run, bodyNodeId } = workflowWithUnknownLoopEffect()
   if (compensationMode) {
     run.effectReconciliationTargets = []
@@ -86,15 +86,18 @@ async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffec
   })
   Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+  const compensate = vi.fn(async () => run)
   const bridge = {
     workflows: {
       list: vi.fn(async () => [workflow]),
       listRuns: vi.fn(async () => [run]),
+      reconcileEffect,
+      reconcileCompensation: reconcileCompensation ?? (async () => run),
+      compensate,
       onStateChange: vi.fn(() => () => {}),
       listModificationHistory: vi.fn(async () => []),
       onModificationStateChange: vi.fn(() => () => {}),
     },
-    workflowRuns: { reconcileEffect, reconcileCompensation: reconcileCompensation ?? (async () => run) },
     employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
     workflowCredentials: { list: vi.fn(async () => []) },
     workflowConnectors: { list: vi.fn(async () => []) },
@@ -119,6 +122,7 @@ async function mountWorkflowEffectReviewPage(locale: 'zh' | 'en', reconcileEffec
     workflow,
     run,
     bodyNodeId,
+    compensate,
     cleanup: async () => {
       await act(async () => { root.unmount() })
       delete (globalThis as { EzDSH?: unknown }).EzDSH
@@ -1482,6 +1486,29 @@ describe('WorkflowPage regressions', () => {
       expect(reconcileCompensation).toHaveBeenCalledWith(page.run.id, {
         occurrenceId: 'run-effect-acceptance:compensation:charge:ordinary', outcome: 'not-dispatched', note: 'provider confirms absent',
       })
+      expect(page.compensate).toHaveBeenCalledWith(page.run.id)
+    } finally { await page.cleanup() }
+  })
+
+  it('continues compensation after a dispatched decision when an earlier entry remains pending', async () => {
+    const reconcileCompensation = vi.fn(async () => {
+      const { run } = workflowWithUnknownLoopEffect()
+      run.effectReconciliationTargets = []
+      run.compensationStack = [
+        { sourceNodeId: 'earlier', action: { type: 'workflow', workflowId: 'undo' }, status: 'pending', effectState: 'none', occurrenceId: 'earlier-occurrence' },
+        { sourceNodeId: 'charge', action: { type: 'workflow', workflowId: 'refund' }, status: 'completed', effectState: 'confirmed', occurrenceId: 'run-effect-acceptance:compensation:charge:ordinary' },
+      ]
+      return run
+    })
+    const page = await mountWorkflowEffectReviewPage('zh', vi.fn(), reconcileCompensation, true)
+    try {
+      const textarea = page.domWindow.document.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => { Simulate.change(textarea, { target: { value: 'provider receipt found' } }) })
+      const dispatched = Array.from(page.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '确认补偿已派发') as HTMLButtonElement
+      await act(async () => { dispatched.click() })
+      const confirm = Array.from(page.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '我确认已经发送，继续') as HTMLButtonElement
+      await act(async () => { confirm.click(); await Promise.resolve() })
+      expect(page.compensate).toHaveBeenCalledWith(page.run.id)
     } finally { await page.cleanup() }
   })
 

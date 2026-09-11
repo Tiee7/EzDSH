@@ -408,6 +408,7 @@ export function App() {
   }
 
   if (runtime?.phase === 'ready' && runtime.url !== undefined) {
+    const runtimeUrl = runtime.url
     return (
       <main className={`workspace ${activeTab === 'workflow' && workflowWorkspaceMode ? 'workspace-workflow-focus' : ''}`}>
         <SystemNavigation copy={copy} locale={locale} isMac={isMac} visibleItems={visibleItems} activeTab={activeTab} languageTagVisible={languageTagVisible} onSelectTab={setActiveTab} onSelectLocale={selectLocale} />
@@ -421,7 +422,7 @@ export function App() {
                 return (
                   <div key="harness" className={`workspace-pane ${activeTab === 'harness' ? 'workspace-pane-active' : ''}`}>
                     <RuntimePane
-                      url={runtime.url}
+                      url={runtimeUrl}
                       active={activeTab === 'harness' && workspaceOperation === undefined}
                       sessionId={deepLinkSession?.sessionId}
                     />
@@ -479,7 +480,11 @@ export function App() {
                 ? copy.starting
                 : copy.preparing
 
-  const isBusy = loading || runtime?.phase === 'starting' || runtime?.phase === 'preparing'
+  // Keep accepting the legacy `preparing` payload without widening the current
+  // RuntimePhase contract: Main no longer produces it, but older bridges may.
+  const compatibleRuntimePhase: string | undefined = runtime?.phase
+  const isBusy =
+    loading || compatibleRuntimePhase === 'starting' || compatibleRuntimePhase === 'preparing'
   const runtimeFailed = errorKey === 'runtime-start' || runtime?.phase === 'failed'
   const runtimeFailureMessage = runtime?.phase === 'failed' ? runtime.message ?? runtimeError : runtimeError
 

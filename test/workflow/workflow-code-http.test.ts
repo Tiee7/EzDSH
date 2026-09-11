@@ -36,7 +36,8 @@ async function runNode(node: WorkflowNode, input: unknown, options: { allowCode?
     mcpClient: { call: async () => 'unused' },
   })
   const record = await service.start(workflow.id, input, options)
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
     const current = service.get(record.id)
     if (current !== undefined && ['completed', 'failed', 'cancelled'].includes(current.status)) return current
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -99,11 +100,11 @@ describe('workflow HTTP and code nodes', () => {
       // prove the cancellation precondition instead of silently cancelling a
       // still-queued run after an arbitrary 500ms.
       const startDeadline = Date.now() + 3_000
-      while (Date.now() < startDeadline && service.get(run.id)?.nodeStates.find((state) => state.nodeId === 'shell')?.status !== 'running') {
+      while (Date.now() < startDeadline && service.get(run.id)?.nodeStates.find((state) => state.nodeId === 'shell')?.effectState !== 'dispatched') {
         await new Promise((resolve) => setTimeout(resolve, 10))
       }
       const started = service.get(run.id)
-      expect(started?.nodeStates.find((state) => state.nodeId === 'shell')?.status, `shell did not start before cancellation; run=${started?.status ?? 'missing'}`).toBe('running')
+      expect(started?.nodeStates.find((state) => state.nodeId === 'shell'), `shell did not cross the dispatched effect boundary before cancellation; run=${started?.status ?? 'missing'}`).toMatchObject({ status: 'running', effectState: 'dispatched' })
 
       await service.cancel(run.id)
       const settleDeadline = Date.now() + 1_000

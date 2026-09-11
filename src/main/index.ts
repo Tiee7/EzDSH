@@ -696,10 +696,6 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     resolveReleasedWorkflow: (releaseId) => workflowReleaseStore?.get(releaseId),
     resolveWorkflowEnvironment: (environmentId) => workflowEnvironmentStore?.get(environmentId),
     allowLegacyHttp: false,
-    executeSubWorkflow: async (childWorkflowId, input, waitForCompletion, version, childOptions) => {
-      if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
-      return workflowRunService.executeSubWorkflow(childWorkflowId, input, waitForCompletion, version, childOptions)
-    },
     internalSessionStore: new WorkflowInternalSessionStore(layout.state),
   })
   workflowDeploymentService = new WorkflowDeploymentService({

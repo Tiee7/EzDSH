@@ -320,20 +320,33 @@ describe('unpublished child workflows in the single Worker', () => {
     const directory = await mkdtemp(join(tmpdir(), 'ezdsh-live-child-legacy-lineage-'))
     const workflowStore = new WorkflowStore(directory)
     const runStore = new WorkflowRunStore(directory)
-    const parent = await workflowStore.create({ id: 'legacy-lineage-a', name: 'A', description: '', nodes: [{ id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } }, { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 200, y: 0 } }], edges: [{ id: 'a', source: 'input', target: 'output' }] })
     const child = await workflowStore.create({
       id: 'legacy-lineage-b', name: 'B', description: '',
       nodes: [
         { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
         { id: 'write-before-recursion', type: 'mcp', label: 'Must not write', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } },
-        { id: 'back-to-a', type: 'sub-workflow', label: 'Back to A', config: { workflowId: parent.id, waitForCompletion: true }, position: { x: 400, y: 0 } },
+        { id: 'back-to-a', type: 'sub-workflow', label: 'Back to A', config: { workflowId: 'legacy-lineage-a', waitForCompletion: true }, position: { x: 400, y: 0 } },
         { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 600, y: 0 } },
       ],
       edges: [{ id: 'a', source: 'input', target: 'write-before-recursion' }, { id: 'b', source: 'write-before-recursion', target: 'back-to-a' }, { id: 'c', source: 'back-to-a', target: 'output' }],
     })
-    await runStore.enqueue({ id: 'legacy-parent-run', workflowId: parent.id, workflowRevision: parent.revision, status: 'completed', input: null, output: null, allowShellFile: false, nodeStates: [], events: [] })
+    const parent = await workflowStore.create({
+      id: 'legacy-lineage-a', name: 'A', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'to-b', type: 'sub-workflow', label: 'To B', config: { workflowId: child.id, waitForCompletion: false }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'to-b' }, { id: 'b', source: 'to-b', target: 'output' }],
+    })
+    // Exact pre-lineage schema: neither parentRunId nor workflowAncestry was
+    // persisted. The completed async parent output is the durable provenance.
     await runStore.enqueue({
-      id: 'legacy-child-run', workflowId: child.id, workflowRevision: child.revision, parentRunId: 'legacy-parent-run', status: 'queued', input: null, allowShellFile: false,
+      id: 'legacy-parent-run', workflowId: parent.id, workflowRevision: parent.revision, status: 'completed', input: null, output: { runId: 'legacy-child-run' }, allowShellFile: false,
+      nodeStates: [{ nodeId: 'to-b', status: 'completed', output: { runId: 'legacy-child-run' } }], events: [],
+    })
+    await runStore.enqueue({
+      id: 'legacy-child-run', workflowId: child.id, workflowRevision: child.revision, status: 'queued', input: null, allowShellFile: false,
       nodeStates: child.nodes.map((node) => ({ nodeId: node.id, status: 'pending' as const })), events: [],
     })
     let childEffects = 0
@@ -346,8 +359,56 @@ describe('unpublished child workflows in the single Worker', () => {
       await service.initialize()
       const stopped = await eventually(() => service.get('legacy-child-run'), (run) => run.status === 'failed' || run.status === 'paused')
       expect(stopped.workflowAncestry).toEqual([parent.id])
+      expect(stopped.parentRunId).toBe('legacy-parent-run')
       expect(stopped.error).toMatch(/递归|recursive/iu)
       expect(childEffects).toBe(0)
+    } finally { await service.stop() }
+  })
+
+  it('keeps a genuine legacy top-level queued run executable', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-live-child-legacy-top-level-'))
+    const workflowStore = new WorkflowStore(directory)
+    const workflow = await workflowStore.create({
+      id: 'legacy-top-level', name: 'Top level', description: '',
+      nodes: [{ id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } }, { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 200, y: 0 } }],
+      edges: [{ id: 'a', source: 'input', target: 'output' }],
+    })
+    const runStore = new WorkflowRunStore(directory)
+    await runStore.enqueue({ id: 'legacy-top-run', workflowId: workflow.id, workflowRevision: workflow.revision, status: 'queued', input: 'safe', allowShellFile: false, nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending' as const })), events: [] })
+    const service = new WorkflowRunService({ workflowStore, runStore: new WorkflowRunStore(directory), workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    try {
+      await service.initialize()
+      expect((await eventually(() => service.get('legacy-top-run'), (run) => run.status === 'completed')).output).toBe('safe')
+    } finally { await service.stop() }
+  })
+
+  it('pauses a provenance-linked legacy child when the immutable parent node cannot verify the relationship', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-live-child-legacy-unverified-'))
+    const workflowStore = new WorkflowStore(directory)
+    const parent = await workflowStore.create({
+      id: 'legacy-unverified-parent', name: 'Parent', description: '',
+      nodes: [{ id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } }, { id: 'not-a-child', type: 'transform', label: 'Transform', config: { template: 'identity' }, position: { x: 200, y: 0 } }, { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } }],
+      edges: [{ id: 'a', source: 'input', target: 'not-a-child' }, { id: 'b', source: 'not-a-child', target: 'output' }],
+    })
+    const child = await workflowStore.create({
+      id: 'legacy-unverified-child', name: 'Child', description: '',
+      nodes: [{ id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } }, { id: 'write', type: 'mcp', label: 'Must not write', config: { tool: 'write', arguments: {} }, position: { x: 200, y: 0 } }, { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } }],
+      edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }],
+    })
+    const runStore = new WorkflowRunStore(directory)
+    await runStore.enqueue({ id: 'legacy-unverified-parent-run', workflowId: parent.id, workflowRevision: parent.revision, status: 'completed', input: null, allowShellFile: false, nodeStates: [{ nodeId: 'not-a-child', status: 'completed', output: { runId: 'legacy-unverified-child-run' } }], events: [] })
+    await runStore.enqueue({ id: 'legacy-unverified-child-run', workflowId: child.id, workflowRevision: child.revision, status: 'queued', input: null, allowShellFile: false, nodeStates: child.nodes.map((node) => ({ nodeId: node.id, status: 'pending' as const })), events: [] })
+    let effects = 0
+    const service = new WorkflowRunService({ workflowStore, runStore: new WorkflowRunStore(directory), workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      mcpClient: { call: async () => { effects += 1; return 'written' } },
+    })
+    try {
+      await service.initialize()
+      expect(service.get('legacy-unverified-child-run')).toMatchObject({ status: 'paused', error: expect.stringMatching(/父级链路|递归/u) })
+      expect(effects).toBe(0)
     } finally { await service.stop() }
   })
 

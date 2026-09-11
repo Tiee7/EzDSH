@@ -309,6 +309,45 @@ describe('effect reconciliation', () => {
 })
 
 describe('durable loop execution identity', () => {
+  it('keeps derived managed-connector keys within the real 200-character dispatch boundary', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-managed-key-boundary-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const credentials = new WorkflowCredentialStore(dir)
+    await credentials.upsert({
+      id: 'token', label: 'Token', type: 'bearer-token', secret: 'secret',
+      scopes: [{ origin: 'https://api.example.test', methods: ['POST'], headerName: 'Authorization', pathPrefixes: ['/write'] }],
+    })
+    const connectors = new WorkflowConnectorStore(dir)
+    await connectors.upsert({ id: 'api', name: 'API', kind: 'http', baseUrl: 'https://api.example.test/', credentialRef: { id: 'token' }, allowedPathPrefixes: ['/write'] })
+    const sentKeys: string[] = []
+    const connectorService = new WorkflowConnectorService({
+      connectors, credentials, resolveHost: async () => [{ address: '93.184.216.34' }],
+      fetchImpl: (async (_url: URL | string, init?: RequestInit) => {
+        sentKeys.push((init?.headers as Record<string, string>)['Idempotency-Key'])
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }) as typeof fetch,
+    })
+    const workflow = await workflowStore.create({
+      id: 'managed-key-boundary', name: 'Boundary', description: '', permissionPolicy: { connectors: [{ connectorId: 'api', operations: ['write'] }] },
+      nodes: [graph().nodes[0]!, { id: 'write', type: 'http', label: 'Write', config: { method: 'POST', connectorId: 'api', connectorPath: '/write' }, position: { x: 200, y: 0 } }, graph().nodes[4]!],
+      edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }],
+    })
+    const service = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir, connectorService,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    try {
+      const grant = [{ connectorId: 'api', operations: ['write' as const] }]
+      const atBoundary = await eventually(service, (await service.start(workflow.id, null, { idempotencyKey: 'a'.repeat(176), connectorGrants: grant })).id)
+      const overBoundary = await eventually(service, (await service.start(workflow.id, null, { idempotencyKey: 'b'.repeat(177), connectorGrants: grant })).id)
+      expect([atBoundary.status, overBoundary.status]).toEqual(['completed', 'completed'])
+      expect(sentKeys[0]).toHaveLength(200)
+      expect(sentKeys[0]).toMatch(/^a{176}:effect:/u)
+      expect(sentKeys[1]!.length).toBeLessThanOrEqual(200)
+      expect(sentKeys[1]).not.toMatch(/^b{177}:effect:/u)
+    } finally { await service.stop() }
+  })
+
   it.each([{ name: 'last of two items', items: ['A', 'B'] }, { name: 'only item', items: ['B'] }])('completes a continue loop when its final item fails ($name)', async ({ items }) => {
     const fixture = await loopSafetyFixture({ ...loopWriteNode, config: { ...loopWriteNode.config, method: 'GET' } }, {
       request: async (_request, _input, previous) => { if (previous === 'B') throw new Error('last read failed'); return loopResponse(previous) },
@@ -2168,7 +2207,7 @@ describe('workflow run service', () => {
     const compensated = await service.compensate(runId)
 
     const occurrenceId = `${runId}:compensation:effect:ordinary`
-    expect(executeSubWorkflow.mock.calls[0]?.[4]).toMatchObject({ idempotencyKey: occurrenceId })
+    expect(executeSubWorkflow.mock.calls[0]?.[4]).toMatchObject({ idempotencyKey: `${occurrenceId}:attempt:1`, effectIdempotencyKey: occurrenceId })
     expect(compensated.compensationStack?.[0]).toMatchObject({ status: 'completed', effectState: 'confirmed', occurrenceId })
     expect(compensated.events.map((event) => event.type)).toEqual(expect.arrayContaining(['compensation-effect-prepared', 'compensation-effect-dispatched', 'compensation-effect-confirmed']))
     await service.stop()
@@ -2337,6 +2376,159 @@ describe('compensation effect reconciliation', () => {
       expect(record.events.filter((event) => event.type.startsWith('compensation-effect-reconciled-'))).toHaveLength(1)
       expect(executeSubWorkflow).not.toHaveBeenCalled()
     } finally { await service.stop() }
+  })
+
+  it('creates a fresh real child attempt after not-dispatched while preserving the external occurrence key and terminal error', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-real-retry-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const undo = await workflowStore.create({
+      id: 'undo-real-retry', name: 'Undo', description: '', permissionPolicy: { connectors: [{ connectorId: 'crm', operations: ['write'] }] },
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'refund', type: 'http', label: 'Refund', config: { method: 'POST', connectorId: 'crm', connectorPath: '/refund' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'refund' }, { id: 'b', source: 'refund', target: 'output' }],
+    })
+    const parent = await workflowStore.create({
+      id: 'compensation-real-retry', name: 'Parent', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'charge', type: 'mcp', label: 'Charge', config: { tool: 'charge', arguments: {} }, compensation: { type: 'workflow', workflowId: undo.id }, position: { x: 200, y: 0 } },
+        { id: 'fail', type: 'ai-task', label: 'Fail', config: { instruction: 'fail', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 400, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 600, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'charge' }, { id: 'b', source: 'charge', target: 'fail' }, { id: 'c', source: 'fail', target: 'output' }],
+    })
+    const externalKeys: string[] = []
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      mcpClient: { call: async () => 'charged' },
+      lightweightClient: { complete: async () => { throw new Error('original terminal failure') } },
+      connectorService: { request: async (request) => {
+        externalKeys.push(request.idempotencyKey ?? '')
+        if (externalKeys.length === 1) throw new Error('provider outcome unknown')
+        return { status: 200, ok: true, headers: {}, body: 'refunded' }
+      } },
+    })
+    try {
+      const failed = await eventually(service, (await service.start(parent.id, null)).id)
+      expect(failed.status).toBe('failed')
+      const originalError = failed.error
+      const first = await service.compensate(failed.id)
+      const occurrenceId = first.compensationStack?.[0]?.occurrenceId
+      expect(first.compensationStack?.[0]).toMatchObject({ status: 'failed', effectState: 'unknown', attempt: 1, childRunId: expect.any(String) })
+      expect(first.error).toBe(originalError)
+
+      const reconciled = await service.reconcileCompensation(failed.id, { occurrenceId: occurrenceId!, outcome: 'not-dispatched', note: 'provider confirms absent' })
+      expect(reconciled.error).toBe(originalError)
+      const retried = await service.compensate(failed.id)
+      expect(retried.compensationStack?.[0]).toMatchObject({ status: 'completed', effectState: 'confirmed', attempt: 2, childRunId: expect.any(String) })
+      expect(runStore.list(undo.id)).toHaveLength(2)
+      expect(new Set(runStore.list(undo.id).map((run) => run.id)).size).toBe(2)
+      expect(externalKeys).toHaveLength(2)
+      expect(externalKeys[1]).toBe(externalKeys[0])
+      expect(externalKeys[0]).toContain(occurrenceId!)
+      expect(retried.error).toBe(originalError)
+      const reloadedStore = new WorkflowRunStore(dir)
+      await reloadedStore.initialize()
+      expect(reloadedStore.get(failed.id)?.compensationStack?.[0]).toMatchObject({ attempt: 2, childRunId: expect.any(String), childRunIds: [expect.any(String), expect.any(String)] })
+    } finally { await service.stop() }
+  })
+
+  it('continues earlier real compensation entries after the latest occurrence is confirmed dispatched', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-real-stack-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const undo = await workflowStore.create({
+      id: 'undo-real-stack', name: 'Undo', description: '', permissionPolicy: { connectors: [{ connectorId: 'crm', operations: ['write'] }] },
+      nodes: [{ id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } }, { id: 'undo', type: 'http', label: 'Undo', config: { method: 'POST', connectorId: 'crm', connectorPath: '/undo' }, position: { x: 200, y: 0 } }, { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } }],
+      edges: [{ id: 'a', source: 'input', target: 'undo' }, { id: 'b', source: 'undo', target: 'output' }],
+    })
+    await runStore.enqueue({
+      id: 'real-stack-parent', workflowId: 'source', workflowRevision: 1, status: 'failed', input: null, allowShellFile: false, nodeStates: [], events: [], error: 'source failed',
+      compensationStack: ['first', 'second'].map((sourceNodeId) => ({ sourceNodeId, action: { type: 'workflow' as const, workflowId: undo.id }, status: 'pending' as const, effectState: 'none' as const })),
+    })
+    let calls = 0
+    const service = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      connectorService: { request: async () => { calls += 1; if (calls === 1) throw new Error('unknown'); return { status: 200, ok: true, headers: {}, body: 'ok' } } },
+    })
+    try {
+      const uncertain = await service.compensate('real-stack-parent')
+      const latest = uncertain.compensationStack?.[1]
+      expect(latest).toMatchObject({ status: 'failed', effectState: 'unknown' })
+      await service.reconcileCompensation('real-stack-parent', { occurrenceId: latest!.occurrenceId!, outcome: 'dispatched', note: 'provider receipt found' })
+      const completed = await service.compensate('real-stack-parent')
+      expect(completed.compensationStack?.map((entry) => entry.status)).toEqual(['completed', 'completed'])
+      expect(calls).toBe(2)
+      expect(completed.error).toBe('source failed')
+    } finally { await service.stop() }
+  })
+
+  it.each(['resume', 'remove', 'removeForWorkflow'] as const)('excludes %s while a real compensation child is executing', async (operation) => {
+    const dir = await mkdtemp(join(tmpdir(), `ezdsh-workflow-compensation-exclusion-${operation}-`))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const child = await workflowStore.create({
+      id: `blocking-undo-${operation}`, name: 'Blocking undo', description: '',
+      nodes: [graph().nodes[0]!, { id: 'hold', type: 'ai-task', label: 'Hold', config: { instruction: 'hold', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 0 } }, graph().nodes[4]!],
+      edges: [{ id: 'a', source: 'input', target: 'hold' }, { id: 'b', source: 'hold', target: 'output' }],
+    })
+    const source = await workflowStore.create({ id: `source-${operation}`, name: 'Source', description: '', nodes: [graph().nodes[0]!, graph().nodes[4]!], edges: [{ id: 'a', source: 'input', target: 'output' }] })
+    await runStore.enqueue({
+      id: `parent-${operation}`, workflowId: source.id, workflowRevision: source.revision, status: 'failed', input: null, allowShellFile: false, nodeStates: [], events: [], error: 'source failed',
+      compensationStack: [{ sourceNodeId: 'write', action: { type: 'workflow', workflowId: child.id }, status: 'pending', effectState: 'none' }],
+    })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let entered!: () => void
+    const executing = new Promise<void>((resolve) => { entered = resolve })
+    const service = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      lightweightClient: { complete: async () => { entered(); await gate; return 'undone' } },
+    })
+    const compensating = service.compensate(`parent-${operation}`)
+    try {
+      await executing
+      const mutation = operation === 'resume'
+        ? service.resume(`parent-${operation}`)
+        : operation === 'remove'
+          ? service.remove(`parent-${operation}`)
+          : service.removeForWorkflow(source.id)
+      await expect(mutation).rejects.toThrow(/执行|补偿|进行/u)
+      release()
+      await compensating
+      expect(service.get(`parent-${operation}`)?.compensationStack?.[0]).toMatchObject({ status: 'completed', effectState: 'confirmed' })
+    } finally { release(); await compensating.catch(() => undefined); await service.stop() }
+  })
+
+  it('excludes removal while a compensation reconciliation snapshot is being persisted', async () => {
+    const { service, runStore } = await fixture()
+    await service.initialize()
+    const originalSave = runStore.save.bind(runStore)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let entered!: () => void
+    const saving = new Promise<void>((resolve) => { entered = resolve })
+    vi.spyOn(runStore, 'save').mockImplementation(async (record) => {
+      if (record.events.some((event) => event.type === 'compensation-effect-reconciled-not-dispatched')) {
+        entered()
+        await gate
+      }
+      return originalSave(record)
+    })
+    const reconciling = service.reconcileCompensation('run-compensation-review', { occurrenceId: 'run-compensation-review:compensation:write:ordinary', outcome: 'not-dispatched', note: 'checked' })
+    try {
+      await saving
+      await expect(service.remove('run-compensation-review')).rejects.toThrow(/核对|进行/u)
+      release()
+      await reconciling
+      expect(service.get('run-compensation-review')).toBeDefined()
+    } finally { release(); await reconciling.catch(() => undefined); await service.stop() }
   })
 })
 

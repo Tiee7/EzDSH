@@ -1104,7 +1104,7 @@ export function detectWorkflowOutputView(value: WorkflowValue | undefined): Work
 
 function formatWorkflowJson(value: WorkflowValue): string {
   const parsed = typeof value === 'string' ? parseWorkflowJsonText(value) : value
-  return parsed === undefined ? value : JSON.stringify(parsed, null, 2)
+  return parsed === undefined ? String(value) : JSON.stringify(parsed, null, 2)
 }
 
 function workflowJsonKind(value: WorkflowValue): string {
@@ -1400,7 +1400,7 @@ export function openWorkflowOutputWindow(windows: ReadonlyArray<WorkflowOutputWi
   return focusWorkflowOutputWindow(next, id)
 }
 
-function WorkflowOutputFloatingWindow({ copy, item, index, fontScale, onClose, onCopy, onMove, onFocus, onIncreaseFont, onDecreaseFont }: WorkflowOutputFloatingWindowsProps & { item: WorkflowOutputWindowState; index: number }): JSX.Element {
+function WorkflowOutputFloatingWindow({ copy, item, index, fontScale, onClose, onCopy, onMove, onFocus, onIncreaseFont, onDecreaseFont }: Omit<WorkflowOutputFloatingWindowsProps, 'windows'> & { item: WorkflowOutputWindowState; index: number }): JSX.Element {
   const defaultPosition = useMemo(() => createWorkflowOutputWindowState(item.id, item.title, item.value, index).position, [index, item.id, item.title, item.value])
   const [fallbackPosition, setFallbackPosition] = useState(defaultPosition)
   const [size, setSize] = useState<WorkflowOutputWindowSize>()
@@ -2556,7 +2556,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>()
   const [nodeInspectorTab, setNodeInspectorTab] = useState<'settings' | 'last-run'>('settings')
   const [nodes, setNodes] = useNodesState<FlowNode>([])
-  const [edges, setEdges] = useEdgesState([])
+  const [edges, setEdges] = useEdgesState<Edge>([])
   const [executionNodePositions, setExecutionNodePositions] = useState<Record<string, Record<string, WorkflowPosition>>>({})
   const [runs, setRuns] = useState<WorkflowRunRecord[]>([])
   const [workflowRunSummaries, setWorkflowRunSummaries] = useState<Record<string, WorkflowRunSummary>>({})
@@ -3544,7 +3544,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       await reconcileWorkflowEffectRequest(
         submittedRunId,
         request,
-        () => window.EzDSH.workflowRuns.reconcileEffect(submittedRunId, request),
+        () => window.EzDSH.workflows.reconcileEffect(submittedRunId, request),
         () => currentRunRef.current?.id,
         applyRunRecord,
       )
@@ -3563,7 +3563,10 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setBusy(true)
     setError('')
     try {
-      const record = await window.EzDSH.workflowRuns.reconcileCompensation(submittedRunId, request)
+      const reconciled = await window.EzDSH.workflows.reconcileCompensation(submittedRunId, request)
+      const shouldContinue = !(reconciled.compensationStack ?? []).some((entry) => entry.effectState === 'unknown')
+        && (reconciled.compensationStack ?? []).some((entry) => entry.status === 'pending')
+      const record = shouldContinue ? await window.EzDSH.workflows.compensate(submittedRunId) : reconciled
       applyRunRecord(record, currentRunRef.current?.id === submittedRunId)
       return true
     } catch {

@@ -154,8 +154,8 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
     setError(undefined)
     try {
       const saved = editingId !== undefined && editingId !== 'new'
-        ? await window.EzDSH.externalServices.update(editingId, input)
-        : await window.EzDSH.externalServices.create(input)
+        ? await window.EzDSH.externalServices.update(editingId, input as ExternalServiceUpdateInput)
+        : await window.EzDSH.externalServices.create(input as ExternalServiceCreateInput)
       setServices((current) => {
         const index = current.findIndex((service) => service.id === saved.id)
         if (index < 0) return [...current, saved]
