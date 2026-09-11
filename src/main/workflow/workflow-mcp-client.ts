@@ -6,6 +6,8 @@ import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js'
 import { parse } from 'yaml'
 import { isWorkflowValue, type WorkflowValue } from '../../shared/workflow.js'
 
+const MCP_ERROR_FALLBACK = 'MCP 工具返回失败结果。'
+
 export interface WorkflowMcpServer {
   serverName: string
   transport: 'stdio' | 'streamable-http'
@@ -67,16 +69,9 @@ export function parseMcpToolReference(value: string): McpToolReference {
 
 export function normalizeMcpToolResult(result: unknown): WorkflowValue {
   const record = asMap(result)
-  const texts = readMcpTextContent(record)
-  if (record?.isError === true) {
-    const diagnostic = texts.length > 0
-      ? texts.join('\n')
-      : isWorkflowValue(record.structuredContent)
-        ? JSON.stringify(record.structuredContent)
-        : 'MCP 工具返回失败结果。'
-    throw new WorkflowMcpToolError(diagnostic)
-  }
+  if (record?.isError === true) throw new WorkflowMcpToolError(readMcpErrorDiagnostic(record))
   if (record !== undefined && isWorkflowValue(record.structuredContent)) return record.structuredContent
+  const texts = readMcpTextContent(record)
   if (texts.length > 0) {
     const joined = texts.join('\n')
     try {
@@ -152,6 +147,17 @@ function readMcpTextContent(record: Record<string, unknown> | undefined): string
     .map((part) => asMap(part))
     .filter((part): part is Record<string, unknown> => part !== undefined && part.type === 'text' && typeof part.text === 'string')
     .map((part) => part.text as string)
+}
+
+function readMcpErrorDiagnostic(record: Record<string, unknown>): string {
+  try {
+    const texts = readMcpTextContent(record).filter((text) => text.trim() !== '')
+    if (texts.length > 0) return texts.join('\n')
+    if (!isWorkflowValue(record.structuredContent)) return MCP_ERROR_FALLBACK
+    return JSON.stringify(record.structuredContent) ?? MCP_ERROR_FALLBACK
+  } catch {
+    return MCP_ERROR_FALLBACK
+  }
 }
 
 function readStringArray(value: unknown): string[] {
