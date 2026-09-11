@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -30,6 +30,52 @@ function queuedRecord(id: string, idempotencyKey?: string): WorkflowRunRecord {
 }
 
 describe('workflow safe execution store', () => {
+  it('rejects malformed persisted loop checkpoints before recovery traverses them', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-loop-malformed-'))
+    await writeFile(join(dir, 'workflow-runs.json'), JSON.stringify([{ ...queuedRecord('malformed-loop'), nodeStates: [{ nodeId: 'loop', status: 'pending', loopIterations: [{ iterationId: 'x', iterationIndex: 0, input: 'A', status: 'running', nodeStates: null }] }] }]))
+    const store = new WorkflowRunStore(dir)
+    await store.initialize()
+    expect(store.get('malformed-loop')).toBeUndefined()
+  })
+
+  it.each(['prepared', 'dispatched', 'confirmed', 'unknown'])('pauses recovery for nested %s loop effects', async (effectState) => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-loop-recovery-'))
+    const store = new WorkflowRunStore(dir)
+    const record = queuedRecord('nested-effect')
+    record.nodeStates = [{ nodeId: 'loop', status: 'running', loopIterations: [{ iterationId: 'iteration-0', iterationIndex: 0, input: 'A', status: 'running', nodeStates: [{ nodeId: 'body', status: 'running', effectState }] }] }] as any
+    await store.enqueue(record)
+    await store.claimNextDue('worker', 2_000)
+    const disk = new WorkflowRunStore(dir)
+    const recovered = await disk.recoverInterruptedRuns(new Date(), true)
+    expect(recovered[0]?.status).toBe('paused')
+    expect((recovered[0]?.nodeStates[0] as any).loopIterations[0].nodeStates[0].effectState).toBe('unknown')
+  })
+
+  it('releases a lost lease without replaying a nested dispatched effect', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-loop-lease-loss-'))
+    const store = new WorkflowRunStore(dir)
+    const record = queuedRecord('nested-lost-lease')
+    record.nodeStates = [{ nodeId: 'loop', status: 'pending', loopIterations: [{ iterationId: 'iteration-0', iterationIndex: 0, input: 'A', status: 'running', nodeStates: [{ nodeId: 'body', status: 'running', effectState: 'dispatched' }] }] }]
+    await store.enqueue(record)
+    await store.claimNextDue('worker', 2_000)
+    await store.releaseLease(record.id, 'worker', true)
+    expect(store.get(record.id)?.status).toBe('paused')
+    expect(store.get(record.id)?.nodeStates[0]?.loopIterations?.[0]?.nodeStates[0]?.effectState).toBe('unknown')
+  })
+
+  it('preserves completed effect checkpoints while requeueing an unfinished read', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-loop-completed-effect-'))
+    const store = new WorkflowRunStore(dir)
+    const record = queuedRecord('nested-completed')
+    record.nodeStates = [{ nodeId: 'loop', status: 'pending', loopIterations: [{ iterationId: 'iteration-0', iterationIndex: 0, input: 'A', status: 'running', nodeStates: [{ nodeId: 'write', status: 'completed', effectState: 'confirmed', output: 'saved-A' }, { nodeId: 'read', status: 'running' }] }] }]
+    await store.enqueue(record)
+    await store.claimNextDue('worker', 2_000)
+    const disk = new WorkflowRunStore(dir)
+    const [recovered] = await disk.recoverInterruptedRuns(new Date(), true)
+    expect(recovered?.status).toBe('queued')
+    expect(recovered?.nodeStates[0]?.loopIterations?.[0]?.nodeStates).toEqual([{ nodeId: 'write', status: 'completed', effectState: 'confirmed', output: 'saved-A' }, { nodeId: 'read', status: 'pending' }])
+  })
+
   it('returns the existing run for the same explicit idempotency key', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-safe-execution-'))
     const store = new WorkflowRunStore(directory) as unknown as QueueStore

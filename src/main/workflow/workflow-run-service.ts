@@ -16,6 +16,7 @@ import type {
   WorkflowNode,
   WorkflowNodeInputBinding,
   WorkflowNodeRunState,
+  WorkflowExecutionScope,
   WorkflowRunEvent,
   WorkflowRunOptions,
   WorkflowRunRecord,
@@ -33,7 +34,7 @@ import type {
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
-import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
+import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalizeWorkflow, resolveWorkflowValuePath, validateWorkflow, workflowAllNodeRunStates, workflowLoopBodyNodeIds, workflowNodeDependencyIds } from '../../shared/workflow.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
@@ -233,13 +234,14 @@ export class WorkflowRunService {
     const record = this.options.runStore.get(runId)
     if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
     if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以恢复')
-    if (record.nodeStates.some((state) => state.effectState === 'unknown' || state.effectState === 'confirmed' && state.status !== 'completed')) throw new Error('运行包含状态不确定的外部副作用，请先完成补偿或人工核对')
+    if (this.hasUncheckpointedLoopEffects(record)) throw new Error('旧版循环缺少逐迭代副作用记录，请先人工核对，不能安全恢复')
+    if (workflowAllNodeRunStates(record.nodeStates).some((state) => state.effectState === 'prepared' || state.effectState === 'dispatched' || state.effectState === 'unknown' || state.effectState === 'confirmed' && state.status !== 'completed')) throw new Error('运行包含状态不确定的外部副作用，请先完成补偿或人工核对')
     this.revalidateReleasedAccess(record)
     record.status = 'queued'
     record.error = undefined
     record.completedAt = undefined
     record.retentionExpiresAt = undefined
-    for (const node of record.nodeStates) {
+    for (const node of workflowAllNodeRunStates(record.nodeStates)) {
       if (node.status === 'failed' || node.status === 'running' || node.status === 'cancelled') {
         node.status = 'pending'
         node.error = undefined
@@ -253,6 +255,22 @@ export class WorkflowRunService {
     await this.save(record, 'run-created', '运行已重新排队')
     this.worker.wake()
     return cloneWorkflow(record)
+  }
+
+  private hasUncheckpointedLoopEffects(record: WorkflowRunRecord): boolean {
+    const workflow = this.workflowForRecord(record)
+    if (workflow === undefined) return false
+    return workflow.nodes.some((node) => {
+      if (node.type !== 'loop') return false
+      const owner = record.nodeStates.find((state) => state.nodeId === node.id)
+      if (owner?.status === 'completed' || owner?.loopIterations !== undefined) return false
+      return workflowLoopBodyNodeIds(workflow, node.id).some((bodyId) => {
+        const body = workflow.nodes.find((candidate) => candidate.id === bodyId)
+        const state = record.nodeStates.find((candidate) => candidate.nodeId === bodyId)
+        return body !== undefined && isEffectfulNode(body) && state !== undefined
+          && (state.status !== 'pending' && state.status !== 'skipped' || state.startedAt !== undefined || (state.attempt ?? 0) > 0 || state.effectState !== undefined && state.effectState !== 'none')
+      })
+    })
   }
 
   async approve(runId: string, approved: boolean): Promise<WorkflowRunRecord> {
@@ -330,10 +348,10 @@ export class WorkflowRunService {
       entry.status = 'running'
       entry.startedAt = new Date().toISOString()
       entry.error = undefined
-      await this.save(record, 'compensation-started', `开始补偿节点：${entry.sourceNodeId}`, entry.sourceNodeId)
+      await this.save(record, 'compensation-started', `开始补偿节点：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope)
       try {
         if (this.options.executeSubWorkflow === undefined) throw new Error('补偿 Workflow 执行器不可用。')
-        const sourceOutput = record.nodeStates.find((state) => state.nodeId === entry.sourceNodeId)?.output ?? null
+        const sourceOutput = workflowAllNodeRunStates(record.nodeStates).find((state) => state.nodeId === entry.sourceNodeId && state.executionScope?.iterationId === entry.executionScope?.iterationId)?.output ?? null
         const compensationInput = entry.action.input === undefined
           ? cloneWorkflow(sourceOutput)
           : resolveWorkflowTemplateValue(entry.action.input, record.input, sourceOutput)
@@ -346,13 +364,13 @@ export class WorkflowRunService {
         )
         entry.status = 'completed'
         entry.completedAt = new Date().toISOString()
-        await this.save(record, 'compensation-completed', `补偿完成：${entry.sourceNodeId}`, entry.sourceNodeId)
+        await this.save(record, 'compensation-completed', `补偿完成：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope)
       } catch (error) {
         entry.status = 'failed'
         entry.completedAt = new Date().toISOString()
         entry.error = error instanceof Error ? error.message : String(error)
         record.error = `补偿失败：${entry.error}`
-        await this.save(record, 'compensation-failed', record.error, entry.sourceNodeId)
+        await this.save(record, 'compensation-failed', record.error, entry.sourceNodeId, entry.executionScope)
         break
       }
       }
@@ -794,6 +812,13 @@ export class WorkflowRunService {
       if (workflow === undefined) throw new Error('关联的 Workflow 已不存在')
       assertValidWorkflow(workflow, '运行工作流')
       this.revalidateReleasedAccess(record)
+      if (this.hasUncheckpointedLoopEffects(record)) {
+        record.status = 'paused'
+        record.error = '旧版循环缺少逐迭代副作用记录，请先人工核对，未自动重放。'
+        record.completedAt = new Date().toISOString()
+        await this.save(record, 'run-paused', record.error)
+        return
+      }
       record.status = 'running'
       record.startedAt ??= new Date().toISOString()
       await this.save(record, 'run-started', '运行开始')
@@ -906,11 +931,11 @@ export class WorkflowRunService {
   ): Promise<'completed' | 'waiting-approval' | 'stopped'> {
     state.status = 'running'
     state.startedAt = new Date().toISOString()
-    this.resetDownstreamNodeStates(workflow, node.id, stateMap, outputs)
+    if (state.executionScope === undefined) this.resetDownstreamNodeStates(workflow, node.id, stateMap, outputs)
     const executionStartedAt = Date.now()
-    await this.save(record, 'node-started', `开始执行节点：${node.label}`, node.id)
+    await this.save(record, 'node-started', `开始执行节点：${node.label}`, node.id, state.executionScope)
     try {
-      const previous = this.resolveNodeInput(node, incoming, outputs, record.input)
+      const previous = state.executionScope === undefined ? this.resolveNodeInput(node, incoming, outputs, record.input) : state.input ?? null
       state.input = cloneWorkflow(previous)
       const output = await this.executeNodeWithRetry(
         node, state, previous, record, active, workflow, nodeMap, stateMap, outputs,
@@ -923,12 +948,13 @@ export class WorkflowRunService {
       state.completedAt = new Date().toISOString()
       state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
       outputs.set(node.id, output)
-      this.registerCompensation(node, record)
-      await this.save(record, 'node-completed', `节点完成：${node.label}`, node.id)
+      this.registerCompensation(node, record, state.executionScope)
+      await this.save(record, 'node-completed', `节点完成：${node.label}`, node.id, state.executionScope)
       return 'completed'
     } catch (error) {
       if (active.leaseLost) return 'stopped'
       if (error instanceof WorkflowRetryScheduled) return 'stopped'
+      if (error instanceof WorkflowLoopStopped) return 'stopped'
       if (error instanceof WorkflowNodeOutputError && !active.cancelled && !active.pauseRequested) {
         state.status = 'failed'
         state.error = error.message
@@ -937,7 +963,7 @@ export class WorkflowRunService {
         record.status = 'failed'
         record.error = error.message
         record.completedAt = new Date().toISOString()
-        await this.save(record, 'node-failed', error.message, node.id)
+        await this.save(record, 'node-failed', error.message, node.id, state.executionScope)
         return 'stopped'
       }
       if (error instanceof WorkflowApprovalRequired) {
@@ -960,7 +986,7 @@ export class WorkflowRunService {
         record.status = 'paused'
         record.error = error.message
         record.completedAt = new Date().toISOString()
-        await this.save(record, 'run-paused', error.message, node.id)
+        await this.save(record, 'run-paused', error.message, node.id, state.executionScope)
         return 'stopped'
       }
       if (state.effectState === 'prepared' || state.effectState === 'dispatched' || state.effectState === 'confirmed') {
@@ -974,17 +1000,19 @@ export class WorkflowRunService {
           ? `运行已取消，但节点“${node.label}”的外部副作用状态未知。`
           : `节点“${node.label}”的外部副作用状态未知，已暂停以避免重复执行。`
         record.completedAt = new Date().toISOString()
-        await this.save(record, active.cancelled ? 'run-cancelled' : 'run-paused', record.error, node.id)
+        await this.save(record, active.cancelled ? 'run-cancelled' : 'run-paused', record.error, node.id, state.executionScope)
         return 'stopped'
       }
       state.status = active.pauseRequested ? 'pending' : active.cancelled ? 'cancelled' : 'failed'
       state.error = error instanceof Error ? error.message : String(error)
       state.completedAt = new Date().toISOString()
       state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
-      record.status = active.pauseRequested ? 'paused' : active.cancelled ? 'cancelled' : 'failed'
-      record.error = state.error
-      record.completedAt = new Date().toISOString()
-      await this.save(record, active.pauseRequested ? 'run-paused' : active.cancelled ? 'run-cancelled' : 'node-failed', state.error, node.id)
+      const owner = state.executionScope === undefined ? undefined : nodeMap.get(state.executionScope.loopNodeId)
+      const continueLoop = owner?.type === 'loop' && owner.config.failureStrategy === 'continue' && !active.pauseRequested && !active.cancelled
+      record.status = continueLoop ? 'running' : active.pauseRequested ? 'paused' : active.cancelled ? 'cancelled' : 'failed'
+      record.error = continueLoop ? undefined : state.error
+      record.completedAt = continueLoop ? undefined : new Date().toISOString()
+      await this.save(record, active.pauseRequested ? 'run-paused' : active.cancelled ? 'run-cancelled' : 'node-failed', state.error, node.id, state.executionScope)
       return 'stopped'
     }
   }
@@ -1009,6 +1037,7 @@ export class WorkflowRunService {
           ? await this.executeLoopNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record, workflow, nodeMap, stateMap, outputs, state)
           : await this.executeNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record, state)
       } catch (error) {
+        if (error instanceof WorkflowLoopStopped) throw error
         // A cancellation request always wins over a retry plan. In
         // particular, an idempotent connector may still be awaiting a
         // response after its effect was dispatched; replaying it after the
@@ -1032,7 +1061,7 @@ export class WorkflowRunService {
             ...(record.queue ?? { enqueuedAt: new Date().toISOString(), availableAt: state.nextAttemptAt }),
             availableAt: state.nextAttemptAt,
           }
-          await this.save(record, 'node-retry', `节点失败，将在 ${plan.delayMs}ms 后重试（第 ${plan.nextAttempt} 次）`, node.id)
+          await this.save(record, 'node-retry', `节点失败，将在 ${plan.delayMs}ms 后重试（第 ${plan.nextAttempt} 次）`, node.id, state.executionScope)
           throw new WorkflowRetryScheduled()
         }
         if (plan.decision === 'pause') throw new WorkflowAmbiguousEffectError(error)
@@ -1041,11 +1070,11 @@ export class WorkflowRunService {
     }
   }
 
-  private registerCompensation(node: WorkflowNode, record: WorkflowRunRecord): void {
+  private registerCompensation(node: WorkflowNode, record: WorkflowRunRecord, executionScope?: WorkflowExecutionScope): void {
     if (node.compensation === undefined) return
     const stack = record.compensationStack ?? (record.compensationStack = [])
-    if (stack.some((entry) => entry.sourceNodeId === node.id && entry.status !== 'failed')) return
-    stack.push({ sourceNodeId: node.id, action: cloneWorkflow(node.compensation), status: 'pending' })
+    if (stack.some((entry) => entry.sourceNodeId === node.id && entry.executionScope?.iterationId === executionScope?.iterationId && entry.status !== 'failed')) return
+    stack.push({ sourceNodeId: node.id, ...(executionScope === undefined ? {} : { executionScope: cloneWorkflow(executionScope) }), action: cloneWorkflow(node.compensation), status: 'pending' })
   }
 
   private async markEffect(
@@ -1056,7 +1085,7 @@ export class WorkflowRunService {
   ): Promise<void> {
     if (state === undefined || !isEffectfulNode(node)) return
     state.effectState = phase
-    await this.save(record, `node-effect-${phase}`, phase === 'prepared' ? `已准备外部副作用：${node.label}` : phase === 'dispatched' ? `已派发外部副作用：${node.label}` : `已确认外部副作用：${node.label}`, node.id)
+    await this.save(record, `node-effect-${phase}`, phase === 'prepared' ? `已准备外部副作用：${node.label}` : phase === 'dispatched' ? `已派发外部副作用：${node.label}` : `已确认外部副作用：${node.label}`, node.id, state.executionScope)
   }
 
   /** Execute the node connected to a loop's body port once per input item. */
@@ -1087,6 +1116,8 @@ export class WorkflowRunService {
 
     const loopInput = this.primaryNodeValue(node, previous)
     const items = Array.isArray(loopInput) ? loopInput : [loopInput]
+    if (ownerState === undefined) throw new Error('循环运行状态不存在')
+    const iterations = ownerState.loopIterations ?? (ownerState.loopIterations = [])
     const results: WorkflowValue[] = []
     const limit = node.config.maxIterations ?? 20
     if (items.length === 0) {
@@ -1100,54 +1131,66 @@ export class WorkflowRunService {
       }
     }
     for (const [index, item] of items.slice(0, limit).entries()) {
-      if (active.cancelled) break
-      let current: WorkflowValue = cloneWorkflow(item)
+      if (active.cancelled || active.leaseLost) throw new Error('运行已取消。')
+      let iteration = iterations.find((candidate) => candidate.iterationIndex === index)
+      if (iteration === undefined) {
+        iteration = { iterationIndex: index, iterationId: `${record.id}:loop:${node.id}:iteration:${index}`, input: cloneWorkflow(item), status: 'pending', nodeStates: bodyNodes.map((bodyNode) => ({ nodeId: bodyNode.id, status: 'pending' })) }
+        iterations.push(iteration)
+      }
+      const scope: WorkflowExecutionScope = { loopNodeId: node.id, iterationIndex: index, iterationId: iteration.iterationId }
+      let current: WorkflowValue = cloneWorkflow(iteration.input)
       const iterationOutputs = new Map(outputs)
       for (const bodyNodeId of bodyNodeIds) iterationOutputs.delete(bodyNodeId)
+      if (iteration.status === 'completed') {
+        for (const bodyState of iteration.nodeStates) {
+          if (bodyState.output !== undefined) outputs.set(bodyState.nodeId, bodyState.output)
+          const summary = stateMap.get(bodyState.nodeId)
+          if (summary !== undefined) Object.assign(summary, cloneWorkflow(bodyState), { executionScope: undefined, effectState: undefined })
+        }
+        results.push(cloneWorkflow(iteration.output ?? null))
+        continue
+      }
+      iteration.status = 'running'
       for (const bodyNode of bodyNodes) {
-        const bodyState = stateMap.get(bodyNode.id)
-        const iterationStarted = Date.now()
-        if (bodyState !== undefined) {
-          bodyState.status = 'running'
-          bodyState.startedAt = new Date().toISOString()
-          bodyState.completedAt = undefined
-          bodyState.error = undefined
-          this.resetDownstreamNodeStates(workflow, bodyNode.id, stateMap, outputs)
-          await this.save(record, 'node-started', `开始执行循环体：${bodyNode.label}（第 ${index + 1} 项）`, bodyNode.id)
+        const bodyState = iteration.nodeStates.find((candidate) => candidate.nodeId === bodyNode.id)
+        if (bodyState === undefined) throw new Error('循环迭代检查点缺少节点状态')
+        bodyState.executionScope = scope
+        if (bodyState.status === 'completed') {
+          current = cloneWorkflow(bodyState.output ?? null)
+          iterationOutputs.set(bodyNode.id, current)
+          continue
         }
-        try {
-          const bodyInput = this.resolveLoopBodyInput(bodyNode, current, node.id, iterationOutputs)
-          const output = await this.executeNode(bodyNode, input, bodyInput, allowShellFile, allowCode, active, record, bodyState)
-          current = cloneWorkflow(output)
-          iterationOutputs.set(bodyNode.id, output)
-          if (bodyState !== undefined) {
-            bodyState.status = 'completed'
-            bodyState.input = cloneWorkflow(bodyInput)
-            bodyState.output = cloneWorkflow(output)
-            bodyState.completedAt = new Date().toISOString()
-            bodyState.elapsedMs = Math.max(0, Date.now() - iterationStarted)
-            await this.save(record, 'node-completed', `循环体完成：${bodyNode.label}（第 ${index + 1} 项）`, bodyNode.id)
+        if (bodyNode.type === 'approval' || bodyNode.type === 'wait-input') throw new Error('循环体暂不支持审批或表单节点')
+        bodyState.input ??= cloneWorkflow(this.resolveLoopBodyInput(bodyNode, current, node.id, iterationOutputs))
+        // Keep the owner resumable in the same persisted snapshot that queues a
+        // body retry or pauses an uncertain effect. The body owns its policy.
+        ownerState.status = 'pending'
+        const outcome = await this.executeReadyNode(bodyNode, bodyState, [], record, iterationOutputs, active, workflow, nodeMap, stateMap)
+        if (active.leaseLost) throw new WorkflowLoopStopped()
+        const summary = stateMap.get(bodyNode.id)
+        if (summary !== undefined) Object.assign(summary, cloneWorkflow(bodyState), { executionScope: undefined, effectState: undefined })
+        if (outcome !== 'completed') {
+          if (node.config.failureStrategy === 'continue' && record.status === 'running' && bodyState.status === 'failed' && !active.cancelled && !active.pauseRequested) {
+            current = { error: bodyState.error ?? '循环体执行失败', index: index + 1 }
+            record.status = 'running'
+            record.error = undefined
+            record.completedAt = undefined
+            record.retentionExpiresAt = undefined
+            break
           }
-        } catch (error) {
-          if (bodyState !== undefined) {
-            bodyState.status = active.cancelled ? 'cancelled' : 'failed'
-            bodyState.error = error instanceof Error ? error.message : String(error)
-            bodyState.completedAt = new Date().toISOString()
-            bodyState.elapsedMs = Math.max(0, Date.now() - iterationStarted)
-            await this.save(record, active.cancelled ? 'run-cancelled' : 'node-failed', bodyState.error, bodyNode.id)
-          }
-          if (node.config.failureStrategy === 'continue') {
-            results.push({ error: error instanceof Error ? error.message : String(error), index: index + 1 })
-            continue
-          }
-          throw error
+          throw new WorkflowLoopStopped()
         }
+        ownerState.status = 'running'
+        current = cloneWorkflow(bodyState.output ?? null)
       }
       for (const bodyNodeId of bodyNodeIds) {
         const bodyOutput = iterationOutputs.get(bodyNodeId)
         if (bodyOutput !== undefined) outputs.set(bodyNodeId, bodyOutput)
       }
+      iteration.output = cloneWorkflow(current)
+      iteration.status = 'completed'
       results.push(current)
+      await this.save(record, 'node-completed', `循环第 ${index + 1} 项完成`, node.id, scope)
     }
     return results
   }
@@ -1420,14 +1463,14 @@ export class WorkflowRunService {
       case 'http':
         if (node.config.connectorId === undefined && this.options.allowLegacyHttp === false) throw new Error('HTTP 节点必须绑定托管连接器。')
         if (node.config.connectorId !== undefined && this.options.connectorService?.authorize !== undefined) {
-          await this.options.connectorService.authorize(this.buildManagedConnectorRequest(node, record), input, previous)
+          await this.options.connectorService.authorize(this.buildManagedConnectorRequest(node, record, state?.executionScope), input, previous)
         }
         await this.markEffect(record, state, node, 'prepared')
         await this.markEffect(record, state, node, 'dispatched')
         {
           const httpOutput = node.config.connectorId === undefined
             ? await runHttp(node.config, input, previous, active.abortController.signal)
-            : await this.executeManagedConnector(node, input, previous, record, active.abortController.signal)
+            : await this.executeManagedConnector(node, input, previous, record, active.abortController.signal, state?.executionScope)
           await this.markEffect(record, state, node, 'confirmed')
           return httpOutput
         }
@@ -1443,13 +1486,13 @@ export class WorkflowRunService {
     }
   }
 
-  private async executeManagedConnector(node: Extract<WorkflowNode, { type: 'http' }>, input: WorkflowValue, previous: WorkflowValue, record: WorkflowRunRecord, signal: AbortSignal): Promise<WorkflowValue> {
+  private async executeManagedConnector(node: Extract<WorkflowNode, { type: 'http' }>, input: WorkflowValue, previous: WorkflowValue, record: WorkflowRunRecord, signal: AbortSignal, scope?: WorkflowExecutionScope): Promise<WorkflowValue> {
     if (this.options.connectorService === undefined) throw new Error('托管连接器服务不可用。')
-    const response = await this.options.connectorService.request(this.buildManagedConnectorRequest(node, record), input, previous, signal)
+    const response = await this.options.connectorService.request(this.buildManagedConnectorRequest(node, record, scope), input, previous, signal)
     return response as unknown as WorkflowValue
   }
 
-  private buildManagedConnectorRequest(node: Extract<WorkflowNode, { type: 'http' }>, record: WorkflowRunRecord): WorkflowConnectorRequest {
+  private buildManagedConnectorRequest(node: Extract<WorkflowNode, { type: 'http' }>, record: WorkflowRunRecord, scope?: WorkflowExecutionScope): WorkflowConnectorRequest {
     const config = node.config
     if (config.connectorId === undefined || config.connectorPath === undefined) throw new Error('托管 HTTP 节点缺少连接器路径。')
     return {
@@ -1463,7 +1506,7 @@ export class WorkflowRunService {
       timeoutMs: config.timeoutMs,
       // A stable run/node key makes retries and lease recovery deduplicable at
       // the remote API when it supports Idempotency-Key.
-      ...(config.method === 'GET' ? {} : { idempotencyKey: `${record.id}:${node.id}` }),
+      ...(config.method === 'GET' ? {} : { idempotencyKey: scope === undefined ? `${record.id}:${node.id}` : `${record.id}:loop:${scope.loopNodeId}:iteration:${scope.iterationIndex}:node:${node.id}` }),
       workflowPolicy: this.workflowForRecord(record)?.permissionPolicy,
       runGrant: record.connectorGrants,
     }
@@ -1672,18 +1715,31 @@ export class WorkflowRunService {
     return input
   }
 
-  private async save(record: WorkflowRunRecord, type: WorkflowRunEvent['type'], message: string, nodeId?: string): Promise<void> {
+  private async save(record: WorkflowRunRecord, type: WorkflowRunEvent['type'], message: string, nodeId?: string, executionScope?: WorkflowExecutionScope): Promise<void> {
+    if (executionScope !== undefined) {
+      const iteration = record.nodeStates.find((state) => state.nodeId === executionScope.loopNodeId)?.loopIterations?.find((candidate) => candidate.iterationId === executionScope.iterationId)
+      for (const bodyState of iteration?.nodeStates ?? []) {
+        const summary = record.nodeStates.find((state) => state.nodeId === bodyState.nodeId)
+        if (summary === undefined) continue
+        // Existing inspectors keep a current-iteration summary. Effects live
+        // only in the durable nested journal, never in this display projection.
+        for (const key of Object.keys(summary) as Array<keyof WorkflowNodeRunState>) if (key !== 'nodeId') delete summary[key]
+        Object.assign(summary, cloneWorkflow(bodyState), { executionScope: undefined, effectState: undefined })
+      }
+    }
     // WorkflowRunStore owns lease removal and conflict detection. Keeping the
     // caller's lease on this snapshot lets the store reject a stale writer if
     // another Worker reclaimed the run between two checkpoint writes.
     if (isRetentionStatus(record.status) && record.completedAt !== undefined && record.retentionExpiresAt === undefined) {
       record.retentionExpiresAt = retentionExpiry(record)
     }
-    record.events.push({ id: randomUUID(), time: new Date().toISOString(), type, nodeId, message })
+    record.events.push({ id: randomUUID(), time: new Date().toISOString(), type, nodeId, message, ...(executionScope === undefined ? {} : { executionScope: cloneWorkflow(executionScope) }) })
     const saved = await this.options.runStore.save(record)
     for (const listener of this.listeners) listener(cloneWorkflow(saved))
   }
 }
+
+class WorkflowLoopStopped extends Error {}
 
 class WorkflowApprovalRequired extends Error {
   constructor(message: string) {

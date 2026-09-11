@@ -9,11 +9,11 @@ import { WorkflowEnvironmentStore } from '../../src/main/workflow/workflow-envir
 import { WorkflowReleaseStore } from '../../src/main/workflow/workflow-release-store.js'
 import { WorkflowConnectorStore } from '../../src/main/workflow/workflow-connector-store.js'
 import { WorkflowCredentialStore } from '../../src/main/workflow/workflow-credential-service.js'
-import { WorkflowConnectorService } from '../../src/main/workflow/workflow-connector-service.js'
+import { WorkflowConnectorService, type WorkflowConnectorResponse } from '../../src/main/workflow/workflow-connector-service.js'
 import { computeWorkflowDefinitionSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
 import type { WorkflowCustomerEnvironment } from '../../src/shared/workflow-operations.js'
 import type { EmployeeCreateInput, EmployeeSnapshot } from '../../src/shared/employees.js'
-import { validateWorkflow, type WorkflowDefinition, type WorkflowNode, type WorkflowOutputMode, type WorkflowRunRecord } from '../../src/shared/workflow.js'
+import { validateWorkflow, type WorkflowDefinition, type WorkflowNode, type WorkflowOutputMode, type WorkflowRunRecord, type WorkflowValue } from '../../src/shared/workflow.js'
 
 function graph(): WorkflowDefinition {
   return {
@@ -35,6 +35,131 @@ function graph(): WorkflowDefinition {
     ],
   }
 }
+
+async function loopSafetyFixture(body: WorkflowNode, connectorService?: WorkflowRunServiceOptions['connectorService'], failureStrategy: 'stop' | 'continue' = 'stop') {
+  const dir = await mkdtemp(join(tmpdir(), 'ezdsh-loop-safety-'))
+  const workflowStore = new WorkflowStore(dir)
+  const runStore = new WorkflowRunStore(dir)
+  const compensations: WorkflowValue[] = []
+  const workflow = await workflowStore.create({
+    name: 'Loop safety', description: '',
+    nodes: [graph().nodes[0]!, { id: 'loop', type: 'loop', label: 'Loop', config: { maxIterations: 10, failureStrategy }, position: { x: 200, y: 0 } }, body, graph().nodes[4]!],
+    edges: [{ id: 'a', source: 'input', target: 'loop' }, { id: 'b', source: 'loop', target: body.id, sourcePort: 'loop-body' }, { id: 'c', source: 'loop', target: 'output', sourcePort: 'loop-next' }],
+  })
+  const createService = (store = runStore) => new WorkflowRunService({
+    workflowStore, runStore: store, workflowRoot: dir, connectorService,
+    createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+    resolveEmployee: () => undefined,
+    executeSubWorkflow: async (_id, input) => { compensations.push(input); return 'undone' },
+  })
+  return { dir, workflow, runStore, compensations, createService, service: createService() }
+}
+
+function loopResponse(body: WorkflowValue = 'ok'): WorkflowConnectorResponse {
+  return { status: 200, ok: true, headers: {}, body }
+}
+
+const loopWriteNode: WorkflowNode = {
+  id: 'body', type: 'http', label: 'Write item', position: { x: 200, y: 200 },
+  config: { method: 'POST', connectorId: 'crm', connectorPath: '/items', responseMode: 'json' },
+}
+
+describe('durable loop execution identity', () => {
+  it('continues past a failed read without losing the queue lease or replaying the failed item', async () => {
+    let calls = 0
+    const fixture = await loopSafetyFixture({ ...loopWriteNode, config: { ...loopWriteNode.config, method: 'GET' } }, { request: async () => { calls += 1; if (calls === 1) throw new Error('read failed'); return loopResponse() } }, 'continue')
+    const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, ['A', 'B'])).id)
+    expect(run.status).toBe('completed')
+    expect(run.output).toEqual([{ error: 'read failed', index: 1 }, loopResponse()])
+    expect(calls).toBe(2)
+    await fixture.service.stop()
+  })
+
+  it('uses distinct stable managed write keys for different iterations', async () => {
+    const keys: Array<string | undefined> = []
+    const fixture = await loopSafetyFixture(loopWriteNode, { request: async (request) => { keys.push(request.idempotencyKey); return loopResponse() } })
+    const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, ['A', 'B'])).id)
+    expect(run.status).toBe('completed')
+    expect(keys).toEqual([`${run.id}:loop:loop:iteration:0:node:body`, `${run.id}:loop:loop:iteration:1:node:body`])
+    await fixture.service.stop()
+  })
+
+  it('retries the same iteration with its stable key and preserves prior completed iterations', async () => {
+    const keys: Array<string | undefined> = []
+    let calls = 0
+    const fixture = await loopSafetyFixture({ ...loopWriteNode, retryPolicy: { mode: 'idempotent', maxAttempts: 2, baseDelayMs: 0, jitterRatio: 0 } }, {
+      request: async (request) => { keys.push(request.idempotencyKey); calls += 1; if (calls === 2) throw new Error('temporary connection failure'); return loopResponse() },
+    })
+    const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, ['A', 'B'])).id)
+    expect(run.status).toBe('completed')
+    expect(keys).toEqual([`${run.id}:loop:loop:iteration:0:node:body`, `${run.id}:loop:loop:iteration:1:node:body`, `${run.id}:loop:loop:iteration:1:node:body`])
+    expect(run.nodeStates.find((state) => state.nodeId === 'loop')?.loopIterations?.map((iteration) => iteration.nodeStates[0]?.attempt)).toEqual([1, 2])
+    expect(run.events.filter((event) => event.type === 'node-retry').map((event) => event.executionScope?.iterationIndex)).toEqual([1])
+    await fixture.service.stop()
+  })
+
+  it('pauses an ambiguous loop effect and refuses resume without replay', async () => {
+    let calls = 0
+    const fixture = await loopSafetyFixture(loopWriteNode, { request: async () => { calls += 1; throw new Error('response lost') } })
+    const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, ['A', 'B'])).id)
+    expect(run.status).toBe('paused')
+    await expect(fixture.service.resume(run.id)).rejects.toThrow(/副作用/u)
+    expect(calls).toBe(1)
+    await fixture.service.stop()
+  })
+
+  it('restores completed iterations and body checkpoints from disk without reexecuting them', async () => {
+    const fixture = await loopSafetyFixture({ id: 'body', type: 'transform', label: 'Body', config: { template: 'append', text: '!' }, position: { x: 200, y: 200 } })
+    await fixture.service.initialize()
+    await fixture.service.stop()
+    const run = await fixture.service.start(fixture.workflow.id, ['A', 'B', 'C'])
+    run.status = 'paused'
+    run.nodeStates.find((state) => state.nodeId === 'input')!.status = 'completed'
+    run.nodeStates.find((state) => state.nodeId === 'input')!.output = ['A', 'B', 'C']
+    Object.assign(run.nodeStates.find((state) => state.nodeId === 'loop')!, {
+      status: 'pending', loopIterations: [
+        { iterationIndex: 0, iterationId: `${run.id}:loop:loop:iteration:0`, input: 'A', status: 'completed', output: 'saved-A', nodeStates: [{ nodeId: 'body', status: 'completed', output: 'saved-A' }] },
+        { iterationIndex: 1, iterationId: `${run.id}:loop:loop:iteration:1`, input: 'B', status: 'running', nodeStates: [{ nodeId: 'body', status: 'completed', output: 'saved-B' }] },
+      ],
+    })
+    await fixture.runStore.save(run)
+    const restarted = fixture.createService(new WorkflowRunStore(fixture.dir))
+    await restarted.resume(run.id)
+    const result = await eventually(restarted, run.id)
+    expect(result.output).toEqual(['saved-A', 'saved-B', 'C!'])
+    expect(result.events.filter((event) => event.type === 'node-started' && event.nodeId === 'body')).toHaveLength(1)
+    await restarted.stop()
+  })
+
+  it('registers one compensation entry per completed effectful iteration', async () => {
+    const fixture = await loopSafetyFixture({ ...loopWriteNode, compensation: { type: 'workflow', workflowId: 'undo' } }, { request: async (_request, _input, previous) => loopResponse(previous) })
+    const run = await eventually(fixture.service, (await fixture.service.start(fixture.workflow.id, ['A', 'B'])).id)
+    expect(run.compensationStack).toHaveLength(2)
+    expect(run.compensationStack?.map((entry) => entry.executionScope?.iterationIndex)).toEqual([0, 1])
+    await fixture.service.compensate(run.id)
+    expect(fixture.compensations).toEqual([loopResponse('B'), loopResponse('A')])
+    await fixture.service.compensate(run.id)
+    expect(fixture.compensations).toHaveLength(2)
+    await fixture.service.stop()
+  })
+
+  it('does not replay a legacy partial loop whose iteration history is unavailable', async () => {
+    let writes = 0
+    const fixture = await loopSafetyFixture(loopWriteNode, { request: async () => { writes += 1; return loopResponse() } })
+    await fixture.service.initialize()
+    await fixture.service.stop()
+    const run = await fixture.service.start(fixture.workflow.id, ['A', 'B'])
+    run.status = 'paused'
+    Object.assign(run.nodeStates.find((state) => state.nodeId === 'input')!, { status: 'completed', output: ['A', 'B'] })
+    Object.assign(run.nodeStates.find((state) => state.nodeId === 'loop')!, { status: 'running', attempt: 1 })
+    Object.assign(run.nodeStates.find((state) => state.nodeId === 'body')!, { status: 'completed', effectState: 'confirmed', output: { ok: true } })
+    await fixture.runStore.save(run)
+    const restarted = fixture.createService(new WorkflowRunStore(fixture.dir))
+    await expect(restarted.resume(run.id)).rejects.toThrow(/迭代|副作用/u)
+    expect(writes).toBe(0)
+    await restarted.stop()
+  })
+})
 
 function reviewer(enabled = true): EmployeeSnapshot {
   return {

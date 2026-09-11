@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { cloneWorkflow, type WorkflowRunLease, type WorkflowRunQueueState, type WorkflowRunRecord } from '../../shared/workflow.js'
+import { cloneWorkflow, isWorkflowValue, workflowAllNodeRunStates, type WorkflowRunLease, type WorkflowRunQueueState, type WorkflowRunRecord } from '../../shared/workflow.js'
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
@@ -16,10 +16,32 @@ function isPersistedRunRecord(value: unknown): value is WorkflowRunRecord {
   if (typeof record.id !== 'string' || typeof record.workflowId !== 'string' || typeof record.workflowRevision !== 'number' || !Number.isInteger(record.workflowRevision)) return false
   if (!['queued', 'running', 'paused', 'waiting-approval', 'completed', 'failed', 'cancelled'].includes(record.status as string)) return false
   if (!Array.isArray(record.nodeStates) || !Array.isArray(record.events)) return false
-  if (!record.nodeStates.every((state) => state && typeof state === 'object' && typeof (state as any).nodeId === 'string' && ['pending', 'running', 'completed', 'skipped', 'failed', 'cancelled'].includes((state as any).status))) return false
+  if (!record.nodeStates.every(isPersistedNodeState)) return false
   const queue = record.queue
   if (queue !== undefined && !isValidQueueState(queue)) return false
   return true
+}
+
+function isPersistedNodeState(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false
+  const state = value as Record<string, unknown>
+  if (typeof state.nodeId !== 'string' || !['pending', 'running', 'completed', 'skipped', 'failed', 'cancelled'].includes(state.status as string)) return false
+  if (state.loopIterations === undefined) return true
+  if (!Array.isArray(state.loopIterations)) return false
+  const indices = new Set<number>()
+  const ids = new Set<string>()
+  return state.loopIterations.every((value: unknown) => {
+    if (value === null || typeof value !== 'object') return false
+    const iteration = value as Record<string, unknown>
+    if (typeof iteration.iterationIndex !== 'number' || !Number.isInteger(iteration.iterationIndex) || iteration.iterationIndex < 0 || indices.has(iteration.iterationIndex)) return false
+    if (typeof iteration.iterationId !== 'string' || iteration.iterationId.trim() === '' || ids.has(iteration.iterationId)) return false
+    indices.add(iteration.iterationIndex)
+    ids.add(iteration.iterationId)
+    return ['pending', 'running', 'completed'].includes(iteration.status as string)
+      && isWorkflowValue(iteration.input)
+      && Array.isArray(iteration.nodeStates) && iteration.nodeStates.every(isPersistedNodeState)
+      && (iteration.output === undefined || isWorkflowValue(iteration.output))
+  })
 }
 
 function isValidDateString(value: string): boolean {
@@ -240,9 +262,9 @@ export class WorkflowRunStore {
         if (lease === undefined) continue
         if (!isValidLease(lease)) continue
         if (!force && Date.parse(lease.expiresAt) > nowMs) continue
-        const uncertainEffect = record.nodeStates.some(hasUncertainEffect)
+        const uncertainEffect = workflowAllNodeRunStates(record.nodeStates).some(hasUncertainEffect)
         if (uncertainEffect) {
-          for (const state of record.nodeStates) {
+          for (const state of workflowAllNodeRunStates(record.nodeStates)) {
             if (!hasUncertainEffect(state)) continue
             state.effectState = 'unknown'
             state.status = 'cancelled'
@@ -256,7 +278,7 @@ export class WorkflowRunStore {
           record.queue = { ...(record.queue ?? { enqueuedAt: nowIso, availableAt: nowIso }) }
           delete record.queue.lease
         } else {
-          for (const state of record.nodeStates) {
+          for (const state of workflowAllNodeRunStates(record.nodeStates)) {
             if (state.status === 'running') {
               state.status = 'pending'
               state.startedAt = undefined
@@ -301,10 +323,10 @@ export class WorkflowRunStore {
       let queue = { ...record.queue }
       delete queue.lease
       if (recoverInterrupted && record.status === 'running') {
-        const uncertainEffect = record.nodeStates.some(hasUncertainEffect)
+        const uncertainEffect = workflowAllNodeRunStates(record.nodeStates).some(hasUncertainEffect)
         if (uncertainEffect) {
           const now = new Date().toISOString()
-          for (const state of record.nodeStates) {
+          for (const state of workflowAllNodeRunStates(record.nodeStates)) {
             if (!hasUncertainEffect(state)) continue
             state.status = 'cancelled'
             state.effectState = 'unknown'
@@ -320,7 +342,7 @@ export class WorkflowRunStore {
           record.error = '用户取消了运行'
           record.completedAt = queue.cancellationRequestedAt
         } else {
-          for (const state of record.nodeStates) {
+          for (const state of workflowAllNodeRunStates(record.nodeStates)) {
             if (state.status !== 'running') continue
             state.status = 'pending'
             state.startedAt = undefined

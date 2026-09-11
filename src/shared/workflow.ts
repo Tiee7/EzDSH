@@ -93,6 +93,7 @@ export interface WorkflowCompensationAction {
 
 export interface WorkflowCompensationEntry {
   sourceNodeId: string
+  executionScope?: WorkflowExecutionScope
   action: WorkflowCompensationAction
   status: 'pending' | 'running' | 'completed' | 'failed'
   startedAt?: string
@@ -488,8 +489,26 @@ export interface WorkflowRunQueueState {
   cancellationRequestedAt?: string
 }
 
+export interface WorkflowExecutionScope {
+  loopNodeId: string
+  iterationIndex: number
+  iterationId: string
+}
+
+export interface WorkflowLoopIterationCheckpoint {
+  iterationIndex: number
+  iterationId: string
+  input: WorkflowValue
+  status: 'pending' | 'running' | 'completed'
+  nodeStates: WorkflowNodeRunState[]
+  output?: WorkflowValue
+}
+
 export interface WorkflowNodeRunState {
   nodeId: string
+  executionScope?: WorkflowExecutionScope
+  /** Structural loop checkpoints; absent on records created before loop recovery support. */
+  loopIterations?: WorkflowLoopIterationCheckpoint[]
   status: WorkflowNodeRunStatus
   /** Number of attempts already started for this node. */
   attempt?: number
@@ -514,7 +533,13 @@ export interface WorkflowRunEvent {
   time: string
   type: WorkflowRunEventType
   nodeId?: string
+  executionScope?: WorkflowExecutionScope
   message?: string
+}
+
+/** Include durable loop body states when inspecting effects or restoring a run. */
+export function workflowAllNodeRunStates(states: WorkflowNodeRunState[]): WorkflowNodeRunState[] {
+  return states.flatMap((state) => [state, ...(state.loopIterations ?? []).flatMap((iteration) => workflowAllNodeRunStates(iteration.nodeStates))])
 }
 
 export interface WorkflowRunRecord {
