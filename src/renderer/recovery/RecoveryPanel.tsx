@@ -11,7 +11,7 @@ interface RecoveryPanelProps {
   onSafeModeStarted?: (runtime: RuntimeSnapshot) => void
 }
 
-type RecoveryBusyAction = 'retry' | 'restore' | 'restore-snapshot' | 'list-snapshots' | 'safe-mode' | 'exit-safe-mode' | 'rollback-plugin' | 'disable-plugin' | 'doctor'
+type RecoveryBusyAction = 'retry' | 'restore' | 'restore-snapshot' | 'list-snapshots' | 'safe-mode' | 'exit-safe-mode' | 'rollback-plugin' | 'disable-plugin' | 'uninstall-plugin' | 'doctor'
 
 export function sortRecoverySnapshotsByDate(snapshots: readonly RecoverySnapshot[]): RecoverySnapshot[] {
   return [...snapshots].sort((left, right) => right.manifest.createdAt.localeCompare(left.manifest.createdAt))
@@ -23,6 +23,7 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
   const [error, setError] = useState<string>()
   const [doctor, setDoctor] = useState<RecoveryDoctorResult>()
   const [snapshotPickerOpen, setSnapshotPickerOpen] = useState(false)
+  const [pluginListOpen, setPluginListOpen] = useState(false)
   const [availableSnapshots, setAvailableSnapshots] = useState<RecoverySnapshot[]>([])
   const [selectedSnapshotName, setSelectedSnapshotName] = useState<string>()
   const busy = busyAction !== undefined
@@ -141,6 +142,21 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
     }
   }
 
+  const uninstallPlugin = async (plugin: RuntimeFailurePlugin): Promise<void> => {
+    if (busy) return
+    const name = plugin.name ?? plugin.packageName
+    if (!window.confirm(copy.recoveryUninstallPluginConfirm(name))) return
+    setBusyAction('uninstall-plugin')
+    setError(undefined)
+    try {
+      await window.EzDSH.recovery.uninstallPlugin(plugin.packageName, plugin.profile)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.recoveryRestoreFailed)
+    } finally {
+      setBusyAction(undefined)
+    }
+  }
+
   const inspectSessions = async (repair = false): Promise<void> => {
     if (busy) return
     setBusyAction('doctor')
@@ -174,25 +190,53 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
           </div>
         ) : null}
         {runtimeFailure ? (
-          <div className="recovery-runtime-incident" role="status">
-            <strong>{copy.recoveryPluginChoiceTitle}</strong>
-            {runtimeFailure.plugins.length === 0
-              ? <p>{copy.recoveryNoPluginChoices}</p>
-              : (
-                <div className="recovery-plugin-choices">
-                  {runtimeFailure.plugins.map((plugin) => (
-                    <button
-                      key={`${plugin.profile}:${plugin.packageName}`}
-                      type="button"
-                      className="recovery-disable-plugin"
-                      disabled={busy}
-                      onClick={() => { void disablePlugin(plugin) }}
-                    >
-                      {busyAction === 'disable-plugin' ? copy.recoveryDisablingPlugin : copy.recoveryDisablePlugin(plugin.name ?? plugin.packageName)}
-                    </button>
-                  ))}
-                </div>
-                )}
+          <div className="recovery-runtime-incident">
+            <button
+              type="button"
+              className="recovery-uninstall-plugin recovery-plugin-list-toggle"
+              disabled={busy}
+              aria-expanded={pluginListOpen}
+              onClick={() => setPluginListOpen((open) => !open)}
+            >
+              {copy.recoveryRemoveConflictingPlugins}
+            </button>
+            {pluginListOpen ? (
+              runtimeFailure.plugins.length === 0
+                ? <p>{copy.recoveryNoPluginChoices}</p>
+                : (
+                  <>
+                    <p className="recovery-plugin-choice-hint">{copy.recoveryPluginChoiceHint}</p>
+                    <div className="recovery-plugin-choices">
+                      {runtimeFailure.plugins.map((plugin) => (
+                        <div className="recovery-plugin-choice" key={`${plugin.profile}:${plugin.packageName}`}>
+                          {plugin.enabled === false
+                            ? <span className="recovery-plugin-disabled">{copy.recoveryPluginDisabled(plugin.name ?? plugin.packageName)}</span>
+                            : (
+                              <button
+                                type="button"
+                                className="recovery-disable-plugin"
+                                disabled={busy}
+                                onClick={() => { void disablePlugin(plugin) }}
+                              >
+                                {busyAction === 'disable-plugin' ? copy.recoveryDisablingPlugin : copy.recoveryDisablePlugin(plugin.name ?? plugin.packageName)}
+                              </button>
+                              )}
+                          {plugin.enabled === false ? (
+                            <button
+                              type="button"
+                              className="recovery-uninstall-plugin"
+                              disabled={busy}
+                              onClick={() => { void uninstallPlugin(plugin) }}
+                            >
+                              {busyAction === 'uninstall-plugin' ? copy.recoveryUninstallingPlugin : copy.recoveryUninstallPlugin(plugin.name ?? plugin.packageName)}
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                  )
+            ) : null}
           </div>
         ) : null}
         <p className="recovery-snapshot">{snapshotName}</p>

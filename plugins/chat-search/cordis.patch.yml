@@ -1,0 +1,9 @@
+# Enable the deferred in-memory full-text index and mount EzDSH chat search.
+- id: session-query-sqlite
+  config:
+    path: ':memory:'
+    openAt: first-search
+
+- insert:
+    - id: ezdsh-chat-search
+      name: ./src/index.js

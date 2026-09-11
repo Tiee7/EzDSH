@@ -235,6 +235,7 @@ describe('RuntimeManager', () => {
       command: process.execPath,
       appVersion: '1.8.1540',
       runtimeVersion: '0.1.5-rc.1',
+      patchPaths: ['/app/plugins/chat-search/cordis.patch.yml'],
       startupTimeoutMs: 2_000,
       stopTimeoutMs: 1_000,
       allocatePort: async () => 4567,
@@ -257,6 +258,9 @@ describe('RuntimeManager', () => {
     expect(ready.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(spawnedArgs[0]).toBe('--expose-internals')
     expect(spawnedArgs).toContain('--no-open')
+    expect(spawnedArgs.slice(2, 6)).toEqual([
+      'web', '--patch', '/app/plugins/chat-search/cordis.patch.yml', '--host',
+    ])
     expect(spawnedOptions?.detached).toBe(process.platform !== 'win32')
     expect(spawnedOptions?.env?.EZDSH_RUNTIME_OWNER).toBe('EzDSH')
     expect(ownership.register).toHaveBeenCalledWith(12345)
@@ -426,13 +430,16 @@ describe('RuntimeManager', () => {
       }
     })
     let spawnedOptions: import('node:child_process').SpawnOptions | undefined
+    let spawnedArgs: readonly string[] = []
     const manager = new RuntimeManager({
       layout,
       runtimeEntryPath: '/dev/null',
       command: process.execPath,
+      patchPaths: ['/app/plugins/chat-search/cordis.patch.yml'],
       allocatePort: async () => 4567,
       waitForHealthy: async () => undefined,
-      spawnProcess: (_command, _args, options) => {
+      spawnProcess: (_command, args, options) => {
+        spawnedArgs = args
         spawnedOptions = options
         return child as never
       }
@@ -441,6 +448,7 @@ describe('RuntimeManager', () => {
     const ready = await manager.start({ mode: 'safe', dshHome: join(root, 'safe-mode-home') } as never)
 
     expect(spawnedOptions?.env?.DSH_HOME).toBe(join(root, 'safe-mode-home'))
+    expect(spawnedArgs).not.toContain('--patch')
     expect((ready as { mode?: string }).mode).toBe('safe')
     await manager.stop()
   })

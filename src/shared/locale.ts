@@ -89,10 +89,16 @@ export interface AppCopy {
   recoveryRestoreFailed: string
   recoveryRuntimeFailureDetail: string
   recoverySnapshotChoice: (name: string, createdAt: string, reason: string) => string
+  recoveryRemoveConflictingPlugins: string
   recoveryPluginChoiceTitle: string
+  recoveryPluginChoiceHint: string
   recoveryNoPluginChoices: string
   recoveryDisablePlugin: (name: string) => string
   recoveryDisablingPlugin: string
+  recoveryPluginDisabled: (name: string) => string
+  recoveryUninstallPlugin: (name: string) => string
+  recoveryUninstallingPlugin: string
+  recoveryUninstallPluginConfirm: (name: string) => string
   recoveryDoctor: string
   recoveryDoctorRunning: string
   recoveryDoctorDone: (issues: number, repaired: number) => string
@@ -103,9 +109,10 @@ export interface AppCopy {
   settingsRecoveryCreating: string
   settingsRecoveryNotePrompt: string
   settingsRecoveryEditNotePrompt: string
-  settingsRecoveryNoteEmpty: string
   settingsRecoveryNoteUpdated: string
   settingsRecoveryEditNote: string
+  settingsRecoveryNoteSave: string
+  settingsRecoveryNoteCancel: string
   settingsRecoveryCheckLogs: string
   settingsRecoveryOpen: string
   settingsRecoveryEmpty: string
@@ -966,12 +973,18 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryOpenBackups: '打开备份目录',
     recoveryRestoring: '正在恢复上一份环境…',
     recoveryRestoreFailed: '恢复失败，请查看备份目录或重试。',
-    recoveryRuntimeFailureDetail: 'DSH Runtime 启动失败。你可以先停用导致问题的插件后继续，也可以恢复最近一次环境快照。',
+    recoveryRuntimeFailureDetail: 'DSH Runtime 启动失败。你可以先停用可疑插件；如果停用后仍失败，再卸载该插件或恢复环境快照。',
     recoverySnapshotChoice: (name, createdAt, reason) => `恢复目标：${name}（创建于 ${createdAt}，${reason}）`,
-    recoveryPluginChoiceTitle: '可尝试停用插件：',
+    recoveryRemoveConflictingPlugins: '删除冲突的插件',
+    recoveryPluginChoiceTitle: '可处理的第三方插件：',
+    recoveryPluginChoiceHint: '以下插件来自当前 profile；它们不一定是本次故障原因。已停用的插件可以彻底卸载。',
     recoveryNoPluginChoices: '未能从当前 profile 识别出可管理的第三方插件；你仍可以恢复最近快照或进入安全模式。',
     recoveryDisablePlugin: (name) => `停用「${name}」并继续启动`,
     recoveryDisablingPlugin: '正在停用插件并重新启动 Runtime…',
+    recoveryPluginDisabled: (name) => `「${name}」已停用`,
+    recoveryUninstallPlugin: (name) => `卸载「${name}」并重新启动`,
+    recoveryUninstallingPlugin: '正在卸载插件并重新启动 Runtime…',
+    recoveryUninstallPluginConfirm: (name) => `确定卸载“${name}”？EzDSH 会先保留恢复快照，再从当前 profile 移除该插件。`,
     recoveryDoctor: '检查会话日志',
     recoveryDoctorRunning: '正在检查会话日志…',
     recoveryDoctorDone: (issues, repaired) => `检查完成：${issues} 个问题，修复 ${repaired} 个尾记录`,
@@ -982,16 +995,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRecoveryCreating: '正在备份…',
     settingsRecoveryNotePrompt: '为这份备份添加备注（可选）：',
     settingsRecoveryEditNotePrompt: '编辑备份备注（留空可删除）：',
-    settingsRecoveryNoteEmpty: '未填写备注',
     settingsRecoveryNoteUpdated: '备份备注已更新',
     settingsRecoveryEditNote: '编辑备注',
+    settingsRecoveryNoteSave: '保存备注',
+    settingsRecoveryNoteCancel: '取消',
     settingsRecoveryCheckLogs: '检查会话日志',
     settingsRecoveryOpen: '打开备份目录',
     settingsRecoveryEmpty: '还没有可用的恢复快照',
     settingsRecoveryCreated: '备份已创建',
     settingsRecoveryDeleted: '备份已删除',
-    settingsRecoveryVerify: '校验备份',
-    settingsRecoveryVerifyHint: '“校验备份”只检查文件是否与生成时的 SHA-256 一致，不会恢复或修改任何数据。',
+    settingsRecoveryVerify: '校验',
+    settingsRecoveryVerifyHint: '“校验”只检查文件是否与生成时的 SHA-256 一致，不会恢复或修改任何数据。',
     settingsRecoveryRestore: '恢复',
     settingsRecoveryDelete: '删除备份',
     settingsRecoveryDeleteConfirm: (name) => `确定删除备份“${name}”？此操作无法撤销。`,
@@ -1870,12 +1884,18 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryOpenBackups: 'Open backup folder',
     recoveryRestoring: 'Restoring previous environment…',
     recoveryRestoreFailed: 'Restore failed. Open the backup folder or try again.',
-    recoveryRuntimeFailureDetail: 'DSH Runtime failed to start. Disable the plugin causing the failure and continue, or restore the latest environment snapshot.',
+    recoveryRuntimeFailureDetail: 'DSH Runtime failed to start. Disable a suspected plugin first; if startup still fails, uninstall it or restore an environment snapshot.',
     recoverySnapshotChoice: (name, createdAt, reason) => `Restore target: ${name} (created ${createdAt}; ${reason})`,
-    recoveryPluginChoiceTitle: 'Plugins you can try disabling:',
+    recoveryRemoveConflictingPlugins: 'Remove conflicting plugins',
+    recoveryPluginChoiceTitle: 'Third-party plugins you can recover:',
+    recoveryPluginChoiceHint: 'These plugins come from the current profile and may not have caused this failure. Disabled plugins can be uninstalled completely.',
     recoveryNoPluginChoices: 'No manageable third-party plugin was identified in the current profile. You can still restore the latest snapshot or enter Safe Mode.',
     recoveryDisablePlugin: (name) => `Disable “${name}” and continue startup`,
     recoveryDisablingPlugin: 'Disabling the plugin and restarting Runtime…',
+    recoveryPluginDisabled: (name) => `“${name}” is disabled`,
+    recoveryUninstallPlugin: (name) => `Uninstall “${name}” and restart`,
+    recoveryUninstallingPlugin: 'Uninstalling the plugin and restarting Runtime…',
+    recoveryUninstallPluginConfirm: (name) => `Uninstall “${name}”? EzDSH will preserve a recovery snapshot before removing it from this profile.`,
     recoveryDoctor: 'Check Session Logs',
     recoveryDoctorRunning: 'Checking Session Logs…',
     recoveryDoctorDone: (issues, repaired) => `Check complete: ${issues} issue(s), repaired ${repaired} tail record(s)`,
@@ -1886,16 +1906,17 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRecoveryCreating: 'Backing up…',
     settingsRecoveryNotePrompt: 'Add a note for this backup (optional):',
     settingsRecoveryEditNotePrompt: 'Edit backup note (leave blank to remove):',
-    settingsRecoveryNoteEmpty: 'No note',
     settingsRecoveryNoteUpdated: 'Backup note updated',
     settingsRecoveryEditNote: 'Edit note',
+    settingsRecoveryNoteSave: 'Save note',
+    settingsRecoveryNoteCancel: 'Cancel',
     settingsRecoveryCheckLogs: 'Check Session Logs',
     settingsRecoveryOpen: 'Open backup folder',
     settingsRecoveryEmpty: 'No recovery snapshots yet',
     settingsRecoveryCreated: 'Backup created',
     settingsRecoveryDeleted: 'Backup deleted',
-    settingsRecoveryVerify: 'Verify backup',
-    settingsRecoveryVerifyHint: '“Verify backup” only compares the archive with its recorded SHA-256 checksum. It does not restore or modify any data.',
+    settingsRecoveryVerify: 'Verify',
+    settingsRecoveryVerifyHint: '“Verify” only compares the archive with its recorded SHA-256 checksum. It does not restore or modify any data.',
     settingsRecoveryRestore: 'Restore',
     settingsRecoveryDelete: 'Delete backup',
     settingsRecoveryDeleteConfirm: (name) => `Delete backup “${name}”? This cannot be undone.`,

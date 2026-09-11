@@ -113,10 +113,29 @@
   margin: 6px 0 0;
 }
 
+.recovery-plugin-choice-hint {
+  color: #b8c3d9;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .recovery-plugin-choices {
   display: grid;
   gap: 8px;
   margin-top: 10px;
+}
+
+.recovery-plugin-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.recovery-plugin-disabled {
+  min-width: 0;
+  color: #c8d2e5;
+  overflow-wrap: anywhere;
 }
 
 .recovery-disable-plugin {
@@ -133,6 +152,28 @@
 .recovery-disable-plugin:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+.recovery-uninstall-plugin {
+  border: 1px solid rgba(255, 126, 126, 0.62);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 92, 92, 0.12);
+  color: #ffd3d3;
+  font: inherit;
+  cursor: pointer;
+}
+
+.recovery-uninstall-plugin:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.recovery-plugin-list-toggle {
+  width: 100%;
+  min-height: 44px;
+  font-weight: 650;
+  text-align: center;
 }
 
 .recovery-doctor-result p {

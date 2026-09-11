@@ -39,6 +39,37 @@ describe('RuntimeViewController', () => {
     expect(harness.loadURL).toHaveBeenCalledWith('http://127.0.0.1:4567/?token=runtime-token')
   })
 
+  it('prepares the Runtime browser session before loading a new authentication URL', async () => {
+    const harness = makeHarness()
+    const order: string[] = []
+    const prepareNavigation = vi.fn(async () => { order.push('prepare') })
+    harness.loadURL.mockImplementation(async () => { order.push('load') })
+    const controller = new RuntimeViewController({ ...harness, prepareNavigation })
+    const url = 'http://127.0.0.1:4567/?token=runtime-token'
+
+    await controller.show(url, { x: 0, y: 0, width: 800, height: 600 })
+
+    expect(prepareNavigation).toHaveBeenCalledWith(harness.view, url)
+    expect(order).toEqual(['prepare', 'load'])
+  })
+
+  it('shares one preparation and navigation across concurrent show requests for the same URL', async () => {
+    const harness = makeHarness()
+    const finishPreparations: Array<() => void> = []
+    const prepareNavigation = vi.fn(() => new Promise<void>((resolve) => { finishPreparations.push(resolve) }))
+    const controller = new RuntimeViewController({ ...harness, prepareNavigation })
+    const url = 'http://127.0.0.1:4567/?token=runtime-token'
+
+    const first = controller.show(url, { x: 0, y: 0, width: 800, height: 600 })
+    await vi.waitFor(() => expect(prepareNavigation).toHaveBeenCalledTimes(1))
+    const second = controller.show(url, { x: 0, y: 0, width: 800, height: 600 })
+    finishPreparations.forEach((finish) => finish())
+    await Promise.all([first, second])
+
+    expect(prepareNavigation).toHaveBeenCalledTimes(1)
+    expect(harness.loadURL).toHaveBeenCalledTimes(1)
+  })
+
   it('reports a DSH boot-page plugin failure even when the WebContents navigation succeeds', async () => {
     const harness = makeHarness()
     const failure = 'Failed to load plugins\nfailed to import loader entry 7a2237f2 (mode-menu-plus)'

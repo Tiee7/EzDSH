@@ -297,6 +297,76 @@ describe('install state machine', () => {
     })
   })
 
+  it('exposes installed disabled profile plugins as recovery uninstall choices', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const service = makeService([], root, events, {}, undefined, {
+      install: async () => ({ packageName: 'mode-menu-plus', profile: 'web' }),
+      uninstall: async () => undefined,
+      listInstalledPlugins: async () => [{ packageName: 'mode-menu-plus', profile: 'web', version: '1.0.0', enabled: false }],
+    })
+
+    await expect(service.listRuntimePlugins()).resolves.toEqual([{
+      packageName: 'mode-menu-plus',
+      profile: 'web',
+      entryId: 'mode-menu-plus',
+      name: 'mode-menu-plus',
+      enabled: false,
+    }])
+  })
+
+  it('uninstalls an exact disabled profile plugin during recovery', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    await mkdir(join(root.registryPath, '..'), { recursive: true })
+    await writeFile(root.registryPath, JSON.stringify([{
+      kind: 'skill',
+      id: 'mode-menu',
+      version: '1.0.0',
+      sha256: '0'.repeat(64),
+      installedAt: '2026-09-10T00:00:00.000Z',
+      name: 'Mode Menu Plus',
+      pluginPackageName: 'mode-menu-plus',
+      pluginProfile: 'web',
+      enabled: false,
+    }]))
+    const removed: string[] = []
+    let installed = true
+    const service = makeService([], root, events, {}, undefined, {
+      install: async () => ({ packageName: 'mode-menu-plus', profile: 'web' }),
+      uninstall: async (record) => { removed.push(`${record.pluginProfile}:${record.pluginPackageName}`); installed = false },
+      listInstalledPlugins: async () => installed ? [
+        { packageName: 'mode-menu-plus', profile: 'desktop', version: '1.0.0', enabled: false },
+        { packageName: 'mode-menu-plus', profile: 'web', version: '1.0.0', enabled: false },
+      ] : [],
+    })
+
+    const result = await service.uninstallPluginForRecovery('mode-menu-plus', 'web')
+
+    expect(result.phase).toBe('done')
+    expect(removed).toEqual(['web:mode-menu-plus'])
+    expect((await service.listInstalled()).records).toEqual([])
+  })
+
+  it('keeps recovery uninstall scoped to the selected profile for unmanaged plugins', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const removed: string[] = []
+    const service = makeService([], root, events, {}, undefined, {
+      install: async () => ({ packageName: 'mode-menu-plus', profile: 'web' }),
+      uninstall: async (record) => { removed.push(`${record.pluginProfile}:${record.pluginPackageName}`) },
+      listInstalledPlugins: async () => [
+        { packageName: 'mode-menu-plus', profile: 'desktop', version: '1.0.0', enabled: false },
+        { packageName: 'mode-menu-plus', profile: 'web', version: '1.0.0', enabled: false },
+      ],
+    })
+
+    const result = await service.uninstallPluginForRecovery('mode-menu-plus', 'web')
+
+    expect(result.phase).toBe('done')
+    expect(removed).toEqual(['web:mode-menu-plus'])
+  })
+
   it('includes DSH profile plugins that were installed outside the EzDSH registry', async () => {
     const root = await tempRoot()
     const events: InstallState[] = []

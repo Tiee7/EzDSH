@@ -290,19 +290,27 @@ export class StoreService {
     return { records: merged }
   }
 
-  /** Active third-party DSH profile layers shown as choices after a Runtime boot failure. */
+  /** Installed third-party DSH profile layers shown as choices after a Runtime boot failure. */
   async listRuntimePlugins(): Promise<RuntimeFailurePlugin[]> {
-    const active = await this.pluginInstaller?.listActivePlugins?.() ?? []
+    const installed = this.pluginInstaller?.listInstalledPlugins !== undefined
+      ? await this.pluginInstaller.listInstalledPlugins()
+      : (await this.pluginInstaller?.listActivePlugins?.() ?? []).map((plugin) => ({
+          ...plugin,
+          version: 'unknown',
+          enabled: true,
+        }))
     let records: InstalledRecord[] = []
     if (this.registryPath !== undefined) records = await this.ensureRegistry().list()
-    return active.map((plugin) => {
+    return installed.map((plugin) => {
       const record = records.find((candidate) => candidate.kind === 'skill'
         && candidate.pluginPackageName === plugin.packageName
         && (candidate.pluginProfile ?? 'web') === plugin.profile)
       return {
         packageName: plugin.packageName,
         profile: plugin.profile,
-        ...(record === undefined ? {} : { entryId: record.id, name: record.name }),
+        entryId: record?.id ?? plugin.packageName,
+        name: record?.name ?? plugin.packageName,
+        enabled: plugin.enabled,
       }
     })
   }
@@ -320,6 +328,20 @@ export class StoreService {
         await registry.upsert({ ...record, enabled: false })
       }
     }
+  }
+
+  /** Remove an exact disabled third-party profile package while Runtime is unavailable. */
+  async uninstallPluginForRecovery(packageName: string, profile: string): Promise<InstallState> {
+    const record = (await this.listInstalled()).records.find((candidate) => candidate.kind === 'skill'
+      && candidate.pluginPackageName === packageName
+      && (candidate.pluginProfile ?? 'web') === profile)
+    if (record === undefined) {
+      return this.finish({ kind: 'skill', id: packageName, phase: 'failed', failureReason: 'conflict', message: `${packageName} is not installed in profile ${profile}` })
+    }
+    if (record.enabled !== false) {
+      return this.finish({ kind: 'skill', id: record.id, phase: 'failed', failureReason: 'conflict', message: 'Disable the plugin before uninstalling it from Recovery' })
+    }
+    return this.uninstall('skill', record.id, record)
   }
 
   /**
@@ -557,12 +579,12 @@ export class StoreService {
    * @param id - the entry id.
    * @returns the `done` state after removal, or `failed`.
    */
-  async uninstall(kind: StoreKind, id: string): Promise<InstallState> {
+  async uninstall(kind: StoreKind, id: string, exactRecord?: InstalledRecord): Promise<InstallState> {
     if (this.dshHome === undefined || this.registryPath === undefined) {
       throw new Error('Store uninstall is not available in this build')
     }
     const registry = this.ensureRegistry()
-    const record = await this.findInstalledRecord(kind, id)
+    const record = exactRecord ?? await this.findInstalledRecord(kind, id)
     if (record === undefined) {
       return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: `${id} is not installed` })
     }

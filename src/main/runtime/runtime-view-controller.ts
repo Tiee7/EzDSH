@@ -17,6 +17,8 @@ export interface RuntimeViewControllerOptions {
   createView(): RuntimeViewLike
   attach(view: RuntimeViewLike): void
   detach(view: RuntimeViewLike): void
+  /** Prepare the browser session before a new Runtime authentication URL is loaded. */
+  prepareNavigation?(view: RuntimeViewLike, runtimeUrl: string): Promise<void>
   /** Called when DSH's browser boot page reports a plugin-loading failure. */
   onBootFailure?: (message: string) => void
   bootFailurePollMs?: number
@@ -82,7 +84,10 @@ export class RuntimeViewController {
     }
 
     this.loadedRuntimeUrl = runtimeUrl
-    const navigation = view.webContents.loadURL(runtimeUrl)
+    const navigation = (async () => {
+      await this.options.prepareNavigation?.(view, runtimeUrl)
+      await view.webContents.loadURL(runtimeUrl)
+    })()
     this.navigation = navigation
     try {
       await navigation

@@ -24,6 +24,14 @@ export function recoveryVerificationLabel(
     : copy.settingsRecoveryVerify
 }
 
+export function recoveryVerificationClass(
+  snapshotName: string,
+  verification: RecoveryVerifyResult | undefined,
+): string {
+  if (verification?.snapshotName !== snapshotName) return ''
+  return verification.ok ? 'settings-recovery-verify-success' : 'settings-recovery-verify-failure'
+}
+
 /** User-facing manual backup, checksum verification, restore preview, and Session Log doctor. */
 export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
   const [snapshots, setSnapshots] = useState<RecoverySnapshot[]>([])
@@ -32,6 +40,7 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string>()
   const [error, setError] = useState<string>()
+  const [noteEditor, setNoteEditor] = useState<{ mode: 'create' | 'edit'; snapshot?: RecoverySnapshot; value: string }>()
 
   const refresh = useCallback(async (): Promise<void> => {
     setSnapshots(await window.EzDSH.recovery.listSnapshots())
@@ -41,14 +50,12 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
     void refresh().catch((reason) => setError(reason instanceof Error ? reason.message : copy.settingsRecoveryEmpty))
   }, [copy.settingsRecoveryEmpty, refresh])
 
-  const createSnapshot = async (): Promise<void> => {
+  const createSnapshot = async (note: string): Promise<void> => {
     if (busy) return
     setBusy(true)
     setError(undefined)
     setMessage(undefined)
     try {
-      const note = window.prompt(copy.settingsRecoveryNotePrompt, '')
-      if (note === null) return
       await window.EzDSH.recovery.createSnapshot(note)
       await refresh()
       setMessage(copy.settingsRecoveryCreated)
@@ -56,6 +63,7 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
       setError(reason instanceof Error ? reason.message : copy.settingsRecoveryEmpty)
     } finally {
       setBusy(false)
+      setNoteEditor(undefined)
     }
   }
 
@@ -63,6 +71,7 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
     if (busy) return
     setBusy(true)
     setError(undefined)
+    setVerification(undefined)
     try {
       setVerification(await window.EzDSH.recovery.verify(snapshotName))
     } catch (reason) {
@@ -107,15 +116,14 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
     }
   }
 
-  const editNote = async (snapshot: RecoverySnapshot): Promise<void> => {
+  const editNote = async (snapshot: RecoverySnapshot, note: string): Promise<void> => {
     if (busy) return
     const updateNoteApi: unknown = window.EzDSH.recovery.updateSnapshotNote
     if (!recoveryUpdateNoteApiAvailable(updateNoteApi)) {
       setError(copy.settingsRecoveryBridgeOutdated)
+      setNoteEditor(undefined)
       return
     }
-    const note = window.prompt(copy.settingsRecoveryEditNotePrompt, snapshot.manifest.note ?? '')
-    if (note === null) return
     setBusy(true)
     setError(undefined)
     try {
@@ -126,6 +134,7 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
       setError(reason instanceof Error ? reason.message : copy.settingsRecoveryEmpty)
     } finally {
       setBusy(false)
+      setNoteEditor(undefined)
     }
   }
 
@@ -161,7 +170,7 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
         </div>
       </div>
       <div className="settings-recovery-actions">
-        <button className="settings-action settings-action-primary" type="button" disabled={busy} onClick={() => { void createSnapshot() }}>
+        <button className="settings-action settings-action-primary" type="button" disabled={busy} onClick={() => { setError(undefined); setMessage(undefined); setNoteEditor({ mode: 'create', value: '' }) }}>
           {busy ? copy.settingsRecoveryCreating : copy.settingsRecoveryCreate}
         </button>
         <button className="settings-action" type="button" disabled={busy} onClick={() => { void inspectSessions() }}>
@@ -173,6 +182,37 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
       </div>
       {message ? <p className="settings-recovery-message" role="status">{message}</p> : null}
       {error ? <p className="settings-error settings-recovery-message" role="alert">{error}</p> : null}
+      {noteEditor ? (
+        <div className="settings-recovery-note-editor" role="dialog" aria-modal="true" aria-labelledby="settings-recovery-note-title">
+          <div className="settings-recovery-note-editor-card">
+            <h2 id="settings-recovery-note-title">
+              {noteEditor.mode === 'create' ? copy.settingsRecoveryNotePrompt : copy.settingsRecoveryEditNotePrompt}
+            </h2>
+            <textarea
+              className="settings-recovery-note-input"
+              value={noteEditor.value}
+              onChange={(event) => { setNoteEditor((current) => current ? { ...current, value: event.target.value } : current) }}
+              rows={3}
+              autoFocus
+              disabled={busy}
+            />
+            <div className="settings-recovery-note-actions">
+              <button className="settings-action" type="button" disabled={busy} onClick={() => { setNoteEditor(undefined) }}>{copy.settingsRecoveryNoteCancel}</button>
+              <button
+                className="settings-action settings-action-primary"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  if (noteEditor.mode === 'create') void createSnapshot(noteEditor.value)
+                  else if (noteEditor.snapshot !== undefined) void editNote(noteEditor.snapshot, noteEditor.value)
+                }}
+              >
+                {noteEditor.mode === 'create' ? copy.settingsRecoveryCreate : copy.settingsRecoveryNoteSave}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {verification ? <p className={`settings-recovery-message ${verification.ok ? '' : 'settings-error'}`} role="status">{copy.settingsRecoveryVerified(verification.ok)}</p> : null}
       {doctor ? <p className={`settings-recovery-message ${doctor.issues.length === 0 ? '' : 'settings-error'}`} role="status">{copy.settingsRecoveryIssues(doctor.issues.length)}</p> : null}
       <div className="settings-recovery-list">
@@ -180,14 +220,32 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
           <div key={snapshot.archiveName} className="settings-recovery-row">
             <div className="settings-item-text">
               <code className="settings-value settings-recovery-name">{snapshot.archiveName}</code>
-              <p className="settings-hint">{snapshot.manifest.kind} · {snapshot.manifest.createdAt} · EzDSH {snapshot.manifest.appVersion}</p>
-               <p className="settings-hint">{snapshot.manifest.note ?? copy.settingsRecoveryNoteEmpty}</p>
+              <p className="settings-hint">{snapshot.manifest.kind} · {snapshot.manifest.createdAt} · v{snapshot.manifest.appVersion}</p>
+              {snapshot.manifest.note ? <p className="settings-hint">{snapshot.manifest.note}</p> : null}
             </div>
             <div className="settings-actions">
-              <button className="settings-action" type="button" disabled={busy} onClick={() => { void verify(snapshot.archiveName) }}>{recoveryVerificationLabel(copy, snapshot.archiveName, verification)}</button>
-              <button className="settings-action" type="button" disabled={busy} onClick={() => { void editNote(snapshot) }}>{copy.settingsRecoveryEditNote}</button>
-               <button className="settings-action" type="button" disabled={busy} onClick={() => { void restore(snapshot) }}>{copy.settingsRecoveryRestore}</button>
-              <button className="settings-action settings-action-danger" type="button" disabled={busy} onClick={() => { void deleteSnapshot(snapshot) }}>{copy.settingsRecoveryDelete}</button>
+              <button
+                className={`settings-action ${recoveryVerificationClass(snapshot.archiveName, verification)}`}
+                type="button"
+                disabled={busy}
+                onClick={() => { void verify(snapshot.archiveName) }}
+              >
+                {recoveryVerificationLabel(copy, snapshot.archiveName, verification)}
+              </button>
+              <button className="settings-action" type="button" disabled={busy} onClick={() => { setError(undefined); setMessage(undefined); setNoteEditor({ mode: 'edit', snapshot, value: snapshot.manifest.note ?? '' }) }}>{copy.settingsRecoveryEditNote}</button>
+              <button className="settings-action" type="button" disabled={busy} onClick={() => { void restore(snapshot) }}>{copy.settingsRecoveryRestore}</button>
+              <button
+                className="settings-action settings-action-danger settings-recovery-delete-button"
+                type="button"
+                disabled={busy}
+                onClick={() => { void deleteSnapshot(snapshot) }}
+                aria-label={copy.settingsRecoveryDelete}
+                title={copy.settingsRecoveryDelete}
+              >
+                <svg className="settings-recovery-delete-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M5 7h14m-9 4v5m4-5v5M9 4h6l1 3H8l1-3Zm-4 3h14l-1 13H6L5 7Z" />
+                </svg>
+              </button>
             </div>
           </div>
         ))}

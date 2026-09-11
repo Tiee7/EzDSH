@@ -281,6 +281,7 @@ export interface EzDSHBridge {
     exitSafeMode(): Promise<RuntimeSnapshot>
     rollbackPendingPlugin(): Promise<RecoveryRestoreResult>
     disablePlugin(packageName: string, profile: string): Promise<RuntimeSnapshot>
+    uninstallPlugin(packageName: string, profile: string): Promise<RuntimeSnapshot>
     resolve(): Promise<void>
     openDirectory(): Promise<void>
     onStateChange(listener: (state: RecoveryState) => void): () => void

@@ -139,12 +139,13 @@ export interface RecoveryTransaction {
   error?: string
 }
 
-/** A currently active third-party profile layer that can be disabled after a boot failure. */
+/** An installed third-party profile layer that can be disabled or removed after a boot failure. */
 export interface RuntimeFailurePlugin {
   packageName: string
   profile: string
   entryId?: string
   name?: string
+  enabled?: boolean
 }
 
 export interface RuntimeFailure {
@@ -551,10 +552,31 @@ export class RecoveryManager {
     return this.snapshot()
   }
 
+  /** Remember the exact plugin disabled from Recovery so a failed retry can offer uninstall. */
+  async markRuntimePluginDisabled(packageName: string, profile: string): Promise<RecoveryState> {
+    const runtimeFailure = this.current.runtimeFailure
+    if (runtimeFailure === undefined) throw new Error('No Runtime plugin failure is available')
+    const plugins = runtimeFailure.plugins.map((plugin) => plugin.packageName === packageName && plugin.profile === profile
+      ? { ...plugin, enabled: false }
+      : { ...plugin })
+    if (!plugins.some((plugin) => plugin.packageName === packageName && plugin.profile === profile && plugin.enabled === false)) {
+      throw new Error(`Plugin ${packageName} is not a current recovery choice`)
+    }
+    this.publish({
+      ...this.current,
+      runtimeFailure: { ...runtimeFailure, plugins },
+    })
+    return this.snapshot()
+  }
+
   /** Record a normal Runtime boot failure and expose active plugins as user choices. */
   async markRuntimeFailure(error: string, plugins: readonly RuntimeFailurePlugin[] = [], logPath?: string): Promise<RecoveryState> {
     if (this.current.pendingTransaction !== undefined) return this.markBootFailure(error)
     const unique = new Map<string, RuntimeFailurePlugin>()
+    for (const plugin of this.current.runtimeFailure?.plugins ?? []) {
+      if (plugin.enabled !== false) continue
+      unique.set(`${plugin.profile}:${plugin.packageName}`, { ...plugin })
+    }
     for (const plugin of plugins) {
       const key = `${plugin.profile}:${plugin.packageName}`
       if (!unique.has(key)) unique.set(key, { ...plugin })

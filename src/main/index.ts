@@ -534,6 +534,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     command: runtimeCommandPath,
     appVersion: app.getVersion(),
     runtimeVersion: dshRuntimeVersion,
+    patchPaths: [join(app.getAppPath(), 'plugins', 'chat-search', 'cordis.patch.yml')],
     runtimeOwnership: runtimeOwnershipStore,
     getEnvironment: () => proxyService?.getRuntimeEnvironment() ?? { ...process.env },
     beforeStart: async () => {
@@ -2211,7 +2212,26 @@ function registerIpcHandlers(): void {
       if (typeof packageName !== 'string' || typeof profile !== 'string') throw new Error('Invalid plugin recovery input')
       await runtimeManager.stop()
       await storeService.disablePluginForRecovery(packageName, profile)
+      await recoveryManager.markRuntimePluginDisabled(packageName, profile)
       await safeModeController.disable()
+      const runtime = await runtimeManager.start({ mode: 'normal' })
+      await recoveryManager.resolveRecovery()
+      return success(runtime)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('recovery:uninstall-plugin', async (_event, packageName: string, profile: string): Promise<IpcResult<RuntimeSnapshot>> => {
+    try {
+      if (storeService === undefined || safeModeController === undefined || runtimeManager === undefined || recoveryManager === undefined) {
+        throw new Error('Plugin recovery is not ready')
+      }
+      if (typeof packageName !== 'string' || typeof profile !== 'string') throw new Error('Invalid plugin recovery input')
+      await runtimeManager.stop()
+      const result = await storeService.uninstallPluginForRecovery(packageName, profile)
+      if (result.phase !== 'done') throw new Error(result.message ?? `Failed to uninstall ${packageName}`)
+      await safeModeController.disable()
+      await recoveryManager.resolveRecovery()
       const runtime = await runtimeManager.start({ mode: 'normal' })
       await recoveryManager.resolveRecovery()
       return success(runtime)
@@ -2465,6 +2485,19 @@ function createRuntimeViewController(window: BrowserWindow): RuntimeViewControll
         return { action: 'deny' }
       })
       return view
+    },
+    prepareNavigation: async (view, runtimeUrl) => {
+      const contents = (view as WebContentsView).webContents
+      const parsed = new URL(runtimeUrl)
+      const cookies = await contents.session.cookies.get({ domain: parsed.hostname })
+      const staleRuntimeCookies = cookies.filter((cookie) => cookie.name.startsWith('dsh-auth-'))
+      await Promise.all(staleRuntimeCookies.map(async (cookie) => {
+        const cookiePath = cookie.path?.startsWith('/') === true ? cookie.path : '/'
+        await contents.session.cookies.remove(new URL(cookiePath, parsed.origin).href, cookie.name)
+      }))
+      if (staleRuntimeCookies.length > 0) {
+        console.info(`[runtime-view] cleared ${String(staleRuntimeCookies.length)} stale authentication cookies`)
+      }
     },
     attach: (view: RuntimeViewLike) => {
       if (!window.isDestroyed()) window.contentView.addChildView(view as WebContentsView)

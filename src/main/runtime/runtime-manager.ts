@@ -87,6 +87,8 @@ export interface RuntimeManagerOptions {
   allocatePort?: () => Promise<number>
   runtimeOwnership?: RuntimeOwnershipStore
   getEnvironment?: () => NodeJS.ProcessEnv
+  /** Additional patch layers mounted for ordinary Runtime launches. */
+  patchPaths?: readonly string[]
   /** Run app-level compatibility repairs before spawning the DSH child. */
   beforeStart?: () => Promise<void>
 }
@@ -281,9 +283,13 @@ export class RuntimeManager {
       `DSH_HOME=${this.launchContext.dshHome}`,
       '',
     ].join('\n'), processLogStream)
+    const patchArgs = this.launchContext.mode === 'normal'
+      ? (this.config.patchPaths ?? []).flatMap((path) => ['--patch', path])
+      : []
+    const webArgs = ['web', ...patchArgs, '--host', '127.0.0.1', '--port', String(port), '--no-open']
     const args = command === process.execPath
-      ? ['--expose-internals', this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
-      : [this.config.runtimeEntryPath, 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open']
+      ? ['--expose-internals', this.config.runtimeEntryPath, ...webArgs]
+      : [this.config.runtimeEntryPath, ...webArgs]
     const inheritedEnvironment = { ...(this.config.getEnvironment?.() ?? process.env) }
     if (command !== process.execPath) delete inheritedEnvironment.ELECTRON_RUN_AS_NODE
     const spawnOptions: SpawnOptions = {

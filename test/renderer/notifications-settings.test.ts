@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SETTINGS_TAB_IDS } from '../../src/renderer/settings/settings-navigation.js'
 import { notificationPreviewSound } from '../../src/renderer/notifications/audio.js'
 import { DEFAULT_NOTIFICATION_SETTINGS } from '../../src/shared/notifications.js'
-import { recoveryDeleteApiAvailable, recoveryVerificationLabel } from '../../src/renderer/settings/RecoverySection.js'
+import { recoveryDeleteApiAvailable, recoveryVerificationClass, recoveryVerificationLabel } from '../../src/renderer/settings/RecoverySection.js'
 import { getAppCopy } from '../../src/shared/locale.js'
 
 describe('notification settings navigation', () => {
@@ -39,7 +39,7 @@ describe('recovery verification action', () => {
   it('changes the action label to the result for the verified snapshot', () => {
     const copy = getAppCopy('zh')
 
-    expect(recoveryVerificationLabel(copy, 'snapshot-a', undefined)).toBe('校验备份')
+    expect(recoveryVerificationLabel(copy, 'snapshot-a', undefined)).toBe('校验')
     expect(recoveryVerificationLabel(copy, 'snapshot-a', {
       ok: true,
       snapshotName: 'snapshot-a',
@@ -51,7 +51,23 @@ describe('recovery verification action', () => {
       snapshotName: 'snapshot-a',
       expectedSha256: 'expected',
       actualSha256: 'expected',
-    })).toBe('校验备份')
+    })).toBe('校验')
+  })
+
+  it('colors the completed verification action by its result', () => {
+    expect(recoveryVerificationClass('snapshot-a', undefined)).toBe('')
+    expect(recoveryVerificationClass('snapshot-a', {
+      ok: true,
+      snapshotName: 'snapshot-a',
+      expectedSha256: 'expected',
+      actualSha256: 'expected',
+    })).toBe('settings-recovery-verify-success')
+    expect(recoveryVerificationClass('snapshot-a', {
+      ok: false,
+      snapshotName: 'snapshot-a',
+      expectedSha256: 'expected',
+      actualSha256: 'actual',
+    })).toBe('settings-recovery-verify-failure')
   })
 
   it('detects when an older Preload bridge cannot delete snapshots', () => {

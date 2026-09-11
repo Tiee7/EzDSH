@@ -40,6 +40,25 @@ function createManager(layout: ReturnType<typeof getUserDataLayout>, overrides: 
 }
 
 describe('RecoveryManager', () => {
+  it('keeps only the plugin disabled from Recovery as an uninstall choice after retry fails', async () => {
+    const layout = await createFixture()
+    const manager = createManager(layout)
+    await manager.markRuntimeFailure('first failure', [
+      { packageName: 'suspect-plugin', profile: 'web', name: 'Suspect Plugin', enabled: true },
+      { packageName: 'other-plugin', profile: 'web', name: 'Other Plugin', enabled: true },
+    ])
+
+    await manager.markRuntimePluginDisabled('suspect-plugin', 'web')
+    await manager.markRuntimeFailure('retry failure', [
+      { packageName: 'other-plugin', profile: 'web', name: 'Other Plugin', enabled: true },
+    ])
+
+    expect(manager.snapshot().runtimeFailure?.plugins).toEqual([
+      { packageName: 'suspect-plugin', profile: 'web', name: 'Suspect Plugin', enabled: false },
+      { packageName: 'other-plugin', profile: 'web', name: 'Other Plugin', enabled: true },
+    ])
+  })
+
   it('creates a checksummed snapshot with an inventory and a local credential vault', async () => {
     const layout = await createFixture()
     const manager = createManager(layout)

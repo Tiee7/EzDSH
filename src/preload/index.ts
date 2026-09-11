@@ -326,6 +326,7 @@ const bridge: EzDSHBridge = {
     exitSafeMode: () => invoke('recovery:exit-safe-mode'),
     rollbackPendingPlugin: () => invoke<RecoveryRestoreResult>('recovery:rollback-pending-plugin'),
     disablePlugin: (packageName: string, profile: string) => invoke<RuntimeSnapshot>('recovery:disable-plugin', packageName, profile),
+    uninstallPlugin: (packageName: string, profile: string) => invoke<RuntimeSnapshot>('recovery:uninstall-plugin', packageName, profile),
     resolve: () => invoke<void>('recovery:resolve'),
     openDirectory: () => invoke<void>('recovery:open-directory'),
     onStateChange: (listener: (state: RecoveryState) => void) => {
