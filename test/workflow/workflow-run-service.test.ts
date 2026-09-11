@@ -214,6 +214,7 @@ async function createNodeService(options: {
   executeSubWorkflow?: (workflowId: string, input: any, waitForCompletion: boolean) => Promise<any>
 }): Promise<{
   service: WorkflowRunService
+  workflowStore: WorkflowStore
   workflowId: string
   sendPrompt: ReturnType<typeof vi.fn>
   createSession: ReturnType<typeof vi.fn>
@@ -258,7 +259,7 @@ async function createNodeService(options: {
     mcpClient: { call: mcpCall },
     executeSubWorkflow: options.executeSubWorkflow,
   })
-  return { service, workflowId: workflow.id, sendPrompt, createSession, complete, mcpCall, archiveSession, selectSessionModel }
+  return { service, workflowStore, workflowId: workflow.id, sendPrompt, createSession, complete, mcpCall, archiveSession, selectSessionModel }
 }
 
 async function eventually(service: WorkflowRunService, runId: string): Promise<NonNullable<ReturnType<WorkflowRunService['get']>>> {
@@ -484,16 +485,22 @@ describe('workflow run service', () => {
     expect(complete).toHaveBeenCalledTimes(2)
   })
 
-  it('runs a selected sub-workflow and returns its output', async () => {
-    const executeSubWorkflow = vi.fn(async (workflowId: string, input: unknown, waitForCompletion: boolean) => ({ workflowId, input, waitForCompletion, result: 'child-output' }))
-    const { service, workflowId } = await createNodeService({
+  it('runs a stored sub-workflow with inherited permissions and model selection', async () => {
+    const { service, workflowId, workflowStore } = await createNodeService({
       node: { id: 'sub', type: 'sub-workflow', label: 'Sub workflow', config: { workflowId: 'child-workflow', waitForCompletion: true }, position: { x: 200, y: 0 } },
-      executeSubWorkflow,
     })
-    const result = await eventually(service, (await service.start(workflowId, 'hello')).id)
-    expect(result.status).toBe('completed')
-    expect(result.output).toEqual({ workflowId: 'child-workflow', input: 'hello', waitForCompletion: true, result: 'child-output' })
-    expect(executeSubWorkflow).toHaveBeenCalledWith('child-workflow', 'hello', true, undefined, { allowShellFile: false, allowCode: false })
+    await workflowStore.create({
+      id: 'child-workflow', name: 'Child', description: '',
+      nodes: [graph().nodes[0]!, graph().nodes[4]!],
+      edges: [{ id: 'direct', source: 'input', target: 'output' }],
+    })
+    const model = { providerId: 'provider', modelId: 'model' }
+    try {
+      const result = await eventually(service, (await service.start(workflowId, 'hello', { allowCode: true, allowShellFile: true, model })).id)
+      expect(result.status).toBe('completed')
+      expect(result.output).toBe('hello')
+      expect(service.list('child-workflow')[0]).toMatchObject({ status: 'completed', input: 'hello', allowCode: true, allowShellFile: true, model })
+    } finally { await service.stop() }
   })
 
   it('builds objects, filters lists, and merges inputs deterministically', async () => {

@@ -78,7 +78,7 @@ export interface WorkflowRunServiceOptions {
   resolveReleasedWorkflow?: (releaseId: string) => WorkflowRelease | undefined
   /** Current Main-process environment policy; omitted only by compatibility embeddings. */
   resolveWorkflowEnvironment?: (environmentId: string) => WorkflowCustomerEnvironment | undefined
-  /** Executes a referenced workflow and returns its final output. */
+  /** Compatibility executor for explicitly declared compensation workflows. */
   executeSubWorkflow?: (workflowId: string, input: WorkflowValue, waitForCompletion: boolean, version?: number | 'latest', options?: WorkflowRunOptions) => Promise<WorkflowValue>
   internalSessionStore?: WorkflowInternalSessionStore
 }
@@ -112,6 +112,7 @@ interface ActiveRun {
 export class WorkflowRunService {
   private readonly listeners = new Set<RunListener>()
   private readonly active = new Map<string, ActiveRun>()
+  private readonly liveLineages = new Map<string, readonly string[]>()
   private readonly adapter: DshWorkflowAdapter
   private readonly lightweightClient: Pick<WorkflowLightweightClient, 'complete'>
   private readonly mcpClient: Pick<WorkflowMcpClient, 'call'>
@@ -227,6 +228,58 @@ export class WorkflowRunService {
     const release = this.resolveReleasedWorkflowOrThrow(releaseId)
     if (release.status !== 'published') throw new Error('只能启动已发布的 workflow release')
     return this.startReleasedDefinition(release.id, release.workflowSnapshot, input, options, release)
+  }
+
+  /** Execute a live child in the caller's slot, or enqueue an asynchronous child. */
+  async executeSubWorkflow(
+    workflowId: string,
+    input: WorkflowValue,
+    waitForCompletion: boolean,
+    version?: number | 'latest',
+    options: WorkflowRunOptions = {},
+    parentRunId?: string,
+  ): Promise<WorkflowValue> {
+    await this.initialize()
+    if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
+    const parent = parentRunId === undefined ? undefined : this.options.runStore.get(parentRunId)
+    const lineage = parent === undefined ? [] : this.liveLineages.get(parent.id) ?? [parent.workflowId]
+    if (lineage.includes(workflowId)) throw new Error(`不允许递归调用子工作流：${[...lineage, workflowId].join(' → ')}`)
+    const workflow = this.options.workflowStore.get(workflowId)
+    if (workflow === undefined) throw new Error(`子工作流不存在：${workflowId}`)
+    if (typeof version === 'number' && workflow.revision !== version) throw new Error(`子工作流版本不匹配：需要 v${version}，当前为 v${workflow.revision}。`)
+    assertValidWorkflow(workflow, '启动子工作流')
+    const parentActive = parentRunId === undefined ? undefined : this.active.get(parentRunId)
+    throwIfAborted(parentActive?.abortController.signal)
+    const child = this.createRecord(workflow, input, options)
+    this.liveLineages.set(child.id, [...lineage, workflow.id])
+    if (!waitForCompletion) {
+      const enqueued = await this.enqueue(child, '子运行已排队')
+      this.worker.wake()
+      return { runId: enqueued.id }
+    }
+    // Persist as running so even an idle Worker's polling cannot claim this
+    // inline run while its caller is saving the creation event.
+    child.status = 'running'
+    await this.save(child, 'run-created', '同步子运行已创建')
+    for (;;) {
+      await this.execute(child.id, undefined, undefined, parentActive)
+      const settled = this.options.runStore.get(child.id)
+      if (settled === undefined) throw new Error(`Workflow run not found: ${child.id}`)
+      if (settled.status === 'completed') return settled.output ?? null
+      if (settled.status !== 'queued') throw new Error(settled.error ?? '子工作流执行失败。')
+      // A retry yields the child, but the parent's Worker slot still belongs
+      // to this call. Resume the same run when due instead of queueing behind it.
+      const delayMs = Math.max(0, Date.parse(settled.queue?.availableAt ?? '') - Date.now())
+      try {
+        const signal = parentActive?.abortController.signal ?? new AbortController().signal
+        throwIfAborted(signal)
+        await waitForWorkflowDuration(delayMs, signal)
+        throwIfAborted(signal)
+      } catch (error) {
+        await this.cancel(child.id)
+        throw error
+      }
+    }
   }
 
   async resume(runId: string): Promise<WorkflowRunRecord> {
@@ -786,7 +839,7 @@ export class WorkflowRunService {
     await this.save(record, 'run-failed', record.error)
   }
 
-  private async execute(runId: string, expectedLease?: WorkflowRunLease, leaseSignal?: AbortSignal): Promise<void> {
+  private async execute(runId: string, expectedLease?: WorkflowRunLease, leaseSignal?: AbortSignal, parentActive?: ActiveRun): Promise<void> {
     const active: ActiveRun = { cancelled: false, leaseLost: false, abortController: new AbortController(), sessionIds: new Set(), archivedSessionIds: new Set(), sessionKeys: new Map() }
     const onLeaseLost = (): void => {
       active.leaseLost = true
@@ -796,6 +849,15 @@ export class WorkflowRunService {
     }
     if (leaseSignal?.aborted === true) onLeaseLost()
     else leaseSignal?.addEventListener('abort', onLeaseLost, { once: true })
+    const parentSignal = parentActive?.abortController.signal
+    const onParentAbort = (): void => {
+      active.cancelled = true
+      active.pauseRequested = parentActive?.pauseRequested
+      active.abortController.abort()
+      void this.cancelInternalSessions(active)
+    }
+    if (parentSignal?.aborted === true) onParentAbort()
+    else parentSignal?.addEventListener('abort', onParentAbort, { once: true })
     this.active.set(runId, active)
     try {
       const record = this.options.runStore.get(runId)
@@ -920,8 +982,11 @@ export class WorkflowRunService {
       await this.save(record, 'run-failed', record.error)
     } finally {
       leaseSignal?.removeEventListener('abort', onLeaseLost)
+      parentSignal?.removeEventListener('abort', onParentAbort)
       await this.archiveInternalSessions(runId, active).catch(() => undefined)
       this.active.delete(runId)
+      const status = this.options.runStore.get(runId)?.status
+      if (status === 'completed' || status === 'cancelled') this.liveLineages.delete(runId)
     }
   }
 
@@ -1259,13 +1324,13 @@ export class WorkflowRunService {
     allowCode: boolean,
     record: WorkflowRunRecord,
   ): Promise<WorkflowValue> {
-    if (this.options.executeSubWorkflow === undefined) throw new Error('子工作流执行器不可用。')
-    return this.options.executeSubWorkflow(
+    return this.executeSubWorkflow(
       node.config.workflowId,
       childInput,
       node.config.waitForCompletion !== false,
       node.config.version,
       { allowShellFile, allowCode, connectorGrants: record.connectorGrants, ...(record.model === undefined ? {} : { model: record.model }) },
+      record.id,
     )
   }
 

@@ -697,20 +697,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     allowLegacyHttp: false,
     executeSubWorkflow: async (childWorkflowId, input, waitForCompletion, version, childOptions) => {
       if (workflowRunService === undefined) throw new Error('Workflow service is not ready')
-      if (workflowStore === undefined) throw new Error('Workflow store is not ready')
-      const childDefinition = workflowStore.get(childWorkflowId)
-      if (childDefinition === undefined) throw new Error(`子工作流不存在：${childWorkflowId}`)
-      if (typeof version === 'number' && childDefinition.revision !== version) throw new Error(`子工作流版本不匹配：需要 v${version}，当前为 v${childDefinition.revision}。`)
-      const child = await workflowRunService.start(childWorkflowId, input, { ...(childOptions ?? {}), ...(typeof version === 'number' ? { workflowRevision: version } : {}) })
-      if (!waitForCompletion) return { runId: child.id }
-      const deadline = Date.now() + 10 * 60 * 1_000
-      while (Date.now() < deadline) {
-        const current = workflowRunService.get(child.id)
-        if (current?.status === 'completed') return current.output ?? null
-        if (current?.status === 'failed' || current?.status === 'cancelled') throw new Error(current.error ?? '子工作流执行失败。')
-        await new Promise((resolve) => setTimeout(resolve, 50))
-      }
-      throw new Error('子工作流执行超时。')
+      return workflowRunService.executeSubWorkflow(childWorkflowId, input, waitForCompletion, version, childOptions)
     },
     internalSessionStore: new WorkflowInternalSessionStore(layout.state),
   })
