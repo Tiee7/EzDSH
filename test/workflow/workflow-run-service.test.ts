@@ -2010,6 +2010,10 @@ describe('workflow run service', () => {
   it('deletes completed run history and rejects active run deletion', async () => {
     const { service, workflowId } = await createNodeService({ node: { id: 'transform', type: 'transform', label: 'Transform', config: { template: 'identity' }, position: { x: 200, y: 0 } } })
     const completed = await eventually(service, (await service.start(workflowId, 'delete me')).id)
+    // A terminal record is persisted before markLastRun/session cleanup. Drain
+    // the Worker so this assertion targets completed history, not that window.
+    await service.stop()
+    expect(service.get(completed.id)?.status).toBe('completed')
 
     await service.remove(completed.id)
     expect(service.get(completed.id)).toBeUndefined()
@@ -2028,17 +2032,10 @@ describe('workflow run service', () => {
   it('deletes a workflow only after confirming it has no active run records', async () => {
     const { service, workflowId } = await createNodeService({ node: { id: 'transform', type: 'transform', label: 'Transform', config: { template: 'identity' }, position: { x: 200, y: 0 } } })
     const completed = await eventually(service, (await service.start(workflowId, 'delete with workflow')).id)
+    await service.stop()
+    expect(service.get(completed.id)?.status).toBe('completed')
 
-    let removed = 0
-    for (let attempt = 0; attempt < 50 && removed === 0; attempt += 1) {
-      try {
-        removed = await service.removeForWorkflow(workflowId)
-      } catch (error) {
-        if (!(error instanceof Error) || !/完成收尾前不能删除/u.test(error.message)) throw error
-        await new Promise((resolve) => setTimeout(resolve, 2))
-      }
-    }
-    expect(removed).toBe(1)
+    expect(await service.removeForWorkflow(workflowId)).toBe(1)
     expect(service.get(completed.id)).toBeUndefined()
 
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-active-delete-workflow-'))
@@ -2084,17 +2081,9 @@ describe('workflow run service', () => {
 
       allowMarkLastRun()
       await markedLastRun
-      let removed = false
-      for (let attempt = 0; attempt < 50 && !removed; attempt += 1) {
-        try {
-          await service.removeWorkflow(workflow.id)
-          removed = true
-        } catch (error) {
-          if (!(error instanceof Error) || !/仍在执行/u.test(error.message)) throw error
-          await new Promise((resolve) => setTimeout(resolve, 2))
-        }
-      }
-      expect(removed).toBe(true)
+      await service.stop()
+      expect(runStore.get(started.id)?.status).toBe('completed')
+      await service.removeWorkflow(workflow.id)
       expect(workflowStore.get(workflow.id)).toBeUndefined()
       expect(runStore.list(workflow.id)).toHaveLength(0)
 
