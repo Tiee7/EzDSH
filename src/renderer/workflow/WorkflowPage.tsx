@@ -2712,6 +2712,7 @@ function nodeStatusLabel(status: WorkflowNodeRunStatus, copy: AppCopy): string {
 }
 
 type WorkflowWorkspaceView = 'editor' | 'executions'
+type WorkflowRunDefinitionStatus = 'idle' | 'loading' | 'available' | 'unavailable'
 
 interface WorkflowRunSetup {
   workflowId: string
@@ -2762,6 +2763,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [workflowRunSummaries, setWorkflowRunSummaries] = useState<Record<string, WorkflowRunSummary>>({})
   const [viewedRunIds, setViewedRunIds] = useState<Set<string>>(() => readViewedWorkflowRunIds())
   const [currentRun, setCurrentRun] = useState<WorkflowRunRecord>()
+  const [currentRunDefinition, setCurrentRunDefinition] = useState<WorkflowDefinition>()
+  const [currentRunDefinitionStatus, setCurrentRunDefinitionStatus] = useState<WorkflowRunDefinitionStatus>('idle')
   const [selectedRunNodeId, setSelectedRunNodeId] = useState<string>()
   const [showRunSidebar, setShowRunSidebar] = useState(true)
   const [runDeleteUnlocked, setRunDeleteUnlocked] = useState(false)
@@ -2786,6 +2789,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const executionMainRef = useRef<HTMLDivElement>(null)
   const executionResizeRef = useRef<{ startY: number; startHeight: number }>()
   const currentRunRef = useRef<WorkflowRunRecord>()
+  const runDefinitionGenerationRef = useRef(0)
   const selectedWorkflowIdRef = useRef<string>()
   const knownRunsByWorkflowRef = useRef(new Map<string, Map<string, WorkflowRunRecord>>())
   const workflowRunChangesRef = useRef(new Map<string, Map<string, { sequence: number; record?: WorkflowRunRecord; deleted?: true }>>())
@@ -3094,22 +3098,52 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     markRunViewed(run)
   }, [active, markRunViewed, workspaceView])
 
+  const inspectRun = useCallback((run: WorkflowRunRecord | undefined): void => {
+    const generation = ++runDefinitionGenerationRef.current
+    currentRunRef.current = run
+    setCurrentRun(run)
+    setSelectedRunNodeId(undefined)
+    setCurrentRunDefinition(undefined)
+    if (run === undefined) {
+      setCurrentRunDefinitionStatus('idle')
+      return
+    }
+    setCurrentRunDefinitionStatus('loading')
+    void window.EzDSH.workflows.getRunDefinition(run.id).then((definition) => {
+      if (!workflowPageMountedRef.current || generation !== runDefinitionGenerationRef.current || currentRunRef.current?.id !== run.id) return
+      if (definition === undefined || definition.id !== run.workflowId || definition.revision !== run.workflowRevision) {
+        setCurrentRunDefinitionStatus('unavailable')
+        return
+      }
+      setCurrentRunDefinition(definition)
+      setCurrentRunDefinitionStatus('available')
+    }).catch(() => {
+      if (!workflowPageMountedRef.current || generation !== runDefinitionGenerationRef.current || currentRunRef.current?.id !== run.id) return
+      setCurrentRunDefinitionStatus('unavailable')
+    })
+  }, [])
+
   useEffect(() => {
     const unsubscribe = window.EzDSH.workflows.onStateChange((record) => {
       const known = recordLiveWorkflowRun(record)
       const nextObserved = known.find((candidate) => candidate.id === record.id) ?? record
-      if (selectedWorkflowIdRef.current !== record.workflowId) {
-        refreshUnselectedRunSummary(nextObserved)
-        return
-      }
-      setRuns(known)
-      updateRunSummary(record.workflowId, known)
       const inspected = currentRunRef.current
       if (inspected?.id === record.id && inspected.workflowId === record.workflowId) {
         const next = chooseFresherWorkflowRun(inspected, nextObserved)
         currentRunRef.current = next
         setCurrentRun(next)
       }
+      if (selectedWorkflowIdRef.current !== record.workflowId) {
+        if (selectedWorkflowIdRef.current === undefined && inspected?.id === record.id) {
+          setRuns(known)
+          updateRunSummary(record.workflowId, known)
+          return
+        }
+        refreshUnselectedRunSummary(nextObserved)
+        return
+      }
+      setRuns(known)
+      updateRunSummary(record.workflowId, known)
     })
     return unsubscribe
   }, [recordLiveWorkflowRun, refreshUnselectedRunSummary, updateRunSummary])
@@ -3148,13 +3182,14 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   useEffect(() => { setNodeInspectorTab('settings') }, [selectedNodeId])
   useEffect(() => { currentRunRef.current = currentRun }, [currentRun])
   useEffect(() => { setRunDeleteUnlocked(false) }, [selected?.id])
+  const executionDefinition = currentRunDefinitionStatus === 'available' ? currentRunDefinition : undefined
   const currentRunNodeDetail = useMemo(
-    () => selected === undefined || currentRun === undefined ? undefined : getWorkflowNodeRunDetail(selected, currentRun, selectedRunNodeId),
-    [currentRun, selected, selectedRunNodeId],
+    () => executionDefinition === undefined || currentRun === undefined ? undefined : getWorkflowNodeRunDetail(executionDefinition, currentRun, selectedRunNodeId),
+    [currentRun, executionDefinition, selectedRunNodeId],
   )
 
-  const executionLayoutKey = selected === undefined ? undefined : `${selected.id}:${selected.revision}`
-  const executionCanvasNodes = useMemo(() => selected === undefined ? [] : workflowExecutionFlowNodes(selected, currentRun, selectedRunNodeId, employees, executionLayoutKey === undefined ? {} : executionNodePositions[executionLayoutKey] ?? {}), [currentRun, employees, executionLayoutKey, executionNodePositions, selected, selectedRunNodeId])
+  const executionLayoutKey = executionDefinition === undefined ? undefined : `${executionDefinition.id}:${executionDefinition.revision}`
+  const executionCanvasNodes = useMemo(() => executionDefinition === undefined ? [] : workflowExecutionFlowNodes(executionDefinition, currentRun, selectedRunNodeId, employees, executionLayoutKey === undefined ? {} : executionNodePositions[executionLayoutKey] ?? {}), [currentRun, employees, executionDefinition, executionLayoutKey, executionNodePositions, selectedRunNodeId])
   const onExecutionNodesChange = useCallback((changes: NodeChange<FlowNode>[]): void => {
     if (executionLayoutKey === undefined) return
     const positionChanges = changes.filter((change) => change.type === 'position' && change.position !== undefined)
@@ -3201,18 +3236,14 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setNodes(workflowFlowNodes(userFacingWorkflow, undefined, undefined, [], employees))
     setEdges(flowEdges(userFacingWorkflow))
     if (isDraft) {
-      currentRunRef.current = undefined
-      setCurrentRun(undefined)
-      setSelectedRunNodeId(undefined)
+      inspectRun(undefined)
       setRuns([])
       return
     }
     const snapshotRequest = beginWorkflowRunSnapshot(workflow.id)
     const initialKnownRuns = preferredRun === undefined ? knownWorkflowRuns(workflow.id) : recordLiveWorkflowRun(preferredRun)
     const initialPreferred = preferredRun === undefined ? undefined : initialKnownRuns.find((record) => record.id === preferredRun.id) ?? preferredRun
-    currentRunRef.current = initialPreferred
-    setCurrentRun(initialPreferred)
-    setSelectedRunNodeId(undefined)
+    inspectRun(initialPreferred)
     setRuns((current) => {
       const scoped = current.filter((record) => record.workflowId === workflow.id)
       const next = mergeWorkflowRunRecords(scoped, initialKnownRuns)
@@ -3249,11 +3280,24 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     const knownRuns = recordLiveWorkflowRun(record)
     const source = workflowsRef.current.find((workflow) => workflow.id === record.workflowId)
     if (source === undefined) {
-      currentRunRef.current = record
-      setCurrentRun(record)
+      openRequestGenerationRef.current += 1
+      selectedWorkflowIdRef.current = undefined
+      setSelected(undefined)
+      setHistory(undefined)
+      setDraft(false)
+      setNodes([])
+      setEdges([])
+      setContextMenu(undefined)
+      setMetadataDraft(undefined)
+      setShowModifyDialog(false)
+      setShowModificationHistory(false)
+      setRunSetup(undefined)
+      setShowPermissionDialog(false)
+      setWorkspaceView('executions')
+      onWorkspaceModeChange?.(true)
+      inspectRun(record)
       setRuns((current) => [record, ...current.filter((candidate) => candidate.id !== record.id)])
       updateRunSummary(record.workflowId, knownRuns)
-      setError(`发布运行 ${record.id} 已启动，但源工作流当前不可用。`)
       return
     }
     void open(source, false, record)
@@ -3273,8 +3317,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     setSelectedNodeId(undefined)
     setSelectedEdgeId(undefined)
     setContextMenu(undefined)
-    setCurrentRun(undefined)
-    setSelectedRunNodeId(undefined)
+    inspectRun(undefined)
     setRunSetup(undefined)
     setShowPermissionDialog(false)
     setRuns([])
@@ -3518,9 +3561,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       setNodes([])
       setEdges([])
       setRuns([])
-      currentRunRef.current = undefined
-      setCurrentRun(undefined)
-      setSelectedRunNodeId(undefined)
+      inspectRun(undefined)
       setRunSetup(undefined)
       onWorkspaceModeChange?.(false)
       setMessage(copy.workflowDeleted)
@@ -3771,8 +3812,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     try {
       const record = await window.EzDSH.workflows.start(runSetup.workflowId, buildWorkflowLaunchInput(runSetup.fields, runSetup.values), { allowShellFile: runSetup.allowShellFile, allowCode: runSetup.allowCode, connectorGrants: runSetup.connectorGrants, debug: runSetup.debug, ...(runSetup.modelSelection === undefined ? {} : { model: runSetup.modelSelection }) })
       const knownRuns = recordLiveWorkflowRun(record)
-      setCurrentRun(record)
-      setSelectedRunNodeId(undefined)
+      inspectRun(record)
       setRuns((current) => [record, ...current.filter((item) => item.id !== record.id)])
       updateRunSummary(record.workflowId, knownRuns)
       setWorkspaceView('executions')
@@ -3782,8 +3822,11 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const applyRunRecord = (record: WorkflowRunRecord, replaceDetail = true): void => {
     const knownRuns = recordLiveWorkflowRun(record)
-    if (replaceDetail) currentRunRef.current = record
-    setCurrentRun((current) => replaceDetail ? record : current)
+    if (replaceDetail && currentRunRef.current?.id !== record.id) inspectRun(record)
+    else if (replaceDetail) {
+      currentRunRef.current = record
+      setCurrentRun(record)
+    }
     setRuns((current) => {
       const next = [record, ...current.filter((item) => item.id !== record.id)]
       updateRunSummary(record.workflowId, knownRuns)
@@ -3792,9 +3835,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   }
 
   const selectRun = (record: WorkflowRunRecord): void => {
-    currentRunRef.current = record
-    setCurrentRun(record)
-    setSelectedRunNodeId(undefined)
+    if (currentRunRef.current?.id !== record.id) inspectRun(record)
+    else setCurrentRun(record)
     markRunViewed(record)
   }
 
@@ -3841,9 +3883,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       })
       setOutputWindows((current) => current.filter((item) => !item.id.startsWith(`${record.id}:`)))
       if (currentRun?.id === record.id) {
-        currentRunRef.current = undefined
-        setCurrentRun(undefined)
-        setSelectedRunNodeId(undefined)
+        inspectRun(undefined)
       }
       setMessage(copy.workflowRunDeleted)
     } catch (reason) {
@@ -3857,16 +3897,14 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     const workflow = selected
     const unread = workflow === undefined ? undefined : workflowRunSummaries[workflow.id]?.firstUnviewedRun
     if (unread === undefined) return
-    setCurrentRun(unread)
-    setSelectedRunNodeId(undefined)
+    inspectRun(unread)
     setWorkspaceView('executions')
     markRunViewed(unread)
   }
 
   const openWorkflowUnreadRun = async (workflow: WorkflowDefinition, run: WorkflowRunRecord): Promise<void> => {
     await open(workflow)
-    setCurrentRun(run)
-    setSelectedRunNodeId(undefined)
+    inspectRun(run)
     setWorkspaceView('executions')
     markRunViewed(run)
   }
@@ -4012,10 +4050,14 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const toastAction = deletedWorkflow !== undefined ? () => void restoreDeletedWorkflow() : pendingModificationId === undefined ? undefined : openPendingModification
   const selectedNodeFieldClass = (...fields: string[]): string | undefined => selectedNodeIndex < 0 ? undefined : workflowValidationFieldClass(workflowValidationIssues, selectedNodeIndex, ...fields)
   const selectedNodeConfigHasError = selectedNodeIndex >= 0 && workflowValidationConfigIssue(workflowValidationIssues, selectedNodeIndex)
+  const workspaceActive = selected !== undefined || (workspaceView === 'executions' && currentRun !== undefined)
+  const workspaceIdentityDefinition = selected ?? executionDefinition
+  const workspaceTitle = workspaceIdentityDefinition?.name ?? currentRun?.workflowId ?? copy.workflowTitle
+  const workspaceRevision = workspaceIdentityDefinition?.revision ?? currentRun?.workflowRevision
 
   return (
-    <div ref={workflowPageRef} className={`workflow-page ${selected === undefined ? 'workflow-page-browser' : 'workflow-page-workspace'}`}>
-      {showGenerationPage ? <WorkflowGenerationPage copy={copy} locale={locale} onBack={() => setShowGenerationPage(false)} onOpenWorkflow={(workflow) => { setShowGenerationPage(false); void open(workflow, true) }} /> : selected === undefined ? <>
+    <div ref={workflowPageRef} className={`workflow-page ${workspaceActive ? 'workflow-page-workspace' : 'workflow-page-browser'}`}>
+      {showGenerationPage ? <WorkflowGenerationPage copy={copy} locale={locale} onBack={() => setShowGenerationPage(false)} onOpenWorkflow={(workflow) => { setShowGenerationPage(false); void open(workflow, true) }} /> : !workspaceActive ? <>
         <header className="workflow-browser-header">
           <div>
             <p className="workflow-eyebrow">EZDSH / AUTOMATION</p>
@@ -4063,20 +4105,20 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
         <header className="workflow-workspace-header">
           <div className="workflow-workspace-identity">
             <button type="button" className="workflow-back-button" onClick={exitWorkspace}>{copy.workflowBack}</button>
-            <div><div className="workflow-workspace-title-row"><strong>{selected.name}</strong><button type="button" className="workflow-metadata-edit-button" aria-label="编辑工作流信息" title="编辑工作流信息" onClick={() => setMetadataDraft({ name: selected.name, description: selected.description, ...(selected.generationPrompt === undefined ? {} : { generationPrompt: selected.generationPrompt }) })}>✎</button></div><span>v{selected.revision} · {copy.workflowWorkspace}</span></div>
+            <div><div className="workflow-workspace-title-row"><strong>{workspaceTitle}</strong>{selected === undefined ? null : <button type="button" className="workflow-metadata-edit-button" aria-label="编辑工作流信息" title="编辑工作流信息" onClick={() => setMetadataDraft({ name: selected.name, description: selected.description, ...(selected.generationPrompt === undefined ? {} : { generationPrompt: selected.generationPrompt }) })}>✎</button>}</div><span>{workspaceRevision === undefined ? '' : `v${workspaceRevision} · `}{copy.workflowWorkspace}</span></div>
           </div>
           <div className="workflow-view-switch" role="tablist" aria-label={copy.workflowWorkspace}>
-            <button type="button" role="tab" aria-selected={workspaceView === 'editor'} className={workspaceView === 'editor' ? 'workflow-view-active' : ''} onClick={() => setWorkspaceView('editor')}>{copy.workflowEditor}</button>
+            {selected === undefined ? null : <button type="button" role="tab" aria-selected={workspaceView === 'editor'} className={workspaceView === 'editor' ? 'workflow-view-active' : ''} onClick={() => setWorkspaceView('editor')}>{copy.workflowEditor}</button>}
             <button type="button" role="tab" aria-selected={workspaceView === 'executions'} className={workspaceView === 'executions' ? 'workflow-view-active' : ''} onClick={openExecutionView}>{copy.workflowExecutions}</button>
           </div>
           <div className="workflow-workspace-actions">
-            {workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)}</button> : null}
-            {workspaceView === 'editor' ? <button type="button" className="workflow-button-quiet workflow-permission-button" onClick={() => setShowPermissionDialog(true)} disabled={busy}>{copy.workflowPermissionPolicy}</button> : null}
-            {workspaceView === 'editor' ? <button type="button" className="workflow-button-quiet workflow-ai-modify-button" onClick={openModifyDialog} disabled={busy}>
+            {selected !== undefined && workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)}</button> : null}
+            {workspaceView === 'editor' && selected !== undefined ? <button type="button" className="workflow-button-quiet workflow-permission-button" onClick={() => setShowPermissionDialog(true)} disabled={busy}>{copy.workflowPermissionPolicy}</button> : null}
+            {workspaceView === 'editor' && selected !== undefined ? <button type="button" className="workflow-button-quiet workflow-ai-modify-button" onClick={openModifyDialog} disabled={busy}>
               <WandMagicSparklesIcon className="workflow-ai-icon" />
               <span>{copy.workflowAiModify}</span>
             </button> : null}
-            {workspaceView === 'editor' ? <WorkflowEditorActions
+            {workspaceView === 'editor' && selected !== undefined ? <WorkflowEditorActions
               copy={copy}
               draft={draft}
               busy={busy}
@@ -4089,13 +4131,13 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               onExportFile={exportWorkflowToFile}
               onExportClipboard={() => void exportWorkflowToClipboard()}
               onRun={() => void openRunSetup()}
-            /> : <>
+            /> : workspaceView === 'executions' && selected !== undefined ? <>
               <button type="button" className="workflow-button-primary" onClick={() => void openRunSetup()} disabled={busy || currentRun?.status === 'running'}>{currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}</button>
-            </>}
+            </> : null}
           </div>
         </header>
         <div className="workflow-workspace-body">
-          {workspaceView === 'editor' ? <>
+          {workspaceView === 'editor' && selected !== undefined ? <>
             <section className="workflow-editor-panel">
               <div className="workflow-editor-toolbar">
                 <WorkflowNodeLibrary onAdd={addNode} />
@@ -4202,9 +4244,9 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               if (target instanceof Element && target.closest('[data-workflow-viewed-exempt="true"]') !== null) return
               markRunViewedAfterInteraction(currentRun)
             }}>
-              <div className="workflow-execution-canvas"><ReactFlow key={executionLayoutKey ?? selected.id} {...WORKFLOW_EXECUTION_CANVAS_INTERACTION_PROPS} nodes={executionCanvasNodes} edges={workflowExecutionEdges(selected, currentRun)} nodeTypes={nodeTypes} onNodesChange={onExecutionNodesChange} onNodeClick={(_event, node) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(node.id) }} onPaneClick={() => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(undefined) }} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow></div>
+              <div className="workflow-execution-canvas">{executionDefinition === undefined ? <div className="workflow-execution-definition-state" role={currentRunDefinitionStatus === 'unavailable' ? 'alert' : 'status'}>{currentRun === undefined ? copy.workflowChooseRun : currentRunDefinitionStatus === 'loading' ? (locale === 'zh' ? '正在加载该次运行的不可变工作流定义…' : 'Loading the immutable workflow definition for this run…') : (locale === 'zh' ? '该次运行的工作流定义不可用，未显示当前可编辑版本。' : 'The workflow definition for this run is unavailable. The current editable version is not shown.')}</div> : <ReactFlow key={executionLayoutKey ?? currentRun?.id ?? 'run'} {...WORKFLOW_EXECUTION_CANVAS_INTERACTION_PROPS} nodes={executionCanvasNodes} edges={workflowExecutionEdges(executionDefinition, currentRun)} nodeTypes={nodeTypes} onNodesChange={onExecutionNodesChange} onNodeClick={(_event, node) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(node.id) }} onPaneClick={() => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(undefined) }} fitView><Background gap={20} size={1} /><WorkflowCanvasTools copy={copy} showMiniMap={showMiniMap} onToggleMiniMap={() => setShowMiniMap((current) => !current)} /></ReactFlow>}</div>
               <div className="workflow-execution-resize-handle" role="separator" aria-orientation="horizontal" aria-label={copy.workflowResizeExecutionPanel} onPointerDown={beginExecutionResize}><span /></div>
-              <WorkflowExecutionReview copy={copy} workflow={selected} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={selected?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => { markRunViewedAfterInteraction(currentRun); void cancel() }} onApprove={() => { markRunViewedAfterInteraction(currentRun); void approve(true) }} onReject={() => { markRunViewedAfterInteraction(currentRun); void approve(false) }} onResume={() => { markRunViewedAfterInteraction(currentRun); void resume() }} onCompensate={() => { markRunViewedAfterInteraction(currentRun); void continueCompensation() }} onReconcileEffect={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileEffect(request) }} onReconcileCompensation={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileCompensation(request) }} reconciliationBusy={busy} onSelectNode={(nodeId) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(nodeId) }} onMarkUnread={currentRun === undefined ? undefined : () => markRunUnread(currentRun)} onDelete={currentRun === undefined ? undefined : () => void deleteRun(currentRun)} canMarkUnread={currentRun !== undefined && viewedRunIds.has(currentRun.id) && !busy} canDelete={currentRun !== undefined && workflowRunCanDelete(currentRun.status) && !busy} onCopyOutput={() => { markRunViewedAfterInteraction(currentRun); copyOutput() }} onOpenOutputWindow={(key, title, value) => { markRunViewedAfterInteraction(currentRun); openOutputWindow(key, title, value) }} outputFontScale={outputFontScale} onIncreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1)))) }} onDecreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1)))) }} />
+              <WorkflowExecutionReview copy={copy} workflow={executionDefinition} run={currentRun} nodeDetail={currentRunNodeDetail} selectedNode={executionDefinition?.nodes.find((node) => node.id === selectedRunNodeId)} statusLabel={statusLabel} onCancel={() => { markRunViewedAfterInteraction(currentRun); void cancel() }} onApprove={() => { markRunViewedAfterInteraction(currentRun); void approve(true) }} onReject={() => { markRunViewedAfterInteraction(currentRun); void approve(false) }} onResume={() => { markRunViewedAfterInteraction(currentRun); void resume() }} onCompensate={() => { markRunViewedAfterInteraction(currentRun); void continueCompensation() }} onReconcileEffect={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileEffect(request) }} onReconcileCompensation={(request) => { markRunViewedAfterInteraction(currentRun); return reconcileCompensation(request) }} reconciliationBusy={busy} onSelectNode={(nodeId) => { markRunViewedAfterInteraction(currentRun); setSelectedRunNodeId(nodeId) }} onMarkUnread={currentRun === undefined ? undefined : () => markRunUnread(currentRun)} onDelete={currentRun === undefined ? undefined : () => void deleteRun(currentRun)} canMarkUnread={currentRun !== undefined && viewedRunIds.has(currentRun.id) && !busy} canDelete={currentRun !== undefined && workflowRunCanDelete(currentRun.status) && !busy} onCopyOutput={() => { markRunViewedAfterInteraction(currentRun); copyOutput() }} onOpenOutputWindow={(key, title, value) => { markRunViewedAfterInteraction(currentRun); openOutputWindow(key, title, value) }} outputFontScale={outputFontScale} onIncreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.min(1.8, Number((current + .1).toFixed(1)))) }} onDecreaseOutputFont={() => { markRunViewedAfterInteraction(currentRun); setOutputFontScale((current) => Math.max(.7, Number((current - .1).toFixed(1)))) }} />
             </div>
           </section>}
         </div>

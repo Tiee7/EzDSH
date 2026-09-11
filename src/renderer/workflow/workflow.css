@@ -413,6 +413,7 @@
 .workflow-run-item-unread { border-color: var(--ezdsh-accent-unread) !important; }
 .workflow-execution-main { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .workflow-execution-canvas { min-height: 240px; flex: 1 1 auto; }
+.workflow-execution-definition-state { min-height: 240px; height: 100%; display: grid; place-items: center; padding: 24px; color: var(--ezdsh-muted-text); text-align: center; background: var(--ezdsh-panel-background); }
 .workflow-execution-resize-handle { position: relative; z-index: 3; display: grid; height: 9px; flex: 0 0 9px; place-items: center; border-top: 1px solid var(--ezdsh-panel-border); background: var(--ezdsh-panel-background); cursor: row-resize; }
 .workflow-execution-resize-handle span { width: 42px; height: 3px; border-radius: 99px; background: var(--ezdsh-panel-border-strong); }
 .workflow-execution-resize-handle:hover { background: var(--ezdsh-active-background); }

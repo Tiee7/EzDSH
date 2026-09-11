@@ -98,6 +98,7 @@ async function mountWorkflowEffectReviewPage(
     workflows: {
       list: vi.fn(async () => [workflow]),
       listRuns: vi.fn(async () => [run]),
+      getRunDefinition: vi.fn(async () => workflow),
       reconcileEffect,
       reconcileCompensation: reconcileCompensation ?? (async () => run),
       compensate,
@@ -171,7 +172,7 @@ async function mountWorkflowRunCachePage(workflows: Record<string, unknown>): Pr
   Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame, confirm: () => true })
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
   const bridge = {
-    workflows,
+    workflows: { getRunDefinition: vi.fn(async () => undefined), ...workflows },
     employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
     workflowCredentials: { list: vi.fn(async () => []) },
     workflowConnectors: { list: vi.fn(async () => []) },
@@ -573,7 +574,7 @@ describe('WorkflowPage regressions', () => {
     Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
     const bridge = {
-      workflows: { list: vi.fn(async () => [workflow]), listRuns, onStateChange: vi.fn((listener: (next: WorkflowRunRecord) => void) => { emitRunState = listener; return () => {} }), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
+      workflows: { list: vi.fn(async () => [workflow]), listRuns, getRunDefinition: vi.fn(async () => workflow), onStateChange: vi.fn((listener: (next: WorkflowRunRecord) => void) => { emitRunState = listener; return () => {} }), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
       employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
       workflowCredentials: { list: vi.fn(async () => []) },
       workflowConnectors: { list: vi.fn(async () => []) },
@@ -833,15 +834,20 @@ describe('WorkflowPage regressions', () => {
     const environment: WorkflowCustomerEnvironment = { id: 'customer-acme-prod', customerName: 'Acme', name: 'Production', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false, createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z' }
     const release: WorkflowReleaseSummary = { id: 'release-deleted-source', environmentId: environment.id, workflowId: 'deleted-source', workflowRevision: 1, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt, launchFields: [] }
     const record: WorkflowRunRecord = { id: 'run-deleted-source', workflowId: release.workflowId, workflowRevision: 1, releaseId: release.id, environmentId: environment.id, status: 'queued', input: {}, allowShellFile: false, nodeStates: [], events: [] }
-    const previousGlobals = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, HTMLElement: globalThis.HTMLElement, Element: globalThis.Element, Node: globalThis.Node, Event: globalThis.Event, MouseEvent: globalThis.MouseEvent, KeyboardEvent: globalThis.KeyboardEvent, CustomEvent: globalThis.CustomEvent, getComputedStyle: globalThis.getComputedStyle, EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH }
+    const previousGlobals = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, HTMLElement: globalThis.HTMLElement, Element: globalThis.Element, Node: globalThis.Node, Event: globalThis.Event, MouseEvent: globalThis.MouseEvent, KeyboardEvent: globalThis.KeyboardEvent, CustomEvent: globalThis.CustomEvent, getComputedStyle: globalThis.getComputedStyle, ResizeObserver: globalThis.ResizeObserver, requestAnimationFrame: globalThis.requestAnimationFrame, cancelAnimationFrame: globalThis.cancelAnimationFrame, EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH }
     const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
-    Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow) })
+    class TestResizeObserver { observe(): void {} unobserve(): void {} disconnect(): void {} }
+    const requestAnimationFrame = (_callback: FrameRequestCallback): number => 0
+    const cancelAnimationFrame = (_id: number): void => {}
+    Object.defineProperty(domWindow.HTMLElement.prototype, 'getBoundingClientRect', { configurable: true, value: () => ({ x: 0, y: 0, top: 0, left: 0, right: 960, bottom: 640, width: 960, height: 640, toJSON: () => ({}) }) })
+    Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow), ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
+    Object.assign(domWindow as unknown as Record<string, unknown>, { ResizeObserver: TestResizeObserver, requestAnimationFrame, cancelAnimationFrame })
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
     let workflowListCalls = 0
     let resolveStart!: (record: WorkflowRunRecord) => void
     const pendingStart = new Promise<WorkflowRunRecord>((resolve) => { resolveStart = resolve })
     const bridge = {
-      workflows: { list: vi.fn(async () => { workflowListCalls += 1; return workflowListCalls === 1 ? [sourceWorkflow] : [] }), listRuns: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
+      workflows: { list: vi.fn(async () => { workflowListCalls += 1; return workflowListCalls === 1 ? [sourceWorkflow] : [] }), listRuns: vi.fn(async () => []), getRunDefinition: vi.fn(async () => sourceWorkflow), onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}) },
       employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
       workflowCredentials: { list: vi.fn(async () => []) },
       workflowConnectors: { list: vi.fn(async () => []) },
@@ -862,7 +868,8 @@ describe('WorkflowPage regressions', () => {
       await act(async () => { refresh.click(); await Promise.resolve(); await Promise.resolve() })
       await act(async () => { resolveStart(record); await pendingStart; await Promise.resolve() })
       expect(domWindow.document.body.textContent).toContain(record.id)
-      expect(domWindow.document.body.textContent).toContain('源工作流当前不可用')
+      expect(domWindow.document.body.textContent).toContain(sourceWorkflow.nodes[0]!.label)
+      expect(Array.from(domWindow.document.querySelectorAll('button')).some((button) => button.textContent === getAppCopy('zh').workflowEditor)).toBe(false)
     } finally {
       resolveStart(record)
       await act(async () => { root.unmount() })
@@ -870,6 +877,96 @@ describe('WorkflowPage regressions', () => {
       const { navigator: previousNavigator, ...rest } = previousGlobals
       Object.assign(globalThis, rest)
       Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    }
+  })
+
+  it('renders an old run from its immutable definition without replacing the editable current version', async () => {
+    const editable = { ...createDefaultWorkflow('Current V2'), revision: 2 }
+    const historicalSource = createDefaultWorkflow('Historic V1')
+    const historical = {
+      ...historicalSource,
+      id: editable.id,
+      revision: 1,
+      nodes: historicalSource.nodes.map((node, index) => ({ ...node, label: `Historic V1 Node ${index + 1}` })),
+    }
+    const run: WorkflowRunRecord = { id: 'run-historic-v1', workflowId: editable.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: historical.nodes.map((node) => ({ nodeId: node.id, status: 'completed' as const, elapsedMs: 1 })), events: [] }
+    const getRunDefinition = vi.fn(async () => historical)
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [editable]), listRuns: vi.fn(async () => [run]), getRunDefinition,
+      onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-run-item-main') as HTMLButtonElement).click(); await mounted.settle() })
+      expect(mounted.domWindow.document.body.textContent).toContain('Historic V1 Node 1')
+      expect(mounted.domWindow.document.body.textContent).not.toContain('该次运行的工作流定义不可用')
+      const editor = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowEditor) as HTMLButtonElement
+      await act(async () => { editor.click(); await Promise.resolve() })
+      expect(mounted.domWindow.document.querySelector('.workflow-workspace-title-row')?.textContent).toContain('Current V2')
+      expect(mounted.domWindow.document.body.textContent).not.toContain('Historic V1 Node 1')
+      await act(async () => { executions.click(); await Promise.resolve() })
+      expect(mounted.domWindow.document.body.textContent).toContain('Historic V1 Node 1')
+      expect(getRunDefinition).toHaveBeenCalledTimes(1)
+    } finally { await mounted.cleanup() }
+  })
+
+  it.each([
+    ['missing', vi.fn(async () => undefined)],
+    ['rejected', vi.fn(async () => { throw new Error('definition offline') })],
+  ])('shows a persistent unavailable state for a %s run definition without current-version fallback', async (_kind, getRunDefinition) => {
+    const editableSource = createDefaultWorkflow('Editable V2 Only')
+    const editable = { ...editableSource, revision: 2, nodes: editableSource.nodes.map((node, index) => ({ ...node, label: `V2-only node ${index + 1}` })) }
+    const run: WorkflowRunRecord = { id: `run-definition-${_kind}`, workflowId: editable.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [editable]), listRuns: vi.fn(async () => [run]), getRunDefinition,
+      onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-run-item-main') as HTMLButtonElement).click(); await mounted.settle() })
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-definition-state')?.textContent).toContain('工作流定义不可用')
+      expect(mounted.domWindow.document.body.textContent).not.toContain('V2-only node 1')
+      expect(mounted.domWindow.document.body.textContent).toContain(run.id)
+    } finally { await mounted.cleanup() }
+  })
+
+  it('ignores an older run-definition response after a newer run is selected', async () => {
+    const editable = createDefaultWorkflow('Definition race')
+    const sourceA = createDefaultWorkflow('Definition A')
+    const sourceB = createDefaultWorkflow('Definition B')
+    const definitionA = { ...sourceA, id: editable.id, revision: 1, nodes: sourceA.nodes.map((node) => ({ ...node, label: `Definition A ${node.label}` })) }
+    const definitionB = { ...sourceB, id: editable.id, revision: 2, nodes: sourceB.nodes.map((node) => ({ ...node, label: `Definition B ${node.label}` })) }
+    const runA: WorkflowRunRecord = { id: 'run-definition-a', workflowId: editable.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    const runB: WorkflowRunRecord = { id: 'run-definition-b', workflowId: editable.id, workflowRevision: 2, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
+    let resolveA!: (definition: WorkflowDefinition) => void
+    let resolveB!: (definition: WorkflowDefinition) => void
+    const pendingA = new Promise<WorkflowDefinition>((resolve) => { resolveA = resolve })
+    const pendingB = new Promise<WorkflowDefinition>((resolve) => { resolveB = resolve })
+    const getRunDefinition = vi.fn((runId: string) => runId === runA.id ? pendingA : pendingB)
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [editable]), listRuns: vi.fn(async () => [runA, runB]), getRunDefinition,
+      onStateChange: vi.fn(() => () => {}), listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await mounted.settle() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); await Promise.resolve() })
+      const buttons = Array.from(mounted.domWindow.document.querySelectorAll('.workflow-run-item-main')) as HTMLButtonElement[]
+      const buttonA = buttons.find((button) => button.textContent?.includes(runA.id.slice(-12)))!
+      const buttonB = buttons.find((button) => button.textContent?.includes(runB.id.slice(-12)))!
+      await act(async () => { buttonA.click(); buttonB.click(); await Promise.resolve() })
+      await act(async () => { resolveB(definitionB); await pendingB; await mounted.settle() })
+      expect(mounted.domWindow.document.body.textContent).toContain('Definition B')
+      await act(async () => { resolveA(definitionA); await pendingA; await mounted.settle() })
+      expect(mounted.domWindow.document.body.textContent).toContain('Definition B')
+      expect(mounted.domWindow.document.body.textContent).not.toContain('Definition A')
+    } finally {
+      resolveA(definitionA); resolveB(definitionB)
+      await mounted.cleanup()
     }
   })
 
