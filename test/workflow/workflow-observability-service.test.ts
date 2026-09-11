@@ -318,6 +318,22 @@ describe('WorkflowObservabilityService', () => {
     expect(service.health('customer-acme-prod')).toMatchObject({ status: 'healthy', reason: 'healthy' })
   })
 
+  it('uses append order when terminal signals share the same millisecond', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-tie-'))
+    const store = new WorkflowObservationStore(dir)
+    const service = new WorkflowObservabilityService({
+      store,
+      now: () => '2026-09-03T12:00:00.000Z',
+      recentFailureWindowMs: 60_000,
+    })
+    const time = '2026-09-03T08:00:00.000Z'
+
+    await service.observeRun(createRunRecord({ events: [{ id: 'z-failed-first', time, type: 'run-failed' }] }))
+    await service.observeRun(createRunRecord({ events: [{ id: 'a-completed-later', time, type: 'run-completed' }] }))
+
+    expect(service.health('customer-acme-prod')).toMatchObject({ status: 'healthy', reason: 'healthy' })
+  })
+
   it('records each release lifecycle event with a unique observation id and the supplied lifecycle time', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-observability-release-'))
     const store = new WorkflowObservationStore(dir)

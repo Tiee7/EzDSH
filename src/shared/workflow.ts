@@ -87,6 +87,8 @@ export type WorkflowNodeRetryPolicy = WorkflowRetryPolicy
 export interface WorkflowCompensationAction {
   type: 'workflow'
   workflowId: string
+  /** Immutable revision populated in release snapshots; absent on live legacy definitions. */
+  workflowRevision?: number
   input?: WorkflowValue
   waitForCompletion?: boolean
 }
@@ -96,6 +98,10 @@ export interface WorkflowCompensationEntry {
   executionScope?: WorkflowExecutionScope
   action: WorkflowCompensationAction
   status: 'pending' | 'running' | 'completed' | 'failed'
+  /** Stable identity derived from the original run and source occurrence. */
+  occurrenceId?: string
+  /** Durable dispatch journal for the compensation child/effect boundary. */
+  effectState?: WorkflowNodeEffectState
   startedAt?: string
   completedAt?: string
   error?: string
@@ -487,6 +493,17 @@ export interface WorkflowEffectReconciliation {
   resolvedAt: string
 }
 
+/** Main-derived immutable identity for one unknown effect shown to an operator. */
+export interface WorkflowEffectReconciliationTarget {
+  key: string
+  nodeId: string
+  nodeLabel: string
+  iterationId?: string
+  iterationIndex?: number
+  loopNodeLabel?: string
+  input?: WorkflowValue
+}
+
 /** Validate at both the IPC boundary and the service's direct-call boundary. */
 export function validateWorkflowEffectReconcileRequest(value: unknown): WorkflowEffectReconcileRequest {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid workflow effect reconciliation request')
@@ -553,7 +570,7 @@ export interface WorkflowNodeRunState {
   error?: string
 }
 
-export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-effect-reconciled-not-dispatched' | 'node-effect-reconciled-dispatched' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
+export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-effect-reconciled-not-dispatched' | 'node-effect-reconciled-dispatched' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-effect-prepared' | 'compensation-effect-dispatched' | 'compensation-effect-confirmed' | 'compensation-effect-unknown' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
 
 export interface WorkflowRunEvent {
   id: string
@@ -581,6 +598,9 @@ export interface WorkflowRunRecord {
   traceId?: string
   /** Caller-supplied de-duplication key. Omitted runs are never inferred to be equivalent. */
   idempotencyKey?: string
+  /** Persisted child lineage; optional for records created before recursion hardening. */
+  parentRunId?: string
+  workflowAncestry?: string[]
   status: WorkflowRunStatus
   /** Present for records created by the durable local queue; legacy records remain readable. */
   queue?: WorkflowRunQueueState
@@ -589,6 +609,8 @@ export interface WorkflowRunRecord {
   nodeStates: WorkflowNodeRunState[]
   events: WorkflowRunEvent[]
   compensationStack?: WorkflowCompensationEntry[]
+  /** Exact Main-derived unknown-effect targets. Renderer must not infer topology when present. */
+  effectReconciliationTargets?: WorkflowEffectReconciliationTarget[]
   allowShellFile: boolean
   /** Whether code nodes were explicitly authorized for this run. */
   allowCode?: boolean
@@ -928,6 +950,7 @@ function readCompensation(value: unknown): WorkflowCompensationAction | undefine
   return {
     type: 'workflow',
     workflowId: value.workflowId.trim(),
+    ...(typeof value.workflowRevision === 'number' && Number.isInteger(value.workflowRevision) && value.workflowRevision > 0 ? { workflowRevision: value.workflowRevision } : {}),
     ...(isWorkflowValue(value.input) ? { input: value.input } : {}),
     ...(value.waitForCompletion === false ? { waitForCompletion: false } : {}),
   }
@@ -1452,6 +1475,7 @@ function validateNodeConfig(node: WorkflowNode, path: string, issues: WorkflowVa
   }
   if (node.compensation !== undefined) {
     if (node.compensation.type !== 'workflow' || typeof node.compensation.workflowId !== 'string' || node.compensation.workflowId.trim() === '') add('补偿动作需要有效的 Workflow ID。', 'compensation.workflowId')
+    if (node.compensation.workflowRevision !== undefined && (!Number.isInteger(node.compensation.workflowRevision) || node.compensation.workflowRevision < 1)) add('补偿 Workflow 修订号必须是正整数。', 'compensation.workflowRevision')
     if (node.compensation.input !== undefined && !isWorkflowValue(node.compensation.input)) add('补偿输入必须是 JSON 兼容值。', 'compensation.input')
     const canProduceExternalEffect = node.type === 'file'
       ? node.config.operation === 'write'

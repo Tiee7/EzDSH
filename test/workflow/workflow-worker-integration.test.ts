@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkflowRunService, type WorkflowRunServiceOptions } from '../../src/main/workflow/workflow-run-service.js'
-import type { WorkflowNode, WorkflowValue } from '../../src/shared/workflow.js'
+import type { WorkflowNode, WorkflowRunRecord, WorkflowValue } from '../../src/shared/workflow.js'
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 import { WorkflowCredentialStore } from '../../src/main/workflow/workflow-credential-service.js'
@@ -249,6 +249,66 @@ describe('unpublished child workflows in the single Worker', () => {
       expect(service.list(parent.id)).toHaveLength(1)
       expect(service.list(child.id)).toHaveLength(indirect ? 1 : 0)
     } finally { await service.stop() }
+  })
+
+  it('persists async ancestry so A to B still rejects B to A after restart without replaying A effects', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-live-child-restart-lineage-'))
+    const workflowStore = new WorkflowStore(directory)
+    const child = await workflowStore.create({
+      id: 'lineage-b', name: 'B', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'back-to-a', type: 'sub-workflow', label: 'Back to A', config: { workflowId: 'lineage-a', waitForCompletion: true }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'b1', source: 'input', target: 'back-to-a' }, { id: 'b2', source: 'back-to-a', target: 'output' }],
+    })
+    const parent = await workflowStore.create({
+      id: 'lineage-a', name: 'A', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'write-a', type: 'mcp', label: 'Write A', config: { tool: 'write-a', arguments: {} }, position: { x: 200, y: 0 } },
+        { id: 'to-b', type: 'sub-workflow', label: 'To B', config: { workflowId: child.id, waitForCompletion: false }, position: { x: 400, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 600, y: 0 } },
+      ],
+      edges: [{ id: 'a1', source: 'input', target: 'write-a' }, { id: 'a2', source: 'write-a', target: 'to-b' }, { id: 'a3', source: 'to-b', target: 'output' }],
+    })
+    let effects = 0
+    const createService = () => new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(directory), workflowRoot: directory,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      mcpClient: { call: async () => { effects += 1; return 'written' } },
+    })
+    const first = createService()
+    let queuedChild!: (record: WorkflowRunRecord) => void
+    const childCreated = new Promise<WorkflowRunRecord>((resolve) => { queuedChild = resolve })
+    let stopping: Promise<void> | undefined
+    const unwatch = first.watch((record) => {
+      if (record.workflowId === child.id && record.events.some((event) => event.type === 'run-created')) {
+        queuedChild(record)
+        stopping ??= first.stop()
+      }
+    })
+    try {
+      await first.start(parent.id, 'payload')
+      const queued = await childCreated
+      await stopping
+      expect(effects).toBe(1)
+      expect(queued).toMatchObject({ status: 'queued', parentRunId: expect.any(String), workflowAncestry: [parent.id] })
+    } finally {
+      unwatch()
+      await first.stop()
+    }
+
+    const restarted = createService()
+    try {
+      await restarted.initialize()
+      const failedChild = await eventually(() => restarted.list(child.id)[0], (run) => run.status === 'failed')
+      expect(failedChild.error).toMatch(/递归|recursive/iu)
+      expect(restarted.list(parent.id)).toHaveLength(1)
+      expect(effects).toBe(1)
+    } finally { await restarted.stop() }
   })
 })
 

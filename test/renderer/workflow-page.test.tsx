@@ -1518,6 +1518,46 @@ describe('WorkflowPage regressions', () => {
     expect(workflowPage.workflowUnknownEffectTargets(definition, run)).toHaveLength(1)
   })
 
+  it('uses persisted Main reconciliation targets when an ordinary node became a loop body later', () => {
+    const workflow = createDefaultWorkflow('Historical ordinary effect')
+    const originalLoop = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
+    const loop = { ...originalLoop, type: 'loop', label: 'Current loop', config: { maxIterations: 3 } } as never
+    const body = workflow.nodes.find((candidate) => candidate.type === 'output')!
+    const current = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) => node.id === originalLoop.id ? loop : node),
+      edges: [{ id: 'loop-body', source: loop.id, target: body.id, sourcePort: 'loop-body' as const }],
+    }
+    const run = {
+      id: 'run-historical-ordinary', workflowId: workflow.id, workflowRevision: 1, status: 'paused' as const,
+      input: null, allowShellFile: false, events: [],
+      nodeStates: [{ nodeId: body.id, status: 'cancelled' as const, effectState: 'unknown' as const, input: 'ordinary-input' }],
+      effectReconciliationTargets: [{ key: 'ordinary-key', nodeId: body.id, nodeLabel: 'Historical ordinary write', input: 'ordinary-input' }],
+    } as WorkflowRunRecord
+
+    expect(workflowPage.workflowUnknownEffectTargets(current, run)).toEqual([
+      { key: 'ordinary-key', nodeId: body.id, nodeLabel: 'Historical ordinary write', input: 'ordinary-input' },
+    ])
+  })
+
+  it('uses persisted Main reconciliation targets when a loop body became ordinary later', () => {
+    const current = createDefaultWorkflow('Historical loop effect')
+    const body = current.nodes.find((candidate) => candidate.type === 'output')!
+    const run = {
+      id: 'run-historical-loop', workflowId: current.id, workflowRevision: 1, status: 'paused' as const,
+      input: null, allowShellFile: false, events: [], nodeStates: [],
+      effectReconciliationTargets: [{
+        key: 'loop-key', nodeId: body.id, nodeLabel: 'Historical loop write', iterationId: 'iteration-4',
+        iterationIndex: 4, loopNodeLabel: 'Historical loop', input: 'loop-input',
+      }],
+    } as WorkflowRunRecord
+
+    expect(workflowPage.workflowUnknownEffectTargets(current, run)).toEqual([{
+      key: 'loop-key', nodeId: body.id, nodeLabel: 'Historical loop write', iterationId: 'iteration-4',
+      iterationIndex: 4, loopNodeLabel: 'Historical loop', input: 'loop-input',
+    }])
+  })
+
   it('keeps the selected run when an earlier reconciliation response resolves', async () => {
     let resolveRecord: ((record: WorkflowRunRecord) => void) | undefined
     const request = new Promise<WorkflowRunRecord>((resolve) => { resolveRecord = resolve })

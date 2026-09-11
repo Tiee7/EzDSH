@@ -17,6 +17,8 @@ function isPersistedRunRecord(value: unknown): value is WorkflowRunRecord {
   if (!['queued', 'running', 'paused', 'waiting-approval', 'completed', 'failed', 'cancelled'].includes(record.status as string)) return false
   if (!Array.isArray(record.nodeStates) || !Array.isArray(record.events)) return false
   if (!record.nodeStates.every(isPersistedNodeState)) return false
+  if (record.parentRunId !== undefined && (typeof record.parentRunId !== 'string' || record.parentRunId.trim() === '')) return false
+  if (record.workflowAncestry !== undefined && (!Array.isArray(record.workflowAncestry) || !record.workflowAncestry.every((id) => typeof id === 'string' && id.trim() !== ''))) return false
   const queue = record.queue
   if (queue !== undefined && !isValidQueueState(queue)) return false
   return true
@@ -291,6 +293,39 @@ export class WorkflowRunStore {
           delete record.queue.lease
         }
         recovered.push(cloneWorkflow(record))
+      }
+      if (recovered.length > 0) await this.persist()
+      return recovered
+    })
+  }
+
+  /** A compensation dispatch can outlive this process. Never replay an
+   * unconfirmed dispatch: convert it to a durable manual-review state. */
+  async recoverInterruptedCompensations(now = new Date()): Promise<WorkflowRunRecord[]> {
+    await this.initialize()
+    const nowIso = now.toISOString()
+    return this.mutate(async () => {
+      const recovered: WorkflowRunRecord[] = []
+      for (const record of this.runs.values()) {
+        let changed = false
+        for (const entry of record.compensationStack ?? []) {
+          if (entry.status !== 'running' && entry.effectState !== 'dispatched') continue
+          entry.status = 'failed'
+          entry.effectState = 'unknown'
+          entry.completedAt = nowIso
+          entry.error = '补偿副作用可能已派发，必须人工核对后再决定是否重试。'
+          record.error = entry.error
+          record.events.push({
+            id: randomUUID(),
+            time: nowIso,
+            type: 'compensation-effect-unknown',
+            nodeId: entry.sourceNodeId,
+            message: entry.error,
+            ...(entry.executionScope === undefined ? {} : { executionScope: cloneWorkflow(entry.executionScope) }),
+          })
+          changed = true
+        }
+        if (changed) recovered.push(cloneWorkflow(record))
       }
       if (recovered.length > 0) await this.persist()
       return recovered

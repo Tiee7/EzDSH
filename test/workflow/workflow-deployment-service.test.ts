@@ -45,7 +45,7 @@ function createWorkflowInput(input: Partial<WorkflowCreateInput> & Pick<Workflow
   }
 }
 
-async function createFixture() {
+async function createFixture(lightweightComplete: (request: { prompt: string }) => Promise<string> = async () => 'unused') {
   const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-deployment-'))
   const workflowStore = new WorkflowStore(dir)
   const environmentStore = new WorkflowEnvironmentStore(dir)
@@ -62,11 +62,12 @@ async function createFixture() {
     workflowRoot: dir,
     createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
     resolveEmployee: () => undefined,
-    lightweightClient: { complete: async () => 'unused' },
+    lightweightClient: { complete: lightweightComplete },
     mcpClient: { call: async () => 'unused' },
     connectorService: { authorize: connectorAuthorize, request: connectorRequest },
     allowLegacyHttp: false,
     resolveReleasedWorkflow: (releaseId) => releaseStore.get(releaseId),
+    resolveWorkflowEnvironment: (environmentId) => environmentStore.get(environmentId),
   })
   const deploymentService = new WorkflowDeploymentService({
     workflowStore,
@@ -325,6 +326,101 @@ describe('WorkflowDeploymentService', () => {
 
     expect(completed.status).toBe('completed')
     expect(completed.output).toBe('child-v1:42')
+  })
+
+  it('recursively pins compensation workflows and executes the immutable release copy after live deletion', async () => {
+    const { workflowStore, environmentStore, deploymentService, runService } = await createFixture()
+    await environmentStore.upsert(createEnvironment())
+    const nestedUndo = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-compensation-nested', name: 'Nested undo',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'transform', type: 'transform', label: 'Old nested undo', config: { template: 'prepend', text: 'nested-v1:' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'n1', source: 'input', target: 'transform' }, { id: 'n2', source: 'transform', target: 'output' }],
+    }))
+    const undo = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-compensation-undo', name: 'Undo',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'undo-effect', type: 'mcp', label: 'Undo effect', config: { tool: 'undo', arguments: {} }, compensation: { type: 'workflow', workflowId: nestedUndo.id }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'u1', source: 'input', target: 'undo-effect' }, { id: 'u2', source: 'undo-effect', target: 'output' }],
+    }))
+    const parent = await workflowStore.create(createWorkflowInput({
+      id: 'workflow-compensation-parent', name: 'Compensated release',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'effect', type: 'mcp', label: 'Publish', config: { tool: 'publish', arguments: {} }, compensation: { type: 'workflow', workflowId: undo.id }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'p1', source: 'input', target: 'effect' }, { id: 'p2', source: 'effect', target: 'output' }],
+    }))
+
+    const release = await deploymentService.publish({ workflowId: parent.id, environmentId: 'customer-acme-staging' })
+    expect(release.workflowDependencies?.map((dependency) => `${dependency.id}@${String(dependency.revision)}`).sort()).toEqual([
+      `${nestedUndo.id}@1`, `${undo.id}@1`,
+    ].sort())
+    expect(release.workflowSnapshot.nodes.find((node) => node.id === 'effect')?.compensation).toMatchObject({ workflowId: undo.id, workflowRevision: 1 })
+    expect(release.workflowDependencies?.find((dependency) => dependency.id === undo.id)?.nodes.find((node) => node.id === 'undo-effect')?.compensation).toMatchObject({ workflowId: nestedUndo.id, workflowRevision: 1 })
+
+    await workflowStore.remove(undo.id)
+    await workflowStore.remove(nestedUndo.id)
+    const run = await eventually(runService, (await deploymentService.start(release.id, 'order-42')).id)
+    expect(run.status).toBe('completed')
+    const compensated = await runService.compensate(run.id)
+    expect(compensated.compensationStack?.[0]).toMatchObject({ status: 'completed', effectState: 'confirmed' })
+    const compensationChild = runService.list(undo.id)[0]
+    expect(compensationChild).toMatchObject({ releaseId: release.id, environmentId: release.environmentId, status: 'completed' })
+  })
+
+  it('revalidates the environment when an asynchronous released compensation child reaches execution', async () => {
+    let releaseBlocker!: () => void
+    const blocker = new Promise<void>((resolve) => { releaseBlocker = resolve })
+    const { workflowStore, environmentStore, deploymentService, runService } = await createFixture(async ({ prompt }) => {
+      if (prompt.includes('hold worker')) await blocker
+      return 'done'
+    })
+    const environment = await environmentStore.upsert(createEnvironment())
+    const undo = await workflowStore.create(createWorkflowInput({ id: 'async-undo', name: 'Async undo' }))
+    const parent = await workflowStore.create(createWorkflowInput({
+      id: 'async-parent', name: 'Async parent',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'effect', type: 'mcp', label: 'Effect', config: { tool: 'write', arguments: {} }, compensation: { type: 'workflow', workflowId: undo.id, waitForCompletion: false }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'effect' }, { id: 'b', source: 'effect', target: 'output' }],
+    }))
+    const holding = await workflowStore.create(createWorkflowInput({
+      id: 'worker-blocker', name: 'Worker blocker',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'hold', type: 'ai-task', label: 'Hold', config: { instruction: 'hold worker', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'hold' }, { id: 'b', source: 'hold', target: 'output' }],
+    }))
+    const parentRelease = await deploymentService.publish({ workflowId: parent.id, environmentId: environment.id })
+    const holdingRelease = await deploymentService.publish({ workflowId: holding.id, environmentId: environment.id })
+    try {
+      const completedParent = await eventually(runService, (await deploymentService.start(parentRelease.id, null)).id)
+      const holdingRun = await deploymentService.start(holdingRelease.id, null)
+      for (let attempt = 0; attempt < 100 && runService.get(holdingRun.id)?.nodeStates.find((state) => state.nodeId === 'hold')?.status !== 'running'; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      await runService.compensate(completedParent.id)
+      const child = runService.list(undo.id)[0]!
+      expect(child.status).toBe('queued')
+      await environmentStore.upsert({ ...environment, status: 'disabled' })
+      releaseBlocker()
+      expect(await eventually(runService, child.id)).toMatchObject({ status: 'failed', error: expect.stringMatching(/environment must be active/iu) })
+    } finally {
+      releaseBlocker()
+      await runService.stop()
+    }
   })
 
   it('rejects publish when a sub-workflow dependency is missing or cyclic', async () => {

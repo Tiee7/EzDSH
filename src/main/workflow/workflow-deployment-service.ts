@@ -158,7 +158,23 @@ export class WorkflowDeploymentService {
     stack: string[],
   ): WorkflowNode {
     this.assertNodeAllowedForDeployment(node, environment, allowedOperations)
-    if (node.type !== 'sub-workflow') return cloneWorkflow(node)
+    let pinnedNode = cloneWorkflow(node)
+    if (node.compensation !== undefined) {
+      const compensation = this.resolveWorkflowOrThrow(node.compensation.workflowId, node.compensation.workflowRevision)
+      if (compensation.enabled !== true) throw new Error(`只能发布已启用的补偿工作流：${compensation.name}`)
+      assertValidWorkflow(compensation, `发布补偿工作流 ${compensation.name}`)
+      const compensationSnapshot = this.collectWorkflowDeploymentState(compensation, environment, collected, dependencies, stack)
+      dependencies.set(`${compensationSnapshot.id}@${String(compensationSnapshot.revision)}`, cloneWorkflow(compensationSnapshot))
+      pinnedNode = {
+        ...pinnedNode,
+        compensation: {
+          ...cloneWorkflow(node.compensation),
+          workflowId: compensationSnapshot.id,
+          workflowRevision: compensationSnapshot.revision,
+        },
+      }
+    }
+    if (node.type !== 'sub-workflow') return pinnedNode
     const child = this.resolveWorkflowOrThrow(
       node.config.workflowId,
       typeof node.config.version === 'number' ? node.config.version : undefined,
@@ -169,6 +185,7 @@ export class WorkflowDeploymentService {
     dependencies.set(`${childSnapshot.id}@${String(childSnapshot.revision)}`, cloneWorkflow(childSnapshot))
     return {
       ...cloneWorkflow(node),
+      ...(pinnedNode.compensation === undefined ? {} : { compensation: cloneWorkflow(pinnedNode.compensation) }),
       config: {
         ...node.config,
         workflowId: childSnapshot.id,

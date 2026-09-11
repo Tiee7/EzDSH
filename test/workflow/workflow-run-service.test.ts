@@ -11,6 +11,8 @@ import { WorkflowConnectorStore } from '../../src/main/workflow/workflow-connect
 import { WorkflowCredentialStore } from '../../src/main/workflow/workflow-credential-service.js'
 import { WorkflowConnectorService, type WorkflowConnectorResponse } from '../../src/main/workflow/workflow-connector-service.js'
 import { computeWorkflowDefinitionSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
+import { WorkflowObservationStore } from '../../src/main/workflow/workflow-observation-store.js'
+import { WorkflowObservabilityService } from '../../src/main/workflow/workflow-observability-service.js'
 import type { WorkflowCustomerEnvironment } from '../../src/shared/workflow-operations.js'
 import type { EmployeeCreateInput, EmployeeSnapshot } from '../../src/shared/employees.js'
 import { validateWorkflow, type WorkflowDefinition, type WorkflowNode, type WorkflowOutputMode, type WorkflowRunRecord, type WorkflowValue } from '../../src/shared/workflow.js'
@@ -187,6 +189,7 @@ describe('effect reconciliation', () => {
     const first = await fixture.service.reconcileEffect(fixture.run.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'first investigation' })
     first.status = 'paused'
     first.nodeStates.find((state) => state.nodeId === 'body')!.effectState = 'unknown'
+    delete first.effectReconciliationTargets
     await fixture.runStore.save(first)
     const final = await fixture.service.reconcileEffect(first.id, { nodeId: 'body', outcome: 'dispatched', note: 'second investigation' })
     const state = final.nodeStates.find((candidate) => candidate.nodeId === 'body')!
@@ -612,7 +615,10 @@ describe('released workflow access boundaries', () => {
     await environmentStore.upsert({ ...environment, allowCode: false, allowShellFile: false })
     const narrowed = action === 'approve' ? await service.approve(record.id, true) : await service[action](record.id)
     expect(narrowed).toMatchObject({ allowCode: false, allowShellFile: false, connectorGrants: [{ connectorId: 'crm', operations: ['read'] }] })
-    if (action === 'compensate') expect(executeSubWorkflow.mock.calls[0]?.[4]).toMatchObject({ allowCode: false, allowShellFile: false })
+    if (action === 'compensate') {
+      expect(executeSubWorkflow).not.toHaveBeenCalled()
+      expect(narrowed.compensationStack?.[0]).toMatchObject({ status: 'failed', effectState: 'unknown' })
+    }
     narrowed.status = 'paused'
     await runStore.save(narrowed)
     await environmentStore.upsert({ ...environment, connectorIds: [] })
@@ -2131,5 +2137,145 @@ describe('workflow run service', () => {
 
     expect(executeSubWorkflow).toHaveBeenCalledWith(undo.id, { undoValue: 'published' }, true, undefined, expect.any(Object))
     expect(compensated.compensationStack).toMatchObject([{ sourceNodeId: 'effect', status: 'completed' }])
+  })
+
+  it('journals compensation dispatch before the child call and uses a stable occurrence idempotency key', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-journal-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const main = await workflowStore.create({
+      id: 'workflow-compensation-journal', name: 'Compensation journal', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'effect', type: 'mcp', label: 'Effect', config: { tool: 'publish', arguments: {} }, compensation: { type: 'workflow', workflowId: 'undo' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'effect' }, { id: 'b', source: 'effect', target: 'output' }],
+    })
+    let runId = ''
+    const executeSubWorkflow = vi.fn(async (_workflowId: string, _input: WorkflowValue, _wait: boolean, _version?: number | 'latest', options?: { idempotencyKey?: string }) => {
+      expect(runStore.get(runId)?.compensationStack?.[0]).toMatchObject({ status: 'running', effectState: 'dispatched' })
+      return 'undone'
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined, mcpClient: { call: async () => 'published' }, executeSubWorkflow,
+    })
+
+    runId = (await service.start(main.id, 'order-42')).id
+    expect((await eventually(service, runId)).status).toBe('completed')
+    const compensated = await service.compensate(runId)
+
+    const occurrenceId = `${runId}:compensation:effect:ordinary`
+    expect(executeSubWorkflow.mock.calls[0]?.[4]).toMatchObject({ idempotencyKey: occurrenceId })
+    expect(compensated.compensationStack?.[0]).toMatchObject({ status: 'completed', effectState: 'confirmed', occurrenceId })
+    expect(compensated.events.map((event) => event.type)).toEqual(expect.arrayContaining(['compensation-effect-prepared', 'compensation-effect-dispatched', 'compensation-effect-confirmed']))
+    await service.stop()
+  })
+
+  it('recovers a compensation whose remote success preceded the local checkpoint as unknown without replaying it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-crash-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    const workflow = await workflowStore.create({ name: 'Compensation crash', description: '', nodes: [graph().nodes[0]!, graph().nodes[4]!], edges: [{ id: 'direct', source: 'input', target: 'output' }] })
+    const run = await runStore.enqueue({
+      id: 'run-compensation-crash', workflowId: workflow.id, workflowRevision: workflow.revision,
+      status: 'completed', input: null, output: null, allowShellFile: false, nodeStates: [], events: [],
+      compensationStack: [{
+        sourceNodeId: 'write', action: { type: 'workflow', workflowId: 'undo' }, status: 'running',
+        effectState: 'dispatched', occurrenceId: 'run-compensation-crash:compensation:write:ordinary',
+      }],
+    } as WorkflowRunRecord)
+    const executeSubWorkflow = vi.fn(async () => 'must-not-repeat')
+    const restarted = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined, executeSubWorkflow,
+    })
+
+    await restarted.initialize()
+    const recovered = restarted.get(run.id)
+    expect(recovered?.compensationStack?.[0]).toMatchObject({ status: 'failed', effectState: 'unknown', error: expect.stringMatching(/人工核对/u) })
+    await expect(restarted.compensate(run.id)).rejects.toThrow(/人工核对/u)
+    expect(executeSubWorkflow).not.toHaveBeenCalled()
+    await restarted.stop()
+  })
+})
+
+describe('terminal workflow failure contract', () => {
+  it('drives sticky health from a real released RunService node failure', async () => {
+    const fixture = await createReleasedAccessFixture({
+      id: 'fail', type: 'ai-task', label: 'Fail', config: { instruction: 'fail', mode: 'single', skillIds: [], outputMode: 'text' }, position: { x: 200, y: 0 },
+    })
+    const workerService = fixture.createService()
+    const observationStore = new WorkflowObservationStore(fixture.dir)
+    const observability = new WorkflowObservabilityService({ store: observationStore })
+    let observed = Promise.resolve()
+    const unwatch = workerService.watch((record) => { observed = observed.then(() => observability.observeRun(record)) })
+    try {
+      const failed = await eventually(workerService, (await workerService.startReleased(fixture.release.id, null)).id)
+      for (let attempt = 0; attempt < 100 && !observationStore.list(fixture.environment.id).some((event) => event.action === 'run-failed'); attempt += 1) {
+        await observed
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      expect(failed.status).toBe('failed')
+      expect(failed.events.filter((event) => event.type === 'run-failed')).toHaveLength(1)
+      const later = new WorkflowObservabilityService({ store: observationStore, now: () => '2099-01-01T00:00:00.000Z', recentFailureWindowMs: 1 })
+      expect(later.health(fixture.environment.id)).toMatchObject({ status: 'degraded', reason: 'latest-run-failed' })
+    } finally { unwatch(); await workerService.stop() }
+  })
+
+  it('appends one terminal failure when dispatched reconciliation changes a paused run to failed', async () => {
+    const fixture = await createReleasedAccessFixture(loopWriteNode)
+    const observationStore = new WorkflowObservationStore(fixture.dir)
+    const observability = new WorkflowObservabilityService({ store: observationStore })
+    const queued = await fixture.service.startReleased(fixture.release.id, 'item')
+    queued.status = 'paused'
+    Object.assign(queued.nodeStates.find((state) => state.nodeId === 'body')!, { status: 'pending', effectState: 'unknown' })
+    await fixture.runStore.save(queued)
+    let observed = Promise.resolve()
+    const unwatch = fixture.service.watch((record) => { observed = observed.then(() => observability.observeRun(record)) })
+    try {
+      const failed = await fixture.service.reconcileEffect(queued.id, { nodeId: 'body', outcome: 'dispatched', note: 'receipt found' })
+      await observed
+      expect(failed.events.filter((event) => event.type === 'run-failed')).toHaveLength(1)
+      const later = new WorkflowObservabilityService({ store: observationStore, now: () => '2099-01-01T00:00:00.000Z', recentFailureWindowMs: 1 })
+      expect(later.health(fixture.environment.id)).toMatchObject({ status: 'degraded', reason: 'latest-run-failed' })
+    } finally { unwatch(); await fixture.service.stop() }
+  })
+})
+
+describe('cancelled write reconciliation', () => {
+  it('pauses an aborted dispatched write and permits explicit not-dispatched reconciliation', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-cancel-write-'))
+    const workflowStore = new WorkflowStore(dir)
+    const runStore = new WorkflowRunStore(dir)
+    let dispatched!: () => void
+    const requestStarted = new Promise<void>((resolve) => { dispatched = resolve })
+    const workflow = await workflowStore.create({
+      name: 'Cancel write', description: '', permissionPolicy: { connectors: [{ connectorId: 'crm', operations: ['write'] }] },
+      nodes: [graph().nodes[0]!, loopWriteNode, graph().nodes[4]!],
+      edges: [{ id: 'a', source: 'input', target: 'body' }, { id: 'b', source: 'body', target: 'output' }],
+    })
+    const service = new WorkflowRunService({
+      workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
+      resolveEmployee: () => undefined,
+      connectorService: { request: async (_request, _input, _previous, signal) => {
+        dispatched()
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted write')), { once: true }))
+      } },
+    })
+    try {
+      const started = await service.start(workflow.id, 'item', { connectorGrants: [{ connectorId: 'crm', operations: ['write'] }] })
+      await requestStarted
+      await service.cancel(started.id)
+      const paused = await eventually(service, started.id)
+      expect(paused).toMatchObject({ status: 'paused' })
+      expect(paused.events.at(-1)?.type).toBe('run-paused')
+      expect(paused.nodeStates.find((state) => state.nodeId === 'body')).toMatchObject({ status: 'pending', effectState: 'unknown' })
+      expect(await service.reconcileEffect(started.id, { nodeId: 'body', outcome: 'not-dispatched', note: 'connector confirms absent' })).toMatchObject({ status: 'queued' })
+    } finally { await service.stop() }
   })
 })

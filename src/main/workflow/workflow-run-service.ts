@@ -32,6 +32,8 @@ import type {
   ListOperatorNodeConfig,
   MergeNodeConfig,
   WorkflowRunLease,
+  WorkflowCompensationEntry,
+  WorkflowEffectReconciliationTarget,
 } from '../../shared/workflow.js'
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
@@ -147,7 +149,12 @@ export class WorkflowRunService {
       // A new service instance is a new process boundary: any persisted lease
       // belongs to a process that no longer exists, even if its expiry is in
       // the future. Reconcile it before starting the fresh Worker.
-      await this.options.runStore.recoverInterruptedRuns(new Date(), true)
+      const recovered = await this.options.runStore.recoverInterruptedRuns(new Date(), true)
+      await this.options.runStore.recoverInterruptedCompensations()
+      for (const record of recovered) {
+        this.syncEffectReconciliationTargets(record)
+        await this.options.runStore.save(record)
+      }
       // Records written before the durable queue existed have no lease and
       // retain the previous startup-pause behaviour.
       await this.options.runStore.pauseActiveRuns()
@@ -245,8 +252,9 @@ export class WorkflowRunService {
     await this.initialize()
     if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
     const parent = parentRunId === undefined ? undefined : this.options.runStore.get(parentRunId)
-    const lineage = parent === undefined ? [] : this.liveLineages.get(parent.id) ?? [parent.workflowId]
-    if (lineage.includes(workflowId)) throw new Error(`不允许递归调用子工作流：${[...lineage, workflowId].join(' → ')}`)
+    if (parentRunId !== undefined && parent === undefined) throw new Error(`父运行不存在：${parentRunId}`)
+    const lineage = parent === undefined ? [] : [...(parent.workflowAncestry ?? []), parent.workflowId]
+    if (lineage.includes(workflowId)) throw new WorkflowRecursiveCallError([...lineage, workflowId])
     const workflow = this.options.workflowStore.get(workflowId)
     if (workflow === undefined) throw new Error(`子工作流不存在：${workflowId}`)
     if (typeof version === 'number' && workflow.revision !== version) throw new Error(`子工作流版本不匹配：需要 v${version}，当前为 v${workflow.revision}。`)
@@ -254,6 +262,10 @@ export class WorkflowRunService {
     const parentActive = parentRunId === undefined ? undefined : this.active.get(parentRunId)
     throwIfAborted(parentActive?.abortController.signal)
     const child = this.createRecord(workflow, input, options)
+    if (parent !== undefined) {
+      child.parentRunId = parent.id
+      child.workflowAncestry = [...lineage]
+    }
     this.liveLineages.set(child.id, [...lineage, workflow.id])
     if (!waitForCompletion || parentActive === undefined) {
       const enqueued = await this.enqueue(child, '子运行已排队')
@@ -352,7 +364,10 @@ export class WorkflowRunService {
     if (typeof runId !== 'string' || runId.trim() === '') throw new Error('Invalid workflow run ID')
     const request = validateWorkflowEffectReconcileRequest(input)
     await this.initialize()
-    if (this.active.has(runId)) throw new Error('该运行仍在执行，请等待所有分支停止后再人工核对。')
+    const activeRecord = this.options.runStore.get(runId)
+    if (this.active.has(runId) && activeRecord !== undefined && workflowAllNodeRunStates(activeRecord.nodeStates).some((state) => state.status === 'running')) {
+      throw new Error('该运行仍在执行，请等待所有分支停止后再人工核对。')
+    }
     if (this.reconciliationActive.has(runId) || this.compensationActive.has(runId)) throw new Error('该运行的人工核对或补偿正在执行。')
     this.reconciliationActive.add(runId)
     try {
@@ -362,17 +377,25 @@ export class WorkflowRunService {
       let scope: WorkflowExecutionScope | undefined
       let state: WorkflowNodeRunState | undefined
       if (request.iterationId === undefined) {
-        // Loop summaries are projections, never authoritative effect targets.
-        const workflow = this.workflowForRecord(record)
-        const isLoopBody = workflow?.nodes.some((node) => node.type === 'loop' && workflowLoopBodyNodeIds(workflow, node.id).includes(request.nodeId)) === true
-        if (!isLoopBody) state = record.nodeStates.find((candidate) => candidate.nodeId === request.nodeId && candidate.executionScope === undefined)
+        const persistedTarget = record.effectReconciliationTargets?.find((candidate) => candidate.nodeId === request.nodeId && candidate.iterationId === undefined)
+        if (record.effectReconciliationTargets !== undefined) {
+          if (persistedTarget !== undefined) state = record.nodeStates.find((candidate) => candidate.nodeId === request.nodeId && candidate.executionScope === undefined)
+        } else {
+          // Legacy records without exact targets retain topology-based filtering.
+          const workflow = this.workflowForRecord(record)
+          const isLoopBody = workflow?.nodes.some((node) => node.type === 'loop' && workflowLoopBodyNodeIds(workflow, node.id).includes(request.nodeId)) === true
+          if (!isLoopBody) state = record.nodeStates.find((candidate) => candidate.nodeId === request.nodeId && candidate.executionScope === undefined)
+        }
       } else {
-        for (const owner of record.nodeStates) {
-          const iteration = owner.loopIterations?.find((candidate) => candidate.iterationId === request.iterationId)
-          if (iteration === undefined || iteration.status === 'completed') continue
-          state = iteration.nodeStates.find((candidate) => candidate.nodeId === request.nodeId)
-          scope = { loopNodeId: owner.nodeId, iterationId: iteration.iterationId, iterationIndex: iteration.iterationIndex }
-          break
+        const persistedTarget = record.effectReconciliationTargets?.find((candidate) => candidate.nodeId === request.nodeId && candidate.iterationId === request.iterationId)
+        if (record.effectReconciliationTargets === undefined || persistedTarget !== undefined) {
+          for (const owner of record.nodeStates) {
+            const iteration = owner.loopIterations?.find((candidate) => candidate.iterationId === request.iterationId)
+            if (iteration === undefined || iteration.status === 'completed') continue
+            state = iteration.nodeStates.find((candidate) => candidate.nodeId === request.nodeId)
+            scope = { loopNodeId: owner.nodeId, iterationId: iteration.iterationId, iterationIndex: iteration.iterationIndex }
+            break
+          }
         }
       }
       if (state === undefined || state.effectState !== 'unknown') throw new Error('指定节点或循环迭代不存在未知副作用')
@@ -413,7 +436,10 @@ export class WorkflowRunService {
         }
       }
       // Audit, precise reset and queue transition share one durable snapshot.
-      await this.save(record, `node-effect-reconciled-${request.outcome}`, request.outcome === 'dispatched' ? '人工确认副作用已派发，运行终止。' : '人工确认副作用未派发。', request.nodeId, scope)
+      const reconcileType: WorkflowRunEvent['type'] = `node-effect-reconciled-${request.outcome}`
+      const reconcileMessage = request.outcome === 'dispatched' ? '人工确认副作用已派发，运行终止。' : '人工确认副作用未派发。'
+      if (request.outcome === 'dispatched') await this.saveFailure(record, reconcileType, reconcileMessage, request.nodeId, scope)
+      else await this.save(record, reconcileType, reconcileMessage, request.nodeId, scope)
       if (canRequeue) this.worker.wake()
       return this.options.runStore.get(runId) ?? cloneWorkflow(record)
     } finally {
@@ -455,7 +481,7 @@ export class WorkflowRunService {
       record.error = '审批被拒绝'
       record.completedAt = new Date().toISOString()
       record.waitingApprovalNodeId = undefined
-      await this.save(record, 'approval-rejected', '审批被拒绝', node.id)
+      await this.saveFailure(record, 'approval-rejected', '审批被拒绝', node.id)
       return this.options.runStore.get(runId) ?? record
     }
     this.revalidateReleasedAccess(record)
@@ -511,36 +537,47 @@ export class WorkflowRunService {
     this.compensationActive.add(runId)
     try {
       const stack = record.compensationStack ?? []
+      const unresolved = stack.find((entry) => entry.effectState === 'unknown')
+      if (unresolved !== undefined) throw new Error(`补偿节点 ${unresolved.sourceNodeId} 的副作用状态未知，必须先人工核对。`)
       for (const entry of [...stack].reverse()) {
-      if (entry.status === 'completed') continue
-      entry.status = 'running'
-      entry.startedAt = new Date().toISOString()
-      entry.error = undefined
-      await this.save(record, 'compensation-started', `开始补偿节点：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope)
-      try {
-        if (this.options.executeSubWorkflow === undefined) throw new Error('补偿 Workflow 执行器不可用。')
-        const sourceOutput = workflowAllNodeRunStates(record.nodeStates).find((state) => state.nodeId === entry.sourceNodeId && state.executionScope?.iterationId === entry.executionScope?.iterationId)?.output ?? null
-        const compensationInput = entry.action.input === undefined
-          ? cloneWorkflow(sourceOutput)
-          : resolveWorkflowTemplateValue(entry.action.input, record.input, sourceOutput)
-        await this.options.executeSubWorkflow(
-          entry.action.workflowId,
-          compensationInput,
-          entry.action.waitForCompletion !== false,
-          undefined,
-          { allowShellFile: record.allowShellFile, allowCode: record.allowCode === true, connectorGrants: record.connectorGrants, ...(record.model === undefined ? {} : { model: record.model }) },
-        )
-        entry.status = 'completed'
-        entry.completedAt = new Date().toISOString()
-        await this.save(record, 'compensation-completed', `补偿完成：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope)
-      } catch (error) {
-        entry.status = 'failed'
-        entry.completedAt = new Date().toISOString()
-        entry.error = error instanceof Error ? error.message : String(error)
-        record.error = `补偿失败：${entry.error}`
-        await this.save(record, 'compensation-failed', record.error, entry.sourceNodeId, entry.executionScope)
-        break
-      }
+        if (entry.status === 'completed') continue
+        entry.occurrenceId ??= this.compensationOccurrenceId(record, entry.sourceNodeId, entry.executionScope)
+        entry.status = 'running'
+        entry.effectState = 'prepared'
+        entry.startedAt = new Date().toISOString()
+        entry.completedAt = undefined
+        entry.error = undefined
+        await this.saveEvents(record, [
+          this.createEvent('compensation-started', `开始补偿节点：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope),
+          this.createEvent('compensation-effect-prepared', `已准备补偿副作用：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope),
+        ])
+        try {
+          const sourceOutput = workflowAllNodeRunStates(record.nodeStates).find((state) => state.nodeId === entry.sourceNodeId && state.executionScope?.iterationId === entry.executionScope?.iterationId)?.output ?? null
+          const compensationInput = entry.action.input === undefined
+            ? cloneWorkflow(sourceOutput)
+            : resolveWorkflowTemplateValue(entry.action.input, record.input, sourceOutput)
+          entry.effectState = 'dispatched'
+          await this.save(record, 'compensation-effect-dispatched', `已派发补偿副作用：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope)
+          await this.executeCompensationWorkflow(record, entry, compensationInput)
+          entry.status = 'completed'
+          entry.effectState = 'confirmed'
+          entry.completedAt = new Date().toISOString()
+          await this.saveEvents(record, [
+            this.createEvent('compensation-effect-confirmed', `已确认补偿副作用：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope),
+            this.createEvent('compensation-completed', `补偿完成：${entry.sourceNodeId}`, entry.sourceNodeId, entry.executionScope),
+          ])
+        } catch (error) {
+          entry.status = 'failed'
+          entry.effectState = 'unknown'
+          entry.completedAt = new Date().toISOString()
+          entry.error = error instanceof Error ? error.message : String(error)
+          record.error = `补偿副作用状态未知，必须人工核对：${entry.error}`
+          await this.saveEvents(record, [
+            this.createEvent('compensation-effect-unknown', record.error, entry.sourceNodeId, entry.executionScope),
+            this.createEvent('compensation-failed', record.error, entry.sourceNodeId, entry.executionScope),
+          ])
+          break
+        }
       }
       return this.options.runStore.get(runId) ?? record
     } finally {
@@ -910,9 +947,10 @@ export class WorkflowRunService {
     options: WorkflowRunOptions = {},
     releaseOverride?: WorkflowRelease,
     wakeWorker = true,
+    allowHistoricalRelease = false,
   ): Promise<WorkflowRunRecord> {
     const release = releaseOverride ?? this.resolveReleasedWorkflowOrThrow(releaseId)
-    if (release.status !== 'published') throw new Error('只能启动已发布的 workflow release')
+    if (!allowHistoricalRelease && release.status !== 'published') throw new Error('只能启动已发布的 workflow release')
     const workflow = this.resolveReleasedDefinitionOrThrow(release, definition.id, definition.revision)
     assertValidWorkflow(workflow, '启动发布工作流')
     const record = this.createRecord(workflow, input, options, release)
@@ -1150,7 +1188,19 @@ export class WorkflowRunService {
         record.status = 'failed'
         record.error = error.message
         record.completedAt = new Date().toISOString()
-        await this.save(record, 'node-failed', error.message, node.id, state.executionScope)
+        await this.saveFailure(record, 'node-failed', error.message, node.id, state.executionScope)
+        return 'stopped'
+      }
+      if (error instanceof WorkflowRecursiveCallError) {
+        state.status = 'failed'
+        state.effectState = 'none'
+        state.error = error.message
+        state.completedAt = new Date().toISOString()
+        state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
+        record.status = 'failed'
+        record.error = error.message
+        record.completedAt = state.completedAt
+        await this.saveFailure(record, 'node-failed', error.message, node.id, state.executionScope)
         return 'stopped'
       }
       if (error instanceof WorkflowApprovalRequired) {
@@ -1177,17 +1227,18 @@ export class WorkflowRunService {
         return 'stopped'
       }
       if (state.effectState === 'prepared' || state.effectState === 'dispatched' || state.effectState === 'confirmed') {
+        const cancelledWriteNeedsReconciliation = active.cancelled && (node.type === 'mcp' || node.type === 'http' && node.config.method !== 'GET')
         state.effectState = 'unknown'
-        state.status = active.cancelled ? 'cancelled' : 'pending'
+        state.status = cancelledWriteNeedsReconciliation || !active.cancelled ? 'pending' : 'cancelled'
         state.error = error instanceof Error ? error.message : String(error)
         state.completedAt = new Date().toISOString()
         state.elapsedMs = Math.max(0, Date.now() - executionStartedAt)
-        record.status = active.cancelled ? 'cancelled' : 'paused'
-        record.error = active.cancelled
-          ? `运行已取消，但节点“${node.label}”的外部副作用状态未知。`
-          : `节点“${node.label}”的外部副作用状态未知，已暂停以避免重复执行。`
+        record.status = cancelledWriteNeedsReconciliation || !active.cancelled ? 'paused' : 'cancelled'
+        record.error = cancelledWriteNeedsReconciliation
+          ? `运行取消时节点“${node.label}”的外部副作用状态未知，已暂停等待人工核对。`
+          : active.cancelled ? '用户取消了运行' : `节点“${node.label}”的外部副作用状态未知，已暂停以避免重复执行。`
         record.completedAt = new Date().toISOString()
-        await this.save(record, active.cancelled ? 'run-cancelled' : 'run-paused', record.error, node.id, state.executionScope)
+        await this.save(record, record.status === 'paused' ? 'run-paused' : 'run-cancelled', record.error, node.id, state.executionScope)
         return 'stopped'
       }
       state.status = active.pauseRequested ? 'pending' : active.cancelled ? 'cancelled' : 'failed'
@@ -1199,7 +1250,8 @@ export class WorkflowRunService {
       record.status = continueLoop ? 'running' : active.pauseRequested ? 'paused' : active.cancelled ? 'cancelled' : 'failed'
       record.error = continueLoop ? undefined : state.error
       record.completedAt = continueLoop ? undefined : new Date().toISOString()
-      await this.save(record, active.pauseRequested ? 'run-paused' : active.cancelled ? 'run-cancelled' : 'node-failed', state.error, node.id, state.executionScope)
+      if (record.status === 'failed') await this.saveFailure(record, 'node-failed', state.error, node.id, state.executionScope)
+      else await this.save(record, active.pauseRequested ? 'run-paused' : active.cancelled ? 'run-cancelled' : 'node-failed', state.error, node.id, state.executionScope)
       return 'stopped'
     }
   }
@@ -1261,7 +1313,18 @@ export class WorkflowRunService {
     if (node.compensation === undefined) return
     const stack = record.compensationStack ?? (record.compensationStack = [])
     if (stack.some((entry) => entry.sourceNodeId === node.id && entry.executionScope?.iterationId === executionScope?.iterationId && entry.status !== 'failed')) return
-    stack.push({ sourceNodeId: node.id, ...(executionScope === undefined ? {} : { executionScope: cloneWorkflow(executionScope) }), action: cloneWorkflow(node.compensation), status: 'pending' })
+    stack.push({
+      sourceNodeId: node.id,
+      ...(executionScope === undefined ? {} : { executionScope: cloneWorkflow(executionScope) }),
+      action: cloneWorkflow(node.compensation),
+      occurrenceId: this.compensationOccurrenceId(record, node.id, executionScope),
+      effectState: 'none',
+      status: 'pending',
+    })
+  }
+
+  private compensationOccurrenceId(record: WorkflowRunRecord, sourceNodeId: string, executionScope?: WorkflowExecutionScope): string {
+    return `${record.id}:compensation:${sourceNodeId}:${executionScope?.iterationId ?? 'ordinary'}`
   }
 
   private async markEffect(
@@ -1481,6 +1544,51 @@ export class WorkflowRunService {
     const settled = this.options.runStore.get(childRun.id)
     if (settled === undefined) throw new Error(`Workflow run not found: ${childRun.id}`)
     if (settled.status !== 'completed') throw new Error(settled.error ?? '子工作流执行失败')
+    return settled.output ?? null
+  }
+
+  private async executeCompensationWorkflow(
+    record: WorkflowRunRecord,
+    entry: WorkflowCompensationEntry,
+    compensationInput: WorkflowValue,
+  ): Promise<WorkflowValue> {
+    const runOptions: WorkflowRunOptions = {
+      idempotencyKey: entry.occurrenceId,
+      allowShellFile: record.allowShellFile,
+      allowCode: record.allowCode === true,
+      connectorGrants: record.connectorGrants,
+      ...(record.model === undefined ? {} : { model: record.model }),
+    }
+    if (record.releaseId === undefined) {
+      if (this.options.executeSubWorkflow === undefined) throw new Error('补偿 Workflow 执行器不可用。')
+      return this.options.executeSubWorkflow(
+        entry.action.workflowId,
+        compensationInput,
+        entry.action.waitForCompletion !== false,
+        entry.action.workflowRevision,
+        runOptions,
+      )
+    }
+    this.revalidateReleasedAccess(record)
+    const release = this.resolveReleasedWorkflowOrThrow(record.releaseId)
+    const revision = entry.action.workflowRevision
+    if (revision === undefined) throw new Error(`发布补偿工作流缺少固定版本：${entry.action.workflowId}`)
+    const workflow = this.resolveReleasedDefinitionOrThrow(release, entry.action.workflowId, revision)
+    const waitForCompletion = entry.action.waitForCompletion !== false
+    const childRun = await this.startReleasedDefinition(
+      release.id,
+      workflow,
+      compensationInput,
+      runOptions,
+      release,
+      !waitForCompletion,
+      true,
+    )
+    if (!waitForCompletion) return { runId: childRun.id }
+    await this.execute(childRun.id)
+    const settled = this.options.runStore.get(childRun.id)
+    if (settled === undefined) throw new Error(`Workflow run not found: ${childRun.id}`)
+    if (settled.status !== 'completed') throw new Error(settled.error ?? '补偿子工作流执行失败')
     return settled.output ?? null
   }
 
@@ -1902,7 +2010,57 @@ export class WorkflowRunService {
     return input
   }
 
+  private createEvent(type: WorkflowRunEvent['type'], message: string, nodeId?: string, executionScope?: WorkflowExecutionScope): WorkflowRunEvent {
+    return { id: randomUUID(), time: new Date().toISOString(), type, nodeId, message, ...(executionScope === undefined ? {} : { executionScope: cloneWorkflow(executionScope) }) }
+  }
+
+  private syncEffectReconciliationTargets(record: WorkflowRunRecord): void {
+    const workflow = this.workflowForRecord(record)
+    const nodeLabels = new Map(workflow?.nodes.map((node) => [node.id, node.label]) ?? [])
+    const loopBodyNodeIds = new Set(workflow?.nodes.filter((node) => node.type === 'loop').flatMap((node) => workflowLoopBodyNodeIds(workflow, node.id)) ?? [])
+    const targets: WorkflowEffectReconciliationTarget[] = []
+    const visit = (states: WorkflowNodeRunState[], loop?: { nodeLabel: string; iterationId: string; iterationIndex: number; input: WorkflowValue }): void => {
+      for (const state of states) {
+        if (state.effectState === 'unknown' && (loop !== undefined || !loopBodyNodeIds.has(state.nodeId))) {
+          const iterationId = loop?.iterationId
+          const latestEffectEvent = [...record.events].reverse().find((event) => event.nodeId === state.nodeId
+            && event.executionScope?.iterationId === iterationId
+            && event.type.startsWith('node-effect-'))
+          targets.push({
+            key: `${record.id}:${iterationId ?? 'ordinary'}:${state.nodeId}:${state.attempt ?? 0}:${state.effectReconciliationHistory?.length ?? 0}:${latestEffectEvent?.id ?? 'no-effect-event'}`,
+            nodeId: state.nodeId,
+            nodeLabel: nodeLabels.get(state.nodeId) ?? state.nodeId,
+            ...(iterationId === undefined ? {} : { iterationId, iterationIndex: loop?.iterationIndex, loopNodeLabel: loop?.nodeLabel }),
+            ...(state.input === undefined && loop === undefined ? {} : { input: state.input ?? loop?.input }),
+          })
+        }
+        for (const iteration of state.loopIterations ?? []) {
+          visit(iteration.nodeStates, {
+            nodeLabel: nodeLabels.get(state.nodeId) ?? state.nodeId,
+            iterationId: iteration.iterationId,
+            iterationIndex: iteration.iterationIndex,
+            input: iteration.input,
+          })
+        }
+      }
+    }
+    visit(record.nodeStates)
+    record.effectReconciliationTargets = targets
+  }
+
   private async save(record: WorkflowRunRecord, type: WorkflowRunEvent['type'], message: string, nodeId?: string, executionScope?: WorkflowExecutionScope): Promise<void> {
+    return this.saveEvents(record, [this.createEvent(type, message, nodeId, executionScope)], executionScope)
+  }
+
+  private async saveFailure(record: WorkflowRunRecord, detailType: WorkflowRunEvent['type'], message: string, nodeId?: string, executionScope?: WorkflowExecutionScope): Promise<void> {
+    const events: WorkflowRunEvent[] = []
+    if (!record.events.some((event) => event.type === 'run-failed')) events.push(this.createEvent('run-failed', record.error ?? message))
+    events.push(this.createEvent(detailType, message, nodeId, executionScope))
+    await this.saveEvents(record, events, executionScope)
+  }
+
+  private async saveEvents(record: WorkflowRunRecord, events: WorkflowRunEvent[], executionScope?: WorkflowExecutionScope): Promise<void> {
+    executionScope ??= events.find((event) => event.executionScope !== undefined)?.executionScope
     if (executionScope !== undefined) {
       const iteration = record.nodeStates.find((state) => state.nodeId === executionScope.loopNodeId)?.loopIterations?.find((candidate) => candidate.iterationId === executionScope.iterationId)
       for (const bodyState of iteration?.nodeStates ?? []) {
@@ -1920,7 +2078,8 @@ export class WorkflowRunService {
     if (isRetentionStatus(record.status) && record.completedAt !== undefined && record.retentionExpiresAt === undefined) {
       record.retentionExpiresAt = retentionExpiry(record)
     }
-    record.events.push({ id: randomUUID(), time: new Date().toISOString(), type, nodeId, message, ...(executionScope === undefined ? {} : { executionScope: cloneWorkflow(executionScope) }) })
+    record.events.push(...events.map((event) => cloneWorkflow(event)))
+    this.syncEffectReconciliationTargets(record)
     const saved = await this.options.runStore.save(record)
     for (const listener of this.listeners) listener(cloneWorkflow(saved))
   }
@@ -1966,6 +2125,13 @@ class WorkflowAmbiguousEffectError extends Error {
   constructor(cause: unknown) {
     super(`节点执行结果不确定，已暂停以避免重复副作用：${cause instanceof Error ? cause.message : String(cause)}`)
     this.name = 'WorkflowAmbiguousEffectError'
+  }
+}
+
+class WorkflowRecursiveCallError extends Error {
+  constructor(lineage: readonly string[]) {
+    super(`不允许递归调用子工作流：${lineage.join(' → ')}`)
+    this.name = 'WorkflowRecursiveCallError'
   }
 }
 

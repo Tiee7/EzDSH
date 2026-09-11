@@ -159,9 +159,10 @@ export class WorkflowObservabilityService {
 }
 
 function compareObservations(left: WorkflowObservationEvent, right: WorkflowObservationEvent): number {
-  const byTime = left.time.localeCompare(right.time)
-  if (byTime !== 0) return byTime
-  return left.id.localeCompare(right.id)
+  // WorkflowObservationStore already preserves append order. Returning zero
+  // retains that monotonic order for same-millisecond events instead of
+  // letting random UUID lexicography rewrite causality.
+  return left.time.localeCompare(right.time)
 }
 
 function kindForRunEvent(type: WorkflowRunEventType): WorkflowObservationEvent['kind'] {
@@ -171,6 +172,10 @@ function kindForRunEvent(type: WorkflowRunEventType): WorkflowObservationEvent['
     case 'node-effect-confirmed':
     case 'node-effect-reconciled-not-dispatched':
     case 'node-effect-reconciled-dispatched':
+    case 'compensation-effect-prepared':
+    case 'compensation-effect-dispatched':
+    case 'compensation-effect-confirmed':
+    case 'compensation-effect-unknown':
       return 'effect'
     case 'node-started':
     case 'node-retry':
@@ -204,6 +209,7 @@ function severityForAction(action: WorkflowObservationAction): WorkflowObservati
     case 'approval-rejected':
       return 'warning'
     case 'node-retry':
+    case 'compensation-effect-unknown':
     case 'run-paused':
     case 'run-cancelled':
       return 'warning'
@@ -218,11 +224,13 @@ function outcomeForAction(action: WorkflowObservationAction): WorkflowObservatio
     case 'run-started':
     case 'node-started':
     case 'node-effect-prepared':
+    case 'compensation-effect-prepared':
     case 'compensation-started':
     case 'approval-requested':
       return 'started'
     case 'node-completed':
     case 'node-effect-confirmed':
+    case 'compensation-effect-confirmed':
     case 'node-effect-reconciled-not-dispatched':
     case 'node-effect-reconciled-dispatched':
     case 'compensation-completed':
@@ -240,6 +248,8 @@ function outcomeForAction(action: WorkflowObservationAction): WorkflowObservatio
       return 'cancelled'
     case 'node-retry':
     case 'node-effect-dispatched':
+    case 'compensation-effect-dispatched':
+    case 'compensation-effect-unknown':
     case 'node-skipped':
     case 'run-paused':
     case 'release-superseded':

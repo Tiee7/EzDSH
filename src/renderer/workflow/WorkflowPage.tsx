@@ -47,6 +47,7 @@ import {
   type TransformTemplate,
   type WorkflowDefinition,
   type WorkflowEffectReconcileRequest,
+  type WorkflowEffectReconciliationTarget,
   type WorkflowExportDocument,
   type WorkflowExportEmployee,
   type WorkflowNode,
@@ -634,18 +635,11 @@ export interface WorkflowNodeRunDetail {
   upstreamNodes: WorkflowNode[]
 }
 
-export interface WorkflowUnknownEffectTarget {
-  key: string
-  nodeId: string
-  nodeLabel: string
-  iterationId?: string
-  iterationIndex?: number
-  loopNodeLabel?: string
-  input?: WorkflowValue
-}
+export type WorkflowUnknownEffectTarget = WorkflowEffectReconciliationTarget
 
 /** Unknown effects can only be reconciled from their durable journal entry. */
 export function workflowUnknownEffectTargets(workflow: WorkflowDefinition, run: WorkflowRunRecord): WorkflowUnknownEffectTarget[] {
+  if (run.effectReconciliationTargets !== undefined) return cloneWorkflow(run.effectReconciliationTargets)
   const nodeLabels = new Map(workflow.nodes.map((node) => [node.id, node.label]))
   const loopBodyNodeIds = new Set(workflow.nodes.filter((node) => node.type === 'loop').flatMap((node) => workflowLoopBodyNodeIds(workflow, node.id)))
   const targets: WorkflowUnknownEffectTarget[] = []
