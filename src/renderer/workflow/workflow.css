@@ -499,6 +499,17 @@
 .workflow-node-events > strong { color: var(--ezdsh-text-body); }
 .workflow-node-events p { display: grid; grid-template-columns: minmax(160px, auto) 1fr; gap: 8px; margin: 0; }
 .workflow-node-events time { color: var(--ezdsh-text-faint); }
+.workflow-effect-review { display: grid; gap: 10px; border: 1px solid color-mix(in srgb, var(--ezdsh-accent-orange) 48%, var(--ezdsh-panel-border)); border-radius: 9px; padding: 12px; background: color-mix(in srgb, var(--ezdsh-accent-orange) 7%, var(--ezdsh-panel-background)); }
+.workflow-effect-review .workflow-panel-heading { margin: 0; }
+.workflow-effect-review .workflow-panel-heading p { margin: 5px 0 0; color: var(--ezdsh-text-muted); font-size: 11px; line-height: 1.45; }
+.workflow-effect-review-list { display: grid; gap: 9px; }
+.workflow-effect-review-target { display: grid; gap: 8px; border: 1px solid var(--ezdsh-panel-border); border-radius: 8px; padding: 10px; background: var(--ezdsh-panel-background); }
+.workflow-effect-review-target label { margin: 0; }
+.workflow-effect-review-target label textarea { width: 100%; min-height: 58px; resize: vertical; box-sizing: border-box; }
+.workflow-effect-review-target label small { display: block; margin-top: 5px; color: var(--ezdsh-text-faint); font-size: 10px; }
+.workflow-effect-review-validation { display: block; margin-top: 5px; color: var(--ezdsh-accent-red); font-size: 10px; }
+.workflow-effect-review-confirm { border-left: 3px solid var(--ezdsh-accent-red); padding-left: 9px; }
+.workflow-effect-review-confirm p { margin: 0 0 8px; color: var(--ezdsh-text-muted); font-size: 11px; line-height: 1.45; }
 
 .workflow-output-windows { position: fixed; z-index: 50; inset: 0; pointer-events: none; }
 .workflow-output-window { position: absolute; display: flex; width: min(420px, calc(100vw - 54px)); height: min(640px, calc(100vh - 24px)); min-width: min(320px, calc(100vw - 24px)); min-height: min(240px, calc(100vh - 24px)); max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); flex-direction: column; overflow: hidden; box-sizing: border-box; resize: none; border: 1px solid var(--ezdsh-panel-border-strong); border-radius: 11px; background: var(--ezdsh-panel-background); box-shadow: 0 18px 54px rgba(12, 20, 32, .26); pointer-events: auto; }

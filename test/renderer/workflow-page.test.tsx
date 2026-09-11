@@ -1,6 +1,6 @@
 import { createWindow } from '@mixmark-io/domino'
 import { createRoot } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act, Simulate } from 'react-dom/test-utils'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import * as workflowPage from '../../src/renderer/workflow/WorkflowPage.js'
@@ -1268,5 +1268,107 @@ describe('WorkflowPage regressions', () => {
     )
 
     expect(markup).toContain('撤销删除')
+  })
+
+  it('shows effect reconciliation only for an unknown ordinary node effect', () => {
+    const workflow = createDefaultWorkflow('Effect review')
+    const node = workflow.nodes.find((candidate) => candidate.type === 'ai-task')!
+    const run: WorkflowRunRecord = {
+      id: 'run-unknown-effect',
+      workflowId: workflow.id,
+      workflowRevision: workflow.revision,
+      status: 'paused',
+      input: { task: 'send a receipt' },
+      nodeStates: [
+        { nodeId: node.id, status: 'cancelled', effectState: 'unknown', input: { recipient: 'Ada', receipt: 'R-42' } },
+        { nodeId: workflow.nodes.find((candidate) => candidate.type === 'output')!.id, status: 'cancelled', effectState: 'dispatched' },
+      ],
+      events: [],
+      allowShellFile: false,
+    }
+
+    const markup = renderToStaticMarkup(
+      <workflowPage.WorkflowExecutionReview copy={getAppCopy('zh')} workflow={workflow} run={run} statusLabel={() => '已暂停'} onCancel={vi.fn()} onApprove={vi.fn()} onReject={vi.fn()} onResume={vi.fn()} />,
+    )
+
+    expect(markup).toContain('副作用人工核对')
+    expect(markup).toContain(node.label)
+    expect(markup).toContain('R-42')
+    expect(markup).toContain('确认未发送并重试')
+    expect(markup).toContain('确认已经发送')
+    expect(markup).not.toContain('effectState')
+  })
+
+  it('keeps an unknown loop effect bound to its saved iteration input', () => {
+    const workflow = createDefaultWorkflow('Loop effect review')
+    const loop = { ...workflow.nodes.find((candidate) => candidate.type === 'ai-task')!, type: 'loop', label: '逐项发送', config: { maxIterations: 3 } } as never
+    const body = workflow.nodes.find((candidate) => candidate.type === 'output')!
+    const definition = { ...workflow, nodes: workflow.nodes.map((node) => node.id === loop.id ? loop : node) }
+    const run: WorkflowRunRecord = {
+      id: 'run-loop-unknown-effect', workflowId: definition.id, workflowRevision: definition.revision, status: 'paused', input: {}, events: [], allowShellFile: false,
+      nodeStates: [{ nodeId: loop.id, status: 'cancelled', loopIterations: [{ iterationId: 'iteration-7', iterationIndex: 7, input: { recipient: 'Grace' }, status: 'running', nodeStates: [{ nodeId: body.id, status: 'cancelled', effectState: 'unknown', input: { recipient: 'Grace', receipt: 'R-7' } }] }] }],
+    }
+
+    expect(workflowPage.workflowUnknownEffectTargets(definition, run)).toEqual([{
+      key: `iteration-7:${body.id}`,
+      nodeId: body.id,
+      nodeLabel: body.label,
+      iterationId: 'iteration-7',
+      iterationIndex: 7,
+      loopNodeLabel: '逐项发送',
+      input: { recipient: 'Grace', receipt: 'R-7' },
+    }])
+  })
+
+  it('requires a note and a second confirmation before reconciling a dispatched effect', async () => {
+    const reconcile = vi.fn(async () => undefined)
+    const previousGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      navigator: globalThis.navigator,
+      HTMLElement: globalThis.HTMLElement,
+      Node: globalThis.Node,
+      Event: globalThis.Event,
+      MouseEvent: globalThis.MouseEvent,
+      KeyboardEvent: globalThis.KeyboardEvent,
+      CustomEvent: globalThis.CustomEvent,
+      getComputedStyle: globalThis.getComputedStyle,
+    }
+    const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+    Object.assign(globalThis, {
+      window: domWindow,
+      document: domWindow.document,
+      HTMLElement: domWindow.HTMLElement,
+      Node: domWindow.Node,
+      Event: domWindow.Event,
+      MouseEvent: domWindow.MouseEvent,
+      KeyboardEvent: domWindow.KeyboardEvent,
+      CustomEvent: domWindow.CustomEvent,
+      getComputedStyle: domWindow.getComputedStyle.bind(domWindow),
+    })
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+
+    try {
+      const root = createRoot(domWindow.document.getElementById('root')!)
+      await act(async () => {
+        root.render(<workflowPage.WorkflowEffectReconciliationPanel copy={getAppCopy('zh')} onReconcile={reconcile} targets={[{ key: 'iteration-2:write', nodeId: 'write', nodeLabel: '发送回执', iterationId: 'iteration-2', iterationIndex: 2, loopNodeLabel: '逐项发送', input: { receipt: 'R-2' } }]} />)
+      })
+      const textarea = domWindow.document.querySelector('textarea') as HTMLTextAreaElement
+      const dispatched = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '确认已经发送') as HTMLButtonElement
+      expect(dispatched.disabled).toBe(true)
+      await act(async () => {
+        Simulate.change(textarea, { target: { value: '  核对了发送日志  ' } })
+      })
+      expect(dispatched.disabled).toBe(false)
+      await act(async () => { dispatched.click() })
+      expect(reconcile).not.toHaveBeenCalled()
+      const confirm = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '我确认已经发送，继续') as HTMLButtonElement
+      await act(async () => { confirm.click(); await Promise.resolve() })
+      expect(reconcile).toHaveBeenCalledWith({ nodeId: 'write', iterationId: 'iteration-2', outcome: 'dispatched', note: '核对了发送日志' })
+    } finally {
+      const { navigator: previousNavigator, ...previousGlobalsWithoutNavigator } = previousGlobals
+      Object.assign(globalThis, previousGlobalsWithoutNavigator)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+    }
   })
 })

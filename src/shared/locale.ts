@@ -524,6 +524,21 @@ export interface AppCopy {
   workflowNodeStartedAt: string
   workflowNodeCompletedAt: string
   workflowNodeEvents: string
+  workflowEffectReview: string
+  workflowEffectReviewHint: string
+  workflowEffectNode: string
+  workflowEffectIteration: (index: number, id: string) => string
+  workflowEffectSavedInput: string
+  workflowEffectNoSavedInput: string
+  workflowEffectNote: string
+  workflowEffectNoteHint: string
+  workflowEffectNoteInvalid: string
+  workflowEffectNotDispatched: string
+  workflowEffectDispatched: string
+  workflowEffectDispatchedConfirm: string
+  workflowEffectDispatchedWarning: string
+  workflowEffectCancelConfirm: string
+  workflowEffectReconciling: string
   workflowImportEmployee: string
   workflowSelectEmployee: string
   workflowImportedEmployee: string
@@ -1410,6 +1425,21 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowNodeStartedAt: '开始',
     workflowNodeCompletedAt: '完成',
     workflowNodeEvents: '节点事件',
+    workflowEffectReview: '副作用人工核对',
+    workflowEffectReviewHint: '仅列出状态未知的外部副作用。请依据你自己的核查记录作出决定。',
+    workflowEffectNode: '节点',
+    workflowEffectIteration: (index, id) => `循环第 ${index + 1} 项 · ${id}`,
+    workflowEffectSavedInput: '保存的输入',
+    workflowEffectNoSavedInput: '没有保存的输入。',
+    workflowEffectNote: '核对说明',
+    workflowEffectNoteHint: '去除首尾空白后须为 1 至 500 个字符。',
+    workflowEffectNoteInvalid: '请输入 1 至 500 个字符的核对说明。',
+    workflowEffectNotDispatched: '确认未发送并重试',
+    workflowEffectDispatched: '确认已经发送',
+    workflowEffectDispatchedConfirm: '我确认已经发送，继续',
+    workflowEffectDispatchedWarning: '该决定会使本次运行保持终止，且不会生成或补写任何输出。',
+    workflowEffectCancelConfirm: '取消',
+    workflowEffectReconciling: '核对中…',
     workflowImportEmployee: '为员工创建工作流',
     workflowSelectEmployee: '选择员工',
     workflowImportedEmployee: '已创建员工工作流',
@@ -2321,6 +2351,21 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowNodeStartedAt: 'Started',
     workflowNodeCompletedAt: 'Completed',
     workflowNodeEvents: 'Node events',
+    workflowEffectReview: 'Manual effect review',
+    workflowEffectReviewHint: 'Only external effects with an unknown state are listed. Decide from your own verification record.',
+    workflowEffectNode: 'Node',
+    workflowEffectIteration: (index, id) => `Loop item ${index + 1} · ${id}`,
+    workflowEffectSavedInput: 'Saved input',
+    workflowEffectNoSavedInput: 'No saved input is available.',
+    workflowEffectNote: 'Review note',
+    workflowEffectNoteHint: 'Must contain 1 to 500 characters after trimming.',
+    workflowEffectNoteInvalid: 'Enter a review note with 1 to 500 characters.',
+    workflowEffectNotDispatched: 'Confirm not sent and retry',
+    workflowEffectDispatched: 'Confirm already sent',
+    workflowEffectDispatchedConfirm: 'I confirm it was sent, continue',
+    workflowEffectDispatchedWarning: 'This keeps the run terminated and does not generate or backfill any output.',
+    workflowEffectCancelConfirm: 'Cancel',
+    workflowEffectReconciling: 'Reviewing…',
     workflowImportEmployee: 'Create workflow for employee',
     workflowSelectEmployee: 'Select employee',
     workflowImportedEmployee: 'Employee workflow created',
