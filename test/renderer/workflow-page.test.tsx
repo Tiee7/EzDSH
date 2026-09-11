@@ -728,6 +728,47 @@ describe('WorkflowPage regressions', () => {
     }
   })
 
+  it('keeps the freshest same-run live record in a request-period snapshot overlay', async () => {
+    const workflow = createDefaultWorkflow('运行事件新鲜度')
+    const running: WorkflowRunRecord = {
+      id: 'run-live-overlay-freshness', workflowId: workflow.id, workflowRevision: 1, status: 'running', input: {}, allowShellFile: false, nodeStates: [],
+      startedAt: '2026-09-12T02:00:00.000Z', events: [{ id: 'overlay-started', time: '2026-09-12T02:00:00.000Z', type: 'run-started' }],
+    }
+    const completed: WorkflowRunRecord = {
+      ...running, status: 'completed', completedAt: '2026-09-12T02:01:00.000Z',
+      events: [...running.events, { id: 'overlay-completed', time: '2026-09-12T02:01:00.000Z', type: 'run-completed' }],
+    }
+    let emitRunState!: (record: WorkflowRunRecord) => void
+    let resolveOpenSnapshot!: (records: WorkflowRunRecord[]) => void
+    const openSnapshot = new Promise<WorkflowRunRecord[]>((resolve) => { resolveOpenSnapshot = resolve })
+    let listRunsCalls = 0
+    const mounted = await mountWorkflowRunCachePage({
+      list: vi.fn(async () => [workflow]),
+      listRuns: vi.fn(() => {
+        listRunsCalls += 1
+        if (listRunsCalls === 1 || listRunsCalls > 2) return Promise.resolve([])
+        return openSnapshot
+      }),
+      onStateChange: vi.fn((listener: (record: WorkflowRunRecord) => void) => { emitRunState = listener; return () => {} }),
+      listModificationHistory: vi.fn(async () => []), onModificationStateChange: vi.fn(() => () => {}),
+    })
+    try {
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-file-card-main') as HTMLButtonElement).click(); await Promise.resolve() })
+      const executions = Array.from(mounted.domWindow.document.querySelectorAll('button')).find((button) => button.textContent === getAppCopy('zh').workflowExecutions) as HTMLButtonElement
+      await act(async () => { executions.click(); emitRunState(completed); emitRunState(running); await Promise.resolve() })
+      await act(async () => { resolveOpenSnapshot([]); await openSnapshot; await mounted.settle() })
+
+      expect(mounted.domWindow.document.querySelector('.workflow-run-item-main strong')?.textContent).toBe(getAppCopy('zh').workflowRunCompleted)
+
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-back-button') as HTMLButtonElement).click(); await Promise.resolve() })
+      await act(async () => { (mounted.domWindow.document.querySelector('.workflow-unviewed-run-button') as HTMLButtonElement).click(); await mounted.settle() })
+      expect(mounted.domWindow.document.querySelector('.workflow-execution-run-identity .workflow-status-pill')?.textContent).toBe(getAppCopy('zh').workflowRunCompleted)
+    } finally {
+      resolveOpenSnapshot([])
+      await mounted.cleanup()
+    }
+  })
+
   it('clears workflow run state before restoring the same workflow id and ignores its pending old response', async () => {
     const workflow = createDefaultWorkflow('删除后恢复工作流')
     const oldRun: WorkflowRunRecord = { id: 'run-before-workflow-delete', workflowId: workflow.id, workflowRevision: 1, status: 'completed', input: {}, allowShellFile: false, nodeStates: [], events: [] }
@@ -1508,8 +1549,11 @@ describe('WorkflowPage regressions', () => {
   it('ignores invalid run timestamps instead of comparing their raw text', () => {
     const current: WorkflowRunRecord = { id: 'run-invalid-time', workflowId: 'workflow-a', workflowRevision: 1, status: 'running', input: {}, allowShellFile: false, nodeStates: [], events: [{ id: 'valid-event', time: '2026-09-12T02:00:00.000Z', type: 'node-started' }] }
     const incoming: WorkflowRunRecord = { ...current, events: [{ id: 'conflicting-event', time: 'not-a-date', type: 'node-started' }] }
+    const cancelled: WorkflowRunRecord = { ...current, status: 'cancelled', completedAt: 'not-a-date', events: [...current.events, { id: 'cancelled-event', time: 'not-a-date', type: 'run-cancelled' }] }
+    const impossibleQueued: WorkflowRunRecord = { ...cancelled, status: 'queued', completedAt: undefined, events: [...cancelled.events, { id: 'queued-after-cancel', time: 'also-not-a-date', type: 'run-created' }] }
 
     expect(workflowPage.chooseFresherWorkflowRun(current, incoming)).toBe(current)
+    expect(workflowPage.chooseFresherWorkflowRun(cancelled, impossibleQueued)).toBe(cancelled)
   })
 
   it('preserves JSON value types entered in a condition setting', () => {

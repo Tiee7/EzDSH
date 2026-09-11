@@ -2818,12 +2818,18 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
 
   const recordLiveWorkflowRun = useCallback((record: WorkflowRunRecord): WorkflowRunRecord[] => {
     if (removedRunIdsByWorkflowRef.current.get(record.workflowId)?.has(record.id) === true) return knownWorkflowRuns(record.workflowId)
+    const knownRuns = knownWorkflowRuns(record.workflowId)
+    const knownRecord = knownRuns.find((candidate) => candidate.id === record.id)
+    let freshestRecord = knownRecord === undefined ? record : chooseFresherWorkflowRun(knownRecord, record)
+    const changes = workflowRunChangesRef.current.get(record.workflowId) ?? new Map()
+    const priorChange = changes.get(record.id)
+    if (priorChange?.deleted === true) return knownRuns
+    if (priorChange?.record !== undefined) freshestRecord = chooseFresherWorkflowRun(priorChange.record, freshestRecord)
     const sequence = (workflowRunSequenceRef.current.get(record.workflowId) ?? 0) + 1
     workflowRunSequenceRef.current.set(record.workflowId, sequence)
-    const changes = workflowRunChangesRef.current.get(record.workflowId) ?? new Map()
-    changes.set(record.id, { sequence, record })
+    changes.set(record.id, { sequence, record: freshestRecord })
     workflowRunChangesRef.current.set(record.workflowId, changes)
-    return storeKnownWorkflowRuns(record.workflowId, mergeWorkflowRunRecords(knownWorkflowRuns(record.workflowId), [record]))
+    return storeKnownWorkflowRuns(record.workflowId, mergeWorkflowRunRecords(knownRuns, [freshestRecord]))
   }, [knownWorkflowRuns, storeKnownWorkflowRuns])
 
   const beginWorkflowRunSnapshot = useCallback((workflowId: string): WorkflowRunSnapshotRequest => {
