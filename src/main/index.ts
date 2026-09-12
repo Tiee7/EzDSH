@@ -112,6 +112,8 @@ import { WorkflowObservationStore } from './workflow/workflow-observation-store.
 import { WorkflowObservabilityService } from './workflow/workflow-observability-service.js'
 import { WorkflowOperationalHealthService } from './workflow/workflow-operational-health-service.js'
 import { registerWorkflowOperationalHealthIpc } from './workflow/workflow-operational-health-ipc.js'
+import { WorkflowConnectorHealthService } from './workflow/workflow-connector-health-service.js'
+import { registerWorkflowConnectorHealthIpc } from './workflow/workflow-connector-health-ipc.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
 import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowModifyRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue, WorkflowCredentialUpsertInput, WorkflowHttpConnector } from '../shared/workflow.js'
 import { validateWorkflowCompensationEffectReconcileRequest, validateWorkflowEffectReconcileRequest } from '../shared/workflow.js'
@@ -184,6 +186,7 @@ let workflowReleaseStore: WorkflowReleaseStore | undefined
 let workflowDeploymentService: WorkflowDeploymentService | undefined
 let workflowObservabilityService: WorkflowObservabilityService | undefined
 let workflowOperationalHealthService: WorkflowOperationalHealthService | undefined
+let workflowConnectorHealthService: WorkflowConnectorHealthService | undefined
 let workflowGenerationService: WorkflowGenerationService | undefined
 let workflowModificationService: WorkflowModificationService | undefined
 let isQuitting = false
@@ -714,7 +717,16 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     releaseStore: workflowReleaseStore,
     runService: workflowRunService,
   })
+  workflowConnectorHealthService = new WorkflowConnectorHealthService({
+    connectors: workflowConnectorStore,
+    credentials: workflowCredentialStore,
+    resolveEnvironment: (id) => workflowEnvironmentStore!.get(id),
+    listReleases: () => workflowReleaseStore!.list(),
+    listReleaseIntegrityFailures: () => workflowReleaseStore!.listIntegrityFailures(),
+    getAccessGeneration: () => workflowEnvironmentStore!.getGeneration() + workflowReleaseStore!.getGeneration(),
+  })
   workflowOperationalHealthService = new WorkflowOperationalHealthService({
+    getConnectorHealthSnapshot: (query) => workflowConnectorHealthService!.snapshot(query),
     getRunServiceOperations: (environmentId) => workflowRunService!.operationsSnapshot(environmentId),
     resolveEnvironment: (environmentId) => workflowEnvironmentStore!.get(environmentId),
     listReleases: () => workflowReleaseStore!.list(),
@@ -1168,6 +1180,7 @@ function registerIpcHandlers(): void {
   registerWorkflowRunDefinitionIpc(ipcMain, () => workflowRunService)
   registerWorkflowDeadLetterIpc(ipcMain, () => workflowRunService)
   registerWorkflowOperationalHealthIpc(ipcMain, () => workflowOperationalHealthService)
+  registerWorkflowConnectorHealthIpc(ipcMain, () => workflowConnectorHealthService)
   registerWorkflowReleaseRollbackIpc(ipcMain, () => workflowDeploymentService, () => workflowObservabilityService)
   ipcMain.handle('runtime:get-status', (): IpcResult<RuntimeSnapshot> => {
     if (runtimeManager === undefined) return failure(new Error('Runtime manager is not ready'))

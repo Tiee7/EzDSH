@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import type { WorkflowHttpConnector } from '../../shared/workflow.js'
+import type { WorkflowConnectorHealthProbe, WorkflowHttpConnector } from '../../shared/workflow.js'
 
 export interface WorkflowConnectorStoreOptions {
   fileName?: string
@@ -19,6 +19,8 @@ export class WorkflowConnectorStore {
   private readonly connectors = new Map<string, WorkflowHttpConnector>()
   private mutationChain: Promise<void> = Promise.resolve()
   private initialized = false
+  private generation = 0
+  getGeneration(): number { return this.generation }
   private initializationPromise: Promise<void> | undefined
 
   constructor(stateDir: string, options: WorkflowConnectorStoreOptions = {}) {
@@ -65,6 +67,7 @@ export class WorkflowConnectorStore {
     validateConnector(next)
     return this.mutate(async () => {
       this.connectors.set(next.id, next)
+      this.generation++
       await this.persist()
       return cloneConnector(next)
     })
@@ -79,6 +82,7 @@ export class WorkflowConnectorStore {
     await this.initialize()
     return this.mutate(async () => {
       const removed = this.connectors.delete(id)
+      if (removed) this.generation++
       if (removed) await this.persist()
       return removed
     })
@@ -108,6 +112,7 @@ export function cloneConnector(connector: WorkflowHttpConnector): WorkflowHttpCo
     baseUrl: connector.baseUrl,
     ...(connector.credentialRef === undefined ? {} : { credentialRef: { id: connector.credentialRef.id } }),
     allowedPathPrefixes: [...connector.allowedPathPrefixes],
+    ...(connector.healthProbe === undefined ? {} : { healthProbe: { ...connector.healthProbe, expectedStatuses: [...connector.healthProbe.expectedStatuses] } }),
   }
 }
 
@@ -134,12 +139,14 @@ function normalizeConnector(input: WorkflowHttpConnector): WorkflowHttpConnector
     allowedPathPrefixes: Array.isArray(input.allowedPathPrefixes)
       ? [...new Set(input.allowedPathPrefixes.map((prefix) => prefix.trim()).filter(Boolean))]
       : [],
+    ...(input.healthProbe === undefined ? {} : { healthProbe: normalizeHealthProbe(input.healthProbe) }),
   }
 }
 
 function parseConnector(value: unknown): WorkflowHttpConnector | undefined {
   if (!isRecord(value) || value.kind !== 'http' || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.baseUrl !== 'string' || !Array.isArray(value.allowedPathPrefixes)) return undefined
   const credentialRef = isRecord(value.credentialRef) && typeof value.credentialRef.id === 'string' ? { id: value.credentialRef.id } : undefined
+  try {
   const connector = normalizeConnector({
     id: value.id,
     name: value.name,
@@ -147,13 +154,27 @@ function parseConnector(value: unknown): WorkflowHttpConnector | undefined {
     baseUrl: value.baseUrl,
     ...(credentialRef === undefined ? {} : { credentialRef }),
     allowedPathPrefixes: value.allowedPathPrefixes.filter((prefix): prefix is string => typeof prefix === 'string'),
+    ...(value.healthProbe === undefined ? {} : { healthProbe: value.healthProbe }),
   })
-  try {
     validateConnector(connector)
     return cloneConnector(connector)
   } catch {
     return undefined
   }
+}
+
+export function normalizeHealthProbe(value: unknown): WorkflowConnectorHealthProbe {
+  if (!isRecord(value) || Object.keys(value).some((key) => !['enabled', 'path', 'expectedStatuses', 'timeoutMs', 'ttlMs'].includes(key))
+    || typeof value.enabled !== 'boolean' || typeof value.path !== 'string'
+    || !Array.isArray(value.expectedStatuses) || value.expectedStatuses.length === 0
+    || value.expectedStatuses.some((status) => !Number.isInteger(status) || status < 200 || status > 299)) throw new Error('Invalid health probe configuration')
+  const path = value.path.trim()
+  // Reject encoded separators/escapes entirely; a probe is a fixed path, never a template or query.
+  if (!/^\/[A-Za-z0-9_./~-]*$/u.test(path) || path.startsWith('//') || path.split('/').some((part) => part === '..' || part === '.')) throw new Error('Invalid health probe path')
+  const timeoutMs = value.timeoutMs ?? 5000
+  const ttlMs = value.ttlMs ?? 60000
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 10000 || !Number.isInteger(ttlMs) || ttlMs < 10000 || ttlMs > 300000) throw new Error('Invalid health probe limits')
+  return { enabled: value.enabled, path, expectedStatuses: [...new Set<number>(value.expectedStatuses)], timeoutMs, ttlMs }
 }
 
 function validatePathPrefix(value: string): void {

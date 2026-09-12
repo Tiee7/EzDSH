@@ -115,6 +115,8 @@ export class WorkflowReleaseStore {
   private readonly integrityFailures = new Map<string, WorkflowReleaseIntegrityFailure>()
   private pendingIntegrityResolution: WorkflowReleaseIntegrityResolution | undefined
   private initialized = false
+  private generation = 0
+  getGeneration(): number { return this.generation }
   private initializationPromise: Promise<void> | undefined
   private mutationChain: Promise<void> = Promise.resolve()
 
@@ -262,6 +264,7 @@ export class WorkflowReleaseStore {
       await this.persist([...nextReleases.values()])
       this.releases.clear()
       for (const [id, release] of nextReleases) this.releases.set(id, release)
+      this.generation++
       if (resolvesIntegrityFailure) {
         await this.persistIntegrityFailures(normalized)
         this.clearPublishedIntegrityFailures(normalized.workflowId, normalized.environmentId)
@@ -312,6 +315,7 @@ export class WorkflowReleaseStore {
       await this.persist([...nextReleases.values()])
       this.releases.clear()
       for (const [releaseId, release] of nextReleases) this.releases.set(releaseId, release)
+      this.generation++
       if (resolvesIntegrityFailure) {
         await this.persistIntegrityFailures(restored)
         this.clearPublishedIntegrityFailures(restored.workflowId, restored.environmentId)

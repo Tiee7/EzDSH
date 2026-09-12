@@ -100,6 +100,20 @@ export interface WorkflowOperationalHealthQuery {
   environmentId: string
 }
 
+export interface WorkflowConnectorHealthQuery extends WorkflowOperationalHealthQuery { connectorId: string }
+export type WorkflowConnectorHealthState = 'disabled' | 'unchecked' | 'checking' | 'stale' | 'reachable' | 'failed' | 'blocked'
+export type WorkflowConnectorHealthReason = 'probe-disabled' | 'not-checked' | 'checking' | 'expired' | 'status-expected' | 'unexpected-status' | 'redirect-blocked' | 'timeout' | 'dns-failed' | 'request-failed' | 'access-denied' | 'configuration-invalid' | 'credential-unavailable' | 'credential-scope-denied' | 'egress-blocked' | 'target-changed' | 'rate-limited'
+/** Status-only observation, not evidence that a business operation succeeded. */
+export interface WorkflowConnectorHealthEvidence extends WorkflowConnectorHealthQuery {
+  releaseId?: string
+  state: WorkflowConnectorHealthState
+  reason: WorkflowConnectorHealthReason
+  status?: number
+  observedAt?: string
+  expiresAt?: string
+  durationMs?: number
+}
+
 export interface WorkflowOperationalWorkerEvidence {
   state: 'starting' | 'ready' | 'backing-off' | 'stopping' | 'stopped'
   consecutiveClaimFailures: number
@@ -137,6 +151,7 @@ export interface WorkflowOperationalHealth {
   service: { lifecycle: 'new' | 'initializing' | 'accepting' | 'stopping' | 'stopped' }
   worker: WorkflowOperationalWorkerEvidence
   queue?: WorkflowRunQueueSnapshot
+  connectors?: WorkflowConnectorHealthEvidence[]
   environment:
     | { state: 'unchecked' }
     | { state: 'missing' }

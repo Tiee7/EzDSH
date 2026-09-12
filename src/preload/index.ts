@@ -61,6 +61,8 @@ import type {
   WorkflowOperationsHealth,
   WorkflowOperationalHealth,
   WorkflowOperationalHealthQuery,
+  WorkflowConnectorHealthQuery,
+  WorkflowConnectorHealthEvidence,
   WorkflowReleasePublishInput,
   WorkflowReleaseSummary,
 } from '../shared/workflow-operations.js'
@@ -218,6 +220,7 @@ const bridge: EzDSHBridge = {
     listObservations: (environmentId?: string) => invoke<WorkflowObservationEvent[]>('workflow-observations:list', environmentId),
     getHealth: (environmentId: string) => invoke<WorkflowOperationsHealth>('workflow-observability:health', environmentId),
     getOperationalHealth: (query: WorkflowOperationalHealthQuery) => invoke<WorkflowOperationalHealth>('workflow-observability:operational-health', query),
+    checkConnectorHealth: (query: WorkflowConnectorHealthQuery) => invoke<WorkflowConnectorHealthEvidence>('workflow-connectors:check-health', query),
   },
   workflowCredentials: {
     list: () => invoke<WorkflowCredentialMetadata[]>('workflow-credentials:list'),

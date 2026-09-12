@@ -42,6 +42,8 @@ export class WorkflowEnvironmentStore {
   private readonly filePath: string
   private readonly environments = new Map<string, WorkflowCustomerEnvironment>()
   private initialized = false
+  private generation = 0
+  getGeneration(): number { return this.generation }
   private initializationPromise: Promise<void> | undefined
   private mutationChain: Promise<void> = Promise.resolve()
 
@@ -96,6 +98,7 @@ export class WorkflowEnvironmentStore {
     if (normalized === undefined) throw new Error('Invalid workflow customer environment')
     return this.mutate(async () => {
       this.environments.set(normalized.id, cloneEnvironment(normalized))
+      this.generation++
       await this.persist()
       return cloneEnvironment(normalized)
     })
@@ -105,6 +108,7 @@ export class WorkflowEnvironmentStore {
     await this.initialize()
     return this.mutate(async () => {
       const removed = this.environments.delete(id)
+      if (removed) this.generation++
       if (removed) await this.persist()
       return removed
     })

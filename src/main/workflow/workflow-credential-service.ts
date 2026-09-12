@@ -68,6 +68,8 @@ export class WorkflowCredentialStore {
   private readonly protector: WorkflowCredentialProtector
   private mutationChain: Promise<void> = Promise.resolve()
   private initialized = false
+  private generation = 0
+  getGeneration(): number { return this.generation }
   private initializationPromise: Promise<void> | undefined
 
   constructor(stateDir: string, options: WorkflowCredentialStoreOptions = {}) {
@@ -159,6 +161,7 @@ export class WorkflowCredentialStore {
         ...(encryptedSecret === undefined ? {} : { encryptedSecret }),
       }
       this.credentials.set(next.id, next)
+      this.generation++
       await this.persist()
       return metadataOf(next)
     })
@@ -173,6 +176,7 @@ export class WorkflowCredentialStore {
     await this.initialize()
     return this.mutate(async () => {
       const removed = this.credentials.delete(id)
+      if (removed) this.generation++
       if (removed) await this.persist()
       return removed
     })

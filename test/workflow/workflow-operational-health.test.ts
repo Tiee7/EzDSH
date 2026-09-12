@@ -92,6 +92,18 @@ function createService(input: {
 }
 
 describe('WorkflowOperationalHealthService', () => {
+  it('keeps connector reachability independent of local operational status and reason', () => {
+    const local = createService().getOperationalHealth({ workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID })
+    const service = new WorkflowOperationalHealthService({
+      now: () => NOW, getRunServiceOperations: () => readyOperations(),
+      resolveEnvironment: () => ({ id: ENVIRONMENT_ID, status: 'active' } as WorkflowCustomerEnvironment),
+      listReleases: () => [createRelease()], listReleaseIntegrityFailures: () => [], listRuns: () => [createRun()], listObservations: () => [],
+      getConnectorHealthSnapshot: () => [{ workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID, connectorId: 'api', state: 'failed', reason: 'unexpected-status', status: 503 }],
+    })
+    const result = service.getOperationalHealth({ workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID })
+    expect(result.status).toBe(local.status); expect(result.reason).toBe(local.reason)
+    expect(result.connectors?.[0]).toMatchObject({ state: 'failed', status: 503 })
+  })
   it.each([
     ['new', 'unhealthy', 'service-not-accepting'],
     ['stopping', 'unhealthy', 'service-not-accepting'],

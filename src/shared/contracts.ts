@@ -84,6 +84,8 @@ import type {
   WorkflowOperationsHealth,
   WorkflowOperationalHealth,
   WorkflowOperationalHealthQuery,
+  WorkflowConnectorHealthQuery,
+  WorkflowConnectorHealthEvidence,
   WorkflowReleasePublishInput,
   WorkflowReleaseSummary,
 } from './workflow-operations.js'
@@ -209,6 +211,7 @@ export interface EzDSHBridge {
     listObservations(environmentId?: string): Promise<WorkflowObservationEvent[]>
     getHealth(environmentId: string): Promise<WorkflowOperationsHealth>
     getOperationalHealth(query: WorkflowOperationalHealthQuery): Promise<WorkflowOperationalHealth>
+    checkConnectorHealth(query: WorkflowConnectorHealthQuery): Promise<WorkflowConnectorHealthEvidence>
   }
   /** Metadata-only credential APIs; secret values are accepted only by upsert and never returned. */
   workflowCredentials: {

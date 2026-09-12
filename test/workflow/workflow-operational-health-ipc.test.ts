@@ -45,6 +45,35 @@ async function registerHandler(service: { getOperationalHealth(query: unknown): 
 }
 
 describe('operational health IPC contract', () => {
+  it('executes connector check IPC and redacts failure messages and codes', async () => {
+    const { registerWorkflowConnectorHealthIpc } = await import('../../src/main/workflow/workflow-connector-health-ipc.js')
+    let handler!: (_event: unknown, query: unknown) => Promise<unknown>
+    const ipc = { handle: vi.fn((_channel, next) => { handler = next }) }
+    const evidence = { workflowId: 'wf', environmentId: 'env', connectorId: 'api', state: 'reachable' as const, reason: 'status-expected' as const, status: 200 }
+    const check = vi.fn(async () => evidence)
+    registerWorkflowConnectorHealthIpc(ipc, () => ({ check }))
+    expect(ipc.handle.mock.calls[0]?.[0]).toBe('workflow-connectors:check-health')
+    const query = { workflowId: 'wf', environmentId: 'env', connectorId: 'api' }
+    expect(await handler({}, query)).toEqual({ ok: true, data: evidence })
+    expect(check).toHaveBeenCalledWith(query)
+    check.mockRejectedValue(Object.assign(new Error('SECRET'), { code: 'SECRET' }))
+    const failed = await handler({}, query)
+    expect(failed).toMatchObject({ ok: false, error: { message: 'Connector health unavailable', code: 'INTERNAL_ERROR' } })
+    expect(JSON.stringify(failed)).not.toContain('SECRET')
+    registerWorkflowConnectorHealthIpc(ipc, () => undefined)
+    expect(await handler({}, query)).toMatchObject({ ok: false })
+  })
+  it('exposes explicit connector checks in preload with a fixed target-only request', async () => {
+    await import('../../src/preload/index.js')
+    const bridge = preloadElectron.exposeInMainWorld.mock.calls.find(([name]) => name === 'EzDSH')?.[1] as EzDSHBridge
+    const query = { workflowId: 'wf', environmentId: 'env', connectorId: 'api' }
+    const evidence = { ...query, state: 'unchecked', reason: 'not-checked' }
+    preloadElectron.invoke.mockResolvedValueOnce({ ok: true, data: evidence })
+    await expect(bridge.workflowReleases.checkConnectorHealth(query)).resolves.toEqual(evidence)
+    expect(preloadElectron.invoke).toHaveBeenCalledWith('workflow-connectors:check-health', query)
+    preloadElectron.invoke.mockResolvedValueOnce({ ok: false, error: { code: 'INTERNAL_ERROR', message: 'Connector health unavailable', requestId: 'r', retryable: true } })
+    await expect(bridge.workflowReleases.checkConnectorHealth(query)).rejects.toMatchObject({ message: 'Connector health unavailable' })
+  })
   it('registers an executable handler and returns authoritative health', async () => {
     const getOperationalHealth = vi.fn(() => expected)
     const handler = await registerHandler({ getOperationalHealth })

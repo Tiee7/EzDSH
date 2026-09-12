@@ -5,6 +5,7 @@ import type {
   WorkflowOperationalHealthQuery,
   WorkflowObservationEvent,
   WorkflowRelease,
+  WorkflowConnectorHealthEvidence,
 } from '../../shared/workflow-operations.js'
 import { verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
 import type { WorkflowReleaseIntegrityFailure } from './workflow-release-store.js'
@@ -24,6 +25,7 @@ export interface WorkflowOperationalHealthServiceOptions {
   listRuns: () => WorkflowRunRecord[]
   /** Ordered by event time and then durable append order. */
   listObservations: () => WorkflowObservationEvent[]
+  getConnectorHealthSnapshot?: (query: WorkflowOperationalHealthQuery) => WorkflowConnectorHealthEvidence[]
   now?: () => string
   workerStaleAfterMs?: number
   recentFailureWindowMs?: number
@@ -63,6 +65,7 @@ export class WorkflowOperationalHealthService {
       environment: { state: 'unchecked' as const },
       release: { state: 'unchecked' as const },
       execution: { state: 'unchecked' as const },
+      ...(this.options.getConnectorHealthSnapshot === undefined ? {} : { connectors: this.options.getConnectorHealthSnapshot({ workflowId, environmentId }) }),
     }
 
     if (operations.lifecycle === 'initializing') return { ...unchecked, status: 'unknown', reason: 'service-initializing' }

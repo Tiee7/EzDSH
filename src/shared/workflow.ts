@@ -401,6 +401,16 @@ export interface WorkflowHttpConnector {
   baseUrl: string
   credentialRef?: { id: string }
   allowedPathPrefixes: string[]
+  /** Opt-in Main-owned, status-only GET probe. Absence means disabled. */
+  healthProbe?: WorkflowConnectorHealthProbe
+}
+
+export interface WorkflowConnectorHealthProbe {
+  enabled: boolean
+  path: string
+  expectedStatuses: number[]
+  timeoutMs?: number
+  ttlMs?: number
 }
 
 export type WorkflowCodeLanguage = 'nodejs' | 'python3'
