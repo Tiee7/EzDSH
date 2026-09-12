@@ -719,3 +719,9 @@
   .workflow-generation-main { max-width: none; justify-self: stretch; }
   .workflow-generation-history-list { max-height: 280px; }
 }
+.workflow-dead-letter-panel { grid-column: 1 / -1; margin-top: 16px; }
+.workflow-dead-letter-actions { display: flex; gap: 8px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+.workflow-dead-letter-table { max-width: 100%; overflow: auto; }
+.workflow-dead-letter-table table { border-collapse: collapse; width: 100%; text-align: left; font-size: 12px; }
+.workflow-dead-letter-table th, .workflow-dead-letter-table td { padding: 10px; border-bottom: 1px solid var(--ezdsh-panel-border); vertical-align: top; overflow-wrap: anywhere; }
+.workflow-dead-letter-table td > div { margin-top: 4px; }

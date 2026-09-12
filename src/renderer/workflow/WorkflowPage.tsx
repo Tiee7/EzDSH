@@ -76,6 +76,7 @@ import {
   type WorkflowJsonSchema,
 } from '../../shared/workflow.js'
 import { WorkflowGenerationPage } from './WorkflowGenerationPage.js'
+import { WorkflowDeadLetterPanel } from './WorkflowDeadLetterPanel.js'
 import './workflow.css'
 
 export { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
@@ -4227,6 +4228,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
           })}</div> : null}
           <div className="workflow-browser-tools">
             <WorkflowReleasePanel copy={copy} locale={locale} active={active} workflows={workflows} onRunStarted={openReleasedRun} />
+            <WorkflowDeadLetterPanel locale={locale} active={active} />
             <section className="workflow-tool-card workflow-browser-tool-wide">
               <div><span className="workflow-kicker">{copy.workflowImportEmployee}</span><h3>{copy.workflowImportEmployee}</h3><p>把一个专业员工快速转换为可编辑的工作流。</p></div>
               <div className="workflow-import-row"><select id="workflow-employee-select" className="workflow-employee-select" aria-label={copy.workflowImportEmployee} value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} disabled={busy || employees.length === 0}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employeeDisplayLabel(employee)} · {employee.id}</option>)}</select><button type="button" onClick={() => void importEmployee()} disabled={busy || employeeId === ''}>{copy.workflowImportEmployee}</button></div>
