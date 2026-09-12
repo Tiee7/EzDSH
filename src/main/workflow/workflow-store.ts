@@ -76,6 +76,7 @@ export class WorkflowStore {
 
   constructor(stateDir: string, mutations = workflowMutationCoordinator(stateDir)) {
     this.mutations = mutations
+    mutations.workflowStore = this
     this.filePath = join(stateDir, FILE_NAME)
     this.versionsFilePath = join(stateDir, VERSIONS_FILE_NAME)
   }
@@ -196,7 +197,7 @@ export class WorkflowStore {
   async remove(id: string): Promise<void> {
     await this.initialize()
     const { WorkflowRunStore } = await import('./workflow-run-store.js')
-    const runs = new WorkflowRunStore(dirname(this.filePath), undefined, this.mutations)
+    const runs = this.mutations.runStore ?? new WorkflowRunStore(dirname(this.filePath), undefined, this.mutations)
     await runs.deleteWorkflow(this, id, true)
   }
 

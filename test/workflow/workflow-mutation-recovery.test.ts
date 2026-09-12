@@ -7,6 +7,7 @@ import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowMutationCoordinator } from '../../src/main/workflow/workflow-mutation-coordinator.js'
 import type { WorkflowRunRecord } from '../../src/shared/workflow.js'
+import { WorkflowRunService } from '../../src/main/workflow/workflow-run-service.js'
 
 const faults = vi.hoisted(() => ({ failClear: false }))
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -168,5 +169,103 @@ describe('workflow mutation recovery', () => {
     expect(store.get('w')).toBeUndefined()
     await expect(runs.save(run('r'))).rejects.toThrow('TOMBSTONED')
     await expect(store.create({ ...createDefaultWorkflow('ABA'), id: 'w' })).rejects.toThrow('TOMBSTONED')
+  })
+
+  for (const operation of ['delete', 'recover-delete', 'prune', 'lineage'] as const) it(`protects verified legacy async runId output during ${operation}`, async () => {
+    const { dir, mutations, store, runs } = await setup()
+    await store.create({ id: 'parent-definition', name: 'Parent', description: '', nodes: [
+      { id: 'input', type: 'input', label: 'Input', position: { x: 0, y: 0 }, config: {} },
+      { id: 'child', type: 'sub-workflow', label: 'Child', position: { x: 200, y: 0 }, config: { workflowId: 'w', waitForCompletion: false } },
+      { id: 'output', type: 'output', label: 'Output', position: { x: 400, y: 0 }, config: {} },
+    ], edges: [{ id: 'a', source: 'input', target: 'child' }, { id: 'b', source: 'child', target: 'output' }] })
+    await runs.save({ ...run('parent', 'parent-definition'), nodeStates: [{ nodeId: 'child', status: 'completed', output: { runId: 'r' } }] })
+    await runs.save({ ...run('r'), retentionExpiresAt: '2020-01-01T00:00:00Z' })
+    if (operation === 'lineage') {
+      const service = new WorkflowRunService({ workflowStore: store, runStore: runs, workflowRoot: dir,
+        createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      })
+      try {
+        await service.initialize()
+        expect(runs.get('r')).toMatchObject({ status: 'completed', parentRunId: 'parent', workflowAncestry: ['parent-definition'], origin: { kind: 'child', parentRunId: 'parent' } })
+      } finally { await service.stop() }
+    } else if (operation === 'prune') {
+      expect(await runs.pruneExpired()).toEqual([])
+    } else if (operation === 'delete') {
+      expect(await runs.deleteWorkflow(store, 'w', true)).toBe(0)
+    } else {
+      crashBefore(mutations, 'workflow-runs.json')
+      await expect(runs.deleteWorkflow(store, 'w', true)).rejects.toThrow('simulated crash')
+      const recovered = new WorkflowRunStore(dir, undefined, new WorkflowMutationCoordinator(dir))
+      await recovered.initialize()
+      expect(recovered.get('r')).toBeDefined()
+    }
+    expect(runs.get('r')).toBeDefined()
+  })
+
+  it('uses the existing run cache when removing through WorkflowStore', async () => {
+    const { dir, store, runs } = await setup()
+    await store.remove('w')
+    expect(runs.get('r')).toBeUndefined()
+    await runs.save(run('unrelated', 'other'))
+    expect(JSON.parse(await readFile(join(dir, 'workflow-runs.json'), 'utf8')).runs.map((record: WorkflowRunRecord) => record.id)).toEqual(['unrelated'])
+  })
+
+  it('does not infer a child from ordinary user output in an exact non-subworkflow node', async () => {
+    const { store, runs } = await setup()
+    await store.create({ ...createDefaultWorkflow('Parent'), id: 'ordinary-parent' })
+    const parent = store.get('ordinary-parent')!
+    const node = parent.nodes.find((candidate) => candidate.type === 'output')!
+    await runs.save({ ...run('parent', parent.id), nodeStates: [{ nodeId: node.id, status: 'completed', output: { runId: 'r' } }] })
+    await runs.save({ ...run('r'), retentionExpiresAt: '2020-01-01T00:00:00Z' })
+    expect(await runs.pruneExpired()).toEqual(['r'])
+    expect(runs.get('parent')?.parentRunId).toBeUndefined()
+  })
+
+  for (const audit of ['effect-dispatched', 'effect-not-dispatched', 'compensation-dispatched', 'compensation-not-dispatched'] as const) it(`supports retained audit without execution after source deletion: ${audit}`, async () => {
+    const { dir, store, runs } = await setup()
+    const definition = await store.update('w', { nodes: [
+      { id: 'input', type: 'input', label: 'Input', position: { x: 0, y: 0 }, config: {} },
+      { id: 'effect', type: 'mcp', label: 'Effect', position: { x: 200, y: 0 }, config: { tool: 'write', arguments: {} } },
+      { id: 'output', type: 'output', label: 'Output', position: { x: 400, y: 0 }, config: {} },
+    ], edges: [{ id: 'a', source: 'input', target: 'effect' }, { id: 'b', source: 'effect', target: 'output' }] })
+    await runs.save({ ...run('r'), workflowRevision: definition.revision, status: 'paused',
+      nodeStates: [{ nodeId: 'effect', status: 'failed', effectState: 'unknown' }],
+      compensationStack: [{ occurrenceId: 'occurrence', sourceNodeId: 'effect', status: 'failed', effectState: 'unknown', action: { type: 'workflow', workflowId: 'undo' } }],
+    })
+    const service = new WorkflowRunService({ workflowStore: store, runStore: runs, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    try {
+      await service.initialize()
+      await service.removeWorkflow('w')
+      const before = runs.get('r')!
+      if (audit === 'effect-not-dispatched') {
+        await expect(service.reconcileEffect('r', { nodeId: 'effect', outcome: 'not-dispatched', note: 'verified absent' })).rejects.toThrow('TOMBSTONED')
+        expect(runs.get('r')).toEqual(before)
+      } else if (audit === 'effect-dispatched') {
+        const result = await service.reconcileEffect('r', { nodeId: 'effect', outcome: 'dispatched', note: 'receipt found' })
+        expect(result.nodeStates[0]?.effectState).toBe('confirmed')
+        expect(result.status).toBe('failed')
+      } else {
+        const outcome = audit === 'compensation-dispatched' ? 'dispatched' : 'not-dispatched'
+        const result = await service.reconcileCompensation('r', { occurrenceId: 'occurrence', outcome, note: 'reviewed' })
+        expect(result.compensationStack?.[0]?.effectState).toBe(outcome === 'dispatched' ? 'confirmed' : 'none')
+        expect(result.status).toBe('paused')
+      }
+      await expect(service.resume('r')).rejects.toThrow('TOMBSTONED')
+      await expect(service.compensate('r')).rejects.toThrow('TOMBSTONED')
+      await expect(runs.saveRetainedAudit({ ...runs.get('r')!, status: 'queued' })).rejects.toThrow('AUDIT_INVALID')
+      await expect(runs.save({ ...runs.get('r')!, status: 'queued' })).rejects.toThrow('TOMBSTONED')
+      await expect(runs.enqueue({ ...runs.get('r')!, status: 'queued', releaseId: 'claimed-release', environmentId: 'claimed-environment', traceId: 'claimed-trace' })).rejects.toThrow('TOMBSTONED')
+      expect(await runs.claimNextDue('test', 10_000)).toBeUndefined()
+    } finally { await service.stop() }
+    const restarted = new WorkflowRunService({ workflowStore: store, runStore: runs, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    try {
+      await restarted.initialize()
+      expect(runs.get('r')).toBeDefined()
+      expect(runs.get('r')?.status).not.toBe('queued')
+    } finally { await restarted.stop() }
   })
 })

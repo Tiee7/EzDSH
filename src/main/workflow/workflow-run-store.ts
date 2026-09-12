@@ -162,6 +162,7 @@ export class WorkflowRunStore {
     }
     this.queueLimits = Object.freeze({ ...queueLimits })
     this.mutations = mutations
+    mutations.runStore = this
     this.filePath = join(stateDir, 'workflow-runs.json')
   }
 
@@ -259,11 +260,31 @@ export class WorkflowRunStore {
   }
 
   async save(record: WorkflowRunRecord): Promise<WorkflowRunRecord> {
+    return this.saveRecord(record, false)
+  }
+
+  /** Main-only audit persistence for an existing retained record. It cannot
+   * admit work, change record identity, or recreate a deleted run ID. */
+  async saveRetainedAudit(record: WorkflowRunRecord): Promise<WorkflowRunRecord> {
+    return this.saveRecord(record, true)
+  }
+
+  private async saveRecord(record: WorkflowRunRecord, retainedAudit: boolean): Promise<WorkflowRunRecord> {
     await this.initialize()
     const snapshot = cloneWorkflow(record)
     return this.mutate(async () => {
-      this.mutations.assertRunWritable(snapshot.id, snapshot.workflowId, snapshot.releaseId !== undefined && snapshot.environmentId !== undefined && snapshot.traceId !== undefined)
       const current = this.runs.get(snapshot.id)
+      if (retainedAudit) {
+        this.mutations.assertAvailable()
+        if (current === undefined || !this.mutations.isWorkflowDeleted(snapshot.workflowId) || !this.mutations.isRunProtected(snapshot.id)
+          || isAdmitted(current) || isAdmitted(snapshot)
+          || current.workflowId !== snapshot.workflowId || current.workflowRevision !== snapshot.workflowRevision
+          || current.releaseId !== snapshot.releaseId || current.environmentId !== snapshot.environmentId || current.traceId !== snapshot.traceId
+          || JSON.stringify(current.queue) !== JSON.stringify(snapshot.queue)) throw new Error('WORKFLOW_RETAINED_AUDIT_INVALID')
+      } else {
+        if (current !== undefined && this.mutations.isRunProtected(current.id) && this.mutations.isWorkflowDeleted(current.workflowId)) throw new Error('WORKFLOW_TOMBSTONED: retained record is audit-only')
+        this.mutations.assertRunWritable(snapshot.id, snapshot.workflowId, snapshot.releaseId !== undefined && snapshot.environmentId !== undefined && snapshot.traceId !== undefined)
+      }
       // Acceptance is append-only across later worker/admin snapshots. A
       // stale writer must not erase a receipt and enable another admission.
       if (current?.recoveryReceipts !== undefined) {
@@ -310,6 +331,7 @@ export class WorkflowRunStore {
       queue: record.queue ?? { enqueuedAt: now, availableAt: now },
     })
     return this.mutate(async () => {
+      if (this.mutations.isRunProtected(snapshot.id) && this.mutations.isWorkflowDeleted(this.runs.get(snapshot.id)?.workflowId ?? snapshot.workflowId)) throw new Error('WORKFLOW_TOMBSTONED: retained record is audit-only')
       this.mutations.assertRunWritable(snapshot.id, snapshot.workflowId, snapshot.releaseId !== undefined && snapshot.environmentId !== undefined && snapshot.traceId !== undefined)
       if (idempotencyKey !== undefined && idempotencyKey !== '') {
         const existing = Array.from(this.runs.values()).find((candidate) => (
@@ -673,6 +695,24 @@ export class WorkflowRunStore {
       }
     }
     for (const record of this.runs.values()) walk(record, record.id)
+    for (const parent of this.runs.values()) {
+      const definition = this.mutations.workflowStore?.getRevision(parent.workflowId, parent.workflowRevision)
+      for (const state of workflowAllNodeRunStates(parent.nodeStates)) {
+        const output = state.output
+        if (output === null || output === undefined || Array.isArray(output) || typeof output !== 'object' || typeof output.runId !== 'string') continue
+        const node = definition?.nodes.find((candidate) => candidate.id === state.nodeId)
+        // A known ordinary node's user payload is not child provenance.
+        if (node !== undefined && node.type !== 'sub-workflow') continue
+        const child = this.runs.get(output.runId)
+        if (node?.type !== 'sub-workflow' || node.config.waitForCompletion !== false || child === undefined || node.config.workflowId !== child.workflowId
+          || typeof node.config.version === 'number' && node.config.version !== child.workflowRevision) {
+          for (const id of this.runs.keys()) protectedIds.add(id)
+          continue
+        }
+        protectedIds.add(parent.id)
+        protectedIds.add(child.id)
+      }
+    }
     return protectedIds
   }
 }

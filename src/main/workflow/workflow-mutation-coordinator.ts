@@ -3,6 +3,8 @@ import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:f
 import { join, resolve } from 'node:path'
 import { normalizeWorkflow, validateWorkflow } from '../../shared/workflow.js'
 import { isPersistedRunRecord } from './workflow-run-store.js'
+import type { WorkflowRunStore } from './workflow-run-store.js'
+import type { WorkflowStore } from './workflow-store.js'
 
 const FILES = ['workflow-versions.json', 'workflows.json', 'workflow-runs.json', 'workflow-tombstones.json'] as const
 type StateFile = typeof FILES[number]
@@ -37,6 +39,10 @@ function validateImage(file: StateFile, raw: string): void {
 /** One Main process only. Atomic rename provides process-crash recovery, not a
  * power-loss durability guarantee. This journal supports exactly two mutations. */
 export class WorkflowMutationCoordinator {
+  // Main's current store owners. Public definition deletion reuses the run
+  // owner rather than constructing a second independently cached writer.
+  workflowStore: WorkflowStore | undefined
+  runStore: WorkflowRunStore | undefined
   private tail: Promise<void> = Promise.resolve()
   private initialization: Promise<void> | undefined
   private blocked: unknown

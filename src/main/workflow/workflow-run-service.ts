@@ -347,10 +347,11 @@ export class WorkflowRunService {
     }
   }
 
-  private assertRunMutationAvailable(runId: string): void {
+  private assertRunMutationAvailable(runId: string, auditOnly = false): void {
     const record = this.options.runStore.get(runId)
     this.options.runStore.mutations.assertAvailable()
-    if (record !== undefined) this.options.runStore.mutations.assertRunWritable(runId, record.workflowId, record.releaseId !== undefined && record.environmentId !== undefined && record.traceId !== undefined)
+    if (!auditOnly && record !== undefined && this.options.runStore.mutations.isWorkflowDeleted(record.workflowId) && this.options.runStore.mutations.isRunProtected(runId)) throw new Error('WORKFLOW_TOMBSTONED: retained record is audit-only')
+    if (record !== undefined && !(auditOnly && this.options.runStore.mutations.isRunProtected(runId))) this.options.runStore.mutations.assertRunWritable(runId, record.workflowId, record.releaseId !== undefined && record.environmentId !== undefined && record.traceId !== undefined)
     const activelyExecuting = this.active.has(runId) && (record === undefined || record.status === 'queued' || record.status === 'running' || workflowAllNodeRunStates(record.nodeStates).some((state) => state.status === 'running'))
     if (activelyExecuting || this.reconciliationActive.has(runId) || this.compensationActive.has(runId) || this.administrativeActive.has(runId)) {
       throw new Error('该运行仍在执行，或人工核对、补偿、其他变更正在进行。')
@@ -743,9 +744,9 @@ export class WorkflowRunService {
     const request = validateWorkflowEffectReconcileRequest(input)
     await this.initialize()
     this.assertAccepting()
-    this.assertRunMutationAvailable(runId)
+    this.assertRunMutationAvailable(runId, true)
     const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
-    try { this.assertAccepting(); this.assertRunMutationAvailable(runId) } catch (error) { releaseMutation(); throw error }
+    try { this.assertAccepting(); this.assertRunMutationAvailable(runId, true) } catch (error) { releaseMutation(); throw error }
     this.reconciliationActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -773,6 +774,7 @@ export class WorkflowRunService {
       const unsafe = (candidate: WorkflowNodeRunState): boolean => candidate.effectState === 'prepared' || candidate.effectState === 'dispatched' || candidate.effectState === 'unknown' || candidate.effectState === 'confirmed' && candidate.status !== 'completed'
       const canRequeue = request.outcome === 'not-dispatched' && !this.hasUncheckpointedLoopEffects(record)
         && !workflowAllNodeRunStates(record.nodeStates).some((candidate) => candidate !== state && unsafe(candidate))
+      if (canRequeue && this.options.runStore.mutations.isWorkflowDeleted(record.workflowId)) throw new Error('WORKFLOW_TOMBSTONED: audit would requeue deleted workflow')
       if (canRequeue) this.revalidateReleasedAccess(record)
       const resolvedAt = new Date().toISOString()
       appendEffectReconciliation(state, { outcome: request.outcome, note: request.note, resolvedAt })
@@ -809,8 +811,8 @@ export class WorkflowRunService {
       // Audit, precise reset and queue transition share one durable snapshot.
       const reconcileType: WorkflowRunEvent['type'] = `node-effect-reconciled-${request.outcome}`
       const reconcileMessage = request.outcome === 'dispatched' ? '人工确认副作用已派发，运行终止。' : '人工确认副作用未派发。'
-      if (request.outcome === 'dispatched') await this.saveFailure(record, reconcileType, reconcileMessage, request.nodeId, scope)
-      else await this.save(record, reconcileType, reconcileMessage, request.nodeId, scope)
+      if (request.outcome === 'dispatched') await this.saveFailure(record, reconcileType, reconcileMessage, request.nodeId, scope, true)
+      else await this.save(record, reconcileType, reconcileMessage, request.nodeId, scope, true)
       if (canRequeue) this.worker.wake()
       return this.options.runStore.get(runId) ?? cloneWorkflow(record)
     } finally {
@@ -824,9 +826,9 @@ export class WorkflowRunService {
     const request = validateWorkflowCompensationEffectReconcileRequest(input)
     await this.initialize()
     this.assertAccepting()
-    this.assertRunMutationAvailable(runId)
+    this.assertRunMutationAvailable(runId, true)
     const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
-    try { this.assertAccepting(); this.assertRunMutationAvailable(runId) } catch (error) { releaseMutation(); throw error }
+    try { this.assertAccepting(); this.assertRunMutationAvailable(runId, true) } catch (error) { releaseMutation(); throw error }
     this.reconciliationActive.add(runId)
     try {
       const record = this.options.runStore.get(runId)
@@ -854,7 +856,7 @@ export class WorkflowRunService {
       const message = request.outcome === 'dispatched'
         ? `人工确认补偿副作用已派发：${entry.sourceNodeId}`
         : `人工确认补偿副作用未派发：${entry.sourceNodeId}`
-      await this.save(record, type, message, entry.sourceNodeId, entry.executionScope)
+      await this.save(record, type, message, entry.sourceNodeId, entry.executionScope, true)
       return this.options.runStore.get(runId) ?? cloneWorkflow(record)
     } finally {
       this.reconciliationActive.delete(runId)
@@ -1372,11 +1374,12 @@ export class WorkflowRunService {
       if (record.status !== 'paused' && record.status !== 'failed' && record.status !== 'cancelled') continue
       if (!workflowAllNodeRunStates(record.nodeStates).some((state) => state.effectState === 'unknown')) continue
       this.syncEffectReconciliationTargets(record)
-      await this.options.runStore.save(record)
+      await this.saveRecoveredMetadata(record)
     }
   }
 
-  /** Upgrade queued pre-lineage children before the Worker can claim them. */
+  /** Upgrade verifiable pre-lineage children in every state before pruning.
+   * Only queued records require an execution-blocking pause on ambiguity. */
   private async recoverLegacyChildLineages(): Promise<void> {
     const records = new Map(this.options.runStore.list().map((record) => [record.id, record]))
     const inferredParents = new Map<string, Set<string>>()
@@ -1388,7 +1391,7 @@ export class WorkflowRunService {
         if (childRunId === undefined || !records.has(childRunId)) continue
         const node = workflow?.nodes.find((candidate) => candidate.id === state.nodeId)
         const child = records.get(childRunId)!
-        if (node?.type !== 'sub-workflow' || node.config.waitForCompletion !== false || node.config.workflowId !== child.workflowId) {
+        if (node?.type !== 'sub-workflow' || node.config.waitForCompletion !== false || node.config.workflowId !== child.workflowId || typeof node.config.version === 'number' && node.config.version !== child.workflowRevision) {
           unreliableReferences.add(childRunId)
           continue
         }
@@ -1398,18 +1401,19 @@ export class WorkflowRunService {
       }
     }
     for (const record of records.values()) {
-      if (record.status !== 'queued' || record.workflowAncestry !== undefined) continue
+      if (record.workflowAncestry !== undefined) continue
       if (record.parentRunId === undefined) {
         const candidates = [...(inferredParents.get(record.id) ?? [])]
         if (candidates.length === 1 && !unreliableReferences.has(record.id)) {
           record.parentRunId = candidates[0]
           record.origin = { kind: 'child', parentRunId: candidates[0]! }
         } else if (candidates.length > 1 || unreliableReferences.has(record.id) || record.origin?.kind === 'child') {
+          if (record.status !== 'queued') continue
           record.status = 'paused'
           record.error = '旧版子运行缺少可验证的唯一父级链路，已暂停以避免递归执行。'
           record.completedAt = new Date().toISOString()
           record.events.push(this.createEvent('run-paused', record.error))
-          await this.options.runStore.save(record)
+          await this.saveRecoveredMetadata(record)
           continue
         } else {
           // No durable child provenance: preserve legitimate legacy top-level runs.
@@ -1438,13 +1442,19 @@ export class WorkflowRunService {
         record.workflowAncestry = ancestry
         record.origin = { kind: 'child', parentRunId: record.parentRunId }
       } else {
+        if (record.status !== 'queued') continue
         record.status = 'paused'
         record.error = '旧版子运行缺少可验证的父级链路，已暂停以避免递归执行。'
         record.completedAt = new Date().toISOString()
         record.events.push(this.createEvent('run-paused', record.error))
       }
-      await this.options.runStore.save(record)
+      await this.saveRecoveredMetadata(record)
     }
+  }
+
+  private async saveRecoveredMetadata(record: WorkflowRunRecord): Promise<void> {
+    if (this.options.runStore.mutations.isWorkflowDeleted(record.workflowId)) await this.options.runStore.saveRetainedAudit(record)
+    else await this.options.runStore.save(record)
   }
 
   private revalidateReleasedAccess(record: WorkflowRunRecord): void {
@@ -2692,18 +2702,18 @@ export class WorkflowRunService {
     record.effectReconciliationTargets = targets
   }
 
-  private async save(record: WorkflowRunRecord, type: WorkflowRunEvent['type'], message: string, nodeId?: string, executionScope?: WorkflowExecutionScope): Promise<void> {
-    return this.saveEvents(record, [this.createEvent(type, message, nodeId, executionScope)], executionScope)
+  private async save(record: WorkflowRunRecord, type: WorkflowRunEvent['type'], message: string, nodeId?: string, executionScope?: WorkflowExecutionScope, auditOnly = false): Promise<void> {
+    return this.saveEvents(record, [this.createEvent(type, message, nodeId, executionScope)], executionScope, auditOnly)
   }
 
-  private async saveFailure(record: WorkflowRunRecord, detailType: WorkflowRunEvent['type'], message: string, nodeId?: string, executionScope?: WorkflowExecutionScope): Promise<void> {
+  private async saveFailure(record: WorkflowRunRecord, detailType: WorkflowRunEvent['type'], message: string, nodeId?: string, executionScope?: WorkflowExecutionScope, auditOnly = false): Promise<void> {
     const events: WorkflowRunEvent[] = []
     if (!record.events.some((event) => event.type === 'run-failed')) events.push(this.createEvent('run-failed', record.error ?? message))
     events.push(this.createEvent(detailType, message, nodeId, executionScope))
-    await this.saveEvents(record, events, executionScope)
+    await this.saveEvents(record, events, executionScope, auditOnly)
   }
 
-  private async saveEvents(record: WorkflowRunRecord, events: WorkflowRunEvent[], executionScope?: WorkflowExecutionScope): Promise<void> {
+  private async saveEvents(record: WorkflowRunRecord, events: WorkflowRunEvent[], executionScope?: WorkflowExecutionScope, auditOnly = false): Promise<void> {
     executionScope ??= events.find((event) => event.executionScope !== undefined)?.executionScope
     if (executionScope !== undefined) {
       const iteration = record.nodeStates.find((state) => state.nodeId === executionScope.loopNodeId)?.loopIterations?.find((candidate) => candidate.iterationId === executionScope.iterationId)
@@ -2724,7 +2734,9 @@ export class WorkflowRunService {
     }
     record.events.push(...events.map((event) => cloneWorkflow(event)))
     this.syncEffectReconciliationTargets(record)
-    const saved = await this.options.runStore.save(record)
+    const saved = auditOnly && this.options.runStore.mutations.isWorkflowDeleted(record.workflowId)
+      ? await this.options.runStore.saveRetainedAudit(record)
+      : await this.options.runStore.save(record)
     for (const listener of this.listeners) listener(cloneWorkflow(saved))
   }
 }
