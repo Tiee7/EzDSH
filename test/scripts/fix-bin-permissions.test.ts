@@ -33,7 +33,7 @@ afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-describe('fixBinPermissions', () => {
+describe.skipIf(process.platform === 'win32')('fixBinPermissions on POSIX', () => {
   it('repairs a stale valid root .bin symlink with the executable mode npm uses', async () => {
     const fixture = await makeFixture()
     const target = await makeBinTarget(fixture, 'tool', 0o644)
@@ -96,14 +96,6 @@ describe('fixBinPermissions', () => {
     expect((await stat(externalTarget)).mode & 0o777).toBe(0o644)
   })
 
-  it('does nothing when the injected platform is win32', async () => {
-    const fixture = await makeFixture()
-    const target = await makeBinTarget(fixture, 'tool', 0o644)
-
-    await expect(fixBinPermissions(fixture.root, { platform: 'win32' })).resolves.toEqual([])
-    expect((await stat(target)).mode & 0o777).toBe(0o644)
-  })
-
   it('reports target failures after attempting every eligible target', async () => {
     const fixture = await makeFixture()
     const first = await makeBinTarget(fixture, 'first', 0o644)
@@ -127,5 +119,13 @@ describe('fixBinPermissions', () => {
     expect(attempted).toEqual(['first', 'second'])
     expect((await stat(first)).mode & 0o777).toBe(0o644)
     expect((await stat(second)).mode & 0o111).not.toBe(0)
+  })
+})
+
+describe('fixBinPermissions platform handling', () => {
+  it('does nothing when the injected platform is win32', async () => {
+    const missingRoot = join(tmpdir(), 'ezdsh-win32-noop-does-not-exist')
+
+    await expect(fixBinPermissions(missingRoot, { platform: 'win32' })).resolves.toEqual([])
   })
 })
