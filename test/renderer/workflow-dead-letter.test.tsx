@@ -9,7 +9,7 @@ const token = 'a'.repeat(64)
 function page(workflowId = 'workflow-a', count = 2): WorkflowDeadLetterPage {
   return { items: Array.from({ length: count }, (_, i) => ({ runId: `${workflowId}-run-${i}`, workflowId, workflowRevision: 7, environmentId: 'production', releaseId: 'release-7', status: 'failed', expectedStateToken: token, decision: i === 1 ? 'blocked' : 'eligible', reason: i === 1 ? 'compensation-present' : 'safe-to-resume', failureCategory: 'legacy-failure-unclassified', retentionHold: i === 1 })), total: count, offset: 0, limit: 50 }
 }
-async function mount(options: { list?: () => Promise<WorkflowDeadLetterPage>; execute?: (request: WorkflowRecoveryExecuteRequest) => Promise<unknown> } = {}) {
+async function mount(options: { locale?: 'zh' | 'en'; list?: () => Promise<WorkflowDeadLetterPage>; execute?: (request: WorkflowRecoveryExecuteRequest) => Promise<unknown> } = {}) {
   const { WorkflowDeadLetterPanel } = await import('../../src/renderer/workflow/WorkflowDeadLetterPanel.js')
   const dom = createWindow('<html><body><div id="root"></div></body></html>')
   const original = { window: globalThis.window, document: globalThis.document, HTMLElement: globalThis.HTMLElement, Node: globalThis.Node, EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH, IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT }
@@ -19,7 +19,7 @@ async function mount(options: { list?: () => Promise<WorkflowDeadLetterPage>; ex
   Object.assign(globalThis, { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Node: dom.Node, IS_REACT_ACT_ENVIRONMENT: true,
     EzDSH: { workflows: { listDeadLetters, previewRecovery, executeRecovery } } })
   const root = createRoot(dom.document.getElementById('root')!)
-  const render = async (workflowId = 'workflow-a') => { await act(async () => { root.render(<StrictMode><WorkflowDeadLetterPanel workflowId={workflowId} locale="en" /></StrictMode>) }) }
+  const render = async (workflowId = 'workflow-a') => { await act(async () => { root.render(<StrictMode><WorkflowDeadLetterPanel workflowId={workflowId} locale={options.locale ?? 'en'} /></StrictMode>) }) }
   const button = (action: string) => dom.document.querySelector(`[data-dlq-action="${action}"]`) as HTMLButtonElement
   const click = async (action: string) => { await act(async () => { button(action).click(); await Promise.resolve() }) }
   const select = async (id: string) => { await act(async () => { const input = dom.document.querySelector(`input[value="${id}"]`) as HTMLInputElement; Simulate.change(input, { target: { checked: true } } as never) }) }
@@ -30,6 +30,32 @@ async function mount(options: { list?: () => Promise<WorkflowDeadLetterPage>; ex
 }
 
 describe('dead-letter recovery panel', () => {
+  it.each(['zh', 'en'] as const)('localizes run states, decisions, categories, reasons and outcomes in %s', async (locale) => {
+    const reasons = ['safe-to-resume', 'not-found', 'not-resumable', 'run-busy', 'service-unavailable', 'definition-unavailable', 'environment-inactive', 'access-revoked', 'legacy-loop-uncheckpointed', 'effect-reconciliation-required', 'compensation-present', 'state-changed', 'request-conflict', 'queue-full', 'recovery-failed', 'receipt-capacity', 'source-deleted-audit-only'] as const
+    const reasonLabels = locale === 'en' ? ['Safe to resume', 'Run not found', 'Not resumable', 'Run busy', 'Service unavailable', 'Fixed revision or release unavailable', 'Environment inactive', 'Access unavailable', 'Legacy loop requires review', 'Effects require reconciliation', 'Compensation requires review', 'Preview is stale', 'Request conflict', 'Queue full', 'Recovery failed', 'Recovery receipt capacity reached', 'Source deleted; audit only'] : ['可安全恢复', '运行不存在', '只有暂停或失败的运行可以恢复', '运行正在执行或变更', '运行服务暂不可用', '固定版本或发布不可用', '环境未启用', '执行权限不可用', '旧版循环缺少逐迭代副作用记录', '副作用需要人工核对', '补偿栈存在，不能自动恢复', '状态已变化，请重新预览', '请求标识与已接受的预览不一致', '运行队列已满', '恢复未完成，请重试或检查状态', '恢复审计容量已满', '来源已删除，仅保留审计']
+    const states = ['queued', 'running', 'paused', 'waiting-approval', 'completed', 'failed', 'cancelled'] as const
+    const categories = ['legacy-failure-unclassified', 'paused', 'unresolved-audit'] as const
+    const decisions = ['eligible', 'blocked', 'not-found'] as const
+    const outcomes = ['queued', 'already-accepted', 'stale', 'blocked', 'not-found', 'failed'] as const
+    const data = page('workflow-a', reasons.length + 1)
+    data.items = data.items.map((item, i) => ({ ...item, reason: reasons[i] ?? 'SECRET-REASON', status: states[i % states.length], failureCategory: categories[i % categories.length], decision: decisions[i % decisions.length] })) as typeof data.items
+    Object.assign(data.items.at(-1)!, { status: 'SECRET-STATE', failureCategory: 'SECRET-CATEGORY', decision: 'toString' })
+    const f = await mount({ locale, list: async () => data, execute: async (request) => request.items.map((item, i) => ({ runId: item.runId, status: outcomes[i] ?? 'SECRET-OUTCOME', reason: i < outcomes.length ? 'state-changed' : 'SECRET-REASON' })) })
+    try {
+      const text = f.dom.document.body.textContent!
+      for (const label of reasonLabels) expect(text).toContain(label)
+      for (const label of locale === 'en' ? ['Queued', 'Running', 'Paused', 'Awaiting approval', 'Completed', 'Failed', 'Cancelled', 'Eligible', 'Blocked', 'Not found', 'Unclassified legacy failure', 'Unresolved audit evidence', 'Unknown state', 'Details unavailable', 'Unknown decision'] : ['已排队', '运行中', '已暂停', '等待审批', '已完成', '已失败', '已取消', '可恢复', '已阻止', '未找到', '旧版失败未分类', '审计证据待核对', '未知状态', '详情不可用', '未知恢复决定']) expect(text).toContain(label)
+      expect(text).not.toContain('SECRET-'); expect(text).not.toContain('toString')
+      if (locale === 'en') expect(text).not.toMatch(/[\u3400-\u9fff]/u)
+      for (const reason of reasons) expect(text).not.toContain(reason)
+      for (const i of [0, 2, 3, 4, 5, 6, 7]) await f.select(`workflow-a-run-${i}`)
+      await f.click('preview'); await f.click('execute')
+      const resultText = Array.from(f.dom.document.querySelectorAll('td[role="status"]')).map((el) => el.textContent).join(' ')
+      for (const label of locale === 'en' ? ['Queued for execution; completion is not confirmed', 'Already accepted; check the current run state', 'Preview is stale', 'Blocked', 'Not found', 'Failed', 'Unknown outcome', 'Details unavailable'] : ['已排队等待执行，尚未确认完成', '此请求已接受，请查看运行当前状态', '预览已过期', '已阻止', '未找到', '恢复失败', '未知恢复结果', '详情不可用']) expect(resultText).toContain(label)
+      expect(resultText).not.toContain('SECRET-')
+      if (locale === 'en') expect(resultText).not.toMatch(/[\u3400-\u9fff]/u)
+    } finally { await f.cleanup() }
+  })
   it('requires explicit selection and preview; only selected eligible items execute and queued is not business success', async () => {
     const f = await mount()
     try {
