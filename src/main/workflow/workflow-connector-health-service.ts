@@ -29,6 +29,9 @@ export class WorkflowConnectorHealthService {
   private readonly flights = new Map<string, { key: string; promise: Promise<WorkflowConnectorHealthEvidence> }>()
   private readonly lastChecks = new Map<string, number>()
   private active = 0
+  // DNS and vault implementations may not support cancellation. Timed-out
+  // preparations retain a slot until they settle, preventing background buildup.
+  private unsettledWork = 0
   private lastGlobalCheck = -Infinity
   private readonly now: () => number
   constructor(private readonly options: WorkflowConnectorHealthServiceOptions) { this.now = options.now ?? Date.now }
@@ -60,7 +63,7 @@ export class WorkflowConnectorHealthService {
     const flight = this.flights.get(identity)
     if (flight?.key === target.key) return { ...await flight.promise }
     const now = this.now()
-    if (this.active >= 2 || now - this.lastGlobalCheck < 250 || now - (this.lastChecks.get(identity) ?? -Infinity) < 1000) {
+    if (this.active >= 2 || this.unsettledWork >= 2 || now - this.lastGlobalCheck < 250 || now - (this.lastChecks.get(identity) ?? -Infinity) < 1000) {
       return { ...query, releaseId: target.release.id, state: 'blocked', reason: 'rate-limited' }
     }
     this.active++; this.lastGlobalCheck = now; this.lastChecks.set(identity, now)
@@ -93,16 +96,17 @@ export class WorkflowConnectorHealthService {
     const start = Date.now()
     const controller = new AbortController()
     let ttlMs = 60000
+    let deadline = Infinity
     let timer: ReturnType<typeof setTimeout> | undefined
     let result: Pick<WorkflowConnectorHealthEvidence, 'state' | 'reason' | 'status'>
     const assertCurrent = (): void => {
-      if (controller.signal.aborted) throw new Error('timeout')
+      if (controller.signal.aborted || Date.now() >= deadline) throw new Error('timeout')
       if (this.target(query)?.key !== target.key) throw new Error('target-changed')
     }
     try {
       const config = normalizeHealthProbe(target.connector.healthProbe)
       ttlMs = config.ttlMs!
-      const deadline = start + config.timeoutMs!
+      deadline = start + config.timeoutMs!
       const work = async (): Promise<number> => {
         const base = new URL(target.connector.baseUrl)
         const url = new URL(config.path.slice(1), base)
@@ -128,7 +132,9 @@ export class WorkflowConnectorHealthService {
       const timeout = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')) }, Math.max(0, deadline - Date.now()))
       })
-      const status = await Promise.race([work(), timeout])
+      this.unsettledWork++
+      const preparation = work().finally(() => { this.unsettledWork-- })
+      const status = await Promise.race([preparation, timeout])
       assertCurrent()
       if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error('request-failed')
       result = config.expectedStatuses.includes(status) ? { state: 'reachable', reason: 'status-expected', status }

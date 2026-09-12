@@ -31,6 +31,26 @@ async function fixture() {
 }
 
 describe('managed connector health', () => {
+  it('keeps timed-out DNS preparations within the global two-operation bound', async () => {
+    const f = await fixture()
+    const finish: Array<(addresses: Array<{ address: string }>) => void> = []
+    f.resolver.mockImplementation(() => new Promise((resolve) => { finish.push(resolve) }))
+    try {
+      expect((await f.service.check(query)).reason).toBe('timeout')
+      f.advance(1100)
+      expect((await f.service.check(query)).reason).toBe('timeout')
+      f.advance(1100)
+      expect((await f.service.check(query)).reason).toBe('rate-limited')
+      expect(f.resolver).toHaveBeenCalledTimes(2)
+    } finally { finish.forEach((resolve) => resolve([{ address: '8.8.8.8' }])) }
+  })
+  it('enforces the absolute deadline even when the timeout callback is delayed', async () => {
+    const f = await fixture()
+    const start = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start)
+    f.transport.mockImplementation(async () => { clock.mockReturnValue(start + 1100); return 200 })
+    try { expect((await f.service.check(query)).reason).toBe('timeout') } finally { clock.mockRestore() }
+  })
   it.each(['Host', 'Connection', 'Transfer-Encoding'])('rejects credential header %s that could change transport routing', async (headerName) => {
     const f = await fixture()
     await f.credentials.upsert({ id: 'token', label: 'Token', type: 'api-key', secret: 'secret', scopes: [{ origin: 'https://example.com', methods: ['GET'], headerName }] })
