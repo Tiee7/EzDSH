@@ -1,22 +1,11 @@
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { WORKFLOW_SCHEMA_VERSION, cloneWorkflow, createDefaultWorkflow, formatWorkflowValidationIssues, normalizeWorkflow, validateWorkflow, type WorkflowCreateInput, type WorkflowDefinition, type WorkflowUpdateInput } from '../../shared/workflow.js'
+import { WorkflowMutationCoordinator, workflowMutationCoordinator, type WorkflowSaveImages } from './workflow-mutation-coordinator.js'
 
 const FILE_NAME = 'workflows.json'
 const VERSIONS_FILE_NAME = 'workflow-versions.json'
-
-async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
-  const tempPath = `${filePath}.${randomUUID()}.tmp`
-  try {
-    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
-    await rename(tempPath, filePath)
-  } catch (error) {
-    await unlink(tempPath).catch(() => undefined)
-    throw error
-  }
-}
 
 function isNotFound(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
@@ -82,14 +71,23 @@ export class WorkflowStore {
   private readonly workflows = new Map<string, WorkflowDefinition>()
   private readonly versions = new Map<string, Map<number, WorkflowDefinition>>()
   private initialized = false
+  private initializationPromise: Promise<void> | undefined
+  readonly mutations: WorkflowMutationCoordinator
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, mutations = workflowMutationCoordinator(stateDir)) {
+    this.mutations = mutations
     this.filePath = join(stateDir, FILE_NAME)
     this.versionsFilePath = join(stateDir, VERSIONS_FILE_NAME)
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return
+    this.initializationPromise ??= this.load()
+    return this.initializationPromise
+  }
+
+  private async load(): Promise<void> {
+    await this.mutations.initialize()
     await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
     try {
       const raw = JSON.parse(await readFile(this.filePath, 'utf8')) as unknown
@@ -97,9 +95,13 @@ export class WorkflowStore {
         for (const item of raw) {
           const normalized = normalizeWorkflow(item)
           const workflow = normalized === undefined ? undefined : ensureFixedTerminalNodes(normalized)
-          if (workflow !== undefined && validateWorkflow(workflow).valid) this.workflows.set(workflow.id, workflow)
+          if (workflow !== undefined && validateWorkflow(workflow).valid && !this.mutations.isWorkflowDeleted(workflow.id)) this.workflows.set(workflow.id, workflow)
         }
       }
+    } catch (error) {
+      if (!isNotFound(error)) throw error
+    }
+    try {
       const versionsRaw = JSON.parse(await readFile(this.versionsFilePath, 'utf8')) as unknown
       if (versionsRaw !== null && typeof versionsRaw === 'object' && !Array.isArray(versionsRaw)) {
         for (const [workflowId, entries] of Object.entries(versionsRaw)) {
@@ -108,7 +110,10 @@ export class WorkflowStore {
           for (const [revision, value] of Object.entries(entries)) {
             const parsedRevision = Number(revision)
             const snapshot = normalizeWorkflow(value)
-            if (Number.isInteger(parsedRevision) && snapshot !== undefined && validateWorkflow(snapshot).valid) snapshots.set(parsedRevision, snapshot)
+            if (Number.isInteger(parsedRevision) && snapshot !== undefined && validateWorkflow(snapshot).valid) {
+              if (snapshot.id !== workflowId || snapshot.revision !== parsedRevision) continue
+              snapshots.set(parsedRevision, snapshot)
+            }
           }
           if (snapshots.size > 0) this.versions.set(workflowId, snapshots)
         }
@@ -140,6 +145,10 @@ export class WorkflowStore {
 
   async create(input: WorkflowCreateInput): Promise<WorkflowDefinition> {
     await this.initialize()
+    return this.mutations.run(() => this.createLocked(input))
+  }
+
+  private async createLocked(input: WorkflowCreateInput): Promise<WorkflowDefinition> {
     const timestamp = new Date().toISOString()
     const workflow = normalizeWorkflow({
       ...createDefaultWorkflow(input.name),
@@ -155,14 +164,15 @@ export class WorkflowStore {
     const result = validateWorkflow(workflow)
     if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, '创建工作流'))
     if (this.workflows.has(workflow.id)) throw new Error(`Workflow already exists: ${workflow.id}`)
-    this.workflows.set(workflow.id, workflow)
-    this.recordRevision(workflow)
-    await this.persist()
+    this.mutations.assertWorkflowWritable(workflow.id)
+    await this.saveWorkflow(workflow, true)
     return cloneWorkflow(workflow)
   }
 
   async update(id: string, input: WorkflowUpdateInput): Promise<WorkflowDefinition> {
     await this.initialize()
+    return this.mutations.run(async () => {
+    this.mutations.assertWorkflowWritable(id)
     const current = this.workflows.get(id)
     if (current === undefined) throw new Error(`Workflow not found: ${id}`)
     if (input.revision !== undefined && input.revision !== current.revision) throw new Error('Workflow changed elsewhere; reload before saving')
@@ -178,24 +188,26 @@ export class WorkflowStore {
     if (workflow === undefined) throw new Error('Invalid workflow document')
     const result = validateWorkflow(workflow)
     if (!result.valid) throw new Error(formatWorkflowValidationIssues(workflow, result.issues, '保存工作流'))
-    this.workflows.set(id, workflow)
-    this.recordRevision(workflow)
-    await this.persist()
+    await this.saveWorkflow(workflow, true)
     return cloneWorkflow(workflow)
+    })
   }
 
   async remove(id: string): Promise<void> {
     await this.initialize()
-    if (!this.workflows.delete(id)) throw new Error(`Workflow not found: ${id}`)
-    this.versions.delete(id)
-    await this.persist()
+    const { WorkflowRunStore } = await import('./workflow-run-store.js')
+    const runs = new WorkflowRunStore(dirname(this.filePath), undefined, this.mutations)
+    await runs.deleteWorkflow(this, id, true)
   }
 
   async duplicate(id: string): Promise<WorkflowDefinition> {
+    await this.initialize()
+    return this.mutations.run(async () => {
+    this.mutations.assertWorkflowWritable(id)
     const source = this.workflows.get(id)
     if (source === undefined) throw new Error(`Workflow not found: ${id}`)
     const idMap = new Map(source.nodes.map((node) => [node.id, `${node.id}-copy-${randomUUID().slice(0, 6)}`]))
-    return this.create({
+    return this.createLocked({
       name: `${source.name} copy`,
       description: source.description,
       ...(source.generationPrompt === undefined ? {} : { generationPrompt: source.generationPrompt }),
@@ -209,25 +221,57 @@ export class WorkflowStore {
       })),
       edges: source.edges.map((edge) => ({ ...edge, id: `${edge.id}-copy-${randomUUID().slice(0, 6)}`, source: idMap.get(edge.source) as string, target: idMap.get(edge.target) as string })),
     })
+    })
   }
 
   async markLastRun(workflowId: string, runId: string): Promise<void> {
+    await this.initialize()
+    await this.mutations.run(async () => {
     const workflow = this.workflows.get(workflowId)
     if (workflow === undefined) return
-    workflow.lastRunId = runId
-    workflow.updatedAt = new Date().toISOString()
-    await this.persist()
+    this.mutations.assertWorkflowWritable(workflowId)
+    await this.saveWorkflow({ ...workflow, lastRunId: runId, updatedAt: new Date().toISOString() }, false)
+    })
   }
 
-  private async persist(): Promise<void> {
-    await atomicWriteJson(this.filePath, this.list())
-    const serialized = Object.fromEntries(Array.from(this.versions.entries(), ([workflowId, snapshots]) => [workflowId, Object.fromEntries(Array.from(snapshots.entries(), ([revision, workflow]) => [String(revision), workflow]))]))
-    await atomicWriteJson(this.versionsFilePath, serialized)
+  private async persist(images: WorkflowSaveImages): Promise<void> {
+    await this.mutations.save(images)
   }
 
-  private recordRevision(workflow: WorkflowDefinition): void {
-    const snapshots = this.versions.get(workflow.id) ?? new Map<number, WorkflowDefinition>()
-    snapshots.set(workflow.revision, cloneWorkflow(workflow))
-    this.versions.set(workflow.id, snapshots)
+  private async saveWorkflow(workflow: WorkflowDefinition, recordRevision: boolean): Promise<void> {
+    const definitions = new Map(this.workflows)
+    const versions = new Map(this.versions)
+    definitions.set(workflow.id, cloneWorkflow(workflow))
+    if (recordRevision) {
+      const snapshots = new Map(versions.get(workflow.id))
+      const existing = snapshots.get(workflow.revision)
+      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(workflow)) throw new Error('WORKFLOW_REVISION_CONFLICT')
+      snapshots.set(workflow.revision, cloneWorkflow(workflow))
+      versions.set(workflow.id, snapshots)
+    }
+    const images = this.images(definitions, versions)
+    await this.persist(images)
+    this.publish(images)
+  }
+
+  private images(definitions = this.workflows, versions = this.versions): WorkflowSaveImages {
+    return { definitions: cloneList(definitions.values()), versions: Object.fromEntries(Array.from(versions, ([id, snapshots]) => [id, Object.fromEntries(snapshots)])) }
+  }
+
+  /** Called only while the shared writer is held. Historical snapshots remain
+   * archival: deleting an editable definition never loads it from versions. */
+  deletionImages(id: string, removeDefinition: boolean): WorkflowSaveImages {
+    const definitions = new Map(this.workflows)
+    if (removeDefinition && !definitions.delete(id)) throw new Error(`Workflow not found: ${id}`)
+    // Conservatively retain exact historical revisions, including transitive
+    // sub-workflow pins whose release graph is owned by another store.
+    return this.images(definitions)
+  }
+
+  publish(images: WorkflowSaveImages): void {
+    this.workflows.clear()
+    for (const workflow of images.definitions as WorkflowDefinition[]) this.workflows.set(workflow.id, cloneWorkflow(workflow))
+    this.versions.clear()
+    for (const [id, revisions] of Object.entries(images.versions as Record<string, Record<string, WorkflowDefinition>>)) this.versions.set(id, new Map(Object.entries(revisions).map(([revision, workflow]) => [Number(revision), cloneWorkflow(workflow)])))
   }
 }

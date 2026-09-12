@@ -2422,15 +2422,15 @@ describe('workflow run service', () => {
       createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
     })
     await service.initialize()
-    const originalRemove = workflowStore.remove.bind(workflowStore)
+    const originalRemove = runStore.deleteWorkflow.bind(runStore)
     let allowDelete!: () => void
     const deleteGate = new Promise<void>((resolve) => { allowDelete = resolve })
     let deletionEntered!: () => void
     const deleting = new Promise<void>((resolve) => { deletionEntered = resolve })
-    vi.spyOn(workflowStore, 'remove').mockImplementation(async (workflowId) => {
+    vi.spyOn(runStore, 'deleteWorkflow').mockImplementation(async (workflows, workflowId, removeDefinition) => {
       deletionEntered()
       await deleteGate
-      return originalRemove(workflowId)
+      return originalRemove(workflows, workflowId, removeDefinition)
     })
     const deletion = service.removeWorkflow(workflow.id)
     try {
@@ -2472,15 +2472,15 @@ describe('workflow run service', () => {
     })
     const parentRun = await service.start(parent.id, null)
     await parentRunning
-    const originalRemove = workflowStore.remove.bind(workflowStore)
+    const originalRemove = runStore.deleteWorkflow.bind(runStore)
     let allowDelete!: () => void
     const deleteGate = new Promise<void>((resolve) => { allowDelete = resolve })
     let deletionEntered!: () => void
     const deleting = new Promise<void>((resolve) => { deletionEntered = resolve })
-    vi.spyOn(workflowStore, 'remove').mockImplementation(async (workflowId) => {
+    vi.spyOn(runStore, 'deleteWorkflow').mockImplementation(async (workflows, workflowId, removeDefinition) => {
       deletionEntered()
       await deleteGate
-      return originalRemove(workflowId)
+      return originalRemove(workflows, workflowId, removeDefinition)
     })
     const deletion = service.removeWorkflow(child.id)
     try {

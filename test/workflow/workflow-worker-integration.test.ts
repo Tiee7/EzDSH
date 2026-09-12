@@ -797,11 +797,11 @@ describe('workflow service lifecycle', () => {
     await fixture.service.initialize()
     const removing = deferred<void>()
     const allowRemove = deferred<void>()
-    const originalRemove = fixture.workflowStore.remove.bind(fixture.workflowStore)
-    vi.spyOn(fixture.workflowStore, 'remove').mockImplementation(async (workflowId) => {
+    const originalRemove = fixture.runStore.deleteWorkflow.bind(fixture.runStore)
+    vi.spyOn(fixture.runStore, 'deleteWorkflow').mockImplementation(async (workflows, workflowId, removeDefinition) => {
       removing.resolve()
       await allowRemove.promise
-      return originalRemove(workflowId)
+      return originalRemove(workflows, workflowId, removeDefinition)
     })
 
     const deletion = fixture.service.removeWorkflow(fixture.workflow.id)

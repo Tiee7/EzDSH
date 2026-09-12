@@ -89,6 +89,7 @@ import type { ExternalServiceCreateInput, ExternalServiceUpdateInput } from '../
 import { EmployeeService } from './employees/employee-service.js'
 import type { EmployeeCreateInput, EmployeeGenerateRequest, EmployeeProjectSummary, EmployeeRunRequest, EmployeeSessionLock, EmployeeSessionSummary, EmployeeUpdateInput } from '../shared/employees.js'
 import { WorkflowStore } from './workflow/workflow-store.js'
+import { workflowMutationCoordinator } from './workflow/workflow-mutation-coordinator.js'
 import { WorkflowRunStore } from './workflow/workflow-run-store.js'
 import { WorkflowRunService } from './workflow/workflow-run-service.js'
 import { registerWorkflowRunDefinitionIpc } from './workflow/workflow-run-definition-ipc.js'
@@ -661,6 +662,9 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   stopEmployeeWatcher = employeeService.watch(emitEmployeeState)
   stopEmployeeLockWatcher = employeeService.watchSessionLocks(emitEmployeeLockState)
 
+  // Recover the fixed cross-file journal before exposing stores or performing
+  // legacy repairs, lease recovery, pruning, and Worker startup.
+  await workflowMutationCoordinator(layout.state).initialize()
   workflowStore = new WorkflowStore(layout.state)
   workflowRunStore = new WorkflowRunStore(layout.state)
   workflowEnvironmentStore = new WorkflowEnvironmentStore(layout.state)

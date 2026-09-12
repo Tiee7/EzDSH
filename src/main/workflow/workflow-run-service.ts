@@ -301,9 +301,7 @@ export class WorkflowRunService {
         const active = administrativeRecords.find((record) => record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval')
         if (active !== undefined) throw new Error('工作流仍有运行中的记录，请先取消运行后再删除工作流')
         for (const record of administrativeRecords) this.administrativeActive.add(record.id)
-        const removed = await this.options.runStore.removeForWorkflow(workflowId)
-        if (removeDefinition) await this.options.workflowStore.remove(workflowId)
-        return removed
+        return await this.options.runStore.deleteWorkflow(this.options.workflowStore, workflowId, removeDefinition)
       } finally {
         for (const record of administrativeRecords) this.administrativeActive.delete(record.id)
         releaseWorkflow()
@@ -351,6 +349,8 @@ export class WorkflowRunService {
 
   private assertRunMutationAvailable(runId: string): void {
     const record = this.options.runStore.get(runId)
+    this.options.runStore.mutations.assertAvailable()
+    if (record !== undefined) this.options.runStore.mutations.assertRunWritable(runId, record.workflowId, record.releaseId !== undefined && record.environmentId !== undefined && record.traceId !== undefined)
     const activelyExecuting = this.active.has(runId) && (record === undefined || record.status === 'queued' || record.status === 'running' || workflowAllNodeRunStates(record.nodeStates).some((state) => state.status === 'running'))
     if (activelyExecuting || this.reconciliationActive.has(runId) || this.compensationActive.has(runId) || this.administrativeActive.has(runId)) {
       throw new Error('该运行仍在执行，或人工核对、补偿、其他变更正在进行。')
@@ -363,6 +363,7 @@ export class WorkflowRunService {
   }
 
   private assertAccepting(): void {
+    this.options.runStore.mutations.assertAvailable()
     if (this.lifecycleState !== 'accepting') throw new WorkflowRunServiceUnavailableError()
   }
 

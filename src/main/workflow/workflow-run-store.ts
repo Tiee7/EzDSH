@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path'
 import { cloneWorkflow, isWorkflowValue, workflowAllNodeRunStates, type WorkflowRunLease, type WorkflowRunQueueState, type WorkflowRunRecord } from '../../shared/workflow.js'
 import type { WorkflowQueueCapacityMetrics, WorkflowRunQueueSnapshot } from '../../shared/workflow-operations.js'
 import { workflowRunHasUnresolvedAudit } from '../../shared/workflow-dead-letter.js'
+import { WorkflowMutationCoordinator, workflowMutationCoordinator } from './workflow-mutation-coordinator.js'
+import type { WorkflowStore } from './workflow-store.js'
 
 /** Main-only configuration. Never accept these limits from run/Renderer options. */
 export interface WorkflowRunQueueLimits {
@@ -66,7 +68,7 @@ async function atomicWriteJson(filePath: string, value: unknown): Promise<void> 
   await rename(tempPath, filePath)
 }
 
-function isPersistedRunRecord(value: unknown): value is WorkflowRunRecord {
+export function isPersistedRunRecord(value: unknown): value is WorkflowRunRecord {
   if (value === null || typeof value !== 'object') return false
   const record = value as Record<string, unknown>
   if (typeof record.id !== 'string' || typeof record.workflowId !== 'string' || typeof record.workflowRevision !== 'number' || !Number.isInteger(record.workflowRevision)) return false
@@ -146,19 +148,20 @@ export class WorkflowRunStore {
   private readonly filePath: string
   private readonly runs = new Map<string, WorkflowRunRecord>()
   /** Serializes read-modify-write persistence so concurrent Workflow branches cannot overwrite each other. */
-  private mutationChain: Promise<void> = Promise.resolve()
+  readonly mutations: WorkflowMutationCoordinator
   private initialized = false
   private initializationPromise: Promise<void> | undefined
   private readonly queueLimits: Readonly<WorkflowRunQueueLimits>
   private lastClaimedBucket: string | undefined
   private mutationBaseline: Map<string, WorkflowRunRecord> | undefined
 
-  constructor(stateDir: string, queueLimits: WorkflowRunQueueLimits = DEFAULT_WORKFLOW_RUN_QUEUE_LIMITS) {
+  constructor(stateDir: string, queueLimits: WorkflowRunQueueLimits = DEFAULT_WORKFLOW_RUN_QUEUE_LIMITS, mutations = workflowMutationCoordinator(stateDir)) {
     if (queueLimits === null || !Number.isSafeInteger(queueLimits.global) || queueLimits.global <= 0
       || !Number.isSafeInteger(queueLimits.perEnvironment) || queueLimits.perEnvironment <= 0) {
       throw new Error('WORKFLOW_RUN_QUEUE_CONFIG_INVALID')
     }
     this.queueLimits = Object.freeze({ ...queueLimits })
+    this.mutations = mutations
     this.filePath = join(stateDir, 'workflow-runs.json')
   }
 
@@ -166,6 +169,7 @@ export class WorkflowRunStore {
     if (this.initialized) return
     if (this.initializationPromise !== undefined) return this.initializationPromise
     const pending = (async () => {
+      await this.mutations.initialize()
       await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
       try {
         const parsed = JSON.parse(await readFile(this.filePath, 'utf8')) as unknown
@@ -224,19 +228,19 @@ export class WorkflowRunStore {
   }
 
   list(workflowId?: string): WorkflowRunRecord[] {
-    return Array.from(this.runs.values())
+    return Array.from((this.mutationBaseline ?? this.runs).values())
       .filter((record) => workflowId === undefined || record.workflowId === workflowId)
       .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))
       .map((record) => cloneWorkflow(record))
   }
 
   get(id: string): WorkflowRunRecord | undefined {
-    const record = this.runs.get(id)
+    const record = (this.mutationBaseline ?? this.runs).get(id)
     return record === undefined ? undefined : cloneWorkflow(record)
   }
 
   queueSnapshot(environmentId?: string): WorkflowRunQueueSnapshot {
-    const records = [...this.runs.values()]
+    const records = [...(this.mutationBaseline ?? this.runs).values()]
     const bucket = queueBucket(environmentId)
     return {
       global: capacityMetrics(records, this.queueLimits.global),
@@ -246,7 +250,7 @@ export class WorkflowRunStore {
 
   /** Return the next persisted queue availability timestamp for Worker wake-up. */
   nextDueAt(): string | undefined {
-    return Array.from(this.runs.values())
+    return Array.from((this.mutationBaseline ?? this.runs).values())
       .filter((record) => record.status === 'queued')
       .filter((record) => record.queue === undefined || isValidQueueState(record.queue))
       .map((record) => record.queue?.availableAt)
@@ -258,6 +262,7 @@ export class WorkflowRunStore {
     await this.initialize()
     const snapshot = cloneWorkflow(record)
     return this.mutate(async () => {
+      this.mutations.assertRunWritable(snapshot.id, snapshot.workflowId, snapshot.releaseId !== undefined && snapshot.environmentId !== undefined && snapshot.traceId !== undefined)
       const current = this.runs.get(snapshot.id)
       // Acceptance is append-only across later worker/admin snapshots. A
       // stale writer must not erase a receipt and enable another admission.
@@ -305,6 +310,7 @@ export class WorkflowRunStore {
       queue: record.queue ?? { enqueuedAt: now, availableAt: now },
     })
     return this.mutate(async () => {
+      this.mutations.assertRunWritable(snapshot.id, snapshot.workflowId, snapshot.releaseId !== undefined && snapshot.environmentId !== undefined && snapshot.traceId !== undefined)
       if (idempotencyKey !== undefined && idempotencyKey !== '') {
         const existing = Array.from(this.runs.values()).find((candidate) => (
           candidate.workflowId === snapshot.workflowId
@@ -529,6 +535,7 @@ export class WorkflowRunStore {
   async remove(id: string): Promise<boolean> {
     await this.initialize()
     return this.mutate(async () => {
+      if (this.mutations.isRunProtected(id) || this.referenceProtectedIds().has(id)) throw new Error('WORKFLOW_RUN_PROTECTED')
       const removed = this.runs.delete(id)
       if (removed) await this.persist()
       return removed
@@ -539,9 +546,11 @@ export class WorkflowRunStore {
   async removeForWorkflow(workflowId: string): Promise<number> {
     await this.initialize()
     return this.mutate(async () => {
+      const protectedIds = this.referenceProtectedIds()
       let removed = 0
       for (const [id, record] of this.runs.entries()) {
         if (record.workflowId !== workflowId) continue
+        if (this.mutations.isRunProtected(id) || protectedIds.has(id)) continue
         this.runs.delete(id)
         removed += 1
       }
@@ -554,8 +563,10 @@ export class WorkflowRunStore {
   async pruneExpired(now = new Date()): Promise<string[]> {
     await this.initialize()
     return this.mutate(async () => {
+      const protectedIds = this.referenceProtectedIds()
       const removed: string[] = []
       for (const [id, record] of this.runs.entries()) {
+        if (this.mutations.isRunProtected(id) || protectedIds.has(id)) continue
         if (record.status === 'queued' || record.status === 'running' || record.status === 'paused' || record.status === 'waiting-approval') continue
         if (workflowRunHasUnresolvedAudit(record)) continue
         if (record.retentionExpiresAt === undefined) continue
@@ -605,9 +616,64 @@ export class WorkflowRunStore {
         this.mutationBaseline = undefined
       }
     }
-    const result = this.mutationChain.then(mutateWithRollback, mutateWithRollback)
-    this.mutationChain = result.then(() => undefined, () => undefined)
-    return result
+    return this.mutations.run(mutateWithRollback)
+  }
+
+  /** Only the fixed workflow deletion operation may span these stores. The
+   * service holds its administration locks before entering this writer gate. */
+  async deleteWorkflow(workflows: WorkflowStore, workflowId: string, removeDefinition: boolean): Promise<number> {
+    if (workflows.mutations !== this.mutations) throw new Error('WORKFLOW_MUTATION_COORDINATOR_MISMATCH')
+    await Promise.all([this.initialize(), workflows.initialize()])
+    return this.mutations.run(async () => {
+      this.mutations.assertWorkflowWritable(workflowId)
+      const candidates = [...this.runs.values()].filter((record) => record.workflowId === workflowId)
+      if (candidates.some(isAdmitted)) throw new Error('工作流仍有运行中的记录，请先取消运行后再删除工作流')
+      const protectedIds = this.referenceProtectedIds()
+      const tombstones = this.mutations.snapshotTombstones()
+      const retained = candidates.filter((record) => protectedIds.has(record.id) || this.mutations.isRunProtected(record.id) || workflowRunHasUnresolvedAudit(record))
+      for (const record of retained) {
+        if (workflows.getRevision(record.workflowId, record.workflowRevision) === undefined) throw new Error(`WORKFLOW_MUTATION_UNVERIFIED_REVISION: ${record.id}`)
+      }
+      const retainedIds = new Set(retained.map((record) => record.id))
+      const deletedIds = candidates.filter((record) => !retainedIds.has(record.id)).map((record) => record.id)
+      const next = new Map(this.runs)
+      for (const id of deletedIds) next.delete(id)
+      const images = workflows.deletionImages(workflowId, removeDefinition)
+      if (removeDefinition) tombstones.workflowIds = [...new Set([...tombstones.workflowIds, workflowId])]
+      tombstones.runIds = [...new Set([...tombstones.runIds, ...deletedIds])]
+      tombstones.protectedRunIds = [...new Set([...tombstones.protectedRunIds, ...retainedIds, ...protectedIds])]
+      await this.mutations.delete({ ...images, tombstones, runs: { schemaVersion: 1, lastClaimedBucket: this.lastClaimedBucket, runs: [...next.values()] } })
+      workflows.publish(images)
+      this.restoreRuns(next)
+      return deletedIds.length
+    })
+  }
+
+  /** Conservatively retain both ends of every parent/child or compensation
+   * reference. Recursive walking includes loop states and childRunId(s) arrays.
+   * An unresolvable reference blocks destructive cleanup rather than guessing. */
+  private referenceProtectedIds(): Set<string> {
+    const protectedIds = new Set<string>()
+    const walk = (value: unknown, source: string): void => {
+      if (Array.isArray(value)) { for (const item of value) walk(item, source); return }
+      if (value === null || typeof value !== 'object') return
+      for (const [key, child] of Object.entries(value)) {
+        if (/RunIds?$/.test(key)) {
+          if (child === undefined) continue
+          const references = key.endsWith('Ids') ? child : [child]
+          if (!Array.isArray(references) || references.some((id) => typeof id !== 'string' || !this.runs.has(id))) {
+            // Legacy orphan chains must still load so execution can pause them
+            // for review. Unknown references conservatively retain all history.
+            for (const id of this.runs.keys()) protectedIds.add(id)
+            continue
+          }
+          if (references.length > 0) protectedIds.add(source)
+          for (const id of references) protectedIds.add(id as string)
+        } else walk(child, source)
+      }
+    }
+    for (const record of this.runs.values()) walk(record, record.id)
+    return protectedIds
   }
 }
 
