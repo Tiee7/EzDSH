@@ -117,6 +117,9 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
   const [observations, setObservations] = useState<WorkflowObservationEvent[]>([])
   const [health, setHealth] = useState<WorkflowOperationalHealth>()
   const [healthError, setHealthError] = useState(false)
+  const [checkingConnector, setCheckingConnector] = useState<string>()
+  const [connectorCheckError, setConnectorCheckError] = useState(false)
+  const connectorCheckGenerationRef = useRef(0)
   const [documentVisible, setDocumentVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden')
   const visible = active && documentVisible
   const [environmentId, setEnvironmentId] = useState('')
@@ -238,16 +241,45 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
   }, [])
   useEffect(() => {
     healthEnabledRef.current = visible
+    connectorCheckGenerationRef.current += 1
+    setCheckingConnector(undefined)
+    setConnectorCheckError(false)
     setHealth(undefined)
     setHealthError(false)
     refreshHealth()
     return () => {
+      connectorCheckGenerationRef.current += 1
       healthEnabledRef.current = false
       healthGenerationRef.current += 1
       healthRefreshQueuedRef.current = false
       clearHealthTimer()
     }
   }, [visible, clearHealthTimer, refreshHealth])
+
+  const checkConnector = async (connectorId: string): Promise<void> => {
+    const bridge = workflowBridge()
+    const targetWorkflowId = selectedWorkflow?.id
+    const targetEnvironmentId = environmentId
+    if (!visible || checkingConnector !== undefined || !bridge || !targetWorkflowId || !targetEnvironmentId) return
+    const generation = ++connectorCheckGenerationRef.current
+    const ownsCheck = (): boolean => healthEnabledRef.current && generation === connectorCheckGenerationRef.current && ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)
+    setCheckingConnector(connectorId)
+    setConnectorCheckError(false)
+    try {
+      const result = await bridge.workflowReleases.checkConnectorHealth({ workflowId: targetWorkflowId, environmentId: targetEnvironmentId, connectorId })
+      if (!ownsCheck()) return
+      if (!result || result.workflowId !== targetWorkflowId || result.environmentId !== targetEnvironmentId || result.connectorId !== connectorId) throw new Error('Connector target mismatch')
+      // Re-read Main's current authorized list/cache rather than merging a late
+      // response into an obsolete release or connector configuration.
+    } catch {
+      if (ownsCheck()) setConnectorCheckError(true)
+    } finally {
+      if (ownsCheck()) {
+        setCheckingConnector(undefined)
+        refreshHealthRef.current()
+      }
+    }
+  }
 
   const publish = async (): Promise<void> => {
     const bridge = workflowBridge()
@@ -355,6 +387,17 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
       <dt>{locale === 'en' ? 'Release' : '发布'}</dt><dd>{health.release.state}{'id' in health.release ? ` · ${health.release.id} · v${health.release.revision}` : ''}{health.release.state === 'active' && health.release.activation !== undefined ? ` · ${health.release.activation.kind} · ${health.release.activation.at}` : ''}</dd>
       <dt>{locale === 'en' ? 'Execution' : '执行'}</dt><dd>{health.execution.state}{'runId' in health.execution ? ` · ${health.execution.runId} · ${health.execution.time}` : ''}</dd>
     </dl> : null}
+    <section className="workflow-connector-health" aria-label={locale === 'en' ? 'Connector checks' : '连接器检查'}>
+      <strong>{locale === 'en' ? 'Connector checks' : '连接器检查'}</strong>
+      <p className="workflow-muted">{locale === 'en' ? 'Only checks the configured GET path; does not prove writes or business delivery.' : '只验证指定 GET 检查路径，不证明 write 或业务交付。'}</p>
+      {connectorCheckError ? <p className="workflow-error" role="alert">{locale === 'en' ? 'Connector check unavailable. Retry explicitly.' : '连接器检查不可用，请手动重试。'}</p> : null}
+      {(health?.connectors ?? []).filter((connector) => connector.workflowId === selectedWorkflow?.id && connector.environmentId === environmentId && health?.release.state === 'active' && connector.releaseId === health.release.id).map((connector) => <div className="workflow-release-row" key={connector.connectorId}>
+        <div><strong>{connector.connectorId}</strong> · {checkingConnector === connector.connectorId ? 'checking' : connector.state} · {connector.reason}{connector.status === undefined ? '' : ` · HTTP ${connector.status}`}
+          <div><small>{locale === 'en' ? 'Observed' : '观测'}: {connector.observedAt ?? '—'} · {locale === 'en' ? 'Expires' : '过期'}: {connector.expiresAt ?? '—'}</small></div>
+        </div>
+        <button type="button" onClick={() => void checkConnector(connector.connectorId)} disabled={!visible || checkingConnector !== undefined || connector.state === 'disabled' || connector.state === 'checking'}>{locale === 'en' ? `Check ${connector.connectorId}` : `检查 ${connector.connectorId}`}</button>
+      </div>)}
+    </section>
     <div className="workflow-release-list">{releases.length === 0 ? <span className="workflow-muted">{label.empty}</span> : releases.map((release) => <div className="workflow-release-row" key={release.id}><span><strong>v{release.workflowRevision}</strong> · {release.status} · {release.contentSha256.slice(0, 12)}</span>{release.status === 'superseded' ? <button type="button" onClick={() => void rollback(release.id)} disabled={busy}>{label.rollback}</button> : null}</div>)}</div>
     <div className="workflow-observation-list">{observations.slice(-8).map((event) => <div key={event.id}><span>{event.time}</span><strong>{event.action}</strong><em>{event.severity}</em></div>)}</div>
   </section>
@@ -411,6 +454,11 @@ interface WorkflowSecurityAssetDraft {
     baseUrl: string
     credentialRef: string
     allowedPathPrefixes: string
+    healthEnabled: boolean
+    healthPath: string
+    healthStatuses: string
+    healthTimeoutMs: number
+    healthTtlMs: number
   }
 }
 
@@ -2105,7 +2153,7 @@ interface WorkflowSecurityAssetsPanelProps {
 
 const EMPTY_SECURITY_ASSET_DRAFT: WorkflowSecurityAssetDraft = {
   credential: { id: '', label: '', type: 'bearer-token', secret: '', origin: '', headerName: 'Authorization', prefix: 'Bearer', methods: ['GET'], pathPrefixes: '/', scopes: [] },
-  connector: { id: '', name: '', baseUrl: '', credentialRef: '', allowedPathPrefixes: '/' },
+  connector: { id: '', name: '', baseUrl: '', credentialRef: '', allowedPathPrefixes: '/', healthEnabled: false, healthPath: '/health', healthStatuses: '200', healthTimeoutMs: 5000, healthTtlMs: 60000 },
 }
 
 function cloneSecurityAssetDraft(): WorkflowSecurityAssetDraft {
@@ -2169,6 +2217,11 @@ export function WorkflowSecurityAssetsPanel({ copy, credentials, connectors, loa
         baseUrl: connector.baseUrl,
         credentialRef: connector.credentialRef?.id ?? '',
         allowedPathPrefixes: connector.allowedPathPrefixes.join('\n'),
+        healthEnabled: connector.healthProbe?.enabled ?? false,
+        healthPath: connector.healthProbe?.path ?? '/health',
+        healthStatuses: connector.healthProbe?.expectedStatuses.join(', ') ?? '200',
+        healthTimeoutMs: connector.healthProbe?.timeoutMs ?? 5000,
+        healthTtlMs: connector.healthProbe?.ttlMs ?? 60000,
       },
     }))
   }
@@ -2199,6 +2252,7 @@ export function WorkflowSecurityAssetsPanel({ copy, credentials, connectors, loa
       baseUrl: current.baseUrl.trim(),
       ...(current.credentialRef.trim() === '' ? {} : { credentialRef: { id: current.credentialRef.trim() } }),
       allowedPathPrefixes: current.allowedPathPrefixes.split(/\r?\n|,/u).map((value) => value.trim()).filter(Boolean),
+      healthProbe: { enabled: current.healthEnabled, path: current.healthPath.trim(), expectedStatuses: current.healthStatuses.split(',').map((status) => Number(status.trim())), timeoutMs: current.healthTimeoutMs, ttlMs: current.healthTtlMs },
     })).catch(() => undefined).finally(() => setSaving(false))
   }
   const removeCredential = (id: string): void => {
@@ -2217,6 +2271,15 @@ export function WorkflowSecurityAssetsPanel({ copy, credentials, connectors, loa
       <section className="workflow-security-asset-list"><div className="workflow-security-asset-heading"><strong>{copy.workflowConnectors}</strong><span>{connectors.length}</span></div>{connectors.length === 0 ? <p className="workflow-muted">{copy.workflowNoConnectors}</p> : <div className="workflow-security-asset-items">{connectors.map((connector) => <div key={connector.id} className="workflow-security-asset-item"><div><strong>{connector.name}</strong><small>{connector.id} · {connector.baseUrl}{connector.credentialRef === undefined ? '' : ` · ${connector.credentialRef.id}`}</small></div><div className="workflow-security-asset-item-actions"><button type="button" className="workflow-button-quiet" onClick={() => loadConnector(connector)}>{copy.workflowEditSecurityAsset}</button><button type="button" className="workflow-button-quiet workflow-danger-button" onClick={() => removeConnector(connector.id)}>{copy.workflowConnectorDelete}</button></div></div>)}</div>}</section>
     </div>
     <div className="workflow-security-asset-editor-tabs" role="tablist" aria-label={copy.workflowSecurityAssetEditor}><button type="button" role="tab" aria-selected={section === 'credential'} className={section === 'credential' ? 'workflow-view-active' : ''} onClick={() => setSection('credential')}>{copy.workflowCredentialEditor}</button><button type="button" role="tab" aria-selected={section === 'connector'} className={section === 'connector' ? 'workflow-view-active' : ''} onClick={() => setSection('connector')}>{copy.workflowConnectorEditor}</button></div>
+    {section === 'connector' ? <fieldset className="workflow-security-asset-form">
+      <legend>GET 健康检查（默认关闭）</legend>
+      <label className="workflow-checkbox"><input aria-label="启用 GET 健康检查" type="checkbox" checked={draft.connector.healthEnabled} onChange={(event) => updateConnector({ healthEnabled: event.target.checked })} />启用 GET 健康检查</label>
+      <label>健康检查路径<input aria-label="健康检查路径" value={draft.connector.healthPath} onChange={(event) => updateConnector({ healthPath: event.target.value })} placeholder="/v1/health" /></label>
+      <label>预期状态码（200–299，逗号分隔）<input aria-label="健康检查预期状态码" value={draft.connector.healthStatuses} onChange={(event) => updateConnector({ healthStatuses: event.target.value })} /></label>
+      <label>超时（1000–10000 毫秒）<input aria-label="健康检查超时" type="number" min={1000} max={10000} value={draft.connector.healthTimeoutMs} onChange={(event) => updateConnector({ healthTimeoutMs: Number(event.target.value) })} /></label>
+      <label>有效期（10000–300000 毫秒）<input aria-label="健康检查有效期" type="number" min={10000} max={300000} value={draft.connector.healthTtlMs} onChange={(event) => updateConnector({ healthTtlMs: Number(event.target.value) })} /></label>
+      <p className="workflow-muted">保存配置后，在发布面板手动检查。只验证指定 GET 检查路径，不证明 write 或业务交付。</p>
+    </fieldset> : null}
     {section === 'credential' ? <div className="workflow-security-asset-form"><label>{copy.workflowCredentialId}<input value={draft.credential.id} onChange={(event) => updateCredential({ id: event.target.value })} placeholder="crm-token" /></label><label>{copy.workflowCredentialLabel}<input value={draft.credential.label} onChange={(event) => updateCredential({ label: event.target.value })} /></label><label>{copy.workflowCredentialType}<select value={draft.credential.type} onChange={(event) => updateCredential({ type: event.target.value as WorkflowCredentialUpsertInput['type'], prefix: event.target.value === 'bearer-token' ? 'Bearer' : '' })}><option value="bearer-token">bearer-token</option><option value="api-key">api-key</option></select></label><label>{copy.workflowCredentialSecret}<input type="password" autoComplete="new-password" value={draft.credential.secret} onChange={(event) => updateCredential({ secret: event.target.value })} placeholder={copy.workflowCredentialSecretHint} /></label><div className="workflow-security-asset-form-grid"><label>{copy.workflowCredentialOrigin}<input value={draft.credential.origin} onChange={(event) => updateCredential({ origin: event.target.value })} placeholder="https://api.example.com" /></label><label>{copy.workflowCredentialHeader}<input value={draft.credential.headerName} onChange={(event) => updateCredential({ headerName: event.target.value })} placeholder="Authorization" /></label></div><div className="workflow-security-methods"><span>{copy.workflowCredentialMethods}</span>{WORKFLOW_HTTP_METHODS.map((method) => <label key={method} className="workflow-checkbox"><input type="checkbox" checked={draft.credential.methods.includes(method)} onChange={(event) => toggleMethod(method, event.target.checked)} />{method}</label>)}</div><label>{copy.workflowCredentialPaths}<textarea value={draft.credential.pathPrefixes} onChange={(event) => updateCredential({ pathPrefixes: event.target.value })} placeholder="/v1/" /></label><button type="button" className="workflow-button-primary" onClick={saveCredential} disabled={saving}>{copy.workflowSaveCredential}</button></div> : <div className="workflow-security-asset-form"><label>{copy.workflowConnectorId}<input value={draft.connector.id} onChange={(event) => updateConnector({ id: event.target.value })} placeholder="crm" /></label><label>{copy.workflowConnectorName}<input value={draft.connector.name} onChange={(event) => updateConnector({ name: event.target.value })} /></label><label>{copy.workflowConnectorBaseUrl}<input value={draft.connector.baseUrl} onChange={(event) => updateConnector({ baseUrl: event.target.value })} placeholder="https://api.example.com/" /></label><label>{copy.workflowConnectorCredential}<input value={draft.connector.credentialRef} onChange={(event) => updateConnector({ credentialRef: event.target.value })} placeholder="crm-token" /></label><label>{copy.workflowConnectorPaths}<textarea value={draft.connector.allowedPathPrefixes} onChange={(event) => updateConnector({ allowedPathPrefixes: event.target.value })} placeholder="/v1/" /></label><button type="button" className="workflow-button-primary" onClick={saveConnector} disabled={saving}>{copy.workflowSaveConnector}</button></div>}
   </section>
 }

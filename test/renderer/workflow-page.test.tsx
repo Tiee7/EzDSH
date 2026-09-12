@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as workflowPage from '../../src/renderer/workflow/WorkflowPage.js'
 import { getAppCopy } from '../../src/shared/locale.js'
 import { createDefaultWorkflow, type WorkflowDefinition, type WorkflowNodeType, type WorkflowRunRecord } from '../../src/shared/workflow.js'
-import type { WorkflowCustomerEnvironment, WorkflowOperationalHealth, WorkflowReleaseSummary } from '../../src/shared/workflow-operations.js'
+import type { WorkflowConnectorHealthEvidence, WorkflowCustomerEnvironment, WorkflowOperationalHealth, WorkflowReleaseSummary } from '../../src/shared/workflow-operations.js'
 import { ReactFlow, type Edge, type Node } from '@xyflow/react'
 import type { ComponentType } from 'react'
 
@@ -223,7 +223,7 @@ describe('release operational health', () => {
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
     const release: WorkflowReleaseSummary = { id: 'health-release', environmentId: environment.id, workflowId: workflow.id, workflowRevision: 3, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt, launchFields: [] }
     const bridge = { workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() }, workflowReleases: {
-      getHealth: vi.fn(async () => healthy()), getOperationalHealth,
+      getHealth: vi.fn(async () => healthy()), getOperationalHealth, checkConnectorHealth: vi.fn<(query: unknown) => Promise<WorkflowConnectorHealthEvidence>>(),
       list: vi.fn(async () => [release, { ...release, id: 'old-release', status: 'superseded' as const }]), listObservations: vi.fn(async () => []),
       publish: vi.fn(async () => release), rollback: vi.fn(async () => release), start: vi.fn(async () => ({ id: 'new-run', workflowId: workflow.id, status: 'queued' })),
     } }
@@ -257,6 +257,73 @@ describe('release operational health', () => {
       expect(view.bridge.workflowReleases.getHealth).not.toHaveBeenCalled()
       for (const text of ['healthy', 'Observed at', healthy().observedAt, 'Local process evidence only', 'Service', 'accepting', 'Worker', 'ready', 'Environment', 'active', 'Release', 'health-release', 'v3', 'publish', 'Execution', 'health-run', 'completed', '2026-09-12T00:00:59.000Z']) expect(view.text()).toContain(text)
       expect(view.text()).not.toContain('DO-NOT-RENDER')
+    } finally { await view.cleanup() }
+  })
+
+  const connectorEvidence = (state: WorkflowConnectorHealthEvidence['state'] = 'unchecked'): WorkflowConnectorHealthEvidence => ({ workflowId: workflow.id, environmentId: environment.id, connectorId: 'authorized-api', releaseId: 'health-release', state, reason: state === 'unchecked' ? 'not-checked' : 'status-expected', ...(state === 'reachable' ? { status: 200, observedAt: '2026-09-12T00:02:00Z', expiresAt: '2026-09-12T00:03:00Z' } : {}) })
+  it('loads and saves opt-in connector probe settings through the security editor', async () => {
+    const view = await mount()
+    const container = view.document.createElement('div'); view.document.body.appendChild(container)
+    const root = createRoot(container)
+    const save = vi.fn()
+    const copy = getAppCopy('zh')
+    try {
+      await act(async () => { root.render(<workflowPage.WorkflowSecurityAssetsPanel copy={copy} credentials={[]} connectors={[{ id: 'api', name: 'API', kind: 'http', baseUrl: 'https://example.com/', allowedPathPrefixes: ['/v1'], healthProbe: { enabled: true, path: '/v1/health', expectedStatuses: [200, 204], timeoutMs: 3000, ttlMs: 45000 } }]} onRefresh={() => {}} onSaveCredential={() => {}} onRemoveCredential={() => {}} onSaveConnector={save} onRemoveConnector={() => {}} />) })
+      const click = async (text: string) => { await act(async () => { Array.from(container.querySelectorAll('button')).find((button) => button.textContent === text)!.click() }) }
+      await click(copy.workflowEditSecurityAsset)
+      const path = container.querySelector<HTMLInputElement>('[aria-label="健康检查路径"]')
+      expect(path?.value).toBe('/v1/health')
+      expect(container.querySelector<HTMLInputElement>('[aria-label="启用 GET 健康检查"]')?.checked).toBe(true)
+      await act(async () => { Simulate.change(path!, { target: { value: '/v1/ping' } } as never) })
+      await click(copy.workflowSaveConnector)
+      expect(save).toHaveBeenCalledWith(expect.objectContaining({ healthProbe: { enabled: true, path: '/v1/ping', expectedStatuses: [200, 204], timeoutMs: 3000, ttlMs: 45000 } }))
+    } finally { await act(async () => { root.unmount() }); await view.cleanup() }
+  })
+  it('lists connector evidence separately and only probes after explicit Check', async () => {
+    const getHealth = vi.fn(async () => ({ ...healthy(), connectors: [connectorEvidence()] }))
+    const view = await mount(getHealth)
+    try {
+      expect(view.text()).toContain('authorized-api'); expect(view.text()).toContain('unchecked')
+      expect(view.text()).toContain('Only checks the configured GET path; does not prove writes or business delivery.')
+      await view.tick(); expect(view.bridge.workflowReleases.checkConnectorHealth).not.toHaveBeenCalled()
+      const pending = deferred<WorkflowConnectorHealthEvidence>()
+      view.bridge.workflowReleases.checkConnectorHealth.mockReturnValue(pending.promise)
+      await view.click('Check authorized-api')
+      expect(view.text()).toContain('checking')
+      expect(view.bridge.workflowReleases.checkConnectorHealth).toHaveBeenCalledWith({ workflowId: workflow.id, environmentId: environment.id, connectorId: 'authorized-api' })
+      getHealth.mockResolvedValue({ ...healthy(), connectors: [connectorEvidence('reachable')] })
+      await act(async () => { pending.resolve(connectorEvidence('reachable')) })
+      expect(view.text()).toContain('reachable'); expect(view.text()).toContain('2026-09-12T00:03:00Z')
+      expect(view.text()).toContain('Health: healthy')
+    } finally { await view.cleanup() }
+  })
+
+  it.each(['target', 'hidden', 'unmount'])('ignores connector check completion after %s changes', async (change) => {
+    const getHealth = vi.fn(async (query) => ({ ...healthy(query.workflowId), connectors: [connectorEvidence()] }))
+    const view = await mount(getHealth)
+    const pending = deferred<WorkflowConnectorHealthEvidence>()
+    view.bridge.workflowReleases.checkConnectorHealth.mockReturnValue(pending.promise)
+    try {
+      await view.click('Check authorized-api')
+      if (change === 'target') await view.render(createDefaultWorkflow('Other'))
+      if (change === 'hidden') await act(async () => { Object.defineProperty(view.document, 'visibilityState', { configurable: true, value: 'hidden' }); view.document.dispatchEvent(new Event('visibilitychange')) })
+      if (change === 'unmount') await view.unmount()
+      const before = getHealth.mock.calls.length
+      await act(async () => { pending.resolve(connectorEvidence('reachable')) })
+      expect(getHealth).toHaveBeenCalledTimes(before)
+      expect(view.text()).not.toContain('reachable')
+    } finally { pending.resolve(connectorEvidence('reachable')); await view.cleanup() }
+  })
+
+  it('does not render foreign connector targets or arbitrary connector failure text', async () => {
+    const getHealth = vi.fn(async () => ({ ...healthy(), connectors: [connectorEvidence(), { ...connectorEvidence(), workflowId: 'other-workflow', connectorId: 'foreign-api' }] }))
+    const view = await mount(getHealth)
+    try {
+      expect(view.text()).not.toContain('foreign-api')
+      view.bridge.workflowReleases.checkConnectorHealth.mockRejectedValue(new Error('SECRET-SERVER-DETAIL'))
+      await view.click('Check authorized-api')
+      expect(view.text()).toContain('Connector check unavailable')
+      expect(view.text()).not.toContain('SECRET-SERVER-DETAIL')
     } finally { await view.cleanup() }
   })
 
