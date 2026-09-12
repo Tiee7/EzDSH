@@ -500,6 +500,22 @@ describe('WorkflowOperationalHealthService', () => {
       .toMatchObject({ status: 'unhealthy', reason: 'multiple-current-releases' })
   })
 
+  it('normalizes unsafe revisions on digest failures so the persisted ledger remains reloadable', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-health-unsafe-digest-revision-'))
+    const release = createRelease({ contentSha256: '0'.repeat(64) })
+    release.workflowRevision = 9_007_199_254_740_992
+    release.workflowSnapshot.revision = 9_007_199_254_740_992
+    await writeFile(join(directory, 'workflow-releases.json'), JSON.stringify([release]))
+    const first = new WorkflowReleaseStore(directory, { now: () => NOW })
+    await first.initialize()
+    const second = new WorkflowReleaseStore(directory)
+    await expect(second.initialize()).resolves.toBeUndefined()
+    expect(first.listIntegrityFailures()).toMatchObject([{ workflowRevision: 0, reason: 'digest-mismatch' }])
+    expect(second.listIntegrityFailures()).toEqual(first.listIntegrityFailures())
+    const ledger = JSON.parse(await readFile(join(directory, 'workflow-release-integrity-failures.json'), 'utf8'))
+    expect(ledger.failures).toMatchObject([{ workflowRevision: 0, reason: 'digest-mismatch' }])
+  })
+
   it('rejects invalid query identities before reading operational state', () => {
     let reads = 0
     const service = new WorkflowOperationalHealthService({

@@ -80,7 +80,7 @@ function releaseIntegrityFailure(
     id: release.id,
     environmentId: release.environmentId,
     workflowId: release.workflowId,
-    workflowRevision: release.workflowRevision,
+    workflowRevision: safeIntegrityRevision(release.workflowRevision),
     status: release.status,
     detectedAt,
     reason,
@@ -401,8 +401,7 @@ function safeReleaseIdentity(value: unknown): Omit<WorkflowReleaseIntegrityFailu
   const workflowId = safeId(value.workflowId)
   const environmentId = safeId(value.environmentId)
   if (id === undefined || workflowId === undefined || environmentId === undefined) return undefined
-  const workflowRevision = typeof value.workflowRevision === 'number' && Number.isSafeInteger(value.workflowRevision) && value.workflowRevision >= 1
-    ? value.workflowRevision : 0
+  const workflowRevision = safeIntegrityRevision(value.workflowRevision)
   if (value.status !== 'published' && value.status !== 'superseded' && value.status !== 'rolled-back') return undefined
   return {
     id,
@@ -411,6 +410,10 @@ function safeReleaseIdentity(value: unknown): Omit<WorkflowReleaseIntegrityFailu
     workflowRevision,
     status: value.status,
   }
+}
+
+function safeIntegrityRevision(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : 0
 }
 
 function safeReleaseId(value: unknown): string | undefined {
