@@ -672,25 +672,31 @@ export class WorkflowRunService {
       const node = workflow.nodes.find((candidate) => candidate.id === state.nodeId)
       return node !== undefined && isEffectfulNode(node) && state.effectState === undefined
         && (state.status === 'failed' || state.status === 'running' || state.status === 'cancelled')
-        && state.executionScope === undefined
         // Loop summaries are display projections; their effects live in the
         // nested journal, which was checked above and by legacy-loop checks.
-        && !workflow.nodes.some((owner) => owner.type === 'loop' && workflowLoopBodyNodeIds(workflow, owner.id).includes(node.id))
+        && !(record.nodeStates.includes(state) && workflow.nodes.some((owner) => owner.type === 'loop' && workflowLoopBodyNodeIds(workflow, owner.id).includes(node.id)))
     })
     if (unjournaledEffect) return decision('effect-reconciliation-required')
     if ((record.recoveryReceipts?.length ?? 0) >= 200) return decision('receipt-capacity')
     try {
       this.revalidateReleasedAccess(record)
-      for (const node of workflow.nodes) {
-        const insideUnfinishedLoop = workflow.nodes.some((owner) => owner.type === 'loop' && record.nodeStates.find((state) => state.nodeId === owner.id)?.status !== 'completed' && workflowLoopBodyNodeIds(workflow, owner.id).includes(node.id))
-        if (!insideUnfinishedLoop && record.nodeStates.find((state) => state.nodeId === node.id)?.status === 'completed') continue
-        if (node.type === 'code' && !record.allowCode || (node.type === 'shell' || node.type === 'file') && !record.allowShellFile) return decision('access-revoked')
-        if (node.type === 'http') {
-          if (node.config.connectorId === undefined) { if (this.options.allowLegacyHttp === false) return decision('access-revoked'); continue }
-          const request = this.buildManagedConnectorRequest(node, record)
-          assertPermission(request.workflowPolicy, request.runGrant, node.config.connectorId, node.config.method === 'GET' ? 'read' : 'write')
-          if (this.options.connectorService === undefined) return decision('access-revoked')
-          if (this.options.connectorService.authorize !== undefined) await this.options.connectorService.authorize(request, record.input, record.nodeStates.find((state) => state.nodeId === node.id)?.input ?? null)
+      // The release's entire fixed dependency closure is conservative here:
+      // granting recovery must not overlook revoked access inside a child.
+      const dependencies = record.releaseId === undefined ? [] : this.options.resolveReleasedWorkflow?.(record.releaseId)?.workflowDependencies ?? []
+      for (const definition of [workflow, ...dependencies]) {
+        if (!validateWorkflow(definition).valid) return decision('definition-unavailable')
+        for (const node of definition.nodes) {
+          const sourceNode = definition === workflow
+          const insideUnfinishedLoop = definition.nodes.some((owner) => owner.type === 'loop' && record.nodeStates.find((state) => state.nodeId === owner.id)?.status !== 'completed' && workflowLoopBodyNodeIds(definition, owner.id).includes(node.id))
+          if (sourceNode && !insideUnfinishedLoop && record.nodeStates.find((state) => state.nodeId === node.id)?.status === 'completed') continue
+          if (node.type === 'code' && !record.allowCode || (node.type === 'shell' || node.type === 'file') && !record.allowShellFile) return decision('access-revoked')
+          if (node.type === 'http') {
+            if (node.config.connectorId === undefined) { if (this.options.allowLegacyHttp === false) return decision('access-revoked'); continue }
+            const request = { ...this.buildManagedConnectorRequest(node, record), workflowPolicy: definition.permissionPolicy }
+            assertPermission(request.workflowPolicy, request.runGrant, node.config.connectorId, node.config.method === 'GET' ? 'read' : 'write')
+            if (this.options.connectorService === undefined) return decision('access-revoked')
+            if (this.options.connectorService.authorize !== undefined) await this.options.connectorService.authorize(request, record.input, sourceNode ? record.nodeStates.find((state) => state.nodeId === node.id)?.input ?? null : null)
+          }
         }
       }
     } catch { return decision('access-revoked') }

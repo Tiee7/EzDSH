@@ -7,6 +7,8 @@ import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
 import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 import { WorkflowInternalSessionStore } from '../../src/main/workflow/workflow-internal-session-store.js'
 import type { WorkflowRunRecord } from '../../src/shared/workflow.js'
+import type { WorkflowCustomerEnvironment, WorkflowRelease } from '../../src/shared/workflow-operations.js'
+import { computeWorkflowReleaseSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
 
 async function fixture(limits?: { global: number; perEnvironment: number }) {
   const dir = await mkdtemp(join(tmpdir(), 'ezdsh-dead-letter-'))
@@ -182,6 +184,35 @@ describe('operational dead letter and bounded recovery', () => {
     ], edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }] })
     await f.save('legacy', { workflowId: workflow.id, nodeStates: [{ nodeId: 'write', status: 'failed' }], error: 'known not sent safe retry' })
     expect(await f.service.previewRecovery({ runIds: ['legacy'] })).toMatchObject([{ decision: 'blocked', reason: 'effect-reconciliation-required' }])
+  })
+
+  it('does not treat a nested unjournaled effect attempt as a disposable loop display summary', async () => {
+    const f = await fixture()
+    const workflow = await f.workflowStore.create({ name: 'Legacy loop write', description: '', nodes: [
+      f.workflow.nodes[0]!, { id: 'loop', type: 'loop', label: 'Loop', config: { maxIterations: 2 }, position: { x: 100, y: 0 } },
+      { id: 'write', type: 'mcp', label: 'Write', config: { tool: 'send', arguments: {} }, position: { x: 100, y: 100 } }, f.workflow.nodes[1]!,
+    ], edges: [{ id: 'a', source: 'input', target: 'loop' }, { id: 'b', source: 'loop', target: 'write', sourcePort: 'loop-body' }, { id: 'c', source: 'loop', target: 'output', sourcePort: 'loop-next' }] })
+    const run = await f.save('legacy-loop', { workflowId: workflow.id, nodeStates: [{ nodeId: 'loop', status: 'pending', loopIterations: [{ iterationId: 'item-0', iterationIndex: 0, status: 'running', input: 'item', nodeStates: [{ nodeId: 'write', status: 'failed', executionScope: { loopNodeId: 'loop', iterationId: 'item-0', iterationIndex: 0 } }] }] }, { nodeId: 'write', status: 'failed' }] })
+    expect(await f.service.previewRecovery({ runIds: [run.id] })).toMatchObject([{ decision: 'blocked', reason: 'effect-reconciliation-required' }])
+    await expect(f.service.resume(run.id)).rejects.toThrow(/副作用/)
+    expect(f.runStore.get(run.id)).toEqual(run)
+  })
+
+  it('blocks revoked permissions in pinned sub-workflows before admitting the parent', async () => {
+    const f = await fixture()
+    const child = await f.workflowStore.create({ name: 'Child', description: '', permissionPolicy: { connectors: [{ connectorId: 'crm', operations: ['write'] }] }, nodes: [
+      f.workflow.nodes[0]!, { id: 'write', type: 'http', label: 'Write', config: { connectorId: 'crm', connectorPath: '/items', method: 'POST', responseMode: 'json' }, position: { x: 100, y: 0 } }, f.workflow.nodes[1]!,
+    ], edges: [{ id: 'a', source: 'input', target: 'write' }, { id: 'b', source: 'write', target: 'output' }] })
+    const parent = await f.workflowStore.create({ name: 'Parent', description: '', nodes: [f.workflow.nodes[0]!, { id: 'child', type: 'sub-workflow', label: 'Child', config: { workflowId: child.id, version: child.revision, waitForCompletion: true }, position: { x: 100, y: 0 } }, f.workflow.nodes[1]!], edges: [{ id: 'a', source: 'input', target: 'child' }, { id: 'b', source: 'child', target: 'output' }] })
+    const environment: WorkflowCustomerEnvironment = { id: 'env', name: 'Env', customerName: 'Customer', kind: 'production', status: 'active', connectorIds: [], allowCode: false, allowShellFile: false, createdAt: '2026-09-12T00:00:00.000Z', updatedAt: '2026-09-12T00:00:00.000Z' }
+    const release: WorkflowRelease = { id: 'release', environmentId: 'env', workflowId: parent.id, workflowRevision: parent.revision, workflowSnapshot: parent, workflowDependencies: [child], contentSha256: computeWorkflowReleaseSha256({ workflowSnapshot: parent, workflowDependencies: [child] }), connectorGrants: [{ connectorId: 'crm', operations: ['write'] }], status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt }
+    const service = new WorkflowRunService({ workflowStore: f.workflowStore, runStore: f.runStore, workflowRoot: f.dir, createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+      resolveReleasedWorkflow: () => release, resolveWorkflowEnvironment: () => environment })
+    await service.initialize()
+    await (service as unknown as { worker: { stop(): Promise<void> } }).worker.stop()
+    const run = await f.save('parent', { workflowId: parent.id, releaseId: release.id, environmentId: environment.id, traceId: 'trace', connectorGrants: release.connectorGrants, nodeStates: [{ nodeId: 'child', status: 'pending', effectState: 'none' }] })
+    expect(await service.previewRecovery({ runIds: [run.id] })).toMatchObject([{ decision: 'blocked', reason: 'access-revoked' }])
+    expect(f.runStore.get(run.id)).toEqual(run)
   })
 
   it('fails independently when one preview source resolver throws private data', async () => {
