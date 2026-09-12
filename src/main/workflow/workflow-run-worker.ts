@@ -18,6 +18,9 @@ export type WorkflowRunWorkerState = 'starting' | 'ready' | 'backing-off' | 'sto
 export interface WorkflowRunWorkerOperationsSnapshot {
   readonly state: WorkflowRunWorkerState
   readonly consecutiveClaimFailures: number
+  readonly activeRunCount: number
+  readonly activeRunHeartbeatAt?: string
+  readonly activeRunLeaseLostAt?: string
   readonly lastPollAttemptAt?: string
   readonly lastPollSucceededAt?: string
   readonly lastPollFailedAt?: string
@@ -39,6 +42,9 @@ export class WorkflowRunWorker {
   private stopping = false
   private state: WorkflowRunWorkerState = 'stopped'
   private consecutiveClaimFailures = 0
+  private activeRunCount = 0
+  private activeRunHeartbeatAt: string | undefined
+  private activeRunLeaseLostAt: string | undefined
   private retryNotBefore: number | undefined
   private lastPollAttemptAt: string | undefined
   private lastPollSucceededAt: string | undefined
@@ -68,6 +74,9 @@ export class WorkflowRunWorker {
     return {
       state: this.state,
       consecutiveClaimFailures: this.consecutiveClaimFailures,
+      activeRunCount: this.activeRunCount,
+      ...(this.activeRunHeartbeatAt === undefined ? {} : { activeRunHeartbeatAt: this.activeRunHeartbeatAt }),
+      ...(this.activeRunLeaseLostAt === undefined ? {} : { activeRunLeaseLostAt: this.activeRunLeaseLostAt }),
       ...(this.lastPollAttemptAt === undefined ? {} : { lastPollAttemptAt: this.lastPollAttemptAt }),
       ...(this.lastPollSucceededAt === undefined ? {} : { lastPollSucceededAt: this.lastPollSucceededAt }),
       ...(this.lastPollFailedAt === undefined ? {} : { lastPollFailedAt: this.lastPollFailedAt }),
@@ -152,33 +161,56 @@ export class WorkflowRunWorker {
         return
       }
       const leaseController = new AbortController()
+      let heartbeatActive = true
       const heartbeatInterval = Math.max(1_000, Math.floor(this.leaseMs / 2))
       const heartbeat = setInterval(() => {
         void this.options.store.renewLease(claimed.id, this.ownerId, this.leaseMs).then((renewed) => {
+          if (!heartbeatActive) return
           // A missing result means another owner has taken the lease (or the
           // store could not persist the renewal). Abort before the next
           // external dispatch; the service will leave the record for durable
           // recovery instead of writing a stale terminal state.
-          if (renewed === undefined && !leaseController.signal.aborted) leaseController.abort()
+          if (renewed === undefined && !leaseController.signal.aborted) {
+            this.activeRunHeartbeatAt = undefined
+            this.activeRunLeaseLostAt = new Date().toISOString()
+            leaseController.abort()
+          } else if (renewed !== undefined && !leaseController.signal.aborted) {
+            this.activeRunHeartbeatAt = new Date().toISOString()
+          }
         }).catch(() => {
-          if (!leaseController.signal.aborted) leaseController.abort()
+          if (!heartbeatActive) return
+          if (!leaseController.signal.aborted) {
+            this.activeRunHeartbeatAt = undefined
+            this.activeRunLeaseLostAt = new Date().toISOString()
+            leaseController.abort()
+          }
         })
       }, heartbeatInterval)
+      this.activeRunCount += 1
+      this.activeRunHeartbeatAt = new Date().toISOString()
+      this.activeRunLeaseLostAt = undefined
       try {
-        await this.executeClaimedRun(claimed.id, lease, leaseController.signal)
-      } catch (error) {
         try {
-          await this.onExecutionError?.(claimed.id, error)
-        } catch {
-          // An observer/error hook must not stop the Worker from draining the
-          // remaining durable queue.
+          await this.executeClaimedRun(claimed.id, lease, leaseController.signal)
+        } catch (error) {
+          try {
+            await this.onExecutionError?.(claimed.id, error)
+          } catch {
+            // An observer/error hook must not stop the Worker from draining the
+            // remaining durable queue.
+          }
+        } finally {
+          heartbeatActive = false
+          clearInterval(heartbeat)
+          // If the heartbeat was lost, hand the still-running record back to
+          // durable recovery before releasing ownership. A plain lease release
+          // would otherwise leave a running record with no lease forever.
+          await this.options.store.releaseLease(claimed.id, this.ownerId, leaseController.signal.aborted).catch(() => undefined)
         }
       } finally {
-        clearInterval(heartbeat)
-        // If the heartbeat was lost, hand the still-running record back to
-        // durable recovery before releasing ownership. A plain lease release
-        // would otherwise leave a running record with no lease forever.
-        await this.options.store.releaseLease(claimed.id, this.ownerId, leaseController.signal.aborted).catch(() => undefined)
+        this.activeRunCount -= 1
+        if (this.activeRunCount === 0) this.activeRunHeartbeatAt = undefined
+        if (this.activeRunCount === 0) this.activeRunLeaseLostAt = undefined
       }
     }
   }
@@ -186,7 +218,7 @@ export class WorkflowRunWorker {
   private scheduleWake(delay?: number): void {
     if (!this.started || this.stopping || this.timer !== undefined) return
     const nextDueAt = delay === undefined ? this.options.store.nextDueAt() : undefined
-    const dueDelay = delay ?? (nextDueAt === undefined ? this.pollIntervalMs : Math.max(25, Date.parse(nextDueAt) - Date.now()))
+    const dueDelay = delay ?? (nextDueAt === undefined ? this.pollIntervalMs : Math.min(this.pollIntervalMs, Math.max(25, Date.parse(nextDueAt) - Date.now())))
     this.nextPollAt = new Date(Date.now() + dueDelay).toISOString()
     this.timer = setTimeout(() => {
       this.timer = undefined

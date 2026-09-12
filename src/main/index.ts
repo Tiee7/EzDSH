@@ -108,6 +108,8 @@ import { WorkflowDeploymentService } from './workflow/workflow-deployment-servic
 import { registerWorkflowReleaseRollbackIpc } from './workflow/workflow-release-rollback-ipc.js'
 import { WorkflowObservationStore } from './workflow/workflow-observation-store.js'
 import { WorkflowObservabilityService } from './workflow/workflow-observability-service.js'
+import { WorkflowOperationalHealthService } from './workflow/workflow-operational-health-service.js'
+import { registerWorkflowOperationalHealthIpc } from './workflow/workflow-operational-health-ipc.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
 import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowModifyRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue, WorkflowCredentialUpsertInput, WorkflowHttpConnector } from '../shared/workflow.js'
 import { validateWorkflowCompensationEffectReconcileRequest, validateWorkflowEffectReconcileRequest } from '../shared/workflow.js'
@@ -179,6 +181,7 @@ let workflowEnvironmentStore: WorkflowEnvironmentStore | undefined
 let workflowReleaseStore: WorkflowReleaseStore | undefined
 let workflowDeploymentService: WorkflowDeploymentService | undefined
 let workflowObservabilityService: WorkflowObservabilityService | undefined
+let workflowOperationalHealthService: WorkflowOperationalHealthService | undefined
 let workflowGenerationService: WorkflowGenerationService | undefined
 let workflowModificationService: WorkflowModificationService | undefined
 let isQuitting = false
@@ -706,6 +709,14 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     releaseStore: workflowReleaseStore,
     runService: workflowRunService,
   })
+  workflowOperationalHealthService = new WorkflowOperationalHealthService({
+    getRunServiceOperations: () => workflowRunService!.operationsSnapshot(),
+    resolveEnvironment: (environmentId) => workflowEnvironmentStore!.get(environmentId),
+    listReleases: () => workflowReleaseStore!.list(),
+    listReleaseIntegrityFailures: () => workflowReleaseStore!.listIntegrityFailures(),
+    listRuns: () => workflowRunStore!.list(),
+    listObservations: () => workflowObservabilityService!.list(),
+  })
   await workflowRunService.initialize().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error('[workflows] failed to initialize:', message)
@@ -1150,6 +1161,7 @@ function requireDeveloperModeFeature(): void {
 
 function registerIpcHandlers(): void {
   registerWorkflowRunDefinitionIpc(ipcMain, () => workflowRunService)
+  registerWorkflowOperationalHealthIpc(ipcMain, () => workflowOperationalHealthService)
   registerWorkflowReleaseRollbackIpc(ipcMain, () => workflowDeploymentService, () => workflowObservabilityService)
   ipcMain.handle('runtime:get-status', (): IpcResult<RuntimeSnapshot> => {
     if (runtimeManager === undefined) return failure(new Error('Runtime manager is not ready'))

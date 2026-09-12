@@ -81,6 +81,8 @@ import type {
   WorkflowCustomerEnvironment,
   WorkflowObservationEvent,
   WorkflowOperationsHealth,
+  WorkflowOperationalHealth,
+  WorkflowOperationalHealthQuery,
   WorkflowReleasePublishInput,
   WorkflowReleaseSummary,
 } from './workflow-operations.js'
@@ -202,6 +204,7 @@ export interface EzDSHBridge {
     rollback(releaseId: string): Promise<WorkflowReleaseSummary>
     listObservations(environmentId?: string): Promise<WorkflowObservationEvent[]>
     getHealth(environmentId: string): Promise<WorkflowOperationsHealth>
+    getOperationalHealth(query: WorkflowOperationalHealthQuery): Promise<WorkflowOperationalHealth>
   }
   /** Metadata-only credential APIs; secret values are accepted only by upsert and never returned. */
   workflowCredentials: {

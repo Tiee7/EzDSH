@@ -396,6 +396,31 @@ describe('workflow safe execution store', () => {
     expect(store.get('run-first')?.status).toBe('running')
   })
 
+  it('exposes active execution as Worker busy evidence while a claimed run is executing', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-worker-busy-'))
+    const store = new WorkflowRunStore(directory)
+    await store.enqueue(queuedRecord('run-busy'))
+    let executionEntered!: () => void
+    const entered = new Promise<void>((resolve) => { executionEntered = resolve })
+    let finishExecution!: () => void
+    const executionGate = new Promise<void>((resolve) => { finishExecution = resolve })
+    const worker = new WorkflowRunWorker({
+      store,
+      ownerId: 'busy-worker',
+      executeClaimedRun: async () => { executionEntered(); await executionGate },
+    })
+
+    await worker.start()
+    await entered
+    expect(worker.operationsSnapshot()).toMatchObject({
+      state: 'ready', activeRunCount: 1, activeRunHeartbeatAt: expect.any(String),
+    })
+    finishExecution()
+    await worker.stop()
+    expect(worker.operationsSnapshot()).toMatchObject({ state: 'stopped', activeRunCount: 0 })
+    expect(worker.operationsSnapshot()).not.toHaveProperty('activeRunHeartbeatAt')
+  })
+
   it('reports a successful first poll as a value-isolated ready snapshot', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
@@ -418,12 +443,14 @@ describe('workflow safe execution store', () => {
       expect(worker.operationsSnapshot()).toEqual({
         state: 'stopped',
         consecutiveClaimFailures: 0,
+        activeRunCount: 0,
       })
 
       await worker.start()
       expect(worker.operationsSnapshot()).toEqual({
         state: 'starting',
         consecutiveClaimFailures: 0,
+        activeRunCount: 0,
         lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
       })
 
@@ -433,6 +460,7 @@ describe('workflow safe execution store', () => {
       expect(snapshot).toEqual({
         state: 'ready',
         consecutiveClaimFailures: 0,
+        activeRunCount: 0,
         lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
         lastPollSucceededAt: '2026-01-01T00:00:00.000Z',
         nextPollAt: '2026-01-01T00:00:00.100Z',
@@ -469,6 +497,7 @@ describe('workflow safe execution store', () => {
       expect(worker.operationsSnapshot()).toEqual({
         state: 'backing-off',
         consecutiveClaimFailures: 1,
+        activeRunCount: 0,
         lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
         lastPollFailedAt: '2026-01-01T00:00:00.000Z',
         nextPollAt: '2026-01-01T00:00:00.100Z',
@@ -485,6 +514,7 @@ describe('workflow safe execution store', () => {
       expect(worker.operationsSnapshot()).toEqual({
         state: 'ready',
         consecutiveClaimFailures: 0,
+        activeRunCount: 0,
         lastPollAttemptAt: '2026-01-01T00:00:00.100Z',
         lastPollSucceededAt: '2026-01-01T00:00:00.100Z',
         lastPollFailedAt: '2026-01-01T00:00:00.000Z',
@@ -528,6 +558,7 @@ describe('workflow safe execution store', () => {
       expect(worker.operationsSnapshot()).toEqual({
         state: 'stopped',
         consecutiveClaimFailures: 0,
+        activeRunCount: 0,
         lastPollAttemptAt: '2026-01-01T00:00:00.000Z',
         lastPollSucceededAt: '2026-01-01T00:00:00.000Z',
       })
@@ -823,12 +854,66 @@ describe('workflow safe execution store', () => {
     }
   })
 
+  it('continues liveness polling while the next queued run is far in the future', async () => {
+    vi.useFakeTimers()
+    const store = {
+      claimNextDue: vi.fn().mockResolvedValue(undefined),
+      nextDueAt: vi.fn(() => new Date(Date.now() + 86_400_000).toISOString()),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({ store, pollIntervalMs: 1_000, executeClaimedRun: vi.fn() })
+    try {
+      await worker.start()
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(store.claimNextDue).toHaveBeenCalledTimes(2)
+    } finally {
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['success', 'missing', 'rejected'] as const)('ignores a previous execution heartbeat settling after cleanup: %s', async (outcome) => {
+    vi.useFakeTimers()
+    const claimed = queuedRecord('run-late-heartbeat')
+    claimed.queue = { enqueuedAt: new Date().toISOString(), availableAt: new Date().toISOString(),
+      lease: { ownerId: 'late-worker', claimedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 2_000).toISOString() } }
+    let settle!: (value: WorkflowRunRecord | undefined) => void
+    let reject!: (error: Error) => void
+    let finish!: () => void
+    const store = {
+      claimNextDue: vi.fn().mockResolvedValueOnce(claimed).mockResolvedValue(undefined),
+      renewLease: vi.fn(() => new Promise<WorkflowRunRecord | undefined>((resolve, rejectPromise) => { settle = resolve; reject = rejectPromise })),
+      releaseLease: vi.fn().mockResolvedValue(true), nextDueAt: vi.fn(() => undefined),
+    } as unknown as WorkflowRunStore
+    const worker = new WorkflowRunWorker({ store, ownerId: 'late-worker', leaseMs: 2_000,
+      executeClaimedRun: () => new Promise<void>((resolve) => { finish = resolve }) })
+    try {
+      await worker.start()
+      await vi.advanceTimersByTimeAsync(1_000)
+      finish()
+      await worker.stop()
+      if (outcome === 'rejected') reject(new Error('late failure'))
+      else settle(outcome === 'success' ? claimed : undefined)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(worker.operationsSnapshot()).toMatchObject({ state: 'stopped', activeRunCount: 0 })
+      expect(worker.operationsSnapshot()).not.toHaveProperty('activeRunHeartbeatAt')
+      expect(worker.operationsSnapshot()).not.toHaveProperty('activeRunLeaseLostAt')
+    } finally {
+      finish?.()
+      await worker.stop()
+      vi.useRealTimers()
+    }
+  })
+
   it('aborts a claimed execution when lease renewal is lost', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-safe-execution-'))
     const store = new WorkflowRunStore(directory)
     await store.enqueue(queuedRecord('run-lease-loss'))
     vi.spyOn(store, 'renewLease').mockResolvedValue(undefined)
     let aborted = false
+    let abortObserved!: () => void
+    const observed = new Promise<void>((resolve) => { abortObserved = resolve })
+    let finishExecution!: () => void
+    const finish = new Promise<void>((resolve) => { finishExecution = resolve })
     const worker = new WorkflowRunWorker({
       store,
       ownerId: 'lease-worker',
@@ -836,12 +921,20 @@ describe('workflow safe execution store', () => {
       executeClaimedRun: async (_runId, _lease, signal) => {
         await new Promise<void>((resolve) => {
           if (signal?.aborted === true) { aborted = true; resolve(); return }
-          signal?.addEventListener('abort', () => { aborted = true; resolve() }, { once: true })
+          signal?.addEventListener('abort', () => { aborted = true; abortObserved(); resolve() }, { once: true })
         })
+        await finish
       },
     })
     await worker.start()
     for (let attempt = 0; attempt < 300 && !aborted; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    await observed
+    expect(worker.operationsSnapshot()).toMatchObject({
+      activeRunCount: 1,
+      activeRunLeaseLostAt: expect.any(String),
+    })
+    expect(worker.operationsSnapshot()).not.toHaveProperty('activeRunHeartbeatAt')
+    finishExecution()
     await worker.stop()
     expect(aborted).toBe(true)
     expect(store.get('run-lease-loss')?.status).toBe('queued')

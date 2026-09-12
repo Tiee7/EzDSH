@@ -666,14 +666,14 @@ describe('workflow service lifecycle', () => {
 
     expect(fixture.service.operationsSnapshot()).toEqual({
       lifecycle: 'new',
-      worker: { state: 'stopped', consecutiveClaimFailures: 0 },
+      worker: { state: 'stopped', consecutiveClaimFailures: 0, activeRunCount: 0 },
     })
 
     const initializing = fixture.service.initialize()
     await initializeEntered.promise
     expect(fixture.service.operationsSnapshot()).toEqual({
       lifecycle: 'initializing',
-      worker: { state: 'stopped', consecutiveClaimFailures: 0 },
+      worker: { state: 'stopped', consecutiveClaimFailures: 0, activeRunCount: 0 },
     })
 
     allowInitialize.resolve()

@@ -75,6 +75,68 @@ export interface WorkflowOperationsHealth {
   reason: WorkflowHealthReason
 }
 
+export type WorkflowOperationalHealthReason =
+  | 'service-not-accepting'
+  | 'service-initializing'
+  | 'worker-stopped'
+  | 'worker-backing-off'
+  | 'worker-never-polled'
+  | 'worker-stale'
+  | 'worker-active-lease-lost'
+  | 'environment-not-found'
+  | 'environment-not-active'
+  | 'no-current-release'
+  | 'multiple-current-releases'
+  | 'release-integrity-failed'
+  | 'release-activation-unknown'
+  | 'no-terminal-run-after-activation'
+  | 'latest-run-failed'
+  | 'latest-run-cancelled'
+  | 'recent-failures'
+  | 'healthy'
+
+export interface WorkflowOperationalHealthQuery {
+  workflowId: string
+  environmentId: string
+}
+
+export interface WorkflowOperationalWorkerEvidence {
+  state: 'starting' | 'ready' | 'backing-off' | 'stopping' | 'stopped'
+  consecutiveClaimFailures: number
+  activeRunCount: number
+  activeRunHeartbeatAt?: string
+  activeRunLeaseLostAt?: string
+  lastPollAttemptAt?: string
+  lastPollSucceededAt?: string
+  lastPollFailedAt?: string
+  nextPollAt?: string
+}
+
+export interface WorkflowOperationalHealth {
+  workflowId: string
+  environmentId: string
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+  reason: WorkflowOperationalHealthReason
+  observedAt: string
+  service: { lifecycle: 'new' | 'initializing' | 'accepting' | 'stopping' | 'stopped' }
+  worker: WorkflowOperationalWorkerEvidence
+  environment:
+    | { state: 'unchecked' }
+    | { state: 'missing' }
+    | { state: 'inactive'; status: 'disabled' | 'archived' }
+    | { state: 'active' }
+  release:
+    | { state: 'unchecked' }
+    | { state: 'missing' }
+    | { state: 'multiple-published' }
+    | { state: 'integrity-failed'; id: string; revision: number }
+    | { state: 'active'; id: string; revision: number; activation?: WorkflowReleaseActivation }
+  execution:
+    | { state: 'unchecked' }
+    | { state: 'none' }
+    | { state: 'completed' | 'failed' | 'cancelled'; runId: string; time: string }
+}
+
 export interface WorkflowReleasePublishInput {
   id?: string
   environmentId: string
