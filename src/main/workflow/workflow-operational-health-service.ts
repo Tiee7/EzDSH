@@ -141,7 +141,7 @@ export class WorkflowOperationalHealthService {
     if (latest.run.status === 'cancelled') return { ...evidence, status: 'degraded', reason: 'latest-run-cancelled', execution }
 
     if (hasUnresolvedRecentFailure(
-      this.options.listObservations(), environmentId, current.id, latest.time, observedAt, this.recentFailureWindowMs,
+      this.options.listObservations(), environmentId, current.id, latest.run.id, latest.time, observedAt, this.recentFailureWindowMs,
     )) {
       return { ...evidence, status: 'degraded', reason: 'recent-failures', execution }
     }
@@ -193,6 +193,7 @@ function hasUnresolvedRecentFailure(
   observations: readonly WorkflowObservationEvent[],
   environmentId: string,
   releaseId: string,
+  latestCompletedRunId: string,
   latestCompletedAt: string,
   observedAt: string,
   recentFailureWindowMs: number,
@@ -210,6 +211,11 @@ function hasUnresolvedRecentFailure(
       candidate.environmentId === environmentId
       && candidate.releaseId === releaseId
       && candidate.action === 'run-completed'
+      // Append order alone is not execution evidence. Correlate recovery with
+      // the terminal run already verified for this exact release and revision.
+      && candidate.runId === latestCompletedRunId
+      && compareTime(candidate.time, latestCompletedAt) === 0
+      && compareTime(candidate.time, observedAt) <= 0
       && compareTime(candidate.time, event.time) >= 0
     ))
   })

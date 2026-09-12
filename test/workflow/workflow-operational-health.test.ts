@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -457,6 +457,47 @@ describe('WorkflowOperationalHealthService', () => {
     })
     expect(createService({ runs: [malformed] }).getOperationalHealth({ workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID }))
       .toMatchObject({ status: 'unknown', reason: 'no-terminal-run-after-activation', execution: { state: 'none' } })
+  })
+
+  it.each([
+    { runId: 'run-current', time: '2026-09-13T09:30:00.000Z' },
+    { runId: 'unverified-run', time: '2026-09-12T09:30:00.000Z' },
+    { runId: 'run-current', time: '2026-09-12T09:31:00.000Z' },
+  ])('does not let an unverified recovery observation resolve a tied failure: %s', (recovery) => {
+    const failure: WorkflowObservationEvent = {
+      id: 'tied-failure', environmentId: ENVIRONMENT_ID, releaseId: 'release-current', runId: 'run-current',
+      time: '2026-09-12T09:30:00.000Z', kind: 'node', action: 'node-failed', severity: 'error', outcome: 'failed',
+    }
+    const completion: WorkflowObservationEvent = {
+      ...failure, ...recovery, id: 'unverified-completion', kind: 'run', action: 'run-completed', severity: 'info', outcome: 'succeeded',
+    }
+    expect(createService({ observations: [failure, completion] })
+      .getOperationalHealth({ workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID }))
+      .toMatchObject({ status: 'degraded', reason: 'recent-failures' })
+  })
+
+  it('persists a redacted target identity when a corrupt published release has an invalid revision', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-health-invalid-revision-'))
+    await writeFile(join(directory, 'workflow-releases.json'), JSON.stringify([
+      createRelease(),
+      { ...createRelease({ id: 'release-invalid-revision' }), workflowRevision: 'secret-token-invalid-revision' },
+    ]))
+    const store = new WorkflowReleaseStore(directory, { now: () => NOW })
+    await store.initialize()
+    expect(store.listIntegrityFailures()).toEqual([{
+      id: 'release-invalid-revision', workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID,
+      workflowRevision: 0, status: 'published', detectedAt: NOW, reason: 'invalid-release',
+    }])
+    await store.publish(createRelease({ id: 'release-other-environment', environmentId: 'customer-other' }))
+    const reloaded = new WorkflowReleaseStore(directory)
+    await reloaded.initialize()
+    expect(reloaded.listIntegrityFailures()).toEqual(store.listIntegrityFailures())
+    const sidecar = await readFile(join(directory, 'workflow-release-integrity-failures.json'), 'utf8')
+    expect(sidecar).not.toContain('secret-token')
+    expect(sidecar).not.toMatch(/workflowSnapshot|connectorGrants|input|output/)
+    expect(createService({ releases: reloaded.list(), releaseIntegrityFailures: reloaded.listIntegrityFailures() })
+      .getOperationalHealth({ workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID }))
+      .toMatchObject({ status: 'unhealthy', reason: 'multiple-current-releases' })
   })
 
   it('rejects invalid query identities before reading operational state', () => {

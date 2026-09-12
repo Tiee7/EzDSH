@@ -23,6 +23,7 @@ export interface WorkflowReleaseIntegrityFailure {
   id: string
   environmentId: string
   workflowId: string
+  /** Zero means the rejected source had no valid positive revision. Never copy its raw value. */
   workflowRevision: number
   status: WorkflowRelease['status']
   detectedAt: string
@@ -400,13 +401,14 @@ function safeReleaseIdentity(value: unknown): Omit<WorkflowReleaseIntegrityFailu
   const workflowId = safeId(value.workflowId)
   const environmentId = safeId(value.environmentId)
   if (id === undefined || workflowId === undefined || environmentId === undefined) return undefined
-  if (typeof value.workflowRevision !== 'number' || !Number.isInteger(value.workflowRevision) || value.workflowRevision < 1) return undefined
+  const workflowRevision = typeof value.workflowRevision === 'number' && Number.isSafeInteger(value.workflowRevision) && value.workflowRevision >= 1
+    ? value.workflowRevision : 0
   if (value.status !== 'published' && value.status !== 'superseded' && value.status !== 'rolled-back') return undefined
   return {
     id,
     workflowId,
     environmentId,
-    workflowRevision: value.workflowRevision,
+    workflowRevision,
     status: value.status,
   }
 }
@@ -430,6 +432,9 @@ function normalizeReleaseIntegrityFailure(value: unknown): WorkflowReleaseIntegr
   if (!isRecord(value)) return undefined
   const knownKeys = new Set(['id', 'workflowId', 'environmentId', 'workflowRevision', 'status', 'detectedAt', 'reason'])
   if (Object.keys(value).some((key) => !knownKeys.has(key))) return undefined
+  // The persisted sidecar accepts only our numeric sentinel or a safe revision,
+  // rather than normalizing arbitrary malformed sidecar payloads on reload.
+  if (typeof value.workflowRevision !== 'number' || !Number.isSafeInteger(value.workflowRevision) || value.workflowRevision < 0) return undefined
   const identity = safeReleaseIdentity(value)
   if (identity === undefined || typeof value.detectedAt !== 'string' || Number.isNaN(Date.parse(value.detectedAt))) return undefined
   if (value.reason !== 'digest-mismatch' && value.reason !== 'invalid-release' && value.reason !== 'duplicate-release-id') return undefined
