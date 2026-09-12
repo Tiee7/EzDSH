@@ -6,9 +6,13 @@ import { describe, expect, it, vi } from 'vitest'
 import * as workflowPage from '../../src/renderer/workflow/WorkflowPage.js'
 import { getAppCopy } from '../../src/shared/locale.js'
 import { createDefaultWorkflow, type WorkflowDefinition, type WorkflowNodeType, type WorkflowRunRecord } from '../../src/shared/workflow.js'
-import type { WorkflowCustomerEnvironment, WorkflowReleaseSummary } from '../../src/shared/workflow-operations.js'
+import type { WorkflowCustomerEnvironment, WorkflowOperationalHealth, WorkflowReleaseSummary } from '../../src/shared/workflow-operations.js'
 import { ReactFlow, type Edge, type Node } from '@xyflow/react'
 import type { ComponentType } from 'react'
+
+async function unknownOperationalHealth(query: { workflowId: string; environmentId: string }): Promise<WorkflowOperationalHealth> {
+  return { ...query, status: 'unknown', reason: 'service-initializing', observedAt: '2026-09-12T00:00:00.000Z', service: { lifecycle: 'initializing' }, worker: { state: 'starting', activeRunCount: 0, consecutiveClaimFailures: 0 }, environment: { state: 'unchecked' }, release: { state: 'unchecked' }, execution: { state: 'unchecked' } }
+}
 
 function graphWithRemovedNode(): WorkflowDefinition {
   const workflow = createDefaultWorkflow('Graph')
@@ -110,7 +114,7 @@ async function mountWorkflowEffectReviewPage(
     workflowCredentials: { list: vi.fn(async () => []) },
     workflowConnectors: { list: vi.fn(async () => []) },
     workflowEnvironments: { list: vi.fn(async () => []) },
-    workflowReleases: { list: vi.fn(async () => []), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+    workflowReleases: { list: vi.fn(async () => []), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) },
   }
   ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
   ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
@@ -177,7 +181,7 @@ async function mountWorkflowRunCachePage(workflows: Record<string, unknown>): Pr
     workflowCredentials: { list: vi.fn(async () => []) },
     workflowConnectors: { list: vi.fn(async () => []) },
     workflowEnvironments: { list: vi.fn(async () => []), upsert: vi.fn() },
-    workflowReleases: { list: vi.fn(async () => []), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+    workflowReleases: { list: vi.fn(async () => []), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) },
   }
   ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
   ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
@@ -196,6 +200,239 @@ async function mountWorkflowRunCachePage(workflows: Record<string, unknown>): Pr
     },
   }
 }
+
+describe('release operational health', () => {
+  const environment: WorkflowCustomerEnvironment = { id: 'health-env', customerName: 'Acme', name: 'Production', kind: 'production', status: 'active', connectorIds: [], allowShellFile: false, allowCode: false, createdAt: '2026-09-12T00:00:00.000Z', updatedAt: '2026-09-12T00:00:00.000Z' }
+  const workflow = createDefaultWorkflow('Operational health')
+  const healthy = (workflowId = workflow.id): WorkflowOperationalHealth => ({
+    workflowId, environmentId: environment.id, status: 'healthy', reason: 'healthy', observedAt: '2026-09-12T00:01:00.000Z',
+    service: { lifecycle: 'accepting' }, worker: { state: 'ready', consecutiveClaimFailures: 0, activeRunCount: 1, activeRunHeartbeatAt: '2026-09-12T00:00:59.000Z', lastPollSucceededAt: '2026-09-12T00:00:58.000Z' },
+    environment: { state: 'active' }, release: { state: 'active', id: 'health-release', revision: 3, activation: { kind: 'publish', at: '2026-09-12T00:00:01.000Z' } },
+    execution: { state: 'completed', runId: 'health-run', time: '2026-09-12T00:00:10.000Z' },
+  })
+  const deferred = <T,>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: Error) => void } => {
+    let resolve!: (value: T) => void
+    let reject!: (reason: Error) => void
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+    return { promise, resolve, reject }
+  }
+  async function mount(getOperationalHealth = vi.fn(async (_query: { workflowId: string; environmentId: string }) => healthy())) {
+    const previousGlobals = { window: globalThis.window, document: globalThis.document, navigator: globalThis.navigator, HTMLElement: globalThis.HTMLElement, Element: globalThis.Element, Node: globalThis.Node, Event: globalThis.Event, MouseEvent: globalThis.MouseEvent, KeyboardEvent: globalThis.KeyboardEvent, CustomEvent: globalThis.CustomEvent, getComputedStyle: globalThis.getComputedStyle, EzDSH: (globalThis as { EzDSH?: unknown }).EzDSH }
+    const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+    Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow) })
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+    const release: WorkflowReleaseSummary = { id: 'health-release', environmentId: environment.id, workflowId: workflow.id, workflowRevision: 3, contentSha256: 'a'.repeat(64), status: 'published', createdAt: environment.createdAt, publishedAt: environment.createdAt, launchFields: [] }
+    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() }, workflowReleases: {
+      getHealth: vi.fn(async () => healthy()), getOperationalHealth,
+      list: vi.fn(async () => [release, { ...release, id: 'old-release', status: 'superseded' as const }]), listObservations: vi.fn(async () => []),
+      publish: vi.fn(async () => release), rollback: vi.fn(async () => release), start: vi.fn(async () => ({ id: 'new-run', workflowId: workflow.id, status: 'queued' })),
+    } }
+    ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
+    const root = createRoot(domWindow.document.getElementById('root')!)
+    vi.useFakeTimers()
+    const render = async (target = workflow, active = true): Promise<void> => { await act(async () => { root.render(<workflowPage.WorkflowReleasePanel copy={getAppCopy('zh')} locale="en" workflow={target} active={active} />) }) }
+    await render()
+    let unmounted = false
+    return {
+      bridge, render, document: domWindow.document,
+      text: () => domWindow.document.body.textContent ?? '',
+      tick: async (ms = 5000) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }) },
+      click: async (label: string) => { const button = Array.from(domWindow.document.querySelectorAll('button')).find((item) => item.textContent === label); expect(button, label).toBeTruthy(); await act(async () => { button!.click() }) },
+      unmount: async () => { await act(async () => { root.unmount() }); unmounted = true },
+      cleanup: async () => {
+        if (!unmounted) await act(async () => { root.unmount() })
+        vi.useRealTimers()
+        const { navigator: previousNavigator, ...rest } = previousGlobals
+        Object.assign(globalThis, rest)
+        Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+      },
+    }
+  }
+
+  it('queries the exact target and renders only safe local operational evidence', async () => {
+    const getHealth = vi.fn(async (_query: { workflowId: string; environmentId: string }) => ({ ...healthy(), secret: 'DO-NOT-RENDER', workflowSnapshot: { name: 'DO-NOT-RENDER' } }))
+    const view = await mount(getHealth)
+    try {
+      expect(getHealth).toHaveBeenCalledWith({ workflowId: workflow.id, environmentId: environment.id })
+      expect(view.bridge.workflowReleases.getHealth).not.toHaveBeenCalled()
+      for (const text of ['healthy', 'Observed at', healthy().observedAt, 'Local process evidence only', 'Service', 'accepting', 'Worker', 'ready', 'Environment', 'active', 'Release', 'health-release', 'v3', 'publish', 'Execution', 'health-run', 'completed', '2026-09-12T00:00:59.000Z']) expect(view.text()).toContain(text)
+      expect(view.text()).not.toContain('DO-NOT-RENDER')
+    } finally { await view.cleanup() }
+  })
+
+  it('polls healthy to degraded on the same target five seconds after completion', async () => {
+    const getHealth = vi.fn(async (_query: { workflowId: string; environmentId: string }) => healthy())
+    const view = await mount(getHealth)
+    try {
+      expect(view.text()).toContain('Health: healthy')
+      getHealth.mockResolvedValue({ ...healthy(), status: 'degraded', reason: 'worker-backing-off', worker: { ...healthy().worker, state: 'backing-off' } })
+      await view.tick(4999)
+      expect(getHealth).toHaveBeenCalledTimes(1)
+      await view.tick(1)
+      expect(view.text()).toContain('Health: degraded')
+      expect(view.text()).toContain('worker-backing-off')
+      expect(view.text()).not.toContain('Health: healthy')
+    } finally { await view.cleanup() }
+  })
+
+  it('clears old green immediately on health failure even when release metadata is pending, and redacts errors', async () => {
+    const getHealth = vi.fn(async (_query: { workflowId: string; environmentId: string }) => healthy())
+    const view = await mount(getHealth)
+    const metadata = deferred<WorkflowReleaseSummary[]>()
+    try {
+      expect(view.text()).toContain('Health: healthy')
+      view.bridge.workflowReleases.list.mockReturnValue(metadata.promise)
+      getHealth.mockRejectedValue(new Error('Bearer DO-NOT-RENDER'))
+      await view.click('Refresh health')
+      expect(view.text()).toContain('Unable to read operational health')
+      expect(view.text()).not.toContain('Health: healthy')
+      expect(view.text()).not.toContain('DO-NOT-RENDER')
+      getHealth.mockResolvedValue(healthy())
+      await view.tick()
+      expect(view.text()).toContain('Health: healthy')
+      expect(view.text()).not.toContain('Unable to read operational health')
+    } finally { metadata.resolve([]); await view.cleanup() }
+  })
+
+  it('never overlaps slow requests and starts the next poll only after settlement', async () => {
+    const pending = deferred<WorkflowOperationalHealth>()
+    const getHealth = vi.fn((_query: { workflowId: string; environmentId: string }) => pending.promise)
+    const view = await mount(getHealth)
+    try {
+      await view.tick(20000)
+      expect(getHealth).toHaveBeenCalledTimes(1)
+      await act(async () => { pending.resolve(healthy()) })
+      await view.tick(4999)
+      expect(getHealth).toHaveBeenCalledTimes(1)
+      await view.tick(1)
+      expect(getHealth).toHaveBeenCalledTimes(2)
+    } finally { pending.resolve(healthy()); await view.cleanup() }
+  })
+
+  it('coalesces manual refresh while a request is pending without overlap', async () => {
+    const pending = deferred<WorkflowOperationalHealth>()
+    const getHealth = vi.fn((_query: { workflowId: string; environmentId: string }) => pending.promise)
+    const view = await mount(getHealth)
+    try {
+      await view.click('Refresh health')
+      await view.click('Refresh health')
+      expect(getHealth).toHaveBeenCalledTimes(1)
+      getHealth.mockResolvedValue({ ...healthy(), status: 'degraded', reason: 'worker-stale' })
+      await act(async () => { pending.resolve(healthy()) })
+      expect(getHealth).toHaveBeenCalledTimes(2)
+      expect(view.text()).toContain('Health: degraded')
+    } finally { pending.resolve(healthy()); await view.cleanup() }
+  })
+
+  it('invalidates pending responses and timers on unmount', async () => {
+    const pending = deferred<WorkflowOperationalHealth>()
+    const getHealth = vi.fn((_query: { workflowId: string; environmentId: string }) => pending.promise)
+    const view = await mount(getHealth)
+    try {
+      expect(getHealth).toHaveBeenCalledTimes(1)
+      await view.unmount()
+      await act(async () => { pending.resolve(healthy()) })
+      await view.tick(20000)
+      expect(getHealth).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { pending.resolve(healthy()); await view.cleanup() }
+  })
+
+  it('invalidates stale target responses including an A to B to A race', async () => {
+    const pending = deferred<WorkflowOperationalHealth>()
+    const getHealth = vi.fn((_query: { workflowId: string; environmentId: string }) => pending.promise)
+    const view = await mount(getHealth)
+    try {
+      await view.render({ ...workflow, id: 'other-workflow' })
+      await view.render(workflow)
+      getHealth.mockResolvedValue({ ...healthy(), status: 'degraded', reason: 'worker-stale' })
+      await act(async () => { pending.resolve(healthy()) })
+      expect(view.text()).toContain('Health: degraded')
+      expect(view.text()).not.toContain('Health: healthy')
+      expect(getHealth.mock.calls.at(-1)?.[0]).toEqual({ workflowId: workflow.id, environmentId: environment.id })
+    } finally { pending.resolve(healthy()); await view.cleanup() }
+  })
+
+  it('stops polling while hidden or without a target and refreshes immediately when visible', async () => {
+    const view = await mount()
+    try {
+      await view.render(workflow, false)
+      await view.tick(20000)
+      expect(view.bridge.workflowReleases.getOperationalHealth).toHaveBeenCalledTimes(1)
+      await view.render(workflow, true)
+      expect(view.bridge.workflowReleases.getOperationalHealth).toHaveBeenCalledTimes(2)
+      const select = view.document.querySelector('select')!
+      await act(async () => { Simulate.change(select, { target: { value: '' } }) })
+      await view.tick(20000)
+      expect(view.bridge.workflowReleases.getOperationalHealth).toHaveBeenCalledTimes(2)
+      expect(view.text()).not.toContain('Health: healthy')
+    } finally { await view.cleanup() }
+  })
+
+  it('refreshes immediately after publishing, rollback and starting a release', async () => {
+    const view = await mount()
+    try {
+      await view.click('Publish to customer environment')
+      expect(view.bridge.workflowReleases.getOperationalHealth).toHaveBeenCalledTimes(2)
+      await view.click('Rollback')
+      expect(view.bridge.workflowReleases.getOperationalHealth).toHaveBeenCalledTimes(3)
+      await view.click('Start release')
+      const button = view.document.querySelector<HTMLButtonElement>('[role="dialog"] .workflow-button-primary')!
+      expect(button).toBeTruthy()
+      await act(async () => { button.click() })
+      expect(view.bridge.workflowReleases.start).toHaveBeenCalledTimes(1)
+      expect(view.bridge.workflowReleases.getOperationalHealth).toHaveBeenCalledTimes(4)
+    } finally { await view.cleanup() }
+  })
+
+  it('ignores pending health when the document is hidden and refreshes on visibility restoration', async () => {
+    const pending = deferred<WorkflowOperationalHealth>()
+    const getHealth = vi.fn((_query: { workflowId: string; environmentId: string }) => pending.promise)
+    const view = await mount(getHealth)
+    const visibility = async (state: string) => { await act(async () => {
+      Object.defineProperty(view.document, 'visibilityState', { configurable: true, value: state })
+      view.document.dispatchEvent(new Event('visibilitychange'))
+    }) }
+    try {
+      await visibility('hidden')
+      await act(async () => { pending.resolve(healthy()) })
+      expect(view.text()).not.toContain('Health: healthy')
+      await view.tick(20000)
+      expect(getHealth).toHaveBeenCalledTimes(1)
+      await visibility('visible')
+      expect(getHealth).toHaveBeenCalledTimes(2)
+      expect(view.text()).toContain('Health: healthy')
+    } finally { pending.resolve(healthy()); await view.cleanup() }
+  })
+
+  it('fails closed on an absent operational snapshot rather than silently treating it as a successful read', async () => {
+    const getHealth = vi.fn(async (_query: { workflowId: string; environmentId: string }) => healthy())
+    const view = await mount(getHealth)
+    try {
+      getHealth.mockResolvedValue(undefined as unknown as WorkflowOperationalHealth)
+      await view.click('Refresh health')
+      expect(view.text()).toContain('Unable to read operational health')
+      expect(view.text()).not.toContain('Health: healthy')
+    } finally { await view.cleanup() }
+  })
+
+  it('does not retain old green when a superseded pending query fails before the fresh query settles', async () => {
+    const getHealth = vi.fn(async (_query: { workflowId: string; environmentId: string }) => healthy())
+    const view = await mount(getHealth)
+    const old = deferred<WorkflowOperationalHealth>()
+    const fresh = deferred<WorkflowOperationalHealth>()
+    try {
+      getHealth.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
+      await view.tick()
+      await view.click('Refresh health')
+      await act(async () => { old.reject(new Error('superseded')) })
+      expect(view.text()).not.toContain('Health: healthy')
+      expect(getHealth).toHaveBeenCalledTimes(3)
+      await act(async () => { fresh.resolve({ ...healthy(), status: 'degraded', reason: 'worker-stale' }) })
+      expect(view.text()).toContain('Health: degraded')
+    } finally { old.resolve(healthy()); fresh.resolve(healthy()); await view.cleanup() }
+  })
+})
 
 describe('WorkflowPage regressions', () => {
   it('publishes the selected workflow revision into a selected customer environment', async () => {
@@ -251,7 +488,7 @@ describe('WorkflowPage regressions', () => {
         start: vi.fn(async () => undefined),
         rollback: vi.fn(async () => undefined),
         listObservations: vi.fn(async () => []),
-        getHealth: vi.fn(async () => undefined),
+        getOperationalHealth: vi.fn(unknownOperationalHealth),
       },
     }
 
@@ -323,7 +560,7 @@ describe('WorkflowPage regressions', () => {
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
     const bridge = {
       workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() },
-      workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start, rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+      workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start, rollback: vi.fn(), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) },
     }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
@@ -367,7 +604,7 @@ describe('WorkflowPage regressions', () => {
     const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
     Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow) })
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
-    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() }, workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start, rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) } }
+    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() }, workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start, rollback: vi.fn(), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) } }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
     const root = createRoot(domWindow.document.getElementById('root')!)
@@ -400,7 +637,7 @@ describe('WorkflowPage regressions', () => {
     const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
     Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow) })
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
-    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() }, workflowReleases: { list: vi.fn(async () => [releaseA]), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) } }
+    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() }, workflowReleases: { list: vi.fn(async () => [releaseA]), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) } }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
     const root = createRoot(domWindow.document.getElementById('root')!)
@@ -441,7 +678,7 @@ describe('WorkflowPage regressions', () => {
     const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
     Object.assign(globalThis, { window: domWindow, document: domWindow.document, HTMLElement: domWindow.HTMLElement, Element: domWindow.Element, Node: domWindow.Node, Event: domWindow.Event, MouseEvent: domWindow.MouseEvent, KeyboardEvent: domWindow.KeyboardEvent, CustomEvent: domWindow.CustomEvent, getComputedStyle: domWindow.getComputedStyle.bind(domWindow) })
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
-    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environmentA, environmentB]), upsert: vi.fn() }, workflowReleases: { list, publish: vi.fn(), start, rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) } }
+    const bridge = { workflowEnvironments: { list: vi.fn(async () => [environmentA, environmentB]), upsert: vi.fn() }, workflowReleases: { list, publish: vi.fn(), start, rollback: vi.fn(), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) } }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
     const root = createRoot(domWindow.document.getElementById('root')!)
@@ -505,7 +742,7 @@ describe('WorkflowPage regressions', () => {
       workflowReleases: {
         list: vi.fn(async (workflowId?: string, environmentId?: string) => releasesFor(workflowId, environmentId)),
         publish: vi.fn(() => { publishCalls += 1; return publishCalls === 1 ? pendingPublish : rejectedPublish }), start: vi.fn(), rollback: vi.fn(() => pendingRollback),
-        listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined),
+        listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth),
       },
     }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
@@ -579,7 +816,7 @@ describe('WorkflowPage regressions', () => {
       workflowCredentials: { list: vi.fn(async () => []) },
       workflowConnectors: { list: vi.fn(async () => []) },
       workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() },
-      workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start: vi.fn(async () => record), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+      workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start: vi.fn(async () => record), rollback: vi.fn(), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) },
     }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
@@ -645,7 +882,7 @@ describe('WorkflowPage regressions', () => {
       employees: { list: vi.fn(async () => []), onStateChange: vi.fn(() => () => {}) },
       workflowCredentials: { list: vi.fn(async () => []) }, workflowConnectors: { list: vi.fn(async () => []) },
       workflowEnvironments: { list: vi.fn(async () => []), upsert: vi.fn() },
-      workflowReleases: { list: vi.fn(async () => []), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+      workflowReleases: { list: vi.fn(async () => []), publish: vi.fn(), start: vi.fn(), rollback: vi.fn(), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) },
     }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
@@ -852,7 +1089,7 @@ describe('WorkflowPage regressions', () => {
       workflowCredentials: { list: vi.fn(async () => []) },
       workflowConnectors: { list: vi.fn(async () => []) },
       workflowEnvironments: { list: vi.fn(async () => [environment]), upsert: vi.fn() },
-      workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start: vi.fn(() => pendingStart), rollback: vi.fn(), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+      workflowReleases: { list: vi.fn(async () => [release]), publish: vi.fn(), start: vi.fn(() => pendingStart), rollback: vi.fn(), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) },
     }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge
@@ -1611,7 +1848,7 @@ describe('WorkflowPage regressions', () => {
       workflowCredentials: { list: vi.fn(async () => []) },
       workflowConnectors: { list: vi.fn(async () => []) },
       workflowEnvironments: { list: vi.fn(async () => []) },
-      workflowReleases: { list: vi.fn(async () => []), listObservations: vi.fn(async () => []), getHealth: vi.fn(async () => undefined) },
+      workflowReleases: { list: vi.fn(async () => []), listObservations: vi.fn(async () => []), getOperationalHealth: vi.fn(unknownOperationalHealth) },
     }
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     ;(domWindow as unknown as { EzDSH?: unknown }).EzDSH = bridge

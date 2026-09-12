@@ -26,7 +26,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import type { AppCopy, AppLocale } from '../../shared/locale.js'
 import type { EzDSHBridge } from '../../shared/contracts.js'
-import type { WorkflowCustomerEnvironment, WorkflowObservationEvent, WorkflowOperationsHealth, WorkflowReleaseSummary } from '../../shared/workflow-operations.js'
+import type { WorkflowCustomerEnvironment, WorkflowObservationEvent, WorkflowOperationalHealth, WorkflowReleaseSummary } from '../../shared/workflow-operations.js'
 import { employeeDisplayLabel, employeeDisplayName, type EmployeeCreateInput, type EmployeeSnapshot } from '../../shared/employees.js'
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { WandMagicSparklesIcon } from '../icons/WandMagicSparklesIcon.js'
@@ -101,6 +101,7 @@ interface WorkflowReleasePanelProps {
   workflow?: WorkflowDefinition
   workflows?: WorkflowDefinition[]
   locale?: AppLocale
+  active?: boolean
   onRunStarted?: (record: WorkflowRunRecord) => void
 }
 
@@ -109,17 +110,26 @@ function workflowBridge(): EzDSHBridge | undefined {
 }
 
 /** Renderer-only release controls. It receives summaries and never a release snapshot. */
-export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 'zh', onRunStarted }: WorkflowReleasePanelProps): JSX.Element {
+export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 'zh', active = true, onRunStarted }: WorkflowReleasePanelProps): JSX.Element {
   const [environments, setEnvironments] = useState<WorkflowCustomerEnvironment[]>([])
   const [releases, setReleases] = useState<WorkflowReleaseSummary[]>([])
   const [observations, setObservations] = useState<WorkflowObservationEvent[]>([])
-  const [health, setHealth] = useState<WorkflowOperationsHealth>()
+  const [health, setHealth] = useState<WorkflowOperationalHealth>()
+  const [healthError, setHealthError] = useState(false)
+  const [documentVisible, setDocumentVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden')
+  const visible = active && documentVisible
   const [environmentId, setEnvironmentId] = useState('')
   const [workflowId, setWorkflowId] = useState(workflow?.id ?? workflows[0]?.id ?? '')
   const [releaseSetup, setReleaseSetup] = useState<{ releaseId: string; workflowId: string; environmentId: string; fields: WorkflowLaunchField[]; values: Record<string, string> }>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const releaseDataGenerationRef = useRef(0)
+  const healthGenerationRef = useRef(0)
+  const healthTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const healthInFlightRef = useRef(false)
+  const healthRefreshQueuedRef = useRef(false)
+  const healthEnabledRef = useRef(false)
+  const refreshHealthRef = useRef<() => void>(() => undefined)
   const selectedWorkflow = workflow ?? workflows.find((item) => item.id === workflowId)
   const releaseTargetRef = useRef({ workflowId: selectedWorkflow?.id, environmentId })
   releaseTargetRef.current = { workflowId: selectedWorkflow?.id, environmentId }
@@ -128,6 +138,52 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     const current = releaseTargetRef.current
     return current.workflowId === targetWorkflowId && current.environmentId === targetEnvironmentId
   }, [])
+
+  const clearHealthTimer = useCallback((): void => {
+    if (healthTimerRef.current !== undefined) clearTimeout(healthTimerRef.current)
+    healthTimerRef.current = undefined
+  }, [])
+
+  const refreshHealth = useCallback((): void => {
+    clearHealthTimer()
+    const bridge = workflowBridge()
+    const targetWorkflowId = selectedWorkflow?.id
+    const targetEnvironmentId = environmentId
+    if (!visible || !healthEnabledRef.current || bridge === undefined || targetWorkflowId === undefined || targetEnvironmentId === '') return
+    const generation = ++healthGenerationRef.current
+    if (healthInFlightRef.current) {
+      // Manual refresh, mutation completion and target changes share one slot.
+      // Invalidate its old answer and perform one fresh read after it settles.
+      healthRefreshQueuedRef.current = true
+      setHealth(undefined)
+      return
+    }
+    healthInFlightRef.current = true
+    const ownsRequest = (): boolean => healthEnabledRef.current && generation === healthGenerationRef.current && ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)
+    void (async () => {
+      try {
+        const next = await bridge.workflowReleases.getOperationalHealth({ workflowId: targetWorkflowId, environmentId: targetEnvironmentId })
+        if (!ownsRequest()) return
+        if (next === undefined || next.workflowId !== targetWorkflowId || next.environmentId !== targetEnvironmentId) throw new Error('Health target mismatch')
+        setHealth(next)
+        setHealthError(false)
+      } catch {
+        if (!ownsRequest()) return
+        setHealth(undefined)
+        // IPC error text is not operational evidence and may contain secrets.
+        setHealthError(true)
+      } finally {
+        healthInFlightRef.current = false
+        if (healthRefreshQueuedRef.current) {
+          healthRefreshQueuedRef.current = false
+          refreshHealthRef.current()
+        } else if (ownsRequest()) {
+          healthTimerRef.current = setTimeout(() => refreshHealthRef.current(), 5000)
+        }
+      }
+    })()
+  }, [visible, clearHealthTimer, environmentId, ownsReleaseTarget, selectedWorkflow?.id])
+  refreshHealthRef.current = refreshHealth
 
   const refresh = useCallback(async (): Promise<void> => {
     const bridge = workflowBridge()
@@ -149,15 +205,13 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     if (!ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
     const generation = ++releaseDataGenerationRef.current
     try {
-      const [nextReleases, nextObservations, nextHealth] = await Promise.all([
+      const [nextReleases, nextObservations] = await Promise.all([
         bridge.workflowReleases.list(targetWorkflowId, targetEnvironmentId),
         bridge.workflowReleases.listObservations(targetEnvironmentId),
-        bridge.workflowReleases.getHealth(targetEnvironmentId),
       ])
       if (generation !== releaseDataGenerationRef.current || !ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
       setReleases(nextReleases)
       setObservations(nextObservations)
-      setHealth(nextHealth)
     } catch (reason) {
       if (generation !== releaseDataGenerationRef.current || !ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
       setError(reason instanceof Error ? reason.message : '无法读取发布状态')
@@ -173,10 +227,26 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     setReleaseSetup(undefined)
     setReleases([])
     setObservations([])
-    setHealth(undefined)
     void refreshReleaseData()
     return () => { releaseDataGenerationRef.current += 1 }
   }, [refreshReleaseData])
+  useEffect(() => {
+    const onVisibilityChange = (): void => { setDocumentVisible(document.visibilityState !== 'hidden') }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => { document.removeEventListener('visibilitychange', onVisibilityChange) }
+  }, [])
+  useEffect(() => {
+    healthEnabledRef.current = visible
+    setHealth(undefined)
+    setHealthError(false)
+    refreshHealth()
+    return () => {
+      healthEnabledRef.current = false
+      healthGenerationRef.current += 1
+      healthRefreshQueuedRef.current = false
+      clearHealthTimer()
+    }
+  }, [visible, clearHealthTimer, refreshHealth])
 
   const publish = async (): Promise<void> => {
     const bridge = workflowBridge()
@@ -190,6 +260,7 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
       ownedEnvironmentId = targetEnvironmentId
       await bridge.workflowReleases.publish({ workflowId: targetWorkflowId, environmentId: targetEnvironmentId })
       if (!ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
+      refreshHealth()
       await refreshReleaseData()
     } catch (reason) {
       if (ownsReleaseTarget(targetWorkflowId, ownedEnvironmentId)) setError(reason instanceof Error ? reason.message : '发布失败')
@@ -228,6 +299,7 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     setBusy(true); setError('')
     try {
       const record = await bridge.workflowReleases.start(releaseSetup.releaseId, buildWorkflowLaunchInput(releaseSetup.fields, releaseSetup.values))
+      if (ownsReleaseTarget(releaseSetup.workflowId, releaseSetup.environmentId)) refreshHealth()
       setReleaseSetup(undefined)
       setBusy(false)
       onRunStarted?.(record)
@@ -242,6 +314,7 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     try {
       await bridge.workflowReleases.rollback(releaseId)
       if (!ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) return
+      refreshHealth()
       await refreshReleaseData()
     } catch (reason) {
       if (ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)) setError(reason instanceof Error ? reason.message : '回滚失败')
@@ -263,10 +336,24 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     <div className="workflow-release-actions">
       <button type="button" className="workflow-button-primary" onClick={() => void publish()} disabled={busy || selectedWorkflow === undefined}>{label.publish}</button>
       <button type="button" onClick={() => void createEnvironment()} disabled={busy}>{label.create}</button>
+      <button type="button" onClick={refreshHealth} disabled={!visible || selectedWorkflow === undefined || environmentId === ''}>{locale === 'en' ? 'Refresh health' : '刷新健康状态'}</button>
       {activeRelease !== undefined ? <button type="button" onClick={openReleaseSetup} disabled={busy}>{label.start}</button> : null}
     </div>
     {error !== '' ? <p className="workflow-error">{error}</p> : null}
+    {healthError ? <p className="workflow-error" role="alert">{locale === 'en' ? 'Unable to read operational health. Refresh to retry.' : '无法读取运行健康状态，请刷新重试。'}</p> : null}
     <div className="workflow-release-summary"><strong>{label.health}: {health?.status ?? '—'}</strong><span>{health?.reason ?? ''}</span></div>
+    <p className="workflow-muted">{locale === 'en' ? 'Local process evidence only; this does not verify external connector availability or business delivery.' : '仅反映本地进程证据；不代表外部连接器可用或业务交付已验证。'}</p>
+    {health !== undefined ? <dl className="workflow-health-evidence">
+      <dt>{locale === 'en' ? 'Observed at' : '观测时间'}</dt><dd><time dateTime={health.observedAt}>{health.observedAt}</time></dd>
+      <dt>{locale === 'en' ? 'Service' : '服务'}</dt><dd>{health.service.lifecycle}</dd>
+      <dt>Worker</dt><dd>{health.worker.state} · {locale === 'en' ? 'Active runs' : '活动运行'}: {health.worker.activeRunCount} · {locale === 'en' ? 'Claim failures' : '领取失败次数'}: {health.worker.consecutiveClaimFailures}</dd>
+      <dt>{locale === 'en' ? 'Worker heartbeat' : 'Worker 心跳'}</dt><dd>{health.worker.activeRunHeartbeatAt ?? '—'}</dd>
+      <dt>{locale === 'en' ? 'Worker last successful poll' : 'Worker 最近成功轮询'}</dt><dd>{health.worker.lastPollSucceededAt ?? '—'}</dd>
+      <dt>{locale === 'en' ? 'Worker lease lost' : 'Worker 租约丢失'}</dt><dd>{health.worker.activeRunLeaseLostAt ?? '—'}</dd>
+      <dt>{label.environment}</dt><dd>{health.environment.state}{health.environment.state === 'inactive' ? ` · ${health.environment.status}` : ''}</dd>
+      <dt>{locale === 'en' ? 'Release' : '发布'}</dt><dd>{health.release.state}{'id' in health.release ? ` · ${health.release.id} · v${health.release.revision}` : ''}{health.release.state === 'active' && health.release.activation !== undefined ? ` · ${health.release.activation.kind} · ${health.release.activation.at}` : ''}</dd>
+      <dt>{locale === 'en' ? 'Execution' : '执行'}</dt><dd>{health.execution.state}{'runId' in health.execution ? ` · ${health.execution.runId} · ${health.execution.time}` : ''}</dd>
+    </dl> : null}
     <div className="workflow-release-list">{releases.length === 0 ? <span className="workflow-muted">{label.empty}</span> : releases.map((release) => <div className="workflow-release-row" key={release.id}><span><strong>v{release.workflowRevision}</strong> · {release.status} · {release.contentSha256.slice(0, 12)}</span>{release.status === 'superseded' ? <button type="button" onClick={() => void rollback(release.id)} disabled={busy}>{label.rollback}</button> : null}</div>)}</div>
     <div className="workflow-observation-list">{observations.slice(-8).map((event) => <div key={event.id}><span>{event.time}</span><strong>{event.action}</strong><em>{event.severity}</em></div>)}</div>
   </section>
@@ -4139,7 +4226,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             </article>
           })}</div> : null}
           <div className="workflow-browser-tools">
-            <WorkflowReleasePanel copy={copy} locale={locale} workflows={workflows} onRunStarted={openReleasedRun} />
+            <WorkflowReleasePanel copy={copy} locale={locale} active={active} workflows={workflows} onRunStarted={openReleasedRun} />
             <section className="workflow-tool-card workflow-browser-tool-wide">
               <div><span className="workflow-kicker">{copy.workflowImportEmployee}</span><h3>{copy.workflowImportEmployee}</h3><p>把一个专业员工快速转换为可编辑的工作流。</p></div>
               <div className="workflow-import-row"><select id="workflow-employee-select" className="workflow-employee-select" aria-label={copy.workflowImportEmployee} value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} disabled={busy || employees.length === 0}><option value="">{copy.workflowSelectEmployee}</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employeeDisplayLabel(employee)} · {employee.id}</option>)}</select><button type="button" onClick={() => void importEmployee()} disabled={busy || employeeId === ''}>{copy.workflowImportEmployee}</button></div>
