@@ -59,7 +59,7 @@ export class WorkflowOperationalHealthService {
       workflowId,
       environmentId,
       observedAt,
-      service: { lifecycle: operations.lifecycle },
+      service: { lifecycle: operations.lifecycle, mutationRecoveryRequired: operations.mutationRecoveryRequired },
       worker: { ...operations.worker },
       ...(operations.queue === undefined ? {} : { queue: { global: { ...operations.queue.global }, environment: { ...operations.queue.environment } } }),
       environment: { state: 'unchecked' as const },
@@ -68,6 +68,7 @@ export class WorkflowOperationalHealthService {
       ...(this.options.getConnectorHealthSnapshot === undefined ? {} : { connectors: this.options.getConnectorHealthSnapshot({ workflowId, environmentId }) }),
     }
 
+    if (operations.mutationRecoveryRequired) return { ...unchecked, status: 'unhealthy', reason: 'mutation-recovery-required' }
     if (operations.lifecycle === 'initializing') return { ...unchecked, status: 'unknown', reason: 'service-initializing' }
     if (operations.lifecycle !== 'accepting') return { ...unchecked, status: 'unhealthy', reason: 'service-not-accepting' }
 

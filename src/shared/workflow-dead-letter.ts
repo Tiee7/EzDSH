@@ -4,6 +4,7 @@ export type WorkflowRecoveryReason = 'safe-to-resume' | 'not-found' | 'not-resum
   | 'definition-unavailable' | 'environment-inactive' | 'access-revoked' | 'legacy-loop-uncheckpointed'
   | 'effect-reconciliation-required' | 'compensation-present' | 'state-changed' | 'request-conflict'
   | 'queue-full' | 'recovery-failed' | 'receipt-capacity'
+  | 'source-deleted-audit-only'
 
 export interface WorkflowRecoveryPreview {
   runId: string
@@ -86,6 +87,7 @@ export function validateWorkflowDeadLetterQuery(value: unknown): WorkflowDeadLet
 export const workflowRecoveryReasonText: Record<WorkflowRecoveryReason, string> = {
   'safe-to-resume': '可安全恢复 / Safe to resume', 'not-found': '运行不存在 / Run not found', 'not-resumable': '只有暂停或失败的运行可以恢复 / Not resumable',
   'run-busy': '运行正在执行或变更 / Run busy', 'service-unavailable': '运行服务暂不可用 / Service unavailable',
+  'source-deleted-audit-only': '来源已删除，仅保留审计 / Source deleted; audit only',
   'definition-unavailable': 'Workflow revision unavailable / 固定版本或发布不可用', 'environment-inactive': 'Workflow environment must be active / 环境未启用',
   'access-revoked': '执行权限不可用 / Access unavailable', 'legacy-loop-uncheckpointed': '旧版循环缺少逐迭代副作用记录 / Legacy loop requires review',
   'effect-reconciliation-required': '副作用需要人工核对 / Effects require reconciliation', 'compensation-present': '补偿栈存在，不能自动恢复 / Compensation requires review',

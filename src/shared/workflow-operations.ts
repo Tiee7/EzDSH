@@ -78,6 +78,7 @@ export interface WorkflowOperationsHealth {
 export type WorkflowOperationalHealthReason =
   | 'service-not-accepting'
   | 'service-initializing'
+  | 'mutation-recovery-required'
   | 'worker-stopped'
   | 'worker-backing-off'
   | 'worker-never-polled'
@@ -148,7 +149,7 @@ export interface WorkflowOperationalHealth {
   status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
   reason: WorkflowOperationalHealthReason
   observedAt: string
-  service: { lifecycle: 'new' | 'initializing' | 'accepting' | 'stopping' | 'stopped' }
+  service: { lifecycle: 'new' | 'initializing' | 'accepting' | 'stopping' | 'stopped'; mutationRecoveryRequired?: boolean }
   worker: WorkflowOperationalWorkerEvidence
   queue?: WorkflowRunQueueSnapshot
   connectors?: WorkflowConnectorHealthEvidence[]

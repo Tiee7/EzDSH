@@ -121,6 +121,7 @@ export type WorkflowRunServiceLifecycleState = 'new' | 'initializing' | 'accepti
 
 export interface WorkflowRunServiceOperationsSnapshot {
   readonly lifecycle: WorkflowRunServiceLifecycleState
+  readonly mutationRecoveryRequired: boolean
   readonly worker: WorkflowRunWorkerOperationsSnapshot
   readonly queue?: WorkflowRunQueueSnapshot
 }
@@ -221,6 +222,7 @@ export class WorkflowRunService {
   operationsSnapshot(environmentId?: string): WorkflowRunServiceOperationsSnapshot {
     return {
       lifecycle: this.lifecycleState,
+      mutationRecoveryRequired: this.options.runStore.mutations.recoveryRequired,
       worker: this.worker.operationsSnapshot(),
       ...(this.storesReady ? { queue: this.options.runStore.queueSnapshot(environmentId) } : {}),
     }
@@ -588,7 +590,7 @@ export class WorkflowRunService {
         ...(record.environmentId === undefined ? {} : { environmentId: record.environmentId }), ...(record.releaseId === undefined ? {} : { releaseId: record.releaseId }),
         ...(record.traceId === undefined ? {} : { traceId: record.traceId }), status: record.status,
         failureCategory: workflowRunHasUnresolvedAudit(record) ? 'unresolved-audit' as const : record.status === 'paused' ? 'paused' as const : 'legacy-failure-unclassified' as const,
-        retentionHold: workflowRunHasUnresolvedAudit(record),
+        retentionHold: workflowRunHasUnresolvedAudit(record) || this.options.runStore.isRunProtected(record.id),
       })
     }
     return { items, total: records.length, offset, limit }
@@ -621,6 +623,7 @@ export class WorkflowRunService {
           continue
         }
         if (this.lifecycleState !== 'accepting') { results.push(result('blocked', 'service-unavailable')); continue }
+        if (this.isSourceDeletedAuditOnly(record)) { results.push(result('blocked', 'source-deleted-audit-only')); continue }
         try { this.assertRunMutationAvailable(item.runId) } catch { results.push(result('blocked', 'run-busy')); continue }
         this.administrativeActive.add(item.runId)
         ownsMutation = true
@@ -646,6 +649,7 @@ export class WorkflowRunService {
     try {
       const expectedStateToken = this.recoveryStateToken(record)
       if (this.lifecycleState !== 'accepting') return { runId, expectedStateToken, decision: 'blocked', reason: 'service-unavailable' }
+      if (this.isSourceDeletedAuditOnly(record)) return { runId, expectedStateToken, decision: 'blocked', reason: 'source-deleted-audit-only' }
       try { this.assertRunMutationAvailable(runId) } catch { return { runId, expectedStateToken, decision: 'blocked', reason: 'run-busy' } }
       const evaluation = await this.evaluateRecovery(record)
       const reason = evaluation.expectedStateToken === this.recoveryStateToken(this.options.runStore.get(runId) ?? record) ? evaluation.reason : 'state-changed'
@@ -653,6 +657,11 @@ export class WorkflowRunService {
     } catch {
       return { runId, expectedStateToken: createHash('sha256').update(JSON.stringify(record)).digest('hex'), decision: 'blocked', reason: 'recovery-failed' }
     }
+  }
+
+  private isSourceDeletedAuditOnly(record: WorkflowRunRecord): boolean {
+    return this.options.runStore.mutations.isWorkflowDeleted(record.workflowId)
+      && this.options.runStore.mutations.isRunProtected(record.id)
   }
 
   /** Shared, read-only eligibility for ordinary resume and both DLQ phases. */

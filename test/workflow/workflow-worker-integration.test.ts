@@ -667,6 +667,7 @@ describe('workflow service lifecycle', () => {
 
     expect(fixture.service.operationsSnapshot()).toEqual({
       lifecycle: 'new',
+      mutationRecoveryRequired: false,
       worker: { state: 'stopped', consecutiveClaimFailures: 0, activeRunCount: 0 },
     })
 
@@ -674,6 +675,7 @@ describe('workflow service lifecycle', () => {
     await initializeEntered.promise
     expect(fixture.service.operationsSnapshot()).toEqual({
       lifecycle: 'initializing',
+      mutationRecoveryRequired: false,
       worker: { state: 'stopped', consecutiveClaimFailures: 0, activeRunCount: 0 },
     })
 

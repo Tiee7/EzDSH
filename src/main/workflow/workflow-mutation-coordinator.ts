@@ -65,7 +65,9 @@ export class WorkflowMutationCoordinator {
     return result
   }
 
-  assertAvailable(): void { if (this.blocked !== undefined) throw new Error('WORKFLOW_MUTATION_RECOVERY_REQUIRED', { cause: this.blocked }) }
+  /** Public operational evidence contains no storage errors or journal payloads. */
+  get recoveryRequired(): boolean { return this.blocked !== undefined }
+  assertAvailable(): void { if (this.recoveryRequired) throw new Error('WORKFLOW_MUTATION_RECOVERY_REQUIRED', { cause: this.blocked }) }
   assertWorkflowWritable(id: string): void { this.assertAvailable(); if (this.tombstones.workflowIds.includes(id)) throw new Error(`WORKFLOW_TOMBSTONED: ${id}`) }
   assertRunWritable(id: string, workflowId: string, released = false): void { this.assertAvailable(); if (!released) this.assertWorkflowWritable(workflowId); if (this.tombstones.runIds.includes(id)) throw new Error(`WORKFLOW_RUN_TOMBSTONED: ${id}`) }
   isWorkflowDeleted(id: string): boolean { return this.tombstones.workflowIds.includes(id) }

@@ -8,6 +8,9 @@ import { WorkflowReleaseStore } from '../../src/main/workflow/workflow-release-s
 import { createDefaultWorkflow, type WorkflowRunRecord } from '../../src/shared/workflow.js'
 import type { WorkflowCustomerEnvironment, WorkflowObservationEvent, WorkflowRelease } from '../../src/shared/workflow-operations.js'
 import type { WorkflowRunServiceOperationsSnapshot } from '../../src/main/workflow/workflow-run-service.js'
+import { WorkflowRunService } from '../../src/main/workflow/workflow-run-service.js'
+import { WorkflowRunStore } from '../../src/main/workflow/workflow-run-store.js'
+import { WorkflowStore } from '../../src/main/workflow/workflow-store.js'
 
 const NOW = '2026-09-12T10:00:00.000Z'
 const ENVIRONMENT_ID = 'customer-acme-prod'
@@ -55,6 +58,7 @@ function createRun(overrides: Partial<WorkflowRunRecord> = {}): WorkflowRunRecor
 function readyOperations(overrides: Partial<WorkflowRunServiceOperationsSnapshot> = {}): WorkflowRunServiceOperationsSnapshot {
   return {
     lifecycle: 'accepting',
+    mutationRecoveryRequired: false,
     worker: {
       state: 'ready',
       consecutiveClaimFailures: 0,
@@ -92,6 +96,42 @@ function createService(input: {
 }
 
 describe('WorkflowOperationalHealthService', () => {
+  it.each(['workflow-mutation-intent.json', 'workflows.json'])('immediately reports recovery-required after a real service mutation fails writing %s', async (boundary) => {
+    const dir = await mkdtemp(join(tmpdir(), 'workflow-health-mutation-'))
+    const workflowStore = new WorkflowStore(dir)
+    const release = createRelease({ activation: { kind: 'publish', at: '2000-01-01T00:00:00.000Z' } })
+    await workflowStore.create(release.workflowSnapshot)
+    const runStore = new WorkflowRunStore(dir)
+    await runStore.save(createRun({ completedAt: '2001-01-01T00:00:00.000Z' }))
+    const runService = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined })
+    const health = new WorkflowOperationalHealthService({
+      getRunServiceOperations: (id) => runService.operationsSnapshot(id),
+      resolveEnvironment: () => ({ id: ENVIRONMENT_ID, status: 'active' } as WorkflowCustomerEnvironment),
+      listReleases: () => [release], listReleaseIntegrityFailures: () => [], listRuns: () => runStore.list(), listObservations: () => [],
+    })
+    const query = { workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID }
+    try {
+      await runService.initialize()
+      await vi.waitFor(() => expect(health.getOperationalHealth(query).status).toBe('healthy'))
+      const before = runService.operationsSnapshot()
+      const writer = runStore.mutations as unknown as { write(file: string, value: string): Promise<void> }
+      const original = writer.write.bind(writer)
+      vi.spyOn(writer, 'write').mockImplementation(async (file, value) => {
+        if (file === boundary) throw new Error('private-storage-path-and-token')
+        await original(file, value)
+      })
+      await expect(workflowStore.update(WORKFLOW_ID, { name: 'changed' })).rejects.toThrow('private-storage-path-and-token')
+      expect(() => runStore.mutations.assertAvailable()).toThrow('WORKFLOW_MUTATION_RECOVERY_REQUIRED')
+      // No Worker poll or heartbeat is needed to expose the failed write gate.
+      const result = health.getOperationalHealth(query)
+      expect(result).toMatchObject({ status: 'unhealthy', reason: 'mutation-recovery-required', service: { lifecycle: 'accepting', mutationRecoveryRequired: true } })
+      expect(runService.operationsSnapshot()).toMatchObject({ mutationRecoveryRequired: true, worker: before.worker })
+      expect(JSON.stringify(result)).not.toContain('private-storage')
+      expect(JSON.stringify(runService.operationsSnapshot())).not.toContain('private-storage')
+    } finally { await runService.stop() }
+  })
+
   it('keeps connector reachability independent of local operational status and reason', () => {
     const local = createService().getOperationalHealth({ workflowId: WORKFLOW_ID, environmentId: ENVIRONMENT_ID })
     const service = new WorkflowOperationalHealthService({

@@ -240,6 +240,11 @@ export class WorkflowRunStore {
     return record === undefined ? undefined : cloneWorkflow(record)
   }
 
+  /** Retention protection includes durable tombstones and live reference chains. */
+  isRunProtected(id: string): boolean {
+    return this.mutations.isRunProtected(id) || this.referenceProtectedIds().has(id)
+  }
+
   queueSnapshot(environmentId?: string): WorkflowRunQueueSnapshot {
     const records = [...(this.mutationBaseline ?? this.runs).values()]
     const bucket = queueBucket(environmentId)
