@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { DeepLinkInstallTarget, DeepLinkSessionTarget, EzDSHBridge } from '../shared/contracts.js'
 import type { IpcResult } from '../shared/errors.js'
+import type { WorkflowDeadLetterQuery, WorkflowDeadLetterPage, WorkflowRecoveryPreviewRequest, WorkflowRecoveryPreview, WorkflowRecoveryExecuteRequest, WorkflowRecoveryResult } from '../shared/workflow-dead-letter.js'
 import { APP_NAME, APP_VERSION } from '../shared/app-identity.js'
 import type { NavigationTarget } from '../shared/navigation.js'
 import type { AppPlatform } from '../shared/platform.js'
@@ -186,6 +187,9 @@ const bridge: EzDSHBridge = {
     },
     importEmployee: (employeeId: string) => invoke<WorkflowDefinition>('workflows:import-employee', employeeId),
     listRuns: (workflowId?: string) => invoke<WorkflowRunRecord[]>('workflow-runs:list', workflowId),
+    listDeadLetters: (query?: WorkflowDeadLetterQuery) => invoke<WorkflowDeadLetterPage>('workflow-dead-letter:list', query),
+    previewRecovery: (request: WorkflowRecoveryPreviewRequest) => invoke<WorkflowRecoveryPreview[]>('workflow-dead-letter:preview', request),
+    executeRecovery: (request: WorkflowRecoveryExecuteRequest) => invoke<WorkflowRecoveryResult[]>('workflow-dead-letter:execute', request),
     getRun: (runId: string) => invoke<WorkflowRunRecord | undefined>('workflow-runs:get', runId),
     getRunDefinition: (runId: string) => invoke<WorkflowDefinition | undefined>('workflow-runs:get-definition', runId),
     removeRun: (runId: string) => invoke<void>('workflow-runs:remove', runId),

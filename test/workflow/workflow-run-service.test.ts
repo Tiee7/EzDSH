@@ -945,7 +945,7 @@ describe('released workflow access boundaries', () => {
     })
     record.status = action === 'approve' ? 'waiting-approval' : 'paused'
     if (action === 'approve') record.waitingApprovalNodeId = 'approval'
-    record.compensationStack = [{ sourceNodeId: 'input', action: { type: 'workflow', workflowId: 'undo' }, status: 'pending' }]
+    if (action === 'compensate') record.compensationStack = [{ sourceNodeId: 'input', action: { type: 'workflow', workflowId: 'undo' }, status: 'pending' }]
     await runStore.save(record)
     await environmentStore.upsert({ ...environment, allowCode: false, allowShellFile: false })
     const narrowed = action === 'approve' ? await service.approve(record.id, true) : await service[action](record.id)
@@ -953,6 +953,8 @@ describe('released workflow access boundaries', () => {
     if (action === 'compensate') {
       expect(executeSubWorkflow).not.toHaveBeenCalled()
       expect(narrowed.compensationStack?.[0]).toMatchObject({ status: 'failed', effectState: 'unknown' })
+      await expect(service.resume(record.id)).rejects.toThrow(/补偿/)
+      return
     }
     narrowed.status = 'paused'
     await runStore.save(narrowed)
@@ -963,6 +965,21 @@ describe('released workflow access boundaries', () => {
     await runStore.save(revoked)
     await environmentStore.upsert(environment)
     expect(await service.resume(record.id)).toMatchObject({ connectorGrants: [], allowCode: false, allowShellFile: false })
+  })
+
+  it.each(['disabled', 'connector'] as const)('invalidates DLQ preview after %s revocation and blocks a fresh preview without mutation', async (revocation) => {
+    const f = await createReleasedAccessFixture({ id: 'request', type: 'http', label: 'Request', position: { x: 200, y: 0 }, config: { method: 'GET', connectorId: 'crm', connectorPath: '/items', responseMode: 'json' } })
+    const run = await f.service.startReleased(f.release.id, null)
+    run.status = 'failed'
+    await f.runStore.save(run)
+    const items = await f.service.previewRecovery({ runIds: [run.id] })
+    expect(items[0]?.decision).toBe('eligible')
+    await f.environmentStore.upsert({ ...f.environment, ...(revocation === 'disabled' ? { status: 'disabled' as const } : { connectorIds: [] }) })
+    expect(await f.service.executeRecovery({ requestId: 'revoked', items })).toMatchObject([{ status: 'stale' }])
+    expect(await f.service.previewRecovery({ runIds: [run.id] })).toMatchObject([{ decision: 'blocked', reason: revocation === 'disabled' ? 'environment-inactive' : 'access-revoked' }])
+    await expect(f.service.resume(run.id)).rejects.toThrow(/environment|权限/)
+    expect(f.runStore.get(run.id)).toEqual(run)
+    expect(f.fetchImpl).not.toHaveBeenCalled()
   })
 
   it.each(['disabled', 'connector'] as const)('rechecks %s revocation after queueing and before worker execution', async (revocation) => {

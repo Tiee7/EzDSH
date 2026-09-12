@@ -54,6 +54,8 @@ import { planWorkflowRetry } from './workflow-retry.js'
 import { assertPermission, type WorkflowConnectorDispatchHooks, type WorkflowConnectorRequest, type WorkflowConnectorService } from './workflow-connector-service.js'
 import { normalizeWorkflowRelease, restrictConnectorGrantsToEnvironment, type WorkflowCustomerEnvironment, type WorkflowRelease, type WorkflowRunQueueSnapshot } from '../../shared/workflow-operations.js'
 import { verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
+import { validateWorkflowDeadLetterQuery, validateWorkflowRecoveryPreview, validateWorkflowRecoveryExecute, workflowRunHasUnresolvedAudit, workflowRecoveryReasonText,
+  type WorkflowDeadLetterQuery, type WorkflowDeadLetterPage, type WorkflowRecoveryPreviewRequest, type WorkflowRecoveryPreview, type WorkflowRecoveryExecuteRequest, type WorkflowRecoveryResult, type WorkflowRecoveryReason } from '../../shared/workflow-dead-letter.js'
 
 export interface WorkflowRunServiceOptions {
   workflowStore: WorkflowStore
@@ -555,32 +557,178 @@ export class WorkflowRunService {
     try {
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-      if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以恢复')
-      if (this.hasUncheckpointedLoopEffects(record)) throw new Error('旧版循环缺少逐迭代副作用记录，请先人工核对，不能安全恢复')
-      if (workflowAllNodeRunStates(record.nodeStates).some((state) => state.effectState === 'prepared' || state.effectState === 'dispatched' || state.effectState === 'unknown' || state.effectState === 'confirmed' && state.status !== 'completed')) throw new Error('运行包含状态不确定的外部副作用，请先完成补偿或人工核对')
-      this.revalidateReleasedAccess(record)
-      record.status = 'queued'
-      record.error = undefined
-      record.completedAt = undefined
-      record.retentionExpiresAt = undefined
-      for (const node of workflowAllNodeRunStates(record.nodeStates)) {
-        if (node.status === 'failed' || node.status === 'running' || node.status === 'cancelled') {
-          node.status = 'pending'
-          node.error = undefined
-          node.startedAt = undefined
-          node.completedAt = undefined
-          node.input = undefined
-          node.output = undefined
-        }
-      }
-      this.prepareQueuedRecord(record)
-      await this.save(record, 'run-created', '运行已重新排队')
-      this.worker.wake()
-      return cloneWorkflow(record)
+      const evaluation = await this.evaluateRecovery(record)
+      if (evaluation.reason !== 'safe-to-resume') throw new Error(workflowRecoveryReasonText[evaluation.reason])
+      if (evaluation.expectedStateToken !== this.recoveryStateToken(this.options.runStore.get(runId) ?? record)) throw new Error(workflowRecoveryReasonText['state-changed'])
+      this.assertAccepting()
+      return await this.queueRecoveredRecord(evaluation.record)
     } finally {
       this.administrativeActive.delete(runId)
       releaseMutation()
     }
+  }
+
+  /** Main-only projection from authoritative run records. No raw errors or payloads cross this boundary. */
+  async listDeadLetters(input: WorkflowDeadLetterQuery = {}): Promise<WorkflowDeadLetterPage> {
+    const query = validateWorkflowDeadLetterQuery(input)
+    await this.initialize()
+    const records = this.options.runStore.list(query.workflowId).filter((record) => (
+      (record.status === 'failed' || record.status === 'paused' || workflowRunHasUnresolvedAudit(record))
+      && (query.environmentId === undefined || record.environmentId === query.environmentId)
+      && (query.status === undefined || record.status === query.status)
+    )).sort((a, b) => (b.completedAt ?? b.startedAt ?? '').localeCompare(a.completedAt ?? a.startedAt ?? '') || a.id.localeCompare(b.id))
+    const offset = query.offset ?? 0
+    const limit = query.limit ?? 50
+    const items = []
+    for (const record of records.slice(offset, offset + limit)) {
+      const preview = await this.previewRecoveryRecord(record)
+      items.push({ ...preview, workflowId: record.workflowId, workflowRevision: record.workflowRevision,
+        ...(record.environmentId === undefined ? {} : { environmentId: record.environmentId }), ...(record.releaseId === undefined ? {} : { releaseId: record.releaseId }),
+        ...(record.traceId === undefined ? {} : { traceId: record.traceId }), status: record.status,
+        failureCategory: workflowRunHasUnresolvedAudit(record) ? 'unresolved-audit' as const : record.status === 'paused' ? 'paused' as const : 'legacy-failure-unclassified' as const,
+        retentionHold: workflowRunHasUnresolvedAudit(record),
+      })
+    }
+    return { items, total: records.length, offset, limit }
+  }
+
+  async previewRecovery(input: WorkflowRecoveryPreviewRequest): Promise<WorkflowRecoveryPreview[]> {
+    const request = validateWorkflowRecoveryPreview(input)
+    await this.initialize()
+    const previews: WorkflowRecoveryPreview[] = []
+    for (const runId of request.runIds) previews.push(await this.previewRecoveryRecord(this.options.runStore.get(runId), runId))
+    return previews
+  }
+
+  async executeRecovery(input: WorkflowRecoveryExecuteRequest): Promise<WorkflowRecoveryResult[]> {
+    const request = validateWorkflowRecoveryExecute(input)
+    await this.initialize()
+    const results: WorkflowRecoveryResult[] = []
+    for (const item of request.items) {
+      const result = (status: WorkflowRecoveryResult['status'], reason: WorkflowRecoveryReason): WorkflowRecoveryResult => ({ runId: item.runId, status, reason })
+      const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, item.runId)
+      let ownsMutation = false
+      try {
+        const record = this.options.runStore.get(item.runId)
+        if (record === undefined) { results.push(result('not-found', 'not-found')); continue }
+        // Check durable acceptance before status/eligibility: a retried request
+        // must never re-admit a run even if it failed again after acceptance.
+        const receipt = record.recoveryReceipts?.find((entry) => entry.requestId === request.requestId)
+        if (receipt !== undefined) {
+          results.push(receipt.acceptedStateToken === item.expectedStateToken ? result('already-accepted', 'safe-to-resume') : result('blocked', 'request-conflict'))
+          continue
+        }
+        if (this.lifecycleState !== 'accepting') { results.push(result('blocked', 'service-unavailable')); continue }
+        try { this.assertRunMutationAvailable(item.runId) } catch { results.push(result('blocked', 'run-busy')); continue }
+        this.administrativeActive.add(item.runId)
+        ownsMutation = true
+        const evaluated = await this.evaluateRecovery(record)
+        if (item.expectedStateToken !== evaluated.expectedStateToken || evaluated.expectedStateToken !== this.recoveryStateToken(this.options.runStore.get(item.runId) ?? record)) { results.push(result('stale', 'state-changed')); continue }
+        if (evaluated.reason !== 'safe-to-resume') { results.push(result('blocked', evaluated.reason)); continue }
+        if (this.lifecycleState !== 'accepting') { results.push(result('blocked', 'service-unavailable')); continue }
+        evaluated.record.recoveryReceipts = [...(record.recoveryReceipts ?? []), { requestId: request.requestId, acceptedStateToken: item.expectedStateToken, acceptedAt: new Date().toISOString() }]
+        await this.queueRecoveredRecord(evaluated.record)
+        results.push(result('queued', 'safe-to-resume'))
+      } catch (error) {
+        results.push(error instanceof WorkflowRunQueueFullError ? result('blocked', 'queue-full') : result('failed', 'recovery-failed'))
+      } finally {
+        if (ownsMutation) this.administrativeActive.delete(item.runId)
+        releaseMutation()
+      }
+    }
+    return results
+  }
+
+  private async previewRecoveryRecord(record: WorkflowRunRecord | undefined, runId = record?.id ?? ''): Promise<WorkflowRecoveryPreview> {
+    if (record === undefined) return { runId, expectedStateToken: createHash('sha256').update(`missing:${runId}`).digest('hex'), decision: 'not-found', reason: 'not-found' }
+    try {
+      const expectedStateToken = this.recoveryStateToken(record)
+      if (this.lifecycleState !== 'accepting') return { runId, expectedStateToken, decision: 'blocked', reason: 'service-unavailable' }
+      try { this.assertRunMutationAvailable(runId) } catch { return { runId, expectedStateToken, decision: 'blocked', reason: 'run-busy' } }
+      const evaluation = await this.evaluateRecovery(record)
+      const reason = evaluation.expectedStateToken === this.recoveryStateToken(this.options.runStore.get(runId) ?? record) ? evaluation.reason : 'state-changed'
+      return { runId, expectedStateToken: evaluation.expectedStateToken, decision: reason === 'safe-to-resume' ? 'eligible' : 'blocked', reason }
+    } catch {
+      return { runId, expectedStateToken: createHash('sha256').update(JSON.stringify(record)).digest('hex'), decision: 'blocked', reason: 'recovery-failed' }
+    }
+  }
+
+  /** Shared, read-only eligibility for ordinary resume and both DLQ phases. */
+  private async evaluateRecovery(source: WorkflowRunRecord): Promise<{ record: WorkflowRunRecord; expectedStateToken: string; reason: WorkflowRecoveryReason }> {
+    const record = cloneWorkflow(source)
+    const expectedStateToken = this.recoveryStateToken(source)
+    const decision = (reason: WorkflowRecoveryReason) => ({ record, expectedStateToken, reason })
+    if (record.status !== 'paused' && record.status !== 'failed') return decision('not-resumable')
+    const workflow = this.workflowForRecord(record)
+    if (workflow === undefined || !validateWorkflow(workflow).valid) return decision('definition-unavailable')
+    if (record.releaseId !== undefined && this.options.resolveWorkflowEnvironment !== undefined) {
+      const environment = record.environmentId === undefined ? undefined : this.options.resolveWorkflowEnvironment(record.environmentId)
+      if (environment?.status !== 'active') return decision('environment-inactive')
+    }
+    if ((record.compensationStack?.length ?? 0) > 0) return decision('compensation-present')
+    if (this.hasUncheckpointedLoopEffects(record)) return decision('legacy-loop-uncheckpointed')
+    if (workflowRunHasUnresolvedAudit(record)) return decision('effect-reconciliation-required')
+    const unjournaledEffect = workflowAllNodeRunStates(record.nodeStates).some((state) => {
+      const node = workflow.nodes.find((candidate) => candidate.id === state.nodeId)
+      return node !== undefined && isEffectfulNode(node) && state.effectState === undefined
+        && (state.status === 'failed' || state.status === 'running' || state.status === 'cancelled')
+        && state.executionScope === undefined
+        // Loop summaries are display projections; their effects live in the
+        // nested journal, which was checked above and by legacy-loop checks.
+        && !workflow.nodes.some((owner) => owner.type === 'loop' && workflowLoopBodyNodeIds(workflow, owner.id).includes(node.id))
+    })
+    if (unjournaledEffect) return decision('effect-reconciliation-required')
+    if ((record.recoveryReceipts?.length ?? 0) >= 200) return decision('receipt-capacity')
+    try {
+      this.revalidateReleasedAccess(record)
+      for (const node of workflow.nodes) {
+        const insideUnfinishedLoop = workflow.nodes.some((owner) => owner.type === 'loop' && record.nodeStates.find((state) => state.nodeId === owner.id)?.status !== 'completed' && workflowLoopBodyNodeIds(workflow, owner.id).includes(node.id))
+        if (!insideUnfinishedLoop && record.nodeStates.find((state) => state.nodeId === node.id)?.status === 'completed') continue
+        if (node.type === 'code' && !record.allowCode || (node.type === 'shell' || node.type === 'file') && !record.allowShellFile) return decision('access-revoked')
+        if (node.type === 'http') {
+          if (node.config.connectorId === undefined) { if (this.options.allowLegacyHttp === false) return decision('access-revoked'); continue }
+          const request = this.buildManagedConnectorRequest(node, record)
+          assertPermission(request.workflowPolicy, request.runGrant, node.config.connectorId, node.config.method === 'GET' ? 'read' : 'write')
+          if (this.options.connectorService === undefined) return decision('access-revoked')
+          if (this.options.connectorService.authorize !== undefined) await this.options.connectorService.authorize(request, record.input, record.nodeStates.find((state) => state.nodeId === node.id)?.input ?? null)
+        }
+      }
+    } catch { return decision('access-revoked') }
+    return decision('safe-to-resume')
+  }
+
+  /** Hash the complete private journal plus current immutable graph/policy, not raw error-derived categories. */
+  private recoveryStateToken(record: WorkflowRunRecord): string {
+    return createHash('sha256').update(JSON.stringify({ record, definition: this.workflowForRecord(record),
+      release: record.releaseId === undefined ? undefined : this.options.resolveReleasedWorkflow?.(record.releaseId),
+      environment: record.environmentId === undefined ? undefined : this.options.resolveWorkflowEnvironment?.(record.environmentId),
+    })).digest('hex')
+  }
+
+  private async queueRecoveredRecord(record: WorkflowRunRecord): Promise<WorkflowRunRecord> {
+    record.status = 'queued'
+    record.error = undefined
+    record.completedAt = undefined
+    record.retentionExpiresAt = undefined
+    for (const node of workflowAllNodeRunStates(record.nodeStates)) {
+      if (node.status === 'failed' || node.status === 'running' || node.status === 'cancelled') {
+        node.status = 'pending'
+        node.error = undefined
+        node.startedAt = undefined
+        node.completedAt = undefined
+        // Preserve the established retry reset. Failed output is diagnostic,
+        // not a completed checkpoint; the executor's output map loads all
+        // persisted outputs. Completed checkpoints and effect journals stay.
+        node.input = undefined
+        node.output = undefined
+      }
+    }
+    this.prepareQueuedRecord(record)
+    record.events.push(this.createEvent('run-created', '运行已重新排队'))
+    const saved = await this.options.runStore.save(record)
+    this.worker.wake()
+    for (const listener of this.listeners) { try { listener(cloneWorkflow(saved)) } catch { /* acceptance is already durable */ } }
+    return saved
   }
 
   async reconcileEffect(runId: string, input: WorkflowEffectReconcileRequest): Promise<WorkflowRunRecord> {
@@ -2421,7 +2569,9 @@ export class WorkflowRunService {
   async cleanupExpiredInternalArtifacts(removeArtifact: (sessionId: string) => Promise<void>): Promise<{ runIds: string[]; sessionIds: string[] }> {
     await this.initialize()
     const runIds = await this.options.runStore.pruneExpired()
-    const candidates = this.internalSessionStore.expiredArchivedSessionIds()
+    const heldRunIds = new Set(this.options.runStore.list().filter(workflowRunHasUnresolvedAudit).map((record) => record.id))
+    const heldSessionIds = new Set(this.internalSessionStore.list().filter((session) => heldRunIds.has(session.runId)).map((session) => session.sessionId))
+    const candidates = this.internalSessionStore.expiredArchivedSessionIds().filter((sessionId) => !heldSessionIds.has(sessionId))
     const removed: string[] = []
     for (const sessionId of candidates) {
       await removeArtifact(sessionId)

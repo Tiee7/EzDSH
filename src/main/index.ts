@@ -92,6 +92,7 @@ import { WorkflowStore } from './workflow/workflow-store.js'
 import { WorkflowRunStore } from './workflow/workflow-run-store.js'
 import { WorkflowRunService } from './workflow/workflow-run-service.js'
 import { registerWorkflowRunDefinitionIpc } from './workflow/workflow-run-definition-ipc.js'
+import { registerWorkflowDeadLetterIpc } from './workflow/workflow-dead-letter-ipc.js'
 import { WorkflowGenerationService } from './workflow/workflow-generation-service.js'
 import { WorkflowModificationService } from './workflow/workflow-modification-service.js'
 import { WorkflowLightweightClient } from './workflow/workflow-lightweight-client.js'
@@ -1161,6 +1162,7 @@ function requireDeveloperModeFeature(): void {
 
 function registerIpcHandlers(): void {
   registerWorkflowRunDefinitionIpc(ipcMain, () => workflowRunService)
+  registerWorkflowDeadLetterIpc(ipcMain, () => workflowRunService)
   registerWorkflowOperationalHealthIpc(ipcMain, () => workflowOperationalHealthService)
   registerWorkflowReleaseRollbackIpc(ipcMain, () => workflowDeploymentService, () => workflowObservabilityService)
   ipcMain.handle('runtime:get-status', (): IpcResult<RuntimeSnapshot> => {

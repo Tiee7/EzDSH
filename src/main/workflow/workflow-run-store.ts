@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { cloneWorkflow, isWorkflowValue, workflowAllNodeRunStates, type WorkflowRunLease, type WorkflowRunQueueState, type WorkflowRunRecord } from '../../shared/workflow.js'
 import type { WorkflowQueueCapacityMetrics, WorkflowRunQueueSnapshot } from '../../shared/workflow-operations.js'
+import { workflowRunHasUnresolvedAudit } from '../../shared/workflow-dead-letter.js'
 
 /** Main-only configuration. Never accept these limits from run/Renderer options. */
 export interface WorkflowRunQueueLimits {
@@ -258,6 +259,13 @@ export class WorkflowRunStore {
     const snapshot = cloneWorkflow(record)
     return this.mutate(async () => {
       const current = this.runs.get(snapshot.id)
+      // Acceptance is append-only across later worker/admin snapshots. A
+      // stale writer must not erase a receipt and enable another admission.
+      if (current?.recoveryReceipts !== undefined) {
+        const accepted = new Map(current.recoveryReceipts.map((receipt) => [receipt.requestId, receipt]))
+        for (const receipt of snapshot.recoveryReceipts ?? []) if (!accepted.has(receipt.requestId)) accepted.set(receipt.requestId, receipt)
+        snapshot.recoveryReceipts = [...accepted.values()].map((receipt) => ({ ...receipt }))
+      }
       const incomingLease = snapshot.queue?.lease
       const currentLease = current?.queue?.lease
       // A worker may renew its lease while the service is still holding an
@@ -549,6 +557,7 @@ export class WorkflowRunStore {
       const removed: string[] = []
       for (const [id, record] of this.runs.entries()) {
         if (record.status === 'queued' || record.status === 'running' || record.status === 'paused' || record.status === 'waiting-approval') continue
+        if (workflowRunHasUnresolvedAudit(record)) continue
         if (record.retentionExpiresAt === undefined) continue
         const expiresAt = new Date(record.retentionExpiresAt)
         if (Number.isNaN(expiresAt.getTime()) || expiresAt > now) continue

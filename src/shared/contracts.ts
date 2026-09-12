@@ -3,6 +3,7 @@ import type { RuntimeViewBounds } from './runtime-view.js'
 import type { EzDSHError, IpcResult } from './errors.js'
 import type { UpdateState } from './update.js'
 import type { AppLocale } from './locale.js'
+import type { WorkflowDeadLetterQuery, WorkflowDeadLetterPage, WorkflowRecoveryPreviewRequest, WorkflowRecoveryPreview, WorkflowRecoveryExecuteRequest, WorkflowRecoveryResult } from './workflow-dead-letter.js'
 import type { WorkspaceOperationState, WorkspaceSnapshot } from './state.js'
 import type { NavigationTarget } from './navigation.js'
 import type { NavConfig } from './navigation.js'
@@ -180,6 +181,9 @@ export interface EzDSHBridge {
     onGenerationStateChange(listener: (record: WorkflowGenerationRecord) => void): () => void
     importEmployee(employeeId: string): Promise<WorkflowDefinition>
     listRuns(workflowId?: string): Promise<WorkflowRunRecord[]>
+    listDeadLetters(query?: WorkflowDeadLetterQuery): Promise<WorkflowDeadLetterPage>
+    previewRecovery(request: WorkflowRecoveryPreviewRequest): Promise<WorkflowRecoveryPreview[]>
+    executeRecovery(request: WorkflowRecoveryExecuteRequest): Promise<WorkflowRecoveryResult[]>
     getRun(runId: string): Promise<WorkflowRunRecord | undefined>
     getRunDefinition(runId: string): Promise<WorkflowDefinition | undefined>
     removeRun(runId: string): Promise<void>

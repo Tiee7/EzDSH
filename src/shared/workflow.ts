@@ -645,6 +645,8 @@ export interface WorkflowRunRecord {
   nodeStates: WorkflowNodeRunState[]
   events: WorkflowRunEvent[]
   compensationStack?: WorkflowCompensationEntry[]
+  /** Accepted recovery requests, journaled atomically with the same run's queue transition. */
+  recoveryReceipts?: Array<{ requestId: string; acceptedStateToken: string; acceptedAt: string }>
   /** Active compensation-only blocker; never replaces the source run terminal error. */
   compensationBlocker?: string
   /** Exact Main-derived unknown-effect targets. Renderer must not infer topology when present. */
