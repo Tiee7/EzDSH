@@ -17,7 +17,7 @@ const DEFAULT_WORKER_STALE_AFTER_MS = 90_000
 const DEFAULT_RECENT_FAILURE_WINDOW_MS = 60 * 60 * 1000
 
 export interface WorkflowOperationalHealthServiceOptions {
-  getRunServiceOperations: () => WorkflowRunServiceOperationsSnapshot
+  getRunServiceOperations: (environmentId?: string) => WorkflowRunServiceOperationsSnapshot
   resolveEnvironment: (environmentId: string) => WorkflowCustomerEnvironment | undefined
   listReleases: () => WorkflowRelease[]
   listReleaseIntegrityFailures: () => WorkflowReleaseIntegrityFailure[]
@@ -52,13 +52,14 @@ export class WorkflowOperationalHealthService {
     const workflowId = validateId(query?.workflowId, 'workflow')
     const environmentId = validateId(query?.environmentId, 'environment')
     const observedAt = this.now()
-    const operations = this.options.getRunServiceOperations()
+    const operations = this.options.getRunServiceOperations(environmentId)
     const unchecked = {
       workflowId,
       environmentId,
       observedAt,
       service: { lifecycle: operations.lifecycle },
       worker: { ...operations.worker },
+      ...(operations.queue === undefined ? {} : { queue: { global: { ...operations.queue.global }, environment: { ...operations.queue.environment } } }),
       environment: { state: 'unchecked' as const },
       release: { state: 'unchecked' as const },
       execution: { state: 'unchecked' as const },

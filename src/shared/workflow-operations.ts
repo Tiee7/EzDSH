@@ -112,6 +112,22 @@ export interface WorkflowOperationalWorkerEvidence {
   nextPollAt?: string
 }
 
+export interface WorkflowQueueCapacityMetrics {
+  capacity: number
+  admitted: number
+  queued: number
+  running: number
+  waitingApproval: number
+  availableSlots: number
+  overCapacity: boolean
+}
+
+/** Counts only; never includes other environments' identities or run data. */
+export interface WorkflowRunQueueSnapshot {
+  global: WorkflowQueueCapacityMetrics
+  environment: WorkflowQueueCapacityMetrics
+}
+
 export interface WorkflowOperationalHealth {
   workflowId: string
   environmentId: string
@@ -120,6 +136,7 @@ export interface WorkflowOperationalHealth {
   observedAt: string
   service: { lifecycle: 'new' | 'initializing' | 'accepting' | 'stopping' | 'stopped' }
   worker: WorkflowOperationalWorkerEvidence
+  queue?: WorkflowRunQueueSnapshot
   environment:
     | { state: 'unchecked' }
     | { state: 'missing' }

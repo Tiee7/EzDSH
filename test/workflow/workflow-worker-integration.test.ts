@@ -34,7 +34,7 @@ async function eventually<T>(read: () => T | undefined, predicate: (value: T) =>
   throw new Error('condition did not become true in time')
 }
 
-async function liveChildFixture(options: { wait?: boolean; childNode?: WorkflowNode; afterChild?: WorkflowNode; lightweightClient?: WorkflowRunServiceOptions['lightweightClient']; legacyPolling?: boolean } = {}) {
+async function liveChildFixture(options: { queueCapacity?: number; wait?: boolean; childNode?: WorkflowNode; afterChild?: WorkflowNode; lightweightClient?: WorkflowRunServiceOptions['lightweightClient']; legacyPolling?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ezdsh-live-child-'))
   const workflowStore = new WorkflowStore(directory)
   const createWorkflow = (id: string, nodes: WorkflowNode[]) => workflowStore.create({
@@ -52,7 +52,7 @@ async function liveChildFixture(options: { wait?: boolean; childNode?: WorkflowN
     ...(options.afterChild === undefined ? [] : [options.afterChild]),
   ])
   const service: WorkflowRunService = new WorkflowRunService({
-    workflowStore, runStore: new WorkflowRunStore(directory), workflowRoot: directory,
+    workflowStore, runStore: new WorkflowRunStore(directory, options.queueCapacity === undefined ? undefined : { global: options.queueCapacity, perEnvironment: options.queueCapacity }), workflowRoot: directory,
     createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }),
     resolveEmployee: () => undefined,
     lightweightClient: options.lightweightClient,
@@ -140,6 +140,7 @@ describe('unpublished child workflows in the single Worker', () => {
   it('waits for the same inline child to become due and complete its scheduled retry', async () => {
     let attempts = 0
     const { service, parent, child } = await liveChildFixture({
+      queueCapacity: 2,
       childNode: { id: 'ai', type: 'ai-task', label: 'Retry child', config: { instruction: 'retry', mode: 'single', skillIds: [], outputMode: 'text' }, retryPolicy: { maxAttempts: 2, baseDelayMs: 50, maxDelayMs: 50, jitterRatio: 0 }, position: { x: 200, y: 0 } },
       lightweightClient: { complete: async () => { attempts += 1; if (attempts === 1) throw new Error('temporary provider failure'); return 'retried child' } },
     })

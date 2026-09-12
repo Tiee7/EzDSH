@@ -44,7 +44,7 @@ import { cloneWorkflow, interpolateWorkflowVariables, isWorkflowValue, normalize
 import { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
 import { assertValidWorkflow, topologicalOrder } from './workflow-validator.js'
 import { WorkflowStore } from './workflow-store.js'
-import { WorkflowRunStore } from './workflow-run-store.js'
+import { WorkflowRunQueueFullError, WorkflowRunStore } from './workflow-run-store.js'
 import { WorkflowRunWorker, type WorkflowRunWorkerOperationsSnapshot } from './workflow-run-worker.js'
 import { DshWorkflowAdapter, WorkflowNodeOutputError, buildNodePrompt, extractJsonDocument, invalidWorkflowJsonOutputError, parseWorkflowJson, type WorkflowSessionClient } from './dsh-workflow-adapter.js'
 import type { WorkflowLightweightClient, WorkflowLightweightRequest } from './workflow-lightweight-client.js'
@@ -52,7 +52,7 @@ import type { WorkflowMcpClient } from './workflow-mcp-client.js'
 import { WorkflowInternalSessionStore, type WorkflowInternalSessionKind } from './workflow-internal-session-store.js'
 import { planWorkflowRetry } from './workflow-retry.js'
 import { assertPermission, type WorkflowConnectorDispatchHooks, type WorkflowConnectorRequest, type WorkflowConnectorService } from './workflow-connector-service.js'
-import { normalizeWorkflowRelease, restrictConnectorGrantsToEnvironment, type WorkflowCustomerEnvironment, type WorkflowRelease } from '../../shared/workflow-operations.js'
+import { normalizeWorkflowRelease, restrictConnectorGrantsToEnvironment, type WorkflowCustomerEnvironment, type WorkflowRelease, type WorkflowRunQueueSnapshot } from '../../shared/workflow-operations.js'
 import { verifyWorkflowReleaseIntegrity } from './workflow-release-integrity.js'
 
 export interface WorkflowRunServiceOptions {
@@ -120,6 +120,7 @@ export type WorkflowRunServiceLifecycleState = 'new' | 'initializing' | 'accepti
 export interface WorkflowRunServiceOperationsSnapshot {
   readonly lifecycle: WorkflowRunServiceLifecycleState
   readonly worker: WorkflowRunWorkerOperationsSnapshot
+  readonly queue?: WorkflowRunQueueSnapshot
 }
 
 export class WorkflowRunServiceUnavailableError extends Error {
@@ -215,10 +216,11 @@ export class WorkflowRunService {
     return this.options.runStore.get(runId)
   }
 
-  operationsSnapshot(): WorkflowRunServiceOperationsSnapshot {
+  operationsSnapshot(environmentId?: string): WorkflowRunServiceOperationsSnapshot {
     return {
       lifecycle: this.lifecycleState,
       worker: this.worker.operationsSnapshot(),
+      ...(this.storesReady ? { queue: this.options.runStore.queueSnapshot(environmentId) } : {}),
     }
   }
 
@@ -477,6 +479,9 @@ export class WorkflowRunService {
         child.status = 'running'
         await this.save(child, 'run-created', '同步子运行已创建')
       }
+    } catch (error) {
+      if (child !== undefined && this.options.runStore.get(child.id) === undefined) this.liveLineages.delete(child.id)
+      throw error
     } finally {
       releaseWorkflow()
     }
@@ -847,6 +852,14 @@ export class WorkflowRunService {
           ])
         } catch (error) {
           entry.status = 'failed'
+          if (error instanceof WorkflowRunQueueFullError) {
+            entry.effectState = 'none'
+            entry.completedAt = new Date().toISOString()
+            entry.error = error.message
+            record.compensationBlocker = undefined
+            await this.save(record, 'compensation-failed', error.message, entry.sourceNodeId, entry.executionScope)
+            break
+          }
           entry.effectState = 'unknown'
           entry.completedAt = new Date().toISOString()
           entry.error = error instanceof Error ? error.message : String(error)
@@ -1592,7 +1605,7 @@ export class WorkflowRunService {
         await this.saveFailure(record, 'node-failed', error.message, node.id, state.executionScope)
         return 'stopped'
       }
-      if (error instanceof WorkflowRecursiveCallError) {
+      if (error instanceof WorkflowRecursiveCallError || error instanceof WorkflowRunQueueFullError) {
         state.status = 'failed'
         state.effectState = 'none'
         state.error = error.message
@@ -1683,6 +1696,9 @@ export class WorkflowRunService {
           : await this.executeNode(node, record.input, previous, record.allowShellFile, record.allowCode === true, active, record, state)
       } catch (error) {
         if (error instanceof WorkflowLoopStopped) throw error
+        // Admission rejection proves that the child was never persisted or
+        // executed. Do not retry or manufacture an ambiguous external effect.
+        if (error instanceof WorkflowRunQueueFullError) throw error
         // A cancellation request always wins over a retry plan. In
         // particular, an idempotent connector may still be awaiting a
         // response after its effect was dispatched; replaying it after the

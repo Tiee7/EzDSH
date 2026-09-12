@@ -710,7 +710,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     runService: workflowRunService,
   })
   workflowOperationalHealthService = new WorkflowOperationalHealthService({
-    getRunServiceOperations: () => workflowRunService!.operationsSnapshot(),
+    getRunServiceOperations: (environmentId) => workflowRunService!.operationsSnapshot(environmentId),
     resolveEnvironment: (environmentId) => workflowEnvironmentStore!.get(environmentId),
     listReleases: () => workflowReleaseStore!.list(),
     listReleaseIntegrityFailures: () => workflowReleaseStore!.listIntegrityFailures(),

@@ -2,6 +2,61 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { cloneWorkflow, isWorkflowValue, workflowAllNodeRunStates, type WorkflowRunLease, type WorkflowRunQueueState, type WorkflowRunRecord } from '../../shared/workflow.js'
+import type { WorkflowQueueCapacityMetrics, WorkflowRunQueueSnapshot } from '../../shared/workflow-operations.js'
+
+/** Main-only configuration. Never accept these limits from run/Renderer options. */
+export interface WorkflowRunQueueLimits {
+  global: number
+  perEnvironment: number
+}
+
+export const DEFAULT_WORKFLOW_RUN_QUEUE_LIMITS: Readonly<WorkflowRunQueueLimits> = Object.freeze({ global: 1000, perEnvironment: 100 })
+
+export class WorkflowRunQueueFullError extends Error {
+  readonly code = 'WORKFLOW_RUN_QUEUE_FULL'
+  constructor() {
+    super('WORKFLOW_RUN_QUEUE_FULL: Workflow queue capacity reached; try again after admitted work settles.')
+    this.name = 'WorkflowRunQueueFullError'
+  }
+}
+
+function queueBucket(environmentId?: string): string {
+  // Prefixing prevents a real environment named "local" colliding with local work.
+  return environmentId === undefined ? 'local' : `environment:${environmentId}`
+}
+
+function isAdmitted(record: WorkflowRunRecord): boolean {
+  return record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval'
+}
+
+function capacityMetrics(records: WorkflowRunRecord[], capacity: number): WorkflowQueueCapacityMetrics {
+  const queued = records.filter((record) => record.status === 'queued').length
+  const running = records.filter((record) => record.status === 'running').length
+  const waitingApproval = records.filter((record) => record.status === 'waiting-approval').length
+  const admitted = queued + running + waitingApproval
+  return { capacity, admitted, queued, running, waitingApproval, availableSlots: Math.max(0, capacity - admitted), overCapacity: admitted > capacity }
+}
+
+function admissionCounts(records: Iterable<WorkflowRunRecord>): { global: number; buckets: Map<string, number> } {
+  let global = 0
+  const buckets = new Map<string, number>()
+  for (const record of records) {
+    if (!isAdmitted(record)) continue
+    global += 1
+    const bucket = queueBucket(record.environmentId)
+    buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1)
+  }
+  return { global, buckets }
+}
+
+function compareText(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0 }
+
+function compareQueuedRuns(left: WorkflowRunRecord, right: WorkflowRunRecord): number {
+  const timestamp = (value?: string): number => value === undefined ? 0 : Date.parse(value) || 0
+  return timestamp(left.queue?.availableAt ?? left.startedAt) - timestamp(right.queue?.availableAt ?? right.startedAt)
+    || timestamp(left.queue?.enqueuedAt ?? left.startedAt) - timestamp(right.queue?.enqueuedAt ?? right.startedAt)
+    || compareText(left.id, right.id)
+}
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
@@ -93,8 +148,16 @@ export class WorkflowRunStore {
   private mutationChain: Promise<void> = Promise.resolve()
   private initialized = false
   private initializationPromise: Promise<void> | undefined
+  private readonly queueLimits: Readonly<WorkflowRunQueueLimits>
+  private lastClaimedBucket: string | undefined
+  private mutationBaseline: Map<string, WorkflowRunRecord> | undefined
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, queueLimits: WorkflowRunQueueLimits = DEFAULT_WORKFLOW_RUN_QUEUE_LIMITS) {
+    if (queueLimits === null || !Number.isSafeInteger(queueLimits.global) || queueLimits.global <= 0
+      || !Number.isSafeInteger(queueLimits.perEnvironment) || queueLimits.perEnvironment <= 0) {
+      throw new Error('WORKFLOW_RUN_QUEUE_CONFIG_INVALID')
+    }
+    this.queueLimits = Object.freeze({ ...queueLimits })
     this.filePath = join(stateDir, 'workflow-runs.json')
   }
 
@@ -105,13 +168,27 @@ export class WorkflowRunStore {
       await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
       try {
         const parsed = JSON.parse(await readFile(this.filePath, 'utf8')) as unknown
-        if (Array.isArray(parsed)) {
-          for (const value of parsed) {
+        let values: unknown[]
+        let cursor: string | undefined
+        if (Array.isArray(parsed)) values = parsed
+        else {
+          if (parsed === null || typeof parsed !== 'object') throw new Error('WORKFLOW_RUN_STORE_SCHEMA_UNSUPPORTED')
+          const envelope = parsed as Record<string, unknown>
+          if (envelope.schemaVersion !== 1 || !Array.isArray(envelope.runs)
+            || envelope.lastClaimedBucket !== undefined && (typeof envelope.lastClaimedBucket !== 'string' || envelope.lastClaimedBucket === '')) {
+            throw new Error('WORKFLOW_RUN_STORE_SCHEMA_UNSUPPORTED')
+          }
+          values = envelope.runs
+          cursor = envelope.lastClaimedBucket as string | undefined
+        }
+        {
+          for (const value of values) {
             if (typeof value !== 'object' || value === null || typeof (value as { id?: unknown }).id !== 'string') continue
             const record = value as WorkflowRunRecord
             if (!isPersistedRunRecord(record)) continue
             this.runs.set(record.id, cloneWorkflow(record))
           }
+          this.lastClaimedBucket = cursor
         }
       } catch (error) {
         if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
@@ -155,6 +232,15 @@ export class WorkflowRunStore {
   get(id: string): WorkflowRunRecord | undefined {
     const record = this.runs.get(id)
     return record === undefined ? undefined : cloneWorkflow(record)
+  }
+
+  queueSnapshot(environmentId?: string): WorkflowRunQueueSnapshot {
+    const records = [...this.runs.values()]
+    const bucket = queueBucket(environmentId)
+    return {
+      global: capacityMetrics(records, this.queueLimits.global),
+      environment: capacityMetrics(records.filter((record) => queueBucket(record.environmentId) === bucket), this.queueLimits.perEnvironment),
+    }
   }
 
   /** Return the next persisted queue availability timestamp for Worker wake-up. */
@@ -227,23 +313,25 @@ export class WorkflowRunStore {
     })
   }
 
-  /** Atomically lease the oldest due queued record to one local Worker. */
+  /** Round-robin due environment buckets; one claim and cursor per atomic local snapshot. */
   async claimNextDue(ownerId: string, leaseMs: number, now = new Date()): Promise<WorkflowRunRecord | undefined> {
     await this.initialize()
     const nowMs = now.getTime()
     const claimedAt = now.toISOString()
     const expiresAt = new Date(nowMs + Math.max(2_000, leaseMs)).toISOString()
     return this.mutate(async () => {
-      const candidate = Array.from(this.runs.values())
+      const due = Array.from(this.runs.values())
         .filter((record) => {
           if (record.status !== 'queued') return false
           if (record.queue !== undefined && !isValidQueueState(record.queue)) return false
           const availableAt = record.queue?.availableAt
           return record.queue === undefined || (availableAt !== undefined && Date.parse(availableAt) <= nowMs)
         })
-        .sort((left, right) => (left.queue?.availableAt ?? left.startedAt ?? '').localeCompare(right.queue?.availableAt ?? right.startedAt ?? ''))
-        .at(0)
+      const buckets = [...new Set(due.map((record) => queueBucket(record.environmentId)))].sort(compareText)
+      const nextBucket = buckets.find((bucket) => this.lastClaimedBucket === undefined || compareText(bucket, this.lastClaimedBucket) > 0) ?? buckets[0]
+      const candidate = due.filter((record) => queueBucket(record.environmentId) === nextBucket).sort(compareQueuedRuns)[0]
       if (candidate === undefined) return undefined
+      this.lastClaimedBucket = nextBucket
       candidate.status = 'running'
       candidate.queue = {
         ...(candidate.queue ?? { enqueuedAt: claimedAt, availableAt: claimedAt }),
@@ -473,7 +561,15 @@ export class WorkflowRunStore {
   }
 
   private async persist(): Promise<void> {
-    await atomicWriteJson(this.filePath, Array.from(this.runs.values()))
+    // Every mutation, including save/resume/inline child/recovery, passes this
+    // serialized guard before disk writes. Legacy excess can drain, never grow.
+    const before = admissionCounts((this.mutationBaseline ?? this.runs).values())
+    const after = admissionCounts(this.runs.values())
+    if (after.global > this.queueLimits.global && after.global > before.global) throw new WorkflowRunQueueFullError()
+    for (const [bucket, count] of after.buckets) {
+      if (count > this.queueLimits.perEnvironment && count > (before.buckets.get(bucket) ?? 0)) throw new WorkflowRunQueueFullError()
+    }
+    await atomicWriteJson(this.filePath, { schemaVersion: 1, lastClaimedBucket: this.lastClaimedBucket, runs: Array.from(this.runs.values()) })
   }
 
   private cloneRuns(): Map<string, WorkflowRunRecord> {
@@ -488,11 +584,16 @@ export class WorkflowRunStore {
   private async mutate<T>(operation: () => Promise<T>): Promise<T> {
     const mutateWithRollback = async (): Promise<T> => {
       const snapshot = this.cloneRuns()
+      const cursor = this.lastClaimedBucket
+      this.mutationBaseline = snapshot
       try {
         return await operation()
       } catch (error) {
         this.restoreRuns(snapshot)
+        this.lastClaimedBucket = cursor
         throw error
+      } finally {
+        this.mutationBaseline = undefined
       }
     }
     const result = this.mutationChain.then(mutateWithRollback, mutateWithRollback)
