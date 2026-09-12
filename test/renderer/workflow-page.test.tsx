@@ -261,19 +261,31 @@ describe('release operational health', () => {
   })
 
   const connectorEvidence = (state: WorkflowConnectorHealthEvidence['state'] = 'unchecked'): WorkflowConnectorHealthEvidence => ({ workflowId: workflow.id, environmentId: environment.id, connectorId: 'authorized-api', releaseId: 'health-release', state, reason: state === 'unchecked' ? 'not-checked' : 'status-expected', ...(state === 'reachable' ? { status: 200, observedAt: '2026-09-12T00:02:00Z', expiresAt: '2026-09-12T00:03:00Z' } : {}) })
-  it('loads and saves opt-in connector probe settings through the security editor', async () => {
+  it.each(['zh', 'en'] as const)('loads, localizes and saves opt-in connector probe settings in %s', async (locale) => {
     const view = await mount()
     const container = view.document.createElement('div'); view.document.body.appendChild(container)
     const root = createRoot(container)
     const save = vi.fn()
-    const copy = getAppCopy('zh')
+    const copy = getAppCopy(locale)
+    const labels = locale === 'en' ? {
+      title: 'GET health check (disabled by default)', enabled: 'Enable GET health check', path: 'Health check path',
+      statuses: 'Expected status codes (200–299, comma-separated)', timeout: 'Timeout (1000–10000 ms)', ttl: 'Validity (10000–300000 ms)',
+      hint: 'Save the configuration, then check manually in the release panel. Only checks the configured GET path; does not prove writes or business delivery.',
+    } : {
+      title: 'GET 健康检查（默认关闭）', enabled: '启用 GET 健康检查', path: '健康检查路径',
+      statuses: '预期状态码（200–299，逗号分隔）', timeout: '超时（1000–10000 毫秒）', ttl: '有效期（10000–300000 毫秒）',
+      hint: '保存配置后，在发布面板手动检查。只验证指定 GET 检查路径，不证明 write 或业务交付。',
+    }
     try {
       await act(async () => { root.render(<workflowPage.WorkflowSecurityAssetsPanel copy={copy} credentials={[]} connectors={[{ id: 'api', name: 'API', kind: 'http', baseUrl: 'https://example.com/', allowedPathPrefixes: ['/v1'], healthProbe: { enabled: true, path: '/v1/health', expectedStatuses: [200, 204], timeoutMs: 3000, ttlMs: 45000 } }]} onRefresh={() => {}} onSaveCredential={() => {}} onRemoveCredential={() => {}} onSaveConnector={save} onRemoveConnector={() => {}} />) })
       const click = async (text: string) => { await act(async () => { Array.from(container.querySelectorAll('button')).find((button) => button.textContent === text)!.click() }) }
       await click(copy.workflowEditSecurityAsset)
-      const path = container.querySelector<HTMLInputElement>('[aria-label="健康检查路径"]')
+      const fieldset = container.querySelector('fieldset')!
+      for (const label of Object.values(labels)) expect(fieldset.textContent).toContain(label)
+      if (locale === 'en') expect(fieldset.textContent).not.toMatch(/[\u3400-\u9fff]/u)
+      const path = container.querySelector<HTMLInputElement>(`[aria-label="${labels.path}"]`)
       expect(path?.value).toBe('/v1/health')
-      expect(container.querySelector<HTMLInputElement>('[aria-label="启用 GET 健康检查"]')?.checked).toBe(true)
+      expect(container.querySelector<HTMLInputElement>(`[aria-label="${labels.enabled}"]`)?.checked).toBe(true)
       await act(async () => { Simulate.change(path!, { target: { value: '/v1/ping' } } as never) })
       await click(copy.workflowSaveConnector)
       expect(save).toHaveBeenCalledWith(expect.objectContaining({ healthProbe: { enabled: true, path: '/v1/ping', expectedStatuses: [200, 204], timeoutMs: 3000, ttlMs: 45000 } }))

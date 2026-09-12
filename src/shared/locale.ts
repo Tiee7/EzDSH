@@ -369,6 +369,13 @@ export interface AppCopy {
   workflowConnectorPaths: string
   workflowConnectorDelete: string
   workflowSaveConnector: string
+  workflowConnectorHealthTitle: string
+  workflowConnectorHealthEnabled: string
+  workflowConnectorHealthPath: string
+  workflowConnectorHealthStatuses: string
+  workflowConnectorHealthTimeout: string
+  workflowConnectorHealthTtl: string
+  workflowConnectorHealthHint: string
   workflowCancel: string
   workflowApprove: string
   workflowReject: string
@@ -1279,6 +1286,13 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowConnectorPaths: '允许路径前缀（每行一个）',
     workflowConnectorDelete: '删除连接器',
     workflowSaveConnector: '保存连接器',
+    workflowConnectorHealthTitle: 'GET 健康检查（默认关闭）',
+    workflowConnectorHealthEnabled: '启用 GET 健康检查',
+    workflowConnectorHealthPath: '健康检查路径',
+    workflowConnectorHealthStatuses: '预期状态码（200–299，逗号分隔）',
+    workflowConnectorHealthTimeout: '超时（1000–10000 毫秒）',
+    workflowConnectorHealthTtl: '有效期（10000–300000 毫秒）',
+    workflowConnectorHealthHint: '保存配置后，在发布面板手动检查。只验证指定 GET 检查路径，不证明 write 或业务交付。',
     workflowCancel: '取消运行',
     workflowApprove: '通过审批',
     workflowReject: '拒绝审批',
@@ -2214,6 +2228,13 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     workflowConnectorPaths: 'Allowed path prefixes (one per line)',
     workflowConnectorDelete: 'Delete connector',
     workflowSaveConnector: 'Save connector',
+    workflowConnectorHealthTitle: 'GET health check (disabled by default)',
+    workflowConnectorHealthEnabled: 'Enable GET health check',
+    workflowConnectorHealthPath: 'Health check path',
+    workflowConnectorHealthStatuses: 'Expected status codes (200–299, comma-separated)',
+    workflowConnectorHealthTimeout: 'Timeout (1000–10000 ms)',
+    workflowConnectorHealthTtl: 'Validity (10000–300000 ms)',
+    workflowConnectorHealthHint: 'Save the configuration, then check manually in the release panel. Only checks the configured GET path; does not prove writes or business delivery.',
     workflowCancel: 'Cancel run',
     workflowApprove: 'Approve',
     workflowReject: 'Reject',
