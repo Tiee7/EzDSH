@@ -10,13 +10,13 @@ EzDSH 不依赖用户电脑上预先安装的 DSH，也不把用户本机的安�
 
 ```text
 Runtime package:        @deepseek-ai/dsh
-Runtime version:        0.1.5-rc.1
-Source commit:          183f08e9c6dde7e36cd2318eaee70b0da08fb35e
-Published npm package:  0.1.5-rc.1
-Checked at:              2026-09-09
+Runtime version:        0.1.5-rc.2
+Source commit:          fb2c4b9e698e30edb738bca4cf0618587db7d203
+Published npm package:  0.1.5-rc.2
+Checked at:              2026-09-12
 ```
 
-`0.1.5-rc.1` 是当前实际交付的 Runtime 版本：源码来自 `vendor/deepseek-harness`，并由 source pin、暂存目录和最终安装包的健康检查共同设为硬门禁。该版本同时已发布到 npm，根项目的 `@deepseek-ai/dsh` 及其 companion 依赖也统一锁定为 `0.1.5-rc.1`；正式安装包仍以 source-built Runtime 为权威。已有安装包不会因为仓库升级而被追溯更新，需要重新构建并发布新安装包。
+`0.1.5-rc.2` 是当前实际交付的 Runtime 版本：源码来自 `vendor/deepseek-harness`，并由 source pin、暂存目录和最终安装包的健康检查共同设为硬门禁。该版本同时已发布到 npm，根项目的 `@deepseek-ai/dsh` 及其 companion 依赖也统一锁定为 `0.1.5-rc.2`；正式安装包仍以 source-built Runtime 为权威。已有安装包不会因为仓库升级而被追溯更新，需要重新构建并发布新安装包。
 
 项目依赖最终以 `package.json` 和 lockfile 中的精确版本为准。普通开发会优先使用已构建的 `vendor/deepseek-harness/apps/cli/lib/bin.js`；正式打包会将 source-built Runtime 暂存为 `out/dsh-runtime`，生产入口为 `out/dsh-runtime/lib/bin.js`，electron-builder 会把它随 `out/**/*` 放入安装包。若源码 Runtime 缺失，开发模式才回退到已发布 npm 包；正式验证会拒绝选中错误版本。
 
@@ -46,7 +46,7 @@ EzDSH 安装包
 
 ## 2. 项目如何包含 DSH Runtime
 
-当前发布链路使用 DSH 源码子模块构建 `0.1.5-rc.1`。该入口包含：
+当前发布链路使用 DSH 源码子模块构建 `0.1.5-rc.2`。该入口包含：
 
 - `vendor/deepseek-harness` Git 子模块；
 - 子模块指向的完整 upstream commit；
@@ -61,7 +61,7 @@ EzDSH 安装包
 
 ### 3.1 普通开发模式
 
-普通开发模式优先使用仓库中已构建的 vendored DSH Runtime，不使用本机全局安装的 DSH。源码 checkout 必须同时满足 `0.1.5-rc.1` 版本和 `183f08e9c6dde7e36cd2318eaee70b0da08fb35e` commit 两个硬门禁；缺少源码构建产物时才回退到根项目中锁定的已发布 npm 包。这样可以保证：
+普通开发模式优先使用仓库中已构建的 vendored DSH Runtime，不使用本机全局安装的 DSH。源码 checkout 必须同时满足 `0.1.5-rc.2` 版本和 `fb2c4b9e698e30edb738bca4cf0618587db7d203` commit 两个硬门禁；缺少源码构建产物时才回退到根项目中锁定的已发布 npm 包。这样可以保证：
 
 - 每位开发者使用同一个 Runtime 包版本；
 - CI 使用同一个 Runtime 版本；
@@ -152,7 +152,7 @@ API Key 不应直接保存在 EzDSH 安装目录或普通状态 JSON 中。EzDSH
 3. 是否需要本地源码联调；
 4. 如果需要联调，再提供源码目录和 commit。
 
-默认开发路径会在 `vendor/deepseek-harness` 存在并已构建时使用 `0.1.5-rc.1` 源码 Runtime；如果需要显式指定源码目录，仍可使用 `EZDSH_DSH_SOURCE`。`dsh:source:install`、`dsh:source:build` 和 `stage:dsh:source-runtime` 是正式打包所需的源码 Runtime 流程。
+默认开发路径会在 `vendor/deepseek-harness` 存在并已构建时使用 `0.1.5-rc.2` 源码 Runtime；如果需要显式指定源码目录，仍可使用 `EZDSH_DSH_SOURCE`。`dsh:source:install`、`dsh:source:build` 和 `stage:dsh:source-runtime` 是正式打包所需的源码 Runtime 流程。
 
 本项目使用 NVM 切换 Node 版本，仓库根目录的 `.nvmrc` 固定为 Node `24.18.0`；当前上游构建要求 Node `^22.19.0 || >=24.0.0`。进入项目后应先执行 `nvm use`，并确认当前终端的 `node -v` 实际为 `v24.18.0`。
 
@@ -169,7 +169,7 @@ npm ci
 CI=true ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm run package:mac
 ```
 
-`prepare:package` 会校验 npm DSH 依赖、安装并构建 vendored `0.1.5-rc.1`、构建 EzDSH、暂存目标平台 Node Runtime，并执行真实健康检查。健康检查会用暂存的 Node 启动 `out/dsh-runtime/lib/bin.js`，并在无供应商配置的临时用户目录中请求 Web 页面；未通过时不会继续生成安装包。electron-builder 会把 source-built Runtime 随应用一起交付。
+`prepare:package` 会校验 npm DSH 依赖、安装并构建 vendored `0.1.5-rc.2`、构建 EzDSH、暂存目标平台 Node Runtime，并执行真实健康检查。健康检查会用暂存的 Node 启动 `out/dsh-runtime/lib/bin.js`，并在无供应商配置的临时用户目录中请求 Web 页面；未通过时不会继续生成安装包。electron-builder 会把 source-built Runtime 随应用一起交付。
 
 当前发布目标支持 macOS arm64 和 Windows x64。构建脚本会根据原生主机平台选择对应的内置 Node Runtime，并拒绝在其他平台上错误地混入原生依赖。Windows 打包必须在 Windows x64 runner 上执行；macOS arm64 打包必须在 macOS arm64 runner 上执行。Windows 原生打包流程已准备，但需要在对应 Windows 环境中完成首次构建验证后再作为正式发布链路使用。
 

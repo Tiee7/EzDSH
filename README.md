@@ -166,7 +166,7 @@ These steps are for developers who want to run the project locally from a source
    npm ci
    ```
 
-4. `npm ci` installs the published `@deepseek-ai/dsh@0.1.5-rc.1` dependencies. The local Runtime is the vendored `@deepseek-ai/dsh@0.1.5-rc.1`, so build that source checkout before starting the app:
+4. `npm ci` installs the published `@deepseek-ai/dsh@0.1.5-rc.2` dependencies. The local Runtime is the vendored `@deepseek-ai/dsh@0.1.5-rc.2`, so build that source checkout before starting the app:
 
    ```bash
    npm run dsh:source:install
