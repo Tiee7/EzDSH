@@ -1,5 +1,5 @@
 export type RuntimePhase = 'idle' | 'starting' | 'ready' | 'stopping' | 'stopped' | 'failed'
-export type RuntimeMode = 'normal' | 'safe'
+export type RuntimeMode = 'normal' | 'safe' | 'isolation'
 
 export interface RuntimeSnapshot {
   phase: RuntimePhase

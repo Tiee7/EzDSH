@@ -293,6 +293,7 @@ export interface EzDSHBridge {
     doctor(repair?: boolean): Promise<RecoveryDoctorResult>
     restore(selector: string, dryRun: boolean): Promise<RecoveryDryRun | RecoveryRestoreResult>
     enterSafeMode(): Promise<RuntimeSnapshot>
+    enterIsolationMode(): Promise<RuntimeSnapshot>
     exitSafeMode(): Promise<RuntimeSnapshot>
     rollbackPendingPlugin(): Promise<RecoveryRestoreResult>
     disablePlugin(packageName: string, profile: string): Promise<RuntimeSnapshot>

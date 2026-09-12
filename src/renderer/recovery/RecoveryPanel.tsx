@@ -8,17 +8,17 @@ interface RecoveryPanelProps {
   copy: AppCopy
   state: RecoveryState
   runtime?: RuntimeSnapshot
-  onSafeModeStarted?: (runtime: RuntimeSnapshot) => void
+  onRecoveryModeStarted?: (runtime: RuntimeSnapshot) => void
 }
 
-type RecoveryBusyAction = 'retry' | 'restore' | 'restore-snapshot' | 'list-snapshots' | 'safe-mode' | 'exit-safe-mode' | 'rollback-plugin' | 'disable-plugin' | 'uninstall-plugin' | 'doctor'
+type RecoveryBusyAction = 'retry' | 'restore' | 'restore-snapshot' | 'list-snapshots' | 'safe-mode' | 'isolation-mode' | 'exit-safe-mode' | 'rollback-plugin' | 'disable-plugin' | 'uninstall-plugin' | 'doctor'
 
 export function sortRecoverySnapshotsByDate(snapshots: readonly RecoverySnapshot[]): RecoverySnapshot[] {
   return [...snapshots].sort((left, right) => right.manifest.createdAt.localeCompare(left.manifest.createdAt))
 }
 
 /** Recovery UI that remains usable while the DSH child process is unavailable. */
-export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: RecoveryPanelProps): JSX.Element {
+export function RecoveryPanel({ copy, state, runtime, onRecoveryModeStarted }: RecoveryPanelProps): JSX.Element {
   const [busyAction, setBusyAction] = useState<RecoveryBusyAction>()
   const [error, setError] = useState<string>()
   const [doctor, setDoctor] = useState<RecoveryDoctorResult>()
@@ -95,9 +95,26 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
       if (runtime.phase !== 'ready' || runtime.mode !== 'safe' || runtime.url === undefined) {
         throw new Error('安全模式 Runtime 未进入可用状态')
       }
-      onSafeModeStarted?.(runtime)
+      onRecoveryModeStarted?.(runtime)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '无法启动安全模式')
+    } finally {
+      setBusyAction(undefined)
+    }
+  }
+
+  const enterIsolationMode = async (): Promise<void> => {
+    if (busy) return
+    setBusyAction('isolation-mode')
+    setError(undefined)
+    try {
+      const runtime = await window.EzDSH.recovery.enterIsolationMode()
+      if (runtime.phase !== 'ready' || runtime.mode !== 'isolation' || runtime.url === undefined) {
+        throw new Error('隔离模式 Runtime 未进入可用状态')
+      }
+      onRecoveryModeStarted?.(runtime)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法启动隔离模式')
     } finally {
       setBusyAction(undefined)
     }
@@ -186,7 +203,7 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
         {pendingPlugin ? (
           <div className="recovery-plugin-incident" role="status">
             <strong>检测到受管插件变更：</strong> {pendingPlugin.entryId}<br />
-            EzDSH 已保留变更前快照。安全模式不会加载任何第三方插件。
+            EzDSH 已保留变更前快照。安全模式和隔离模式都不会加载任何第三方插件。
           </div>
         ) : null}
         {runtimeFailure ? (
@@ -316,11 +333,14 @@ export function RecoveryPanel({ copy, state, runtime, onSafeModeStarted }: Recov
             {copy.recoverySelectSnapshot}
           </button>
           <button type="button" className="recovery-safe-mode recovery-action-button" disabled={busy} onClick={() => { void enterSafeMode() }}>
-            {copy.runtimeEnterSafeMode}
+            {busyAction === 'safe-mode' ? copy.runtimeEnteringSafeMode : copy.runtimeEnterSafeMode}
           </button>
-          {runtime?.mode === 'safe' ? (
+          <button type="button" className="recovery-link recovery-action-button" disabled={busy} onClick={() => { void enterIsolationMode() }}>
+            {busyAction === 'isolation-mode' ? copy.runtimeEnteringIsolationMode : copy.runtimeEnterIsolationMode}
+          </button>
+          {runtime?.mode === 'safe' || runtime?.mode === 'isolation' ? (
             <button type="button" className="recovery-link recovery-action-button" disabled={busy} onClick={() => { void exitSafeMode() }}>
-              {copy.safeModeExit}
+              {runtime.mode === 'isolation' ? copy.isolationModeExit : copy.safeModeExit}
             </button>
           ) : null}
           <button type="button" className="retry-button recovery-action-button" disabled={busy} onClick={() => { void retry() }}>

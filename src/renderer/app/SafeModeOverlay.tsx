@@ -1,7 +1,7 @@
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
 
-export function isSafeModeActive(runtime: RuntimeSnapshot | undefined): boolean {
-  return runtime?.phase === 'ready' && runtime.mode === 'safe'
+export function isRecoveryModeActive(runtime: RuntimeSnapshot | undefined): boolean {
+  return runtime?.phase === 'ready' && (runtime.mode === 'safe' || runtime.mode === 'isolation')
 }
 
 interface SafeModeCornerOverlayProps {

@@ -41,7 +41,7 @@ describe('RecoveryPanel Safe Mode controls', () => {
     expect(css).toMatch(/\.recovery-actions\s+\.recovery-action-button\s*\{[^}]*margin-top:\s*0/s)
   })
 
-  it('shows Safe Mode and plugin rollback actions for a failed managed plugin change', () => {
+  it('shows Safe Mode, Isolation Mode, and plugin rollback actions for a failed managed plugin change', () => {
     const markup = renderToStaticMarkup(
       <RecoveryPanel
         copy={getAppCopy('zh')}
@@ -66,6 +66,7 @@ describe('RecoveryPanel Safe Mode controls', () => {
     )
 
     expect(markup).toContain('以安全模式启动')
+    expect(markup).toContain('以隔离模式启动')
     expect(markup).toContain('回滚此插件变更')
     expect(markup).toContain('agent-teams')
   })
@@ -182,10 +183,13 @@ describe('RecoveryPanel Safe Mode controls', () => {
     expect(buttons.every((button) => button.includes('recovery-action-button'))).toBe(true)
   })
 
-  it('shows an exit action when the Runtime is in Safe Mode', () => {
+  it.each([
+    ['safe', '退出安全模式并正常启动'],
+    ['isolation', '退出隔离模式并正常启动'],
+  ] as const)('shows an exit action when the Runtime is in %s mode', (mode, exitLabel) => {
     const runtime: RuntimeSnapshot = {
       phase: 'ready',
-      mode: 'safe',
+      mode,
       url: 'http://127.0.0.1:4567/?token=safe-mode-token',
       launchDirectory: '/tmp',
       logPath: '/tmp/harness.log',
@@ -199,7 +203,7 @@ describe('RecoveryPanel Safe Mode controls', () => {
     )
 
     expect(markup).toContain('以安全模式启动')
-    expect(markup).toContain('退出安全模式并正常启动')
+    expect(markup).toContain(exitLabel)
     expect(markup).toContain('class="recovery-link recovery-action-button"')
   })
 

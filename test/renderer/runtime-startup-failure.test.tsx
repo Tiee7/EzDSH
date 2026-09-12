@@ -33,7 +33,7 @@ describe('Runtime startup failure notice', () => {
     expect(detailsStyles).toContain('-webkit-user-select: text;')
   })
 
-  it('offers Safe Mode and a Runtime-independent recovery settings entry point', () => {
+  it('offers Safe Mode, Isolation Mode, and a Runtime-independent recovery settings entry point', () => {
     const copy = getAppCopy('zh')
     const markup = renderToStaticMarkup(
       <RuntimeStartupFailureNotice
@@ -42,12 +42,14 @@ describe('Runtime startup failure notice', () => {
         logPath="/tmp/harness.log"
         onOpenLog={async () => {}}
         onEnterSafeMode={async () => {}}
+        onEnterIsolationMode={async () => {}}
         onOpenRecoverySettings={() => {}}
         initialExpanded
       />
     )
 
     expect(markup).toContain(copy.runtimeEnterSafeMode)
+    expect(markup).toContain(copy.runtimeEnterIsolationMode)
     expect(markup).toContain(copy.runtimeOpenRecoverySettings)
   })
 

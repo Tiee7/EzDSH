@@ -30,6 +30,36 @@ async function fixture(limits?: { global: number; perEnvironment: number }) {
 }
 
 describe('operational dead letter and bounded recovery', () => {
+  it('projects retention holds for reference-protected runs without unresolved effects', async () => {
+    const f = await fixture()
+    await f.save('parent', { status: 'completed' })
+    await f.save('child', { parentRunId: 'parent', retentionExpiresAt: '2000-01-01T00:00:00.000Z' })
+    const page = await f.service.listDeadLetters()
+    expect(page.items.find((item) => item.runId === 'child')).toMatchObject({ retentionHold: true })
+    expect(await f.runStore.pruneExpired()).toEqual([])
+    await expect(f.runStore.remove('child')).rejects.toThrow('PROTECTED')
+  })
+
+  it('keeps resolved tombstoned audit permanently held and explicitly blocks recovery', async () => {
+    const f = await fixture()
+    await f.save('audit', { status: 'paused', compensationStack: [{ occurrenceId: 'comp', sourceNodeId: 'input', action: { type: 'workflow', workflowId: 'undo' }, status: 'failed', effectState: 'unknown' }] })
+    const stalePreview = await f.service.previewRecovery({ runIds: ['audit'] })
+    await f.service.removeWorkflow(f.workflow.id)
+    await f.service.reconcileCompensation('audit', { occurrenceId: 'comp', outcome: 'dispatched', note: 'receipt verified' })
+    const record = f.runStore.get('audit')!
+    expect(record.compensationStack?.[0]).toMatchObject({ status: 'completed', effectState: 'confirmed' })
+    const page = await f.service.listDeadLetters()
+    expect(page.items[0]).toMatchObject({ runId: 'audit', retentionHold: true, decision: 'blocked', reason: 'source-deleted-audit-only' })
+    const previews = await f.service.previewRecovery({ runIds: ['audit'] })
+    expect(previews[0]).toMatchObject({ decision: 'blocked', reason: 'source-deleted-audit-only' })
+    for (const items of [previews, stalePreview]) {
+      expect(await f.service.executeRecovery({ requestId: 'deleted-source', items })).toMatchObject([{ status: 'blocked', reason: 'source-deleted-audit-only' }])
+    }
+    await expect(f.service.resume('audit')).rejects.toThrow('TOMBSTONED')
+    await expect(f.runStore.remove('audit')).rejects.toThrow('PROTECTED')
+    expect(f.runStore.get('audit')).toEqual(record)
+  })
+
   it('projects only dead letters, including completed/cancelled compensation blockers, without raw payloads', async () => {
     const f = await fixture()
     for (const status of ['failed', 'paused', 'queued', 'running', 'waiting-approval', 'completed', 'cancelled'] as const) await f.save(status, { status })

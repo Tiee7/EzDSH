@@ -7,6 +7,7 @@ interface RuntimeStartupFailureNoticeProps {
   logPath: string | undefined
   onOpenLog: () => Promise<void>
   onEnterSafeMode?: () => Promise<void>
+  onEnterIsolationMode?: () => Promise<void>
   onOpenRecoverySettings?: () => void
   initialExpanded?: boolean
 }
@@ -18,6 +19,7 @@ export function RuntimeStartupFailureNotice({
   logPath,
   onOpenLog,
   onEnterSafeMode,
+  onEnterIsolationMode,
   onOpenRecoverySettings,
   initialExpanded = false,
 }: RuntimeStartupFailureNoticeProps): JSX.Element {
@@ -26,6 +28,9 @@ export function RuntimeStartupFailureNotice({
   const [openLogError, setOpenLogError] = useState<string>()
   const [enteringSafeMode, setEnteringSafeMode] = useState(false)
   const [safeModeError, setSafeModeError] = useState<string>()
+  const [enteringIsolationMode, setEnteringIsolationMode] = useState(false)
+  const [isolationModeError, setIsolationModeError] = useState<string>()
+  const enteringRecoveryMode = enteringSafeMode || enteringIsolationMode
 
   const openLog = async (): Promise<void> => {
     if (openingLog || logPath === undefined) return
@@ -41,7 +46,7 @@ export function RuntimeStartupFailureNotice({
   }
 
   const enterSafeMode = async (): Promise<void> => {
-    if (enteringSafeMode || onEnterSafeMode === undefined) return
+    if (enteringRecoveryMode || onEnterSafeMode === undefined) return
     setEnteringSafeMode(true)
     setSafeModeError(undefined)
     try {
@@ -50,6 +55,19 @@ export function RuntimeStartupFailureNotice({
       setSafeModeError(reason instanceof Error ? reason.message : copy.runtimeSafeModeFailed)
     } finally {
       setEnteringSafeMode(false)
+    }
+  }
+
+  const enterIsolationMode = async (): Promise<void> => {
+    if (enteringRecoveryMode || onEnterIsolationMode === undefined) return
+    setEnteringIsolationMode(true)
+    setIsolationModeError(undefined)
+    try {
+      await onEnterIsolationMode()
+    } catch (reason) {
+      setIsolationModeError(reason instanceof Error ? reason.message : copy.runtimeIsolationModeFailed)
+    } finally {
+      setEnteringIsolationMode(false)
     }
   }
 
@@ -65,11 +83,16 @@ export function RuntimeStartupFailureNotice({
         <span aria-hidden="true">{expanded ? '−' : '+'}</span>
         {expanded ? copy.runtimeHideFailureDetails : copy.runtimeShowFailureDetails}
       </button>
-      {onEnterSafeMode !== undefined || onOpenRecoverySettings !== undefined || logPath !== undefined ? (
+      {onEnterSafeMode !== undefined || onEnterIsolationMode !== undefined || onOpenRecoverySettings !== undefined || logPath !== undefined ? (
         <div className="runtime-failure-actions">
           {onEnterSafeMode !== undefined ? (
-            <button type="button" className="runtime-failure-action runtime-failure-action-primary" disabled={enteringSafeMode} onClick={() => { void enterSafeMode() }}>
+            <button type="button" className="runtime-failure-action runtime-failure-action-primary" disabled={enteringRecoveryMode} onClick={() => { void enterSafeMode() }}>
               {enteringSafeMode ? copy.runtimeEnteringSafeMode : copy.runtimeEnterSafeMode}
+            </button>
+          ) : null}
+          {onEnterIsolationMode !== undefined ? (
+            <button type="button" className="runtime-failure-action" disabled={enteringRecoveryMode} onClick={() => { void enterIsolationMode() }}>
+              {enteringIsolationMode ? copy.runtimeEnteringIsolationMode : copy.runtimeEnterIsolationMode}
             </button>
           ) : null}
           {onOpenRecoverySettings !== undefined ? (
@@ -85,6 +108,7 @@ export function RuntimeStartupFailureNotice({
         </div>
       ) : null}
       {safeModeError !== undefined ? <p className="runtime-failure-open-error" role="alert">{copy.runtimeSafeModeFailed}: {safeModeError}</p> : null}
+      {isolationModeError !== undefined ? <p className="runtime-failure-open-error" role="alert">{copy.runtimeIsolationModeFailed}: {isolationModeError}</p> : null}
       {expanded ? (
         <div id="runtime-startup-failure-details" className="runtime-failure-details" role="region" aria-label={copy.runtimeShowFailureDetails}>
           <p className="runtime-failure-label">{copy.runtimeFailureReason}</p>

@@ -416,7 +416,7 @@ describe('RuntimeManager', () => {
     expect(manager.snapshot().pid).toBe(11002)
   })
 
-  it('starts a Safe Mode Runtime against its isolated DSH home', async () => {
+  it('starts an Isolation Mode Runtime against its isolated DSH home', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-safe-mode-'))
     roots.push(root)
     const layout = getUserDataLayout(root)
@@ -445,11 +445,53 @@ describe('RuntimeManager', () => {
       }
     })
 
-    const ready = await manager.start({ mode: 'safe', dshHome: join(root, 'safe-mode-home') } as never)
+    const ready = await manager.start({ mode: 'isolation', dshHome: join(root, 'isolation-mode-home') })
 
-    expect(spawnedOptions?.env?.DSH_HOME).toBe(join(root, 'safe-mode-home'))
+    expect(spawnedOptions?.env?.DSH_HOME).toBe(join(root, 'isolation-mode-home'))
     expect(spawnedArgs).not.toContain('--patch')
-    expect((ready as { mode?: string }).mode).toBe('safe')
+    expect(ready.mode).toBe('isolation')
+    await manager.stop()
+  })
+
+  it('starts Safe Mode in the normal DSH home with a core-only profile and unchanged working directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-safe-profile-'))
+    roots.push(root)
+    const layout = getUserDataLayout(root)
+    const child = Object.assign(new EventEmitter(), {
+      pid: 12002,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill(signal: NodeJS.Signals): boolean {
+        this.emit('exit', 0, signal)
+        return true
+      }
+    })
+    let spawnedOptions: import('node:child_process').SpawnOptions | undefined
+    let spawnedArgs: readonly string[] = []
+    const beforeStart = vi.fn(async () => undefined)
+    const manager = new RuntimeManager({
+      layout,
+      runtimeEntryPath: '/dev/null',
+      command: process.execPath,
+      patchPaths: ['/app/plugins/chat-search/cordis.patch.yml'],
+      allocatePort: async () => 4567,
+      waitForHealthy: async () => undefined,
+      beforeStart,
+      spawnProcess: (_command, args, options) => {
+        spawnedArgs = args
+        spawnedOptions = options
+        return child as never
+      }
+    })
+
+    const ready = await manager.start({ mode: 'safe', dshHome: layout.harness, profile: 'ezdsh-safe' })
+
+    expect(spawnedOptions?.cwd).toBe(layout.launchRoot)
+    expect(spawnedOptions?.env?.DSH_HOME).toBe(layout.harness)
+    expect(spawnedArgs.slice(2, 5)).toEqual(['--profile', 'ezdsh-safe', '--host'])
+    expect(spawnedArgs).not.toContain('--patch')
+    expect(beforeStart).toHaveBeenCalledWith(expect.objectContaining({ mode: 'safe', profile: 'ezdsh-safe' }))
+    expect(ready).toMatchObject({ mode: 'safe', launchDirectory: layout.launchRoot })
     await manager.stop()
   })
 

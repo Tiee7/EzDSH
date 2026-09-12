@@ -338,6 +338,7 @@ const bridge: EzDSHBridge = {
     doctor: (repair = false) => invoke<RecoveryDoctorResult>('recovery:doctor', repair),
     restore: (selector: string, dryRun: boolean) => invoke<RecoveryDryRun | RecoveryRestoreResult>('recovery:restore', selector, dryRun),
     enterSafeMode: () => invoke('recovery:enter-safe-mode'),
+    enterIsolationMode: () => invoke('recovery:enter-isolation-mode'),
     exitSafeMode: () => invoke('recovery:exit-safe-mode'),
     rollbackPendingPlugin: () => invoke<RecoveryRestoreResult>('recovery:rollback-pending-plugin'),
     disablePlugin: (packageName: string, profile: string) => invoke<RuntimeSnapshot>('recovery:disable-plugin', packageName, profile),

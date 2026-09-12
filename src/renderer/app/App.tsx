@@ -31,7 +31,7 @@ import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import { shouldKeepTabMounted } from './page-lifecycle.js'
 import { RecoveryPanel } from '../recovery/RecoveryPanel.js'
 import { RuntimeStartupFailureNotice } from './RuntimeStartupFailureNotice.js'
-import { isSafeModeActive, SafeModeCornerOverlay } from './SafeModeOverlay.js'
+import { isRecoveryModeActive, SafeModeCornerOverlay } from './SafeModeOverlay.js'
 import logoUrl from '../../../assets/logo.png'
 import { ensureAudio, playNotificationSound } from '../notifications/audio.js'
 import './app.css'
@@ -356,6 +356,14 @@ export function App() {
     setActiveTab('settings')
   }, [])
 
+  const enterIsolationModeFromFailure = useCallback(async (): Promise<void> => {
+    const isolationModeRuntime = await window.EzDSH.recovery.enterIsolationMode()
+    setRuntime(isolationModeRuntime)
+    setShowRecoverySettings(false)
+    setShowRecoveryOptions(false)
+    setActiveTab('settings')
+  }, [])
+
   useEffect(() => {
     if (!recoveryLoaded || recovery.phase === 'recovery-required') return
     void ensureRuntime()
@@ -391,15 +399,15 @@ export function App() {
     </div>
   )
 
-  const safeModeActive = isSafeModeActive(runtime)
+  const recoveryModeActive = isRecoveryModeActive(runtime)
 
-  if (recovery.phase === 'recovery-required' && (!safeModeActive || showRecoveryOptions)) {
+  if (recovery.phase === 'recovery-required' && (!recoveryModeActive || showRecoveryOptions)) {
     return (
       <RecoveryPanel
         copy={copy}
         state={recovery}
         runtime={runtime}
-        onSafeModeStarted={(nextRuntime) => {
+        onRecoveryModeStarted={(nextRuntime) => {
           setRuntime(nextRuntime)
           setShowRecoveryOptions(false)
         }}
@@ -459,7 +467,7 @@ export function App() {
         </div>
         {update ? <UpdateCenter state={update} copy={copy} /> : null}
         {workspaceLock}
-        {safeModeActive ? <SafeModeCornerOverlay label={copy.safeModeBadge} /> : null}
+        {recoveryModeActive ? <SafeModeCornerOverlay label={runtime.mode === 'isolation' ? copy.isolationModeBadge : copy.safeModeBadge} /> : null}
       </main>
     )
   }
@@ -524,6 +532,7 @@ export function App() {
             logPath={runtime?.logPath}
             onOpenLog={() => window.EzDSH.runtime.openLog()}
             onEnterSafeMode={enterSafeModeFromFailure}
+            onEnterIsolationMode={enterIsolationModeFromFailure}
             onOpenRecoverySettings={() => { setShowRecoverySettings(true) }}
           />
         ) : null}

@@ -40,6 +40,8 @@ export interface AppCopy {
   runtimeOpenLogFailed: string
   runtimeEnterSafeMode: string
   runtimeEnteringSafeMode: string
+  runtimeEnterIsolationMode: string
+  runtimeEnteringIsolationMode: string
   safeModeBadge: string
   safeModeTitle: string
   safeModeDescription: string
@@ -47,11 +49,18 @@ export interface AppCopy {
   safeModeExiting: string
   safeModeExitFailed: string
   safeModeOpenRecovery: string
+  isolationModeBadge: string
+  isolationModeTitle: string
+  isolationModeDescription: string
+  isolationModeExit: string
+  isolationModeExiting: string
+  isolationModeExitFailed: string
   runtimeOpenRecoverySettings: string
   runtimeReturnToFailure: string
   runtimeRescueTitle: string
   runtimeRescueDetail: string
   runtimeSafeModeFailed: string
+  runtimeIsolationModeFailed: string
   appTitle: string
   appSubtitle: string
   menuAbout: string
@@ -957,18 +966,27 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     runtimeOpenLogFailed: '打开日志失败',
     runtimeEnterSafeMode: '以安全模式启动',
     runtimeEnteringSafeMode: '正在启动安全模式…',
+    runtimeEnterIsolationMode: '以隔离模式启动',
+    runtimeEnteringIsolationMode: '正在启动隔离模式…',
     safeModeBadge: '安全模式',
     safeModeTitle: '安全模式运行中',
-    safeModeDescription: '安全模式仅用于临时恢复和排查设置：它使用独立的临时 DSH_HOME，不加载正常工作区的插件、技能、会话和凭据。问题处理完成后请退出，不建议长期使用。',
+    safeModeDescription: '安全模式保留当前工作文件夹、会话、设置和凭据，但只加载内置 Runtime 组件，并停用所有第三方插件、Skills 和自定义 Agent 模式；正常 web profile 不会被改写。',
     safeModeExit: '退出安全模式并正常启动',
     safeModeExiting: '正在退出安全模式并重启 Runtime…',
     safeModeExitFailed: '退出安全模式失败',
     safeModeOpenRecovery: '打开恢复选项',
+    isolationModeBadge: '隔离模式',
+    isolationModeTitle: '隔离模式运行中',
+    isolationModeDescription: '隔离模式使用独立的临时 DSH_HOME，不加载正常环境的插件、Skills、会话、设置或凭据。它适合正常环境本身已损坏时进行最小化排查。',
+    isolationModeExit: '退出隔离模式并正常启动',
+    isolationModeExiting: '正在退出隔离模式并重启 Runtime…',
+    isolationModeExitFailed: '退出隔离模式失败',
     runtimeOpenRecoverySettings: '打开恢复设置',
     runtimeReturnToFailure: '返回启动失败页',
     runtimeRescueTitle: 'EzDSH 启动修复',
     runtimeRescueDetail: 'Runtime 当前不可用。你可以检查恢复快照和会话日志，再决定是否恢复环境或重试启动。',
     runtimeSafeModeFailed: '安全模式启动失败',
+    runtimeIsolationModeFailed: '隔离模式启动失败',
     appTitle: '你的本地 AI 工作台',
     appSubtitle: 'Easy Way to the DeepSeek‑Harness',
     menuAbout: '关于 EzDSH',
@@ -1009,7 +1027,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryRemoveConflictingPlugins: '删除冲突的插件',
     recoveryPluginChoiceTitle: '可处理的第三方插件：',
     recoveryPluginChoiceHint: '以下插件来自当前 profile；它们不一定是本次故障原因。已停用的插件可以彻底卸载。',
-    recoveryNoPluginChoices: '未能从当前 profile 识别出可管理的第三方插件；你仍可以恢复最近快照或进入安全模式。',
+    recoveryNoPluginChoices: '未能从当前 profile 识别出可管理的第三方插件；你仍可以恢复最近快照，或进入安全模式/隔离模式。',
     recoveryDisablePlugin: (name) => `停用「${name}」并继续启动`,
     recoveryDisablingPlugin: '正在停用插件并重新启动 Runtime…',
     recoveryPluginDisabled: (name) => `「${name}」已停用`,
@@ -1899,18 +1917,27 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     runtimeOpenLogFailed: 'Could not open log',
     runtimeEnterSafeMode: 'Start in Safe Mode',
     runtimeEnteringSafeMode: 'Starting Safe Mode…',
+    runtimeEnterIsolationMode: 'Start in Isolation Mode',
+    runtimeEnteringIsolationMode: 'Starting Isolation Mode…',
     safeModeBadge: 'Safe Mode',
     safeModeTitle: 'Safe Mode is active',
-    safeModeDescription: 'Safe Mode is for temporary recovery and troubleshooting: it uses an isolated temporary DSH_HOME and does not load your normal workspace plugins, skills, sessions, or credentials. Exit after fixing the issue; do not use it as a long-term mode.',
+    safeModeDescription: 'Safe Mode keeps the current working directory, sessions, settings, and credentials, but loads only built-in Runtime components and disables all third-party plugins, Skills, and custom Agent modes. The normal web profile is not rewritten.',
     safeModeExit: 'Exit Safe Mode and start normally',
     safeModeExiting: 'Exiting Safe Mode and restarting Runtime…',
     safeModeExitFailed: 'Could not exit Safe Mode',
     safeModeOpenRecovery: 'Open recovery options',
+    isolationModeBadge: 'Isolation Mode',
+    isolationModeTitle: 'Isolation Mode is active',
+    isolationModeDescription: 'Isolation Mode uses an independent temporary DSH_HOME and does not load plugins, Skills, sessions, settings, or credentials from the normal environment. Use it when the normal environment itself may be damaged.',
+    isolationModeExit: 'Exit Isolation Mode and start normally',
+    isolationModeExiting: 'Exiting Isolation Mode and restarting Runtime…',
+    isolationModeExitFailed: 'Could not exit Isolation Mode',
     runtimeOpenRecoverySettings: 'Open recovery settings',
     runtimeReturnToFailure: 'Back to startup failure',
     runtimeRescueTitle: 'EzDSH startup recovery',
     runtimeRescueDetail: 'Runtime is currently unavailable. Inspect recovery snapshots and Session Logs before restoring the environment or retrying startup.',
     runtimeSafeModeFailed: 'Safe Mode could not start',
+    runtimeIsolationModeFailed: 'Isolation Mode could not start',
     appTitle: 'Your local AI workspace',
     appSubtitle: 'Easy Way to the DeepSeek‑Harness',
     menuAbout: 'About EzDSH',
@@ -1951,7 +1978,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryRemoveConflictingPlugins: 'Remove conflicting plugins',
     recoveryPluginChoiceTitle: 'Third-party plugins you can recover:',
     recoveryPluginChoiceHint: 'These plugins come from the current profile and may not have caused this failure. Disabled plugins can be uninstalled completely.',
-    recoveryNoPluginChoices: 'No manageable third-party plugin was identified in the current profile. You can still restore the latest snapshot or enter Safe Mode.',
+    recoveryNoPluginChoices: 'No manageable third-party plugin was identified in the current profile. You can still restore the latest snapshot, or enter Safe Mode or Isolation Mode.',
     recoveryDisablePlugin: (name) => `Disable “${name}” and continue startup`,
     recoveryDisablingPlugin: 'Disabling the plugin and restarting Runtime…',
     recoveryPluginDisabled: (name) => `“${name}” is disabled`,

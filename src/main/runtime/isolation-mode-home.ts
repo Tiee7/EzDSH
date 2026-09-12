@@ -2,55 +2,55 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import type { UserDataLayout } from '../../shared/state.js'
 
-export type SafeModeReason = 'manual' | 'plugin-recovery' | 'update-recovery' | 'runtime-recovery'
+export type IsolationModeReason = 'manual' | 'plugin-recovery' | 'update-recovery' | 'runtime-recovery'
 
-export interface SafeModeStatus {
+export interface IsolationModeStatus {
   readonly active: boolean
-  readonly reason?: SafeModeReason
+  readonly reason?: IsolationModeReason
   readonly activatedAt?: string
   readonly excludedPluginCount: number
 }
 
-export interface SafeModeControllerOptions {
+export interface IsolationModeControllerOptions {
   readonly layout: UserDataLayout
   readonly now?: () => Date
 }
 
 /**
- * Creates a disposable DSH_HOME which intentionally has no profile, session,
- * or credential state. Recovery must remain usable when the normal credential
- * file belongs to another Runtime version or is malformed.
+ * Creates a disposable DSH_HOME with no profile, session, credential, or
+ * workspace state. This is the strongest recovery boundary, so the product
+ * calls it Isolation Mode rather than Safe Mode.
  */
-export class SafeModeController {
-  private readonly safeRoot: string
-  private readonly safeHome: string
+export class IsolationModeController {
+  private readonly isolationRoot: string
+  private readonly isolationHome: string
   private readonly statusPath: string
   private readonly now: () => Date
-  private current: SafeModeStatus = { active: false, excludedPluginCount: 0 }
+  private current: IsolationModeStatus = { active: false, excludedPluginCount: 0 }
 
-  constructor(private readonly options: SafeModeControllerOptions) {
-    this.safeRoot = join(options.layout.state, 'safe-mode')
-    this.safeHome = join(this.safeRoot, 'harness')
-    this.statusPath = join(this.safeRoot, 'status.json')
+  constructor(private readonly options: IsolationModeControllerOptions) {
+    this.isolationRoot = join(options.layout.state, 'isolation-mode')
+    this.isolationHome = join(this.isolationRoot, 'harness')
+    this.statusPath = join(this.isolationRoot, 'status.json')
     this.now = options.now ?? (() => new Date())
   }
 
-  async initialize(): Promise<SafeModeStatus> {
+  async initialize(): Promise<IsolationModeStatus> {
     this.current = await this.readStatus()
     return this.status()
   }
 
-  status(): SafeModeStatus {
+  status(): IsolationModeStatus {
     return { ...this.current }
   }
 
   homePath(): string {
-    return this.safeHome
+    return this.isolationHome
   }
 
-  async enable(reason: SafeModeReason): Promise<{ status: SafeModeStatus; dshHome: string }> {
-    await rm(this.safeHome, { recursive: true, force: true })
-    await mkdir(this.safeHome, { recursive: true, mode: 0o700 })
+  async enable(reason: IsolationModeReason): Promise<{ status: IsolationModeStatus; dshHome: string }> {
+    await rm(this.isolationHome, { recursive: true, force: true })
+    await mkdir(this.isolationHome, { recursive: true, mode: 0o700 })
     this.current = {
       active: true,
       reason,
@@ -58,11 +58,11 @@ export class SafeModeController {
       excludedPluginCount: await this.countManagedPlugins(),
     }
     await writeAtomic(this.statusPath, `${JSON.stringify(this.current, null, 2)}\n`)
-    return { status: this.status(), dshHome: this.safeHome }
+    return { status: this.status(), dshHome: this.isolationHome }
   }
 
-  async disable(): Promise<SafeModeStatus> {
-    await rm(this.safeHome, { recursive: true, force: true })
+  async disable(): Promise<IsolationModeStatus> {
+    await rm(this.isolationHome, { recursive: true, force: true })
     await rm(this.statusPath, { force: true })
     this.current = { active: false, excludedPluginCount: 0 }
     return this.status()
@@ -78,20 +78,20 @@ export class SafeModeController {
     }
   }
 
-  private async readStatus(): Promise<SafeModeStatus> {
+  private async readStatus(): Promise<IsolationModeStatus> {
     try {
       const parsed: unknown = JSON.parse(await readFile(this.statusPath, 'utf8'))
-      if (isSafeModeStatus(parsed)) return parsed
+      if (isIsolationModeStatus(parsed)) return parsed
     } catch {
-      // Missing or malformed state means Safe Mode is inactive.
+      // Missing or malformed state means Isolation Mode is inactive.
     }
     return { active: false, excludedPluginCount: 0 }
   }
 }
 
-function isSafeModeStatus(value: unknown): value is SafeModeStatus {
+function isIsolationModeStatus(value: unknown): value is IsolationModeStatus {
   if (typeof value !== 'object' || value === null) return false
-  const status = value as Partial<SafeModeStatus>
+  const status = value as Partial<IsolationModeStatus>
   return typeof status.active === 'boolean'
     && typeof status.excludedPluginCount === 'number'
     && (status.reason === undefined || status.reason === 'manual' || status.reason === 'plugin-recovery' || status.reason === 'update-recovery' || status.reason === 'runtime-recovery')

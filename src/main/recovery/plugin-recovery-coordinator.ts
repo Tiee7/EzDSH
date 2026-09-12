@@ -1,6 +1,6 @@
 import type { RuntimeLaunchContext } from '../runtime/runtime-manager.js'
 import type { RuntimeMode, RuntimePhase } from '../runtime/runtime-types.js'
-import type { SafeModeReason } from '../runtime/safe-mode-home.js'
+import type { IsolationModeReason } from '../runtime/isolation-mode-home.js'
 import type {
   PreparePluginChangeInput,
   RecoveryState,
@@ -21,14 +21,14 @@ export interface PluginRecoveryStore {
   hasPendingTransaction?: () => Promise<boolean>
 }
 
-export interface PluginRecoverySafeMode {
-  enable(reason: SafeModeReason): Promise<{ dshHome: string }>
+export interface PluginRecoveryIsolationMode {
+  enable(reason: IsolationModeReason): Promise<{ dshHome: string }>
 }
 
 export interface PluginRecoveryCoordinatorOptions {
   runtime: PluginRecoveryRuntime
   recovery: PluginRecoveryStore
-  safeMode: PluginRecoverySafeMode
+  isolationMode: PluginRecoveryIsolationMode
 }
 
 export interface PluginRecoveryOutcome<T> {
@@ -49,7 +49,7 @@ export interface PluginRecoveryRunOptions {
  * until the user's later restart has booted successfully.
  */
 export class PluginRecoveryCoordinator {
-  private safeModeStart: Promise<void> | undefined
+  private isolationModeStart: Promise<void> | undefined
 
   constructor(private readonly options: PluginRecoveryCoordinatorOptions) {}
 
@@ -82,7 +82,7 @@ export class PluginRecoveryCoordinator {
       if (!mutationCompleted) {
         await this.options.recovery.abortPendingTransaction()
       } else {
-        // Keep the failed transaction visible in Recovery; Safe Mode is always
+        // Keep the failed transaction visible in Recovery; recovery modes are
         // an explicit user choice and must never be entered as a side effect.
         await this.options.recovery.markBootFailure(describe(error))
       }
@@ -90,17 +90,17 @@ export class PluginRecoveryCoordinator {
     }
   }
 
-  async startSafeMode(reason: SafeModeReason): Promise<void> {
-    if (this.safeModeStart !== undefined) return this.safeModeStart
-    this.safeModeStart = (async () => {
+  async startIsolationMode(reason: IsolationModeReason): Promise<void> {
+    if (this.isolationModeStart !== undefined) return this.isolationModeStart
+    this.isolationModeStart = (async () => {
       const snapshot = this.options.runtime.snapshot()
       if (snapshot.phase === 'ready' || snapshot.phase === 'starting') await this.options.runtime.stop()
-      const safeMode = await this.options.safeMode.enable(reason)
-      await this.options.runtime.start({ mode: 'safe', dshHome: safeMode.dshHome })
+      const isolationMode = await this.options.isolationMode.enable(reason)
+      await this.options.runtime.start({ mode: 'isolation', dshHome: isolationMode.dshHome })
     })().finally(() => {
-      this.safeModeStart = undefined
+      this.isolationModeStart = undefined
     })
-    return this.safeModeStart
+    return this.isolationModeStart
   }
 }
 

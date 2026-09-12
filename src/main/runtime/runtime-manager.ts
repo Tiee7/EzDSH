@@ -90,17 +90,19 @@ export interface RuntimeManagerOptions {
   /** Additional patch layers mounted for ordinary Runtime launches. */
   patchPaths?: readonly string[]
   /** Run app-level compatibility repairs before spawning the DSH child. */
-  beforeStart?: () => Promise<void>
+  beforeStart?: (context: Readonly<ResolvedRuntimeLaunchContext>) => Promise<void>
 }
 
 export interface RuntimeLaunchContext {
   mode?: RuntimeMode
   dshHome?: string
+  profile?: string
 }
 
-interface ResolvedRuntimeLaunchContext {
+export interface ResolvedRuntimeLaunchContext {
   mode: RuntimeMode
   dshHome: string
+  profile: string
 }
 
 type RuntimeListener = (snapshot: RuntimeSnapshot) => void
@@ -121,14 +123,16 @@ class RuntimePortOccupiedError extends Error {
 
 function resolveLaunchContext(layout: UserDataLayout, context: RuntimeLaunchContext): ResolvedRuntimeLaunchContext {
   const mode = context.mode ?? 'normal'
-  if (mode === 'safe' && (context.dshHome === undefined || context.dshHome.trim() === '')) {
-    throw new Error('Safe Mode Runtime launch requires an isolated DSH home')
+  if (mode === 'isolation' && (context.dshHome === undefined || context.dshHome.trim() === '')) {
+    throw new Error('Isolation Mode Runtime launch requires an isolated DSH home')
   }
-  return { mode, dshHome: context.dshHome ?? layout.harness }
+  const profile = context.profile ?? 'web'
+  if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(profile)) throw new Error(`Invalid Runtime profile name: ${profile}`)
+  return { mode, dshHome: context.dshHome ?? layout.harness, profile }
 }
 
 function sameLaunchContext(left: ResolvedRuntimeLaunchContext, right: ResolvedRuntimeLaunchContext): boolean {
-  return left.mode === right.mode && left.dshHome === right.dshHome
+  return left.mode === right.mode && left.dshHome === right.dshHome && left.profile === right.profile
 }
 
 function isPortOccupiedMessage(value: unknown): boolean {
@@ -155,7 +159,7 @@ export class RuntimeManager {
       portRetryCount: config.portRetryCount ?? 20
     }
     this.current = initialSnapshot(config.layout)
-    this.launchContext = { mode: 'normal', dshHome: config.layout.harness }
+    this.launchContext = { mode: 'normal', dshHome: config.layout.harness, profile: 'web' }
   }
 
   snapshot(): RuntimeSnapshot {
@@ -228,7 +232,7 @@ export class RuntimeManager {
     try {
       await ensureUserDataLayout(this.config.layout)
       if (this.stopRequested) return this.markStopped()
-      await this.config.beforeStart?.()
+      await this.config.beforeStart?.(this.launchContext)
       if (this.stopRequested) return this.markStopped()
       const firstPort = await (this.config.allocatePort ?? allocateLoopbackPort)()
       if (this.stopRequested) return this.markStopped()
@@ -280,13 +284,15 @@ export class RuntimeManager {
       `runtimeEntryPath=${this.config.runtimeEntryPath}`,
       `runtimeCommand=${command}`,
       `mode=${this.launchContext.mode}`,
+      `profile=${this.launchContext.profile}`,
       `DSH_HOME=${this.launchContext.dshHome}`,
       '',
     ].join('\n'), processLogStream)
     const patchArgs = this.launchContext.mode === 'normal'
       ? (this.config.patchPaths ?? []).flatMap((path) => ['--patch', path])
       : []
-    const webArgs = ['web', ...patchArgs, '--host', '127.0.0.1', '--port', String(port), '--no-open']
+    const profileArgs = this.launchContext.profile === 'web' ? ['web'] : ['--profile', this.launchContext.profile]
+    const webArgs = [...profileArgs, ...patchArgs, '--host', '127.0.0.1', '--port', String(port), '--no-open']
     const args = command === process.execPath
       ? ['--expose-internals', this.config.runtimeEntryPath, ...webArgs]
       : [this.config.runtimeEntryPath, ...webArgs]

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { PluginRecoveryCoordinator } from '../../src/main/recovery/plugin-recovery-coordinator'
 import { RecoveryManager } from '../../src/main/recovery/recovery-manager'
-import { SafeModeController } from '../../src/main/runtime/safe-mode-home'
+import { IsolationModeController } from '../../src/main/runtime/isolation-mode-home'
 import type { RuntimeMode, RuntimePhase } from '../../src/main/runtime/runtime-types'
 import { ensureUserDataLayout, getUserDataLayout } from '../../src/main/state/user-data'
 
@@ -15,7 +15,7 @@ afterEach(async () => {
 })
 
 describe('managed plugin recovery lifecycle', () => {
-  it('keeps recovery available after a failed plugin boot until Safe Mode is explicitly selected', async () => {
+  it('keeps recovery available after a failed plugin boot until Isolation Mode is explicitly selected', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-plugin-lifecycle-'))
     roots.push(root)
     const layout = getUserDataLayout(root)
@@ -33,7 +33,7 @@ describe('managed plugin recovery lifecycle', () => {
       dshRuntimeVersion: '0.1.1-rc.2',
     })
     await recovery.initialize()
-    const safeMode = new SafeModeController({ layout })
+    const isolationMode = new IsolationModeController({ layout })
     let phase: RuntimePhase = 'ready'
     let mode: RuntimeMode = 'normal'
     let normalStartFails = true
@@ -49,7 +49,7 @@ describe('managed plugin recovery lifecycle', () => {
         phase = 'ready'
       },
     }
-    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, safeMode })
+    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, isolationMode })
 
     await expect(coordinator.run({
       action: 'install',
@@ -61,16 +61,16 @@ describe('managed plugin recovery lifecycle', () => {
     }, async () => undefined)).rejects.toThrow('broken plugin boot')
 
     expect(runtime.snapshot()).toEqual({ phase: 'failed', mode: 'normal' })
-    await expect(readFile(join(safeMode.homePath(), 'profiles', 'web', 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(isolationMode.homePath(), 'profiles', 'web', 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     const pending = recovery.snapshot().pendingTransaction
     expect(pending).toMatchObject({ kind: 'plugin-change', phase: 'failed' })
 
-    await coordinator.startSafeMode('manual')
-    expect(runtime.snapshot()).toEqual({ phase: 'ready', mode: 'safe' })
+    await coordinator.startIsolationMode('manual')
+    expect(runtime.snapshot()).toEqual({ phase: 'ready', mode: 'isolation' })
 
     await runtime.stop()
     await recovery.restore(pending!.snapshotName, false)
-    await safeMode.disable()
+    await isolationMode.disable()
     normalStartFails = false
     await runtime.start({ mode: 'normal' })
     await recovery.resolveRecovery()

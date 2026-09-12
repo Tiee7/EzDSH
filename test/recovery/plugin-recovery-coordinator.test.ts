@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { PluginRecoveryCoordinator } from '../../src/main/recovery/plugin-recovery-coordinator'
 
 describe('PluginRecoveryCoordinator', () => {
-  it('preserves the plugin snapshot without automatically starting Safe Mode when normal health fails', async () => {
+  it('preserves the plugin snapshot without automatically starting Isolation Mode when normal health fails', async () => {
     const calls: string[] = []
     const runtime = {
       snapshot: () => ({ phase: 'ready', mode: 'normal' }),
@@ -10,7 +10,7 @@ describe('PluginRecoveryCoordinator', () => {
       start: vi.fn(async (context?: { mode?: string }) => {
         calls.push(`start:${context?.mode ?? 'normal'}`)
         if (context?.mode === 'normal') throw new Error('plugin boot failure')
-        return { phase: 'ready', mode: 'safe' }
+        return { phase: 'ready', mode: 'isolation' }
       }),
     }
     const recovery = {
@@ -19,10 +19,10 @@ describe('PluginRecoveryCoordinator', () => {
       completePendingTransaction: vi.fn(async () => undefined),
       markBootFailure: vi.fn(async () => ({ phase: 'recovery-required' })),
     }
-    const safeMode = {
-      enable: vi.fn(async () => ({ dshHome: '/state/safe-mode/harness', status: { active: true, excludedPluginCount: 1 } })),
+    const isolationMode = {
+      enable: vi.fn(async () => ({ dshHome: '/state/isolation-mode/harness', status: { active: true, excludedPluginCount: 1 } })),
     }
-    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, safeMode })
+    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, isolationMode })
 
     await expect(coordinator.run({
       action: 'install', entryId: 'agent-teams', packageName: '@nanmicoder/dsh-agent-teams', profile: 'web',
@@ -35,7 +35,7 @@ describe('PluginRecoveryCoordinator', () => {
     expect(recovery.preparePluginChange).toHaveBeenCalledWith(expect.objectContaining({ entryId: 'agent-teams', action: 'install' }))
     expect(recovery.markBootFailure).toHaveBeenCalledWith('plugin boot failure')
     expect(recovery.abortPendingTransaction).not.toHaveBeenCalled()
-    expect(safeMode.enable).not.toHaveBeenCalled()
+    expect(isolationMode.enable).not.toHaveBeenCalled()
   })
 
   it('clears a transaction when the installer command itself fails', async () => {
@@ -50,8 +50,8 @@ describe('PluginRecoveryCoordinator', () => {
       completePendingTransaction: vi.fn(async () => undefined),
       markBootFailure: vi.fn(async () => ({ phase: 'recovery-required' })),
     }
-    const safeMode = { enable: vi.fn(async () => ({ dshHome: '/safe', status: { active: true, excludedPluginCount: 0 } })) }
-    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, safeMode })
+    const isolationMode = { enable: vi.fn(async () => ({ dshHome: '/isolation', status: { active: true, excludedPluginCount: 0 } })) }
+    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, isolationMode })
 
     await expect(coordinator.run({
       action: 'uninstall', entryId: 'agent-teams', packageName: '@nanmicoder/dsh-agent-teams', profile: 'web',
@@ -59,7 +59,7 @@ describe('PluginRecoveryCoordinator', () => {
 
     expect(recovery.abortPendingTransaction).toHaveBeenCalledTimes(1)
     expect(recovery.markBootFailure).not.toHaveBeenCalled()
-    expect(safeMode.enable).not.toHaveBeenCalled()
+    expect(isolationMode.enable).not.toHaveBeenCalled()
   })
 
   it('keeps Runtime running during plugin installation and persists before deferring restart', async () => {
@@ -75,9 +75,9 @@ describe('PluginRecoveryCoordinator', () => {
       completePendingTransaction: vi.fn(async () => undefined),
       markBootFailure: vi.fn(async () => ({ phase: 'recovery-required' as const })),
     }
-    const safeMode = { enable: vi.fn(async () => ({ dshHome: '/safe' })) }
+    const isolationMode = { enable: vi.fn(async () => ({ dshHome: '/isolation' })) }
     const persist = vi.fn(async (value: string) => { calls.push(`persist:${value}`) })
-    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, safeMode })
+    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, isolationMode })
 
     const outcome = await coordinator.run({
       action: 'install', entryId: 'dsh-codex', packageName: 'dsh-codex', profile: 'web',
@@ -94,13 +94,13 @@ describe('PluginRecoveryCoordinator', () => {
     expect(persist).toHaveBeenCalledWith('installed')
   })
 
-  it('coalesces concurrent explicit Safe Mode start requests', async () => {
+  it('coalesces concurrent explicit Isolation Mode start requests', async () => {
     let releaseEnable: (() => void) | undefined
     const enableGate = new Promise<void>((resolve) => { releaseEnable = resolve })
     const runtime = {
       snapshot: () => ({ phase: 'stopped', mode: 'normal' }),
       stop: vi.fn(async () => undefined),
-      start: vi.fn(async () => ({ phase: 'ready', mode: 'safe' })),
+      start: vi.fn(async () => ({ phase: 'ready', mode: 'isolation' })),
     }
     const recovery = {
       preparePluginChange: vi.fn(),
@@ -108,18 +108,18 @@ describe('PluginRecoveryCoordinator', () => {
       completePendingTransaction: vi.fn(),
       markBootFailure: vi.fn(),
     }
-    const safeMode = {
+    const isolationMode = {
       enable: vi.fn(async () => {
         await enableGate
-        return { dshHome: '/safe', status: { active: true, excludedPluginCount: 0 } }
+        return { dshHome: '/isolation', status: { active: true, excludedPluginCount: 0 } }
       }),
     }
-    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, safeMode })
+    const coordinator = new PluginRecoveryCoordinator({ runtime, recovery, isolationMode })
 
-    const first = coordinator.startSafeMode('plugin-recovery')
-    const second = coordinator.startSafeMode('plugin-recovery')
+    const first = coordinator.startIsolationMode('plugin-recovery')
+    const second = coordinator.startIsolationMode('plugin-recovery')
 
-    expect(safeMode.enable).toHaveBeenCalledTimes(1)
+    expect(isolationMode.enable).toHaveBeenCalledTimes(1)
     releaseEnable?.()
     await Promise.all([first, second])
     expect(runtime.start).toHaveBeenCalledTimes(1)
