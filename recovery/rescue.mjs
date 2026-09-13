@@ -28,7 +28,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 const COMPONENTS = ['harness', 'state', 'workflow']
 const SNAPSHOT_PATTERN = /^ezdsh-(manual|pre-update|pre-plugin-change|pre-restore)-[^/]+\.tar\.gz$/u
@@ -202,7 +202,7 @@ async function restore(snapshot, preview) {
   await mkdir(staging, { recursive: true, mode: 0o700 })
   try {
     await run('tar', ['-xzf', snapshot.archivePath, '-C', staging], backupsRoot)
-    await validateTree(staging, staging, await loadTrustedSymlinkRoots())
+    await validateTree(staging, staging, await loadTrustedSymlinkRoots(), root)
     for (const component of components) {
       if (!(await isDirectory(join(staging, component)))) {
         throw new Error(`archive is missing component ${component}`)
@@ -446,35 +446,44 @@ async function loadTrustedSymlinkRoots() {
   return [...new Set([...configuredRoots, ...runtimeRoots].map((root) => resolve(root)))]
 }
 
-async function validateTree(directory, archiveRoot, trustedSymlinkRoots = []) {
+async function validateTree(directory, archiveRoot, trustedSymlinkRoots, liveRoot) {
   const canonicalArchiveRoot = await realpath(archiveRoot)
   const canonicalTrustedRoots = await Promise.all(trustedSymlinkRoots.map(async (trustedRoot) => {
     try { return await realpath(trustedRoot) } catch { return resolve(trustedRoot) }
   }))
-  await validateTreeNode(directory, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
+  await validateTreeNode(directory, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots, liveRoot)
 }
 
-async function validateTreeNode(directory, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots) {
+async function validateTreeNode(directory, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots, liveRoot) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const candidate = join(directory, entry.name)
     const relativePath = relative(archiveRoot, candidate).split(sep).join('/')
     validateArchiveEntry(relativePath)
     if (entry.isSymbolicLink()) {
-      await validateSymlink(candidate, relativePath, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
+      await validateSymlink(candidate, relativePath, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots, liveRoot)
       continue
     }
-    if (entry.isDirectory()) await validateTreeNode(candidate, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots)
+    if (entry.isDirectory()) await validateTreeNode(candidate, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots, liveRoot)
     else if (!entry.isFile()) throw new Error(`Unsupported archive entry: ${relativePath}`)
   }
 }
 
-async function validateSymlink(candidate, relativePath, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots) {
+async function validateSymlink(candidate, relativePath, archiveRoot, canonicalArchiveRoot, canonicalTrustedRoots, liveRoot) {
   const linkTarget = await readlink(candidate, 'utf8')
   const resolvedTarget = resolve(dirname(candidate), linkTarget)
   let resolvedRealPath
   try {
     resolvedRealPath = await realpath(candidate)
   } catch (error) {
+    if (error?.code === 'ENOENT' && (
+      await isStaleRuntimeFallback(relativePath, linkTarget, canonicalTrustedRoots)
+      || await isOrphanedPackageBin(candidate, relativePath, linkTarget, canonicalArchiveRoot)
+    )) {
+      // Remove only obsolete generated links in staging. DSH rebuilds its
+      // shared fallback; orphan bins refer to packages no longer installed.
+      await rm(candidate, { force: true })
+      return
+    }
     throw new Error(`Broken symbolic link in recovery archive: ${relativePath} -> ${linkTarget}`, { cause: error })
   }
   const targetIsInsideArchive = isPathInside(archiveRoot, resolvedTarget)
@@ -485,8 +494,107 @@ async function validateSymlink(candidate, relativePath, archiveRoot, canonicalAr
     || bundledRuntimeRoot !== undefined
   )
   if (!targetIsInsideArchive && !targetIsTrusted) {
+    if (await matchesExistingSkillLink(liveRoot, relativePath, linkTarget, resolvedRealPath)) return
+    if (isRuntimeFallbackLink(relativePath, linkTarget) && await findPackagedEzdshRoot(resolvedRealPath) !== undefined) {
+      // Trust this other installation only as the source of a disposable shared
+      // fallback link, never as a general external root for restored data.
+      await rm(candidate, { force: true })
+      return
+    }
     throw new Error(`Symbolic link target is outside the recovery boundary: ${relativePath} -> ${linkTarget}`)
   }
+}
+
+async function matchesExistingSkillLink(liveRoot, relativePath, linkTarget, resolvedRealPath) {
+  if (!/^harness\/skills\/[a-z0-9][a-z0-9._-]*$/iu.test(relativePath)) return false
+  // Only the current live data can establish this exact existing skill link;
+  // the archive cannot add an external skill or change an existing target.
+  const liveLink = join(liveRoot, safeRelative(relativePath))
+  try {
+    return (await lstat(liveLink)).isSymbolicLink()
+      && await readlink(liveLink, 'utf8') === linkTarget
+      && await realpath(liveLink) === resolvedRealPath
+  } catch {
+    return false
+  }
+}
+
+function isRuntimeFallbackLink(relativePath, linkTarget) {
+  const packageName = /^harness\/profiles\/node_modules\/((?:@[a-z0-9._-]+\/)?[a-z0-9._-]+)$/iu.exec(relativePath)?.[1]
+  return packageName !== undefined && isAbsolute(linkTarget)
+    && resolve(linkTarget).endsWith(`${sep}node_modules${sep}${packageName.split('/').join(sep)}`)
+}
+
+async function isStaleRuntimeFallback(relativePath, linkTarget, canonicalTrustedRoots) {
+  if (!isRuntimeFallbackLink(relativePath, linkTarget)) return false
+
+  const canonicalAncestor = await nearestExistingRealPath(linkTarget)
+  if (canonicalAncestor === undefined) return false
+  return canonicalTrustedRoots.some((root) => isPathInside(root, canonicalAncestor))
+    || await findBundledDshRuntimeRoot(canonicalAncestor) !== undefined
+    || await findPackagedEzdshRoot(canonicalAncestor) !== undefined
+}
+
+async function isOrphanedPackageBin(candidate, relativePath, linkTarget, canonicalArchiveRoot) {
+  if (!/^harness\/profiles\/[a-z0-9][a-z0-9._-]*\/node_modules\/\.bin\/[a-z0-9._-]+$/iu.test(relativePath)) return false
+  const match = /^\.\.\/((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)\/(.+)$/iu.exec(linkTarget)
+  if (match === null || match[2].split(/[\\/]/u).includes('..')) return false
+  const modulesRoot = dirname(dirname(candidate))
+  const packageRoot = join(modulesRoot, match[1])
+  if (!isPathInside(packageRoot, resolve(dirname(candidate), linkTarget))) return false
+  try {
+    // A package that exists but lacks its executable is damaged, not an orphan.
+    await lstat(packageRoot)
+    return false
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return false
+  }
+  const canonicalModules = await realpath(modulesRoot)
+  const canonicalAncestor = await nearestExistingRealPath(packageRoot)
+  return canonicalAncestor !== undefined && isPathInside(canonicalArchiveRoot, canonicalModules)
+    && isPathInside(canonicalModules, canonicalAncestor)
+}
+
+async function nearestExistingRealPath(path) {
+  // Resolve the nearest existing ancestor without stepping past a dangling or
+  // escaping parent symlink. A lexical application prefix does not prove trust.
+  let ancestor = resolve(path)
+  for (;;) {
+    try {
+      await lstat(ancestor)
+      break
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return undefined
+      const parent = dirname(ancestor)
+      if (parent === ancestor) return undefined
+      ancestor = parent
+    }
+  }
+  try {
+    return await realpath(ancestor)
+  } catch {
+    return undefined
+  }
+}
+
+async function findPackagedEzdshRoot(target) {
+  let current = resolve(target)
+  for (let depth = 0; depth < 16; depth += 1) {
+    if (basename(current) === 'app' && basename(dirname(current)).toLowerCase() === 'resources') {
+      try {
+        const manifest = JSON.parse(await readFile(join(current, 'package.json'), 'utf8'))
+        if (manifest && typeof manifest === 'object' && manifest.name === 'ezdsh'
+          && (manifest.main === './out/main/index.js' || manifest.main === 'out/main/index.js')
+          && await isFile(join(current, 'out', 'main', 'index.js'))) return current
+      } catch {
+        // A directory name alone does not identify an EzDSH installation.
+      }
+    }
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return undefined
 }
 
 async function findBundledDshRuntimeRoot(target) {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { access, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { zstdCompressSync } from 'node:zlib'
 import { tmpdir } from 'node:os'
@@ -242,6 +242,235 @@ describe('RecoveryManager', () => {
 
     await expect(manager.restore(snapshot.archiveName, false)).resolves.toMatchObject({ snapshotName: snapshot.archiveName })
     await expect(lstat(dependencyLink)).resolves.toSatisfy((entry) => entry.isSymbolicLink())
+  })
+
+  describe.each(['desktop', 'rescue'] as const)('%s recovery of stale Runtime fallbacks', (channel) => {
+    async function restore(manager: RecoveryManager, layout: ReturnType<typeof getUserDataLayout>, snapshotName: string): Promise<unknown> {
+      if (channel === 'desktop') return manager.restore(snapshotName, false)
+      return execFileAsync(process.execPath, [resolve('recovery/rescue.mjs'), 'restore', snapshotName, '--yes', '--root', layout.root])
+    }
+
+    it('restores user data after an application update removes a shared fallback dependency', async () => {
+      const layout = await createFixture()
+      const trustedRoot = await mkdtemp(join(tmpdir(), 'ezdsh-recovery-old-runtime-'))
+      temporaryRoots.push(trustedRoot)
+      const removedPackages = [
+        ...['dsh-tool-subagent-report', 'dsh-client-web', 'dsh-client-ui-primitives', 'dsh-client-schema-form',
+          'dsh-client-web-react', 'dsh-client-runtime', 'dsh-host-apiproxy', 'dsh-client-ui-slots'].map((name) => ({
+          name: `@deepseek-ai/${name}`, modules: 'node_modules',
+        })),
+        ...['node-addon-landlock-run', 'dsh-client-ui-sidebar-textpreview'].map((name) => ({
+          name: `@deepseek-ai/${name}`, modules: 'out/dsh-runtime/node_modules',
+        })),
+        { name: 'micromark', modules: 'node_modules' },
+        { name: 'typescript', modules: 'out/dsh-runtime/node_modules' },
+        { name: '@types/removed-runtime-dependency', modules: 'node_modules' },
+      ]
+      for (const { name: packageName, modules } of removedPackages) {
+        const target = join(trustedRoot, modules, packageName)
+        const link = join(layout.harness, 'profiles', 'node_modules', packageName)
+        await mkdir(target, { recursive: true })
+        await mkdir(join(link, '..'), { recursive: true })
+        await symlink(target, link)
+      }
+      const pluginPath = join(layout.harness, 'profiles', 'web', 'node_modules', 'my-plugin', 'package.json')
+      await mkdir(join(pluginPath, '..'), { recursive: true })
+      await writeFile(pluginPath, '{"name":"my-plugin","version":"1.0.0"}\n')
+      const manager = createManager(layout, { trustedSymlinkRoots: [trustedRoot], rescueScriptPath: resolve('recovery/rescue.mjs') })
+      const snapshot = await manager.createSnapshot({ kind: 'pre-plugin-change', reason: 'Runtime dependency removed after backup' })
+      for (const { name, modules } of removedPackages) await rm(join(trustedRoot, modules, name), { recursive: true })
+      await writeFile(join(layout.harness, 'settings.yaml'), 'broken: true\n')
+
+      // A preview preserves live data and the original, now-stale fallback links.
+      await manager.restore(snapshot.archiveName, true)
+      for (const { name, modules } of removedPackages) {
+        await expect(readlink(join(layout.harness, 'profiles', 'node_modules', name))).resolves.toBe(join(trustedRoot, modules, name))
+      }
+      await expect(restore(manager, layout, snapshot.archiveName)).resolves.toBeDefined()
+
+      expect(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')).toContain('preference: zh')
+      expect(await readFile(pluginPath, 'utf8')).toContain('my-plugin')
+      for (const { name } of removedPackages) {
+        await expect(lstat(join(layout.harness, 'profiles', 'node_modules', name))).rejects.toMatchObject({ code: 'ENOENT' })
+      }
+      await expect(manager.verify(snapshot.archiveName)).resolves.toMatchObject({ ok: true })
+      const archived = await execFileAsync('tar', ['-tvzf', snapshot.archivePath])
+      expect(archived.stdout).toContain('dsh-client-runtime')
+    })
+
+    it('recognizes a bundled Runtime when no application root was saved', async () => {
+      const layout = await createFixture()
+      const runtimeRoot = await mkdtemp(join(tmpdir(), 'ezdsh-recovery-bundled-fallback-'))
+      temporaryRoots.push(runtimeRoot)
+      await mkdir(join(runtimeRoot, 'lib'), { recursive: true })
+      await mkdir(join(runtimeRoot, 'node_modules'), { recursive: true })
+      await writeFile(join(runtimeRoot, 'package.json'), '{"name":"@deepseek-ai/dsh","version":"0.1.5"}\n')
+      await writeFile(join(runtimeRoot, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
+      const link = join(layout.harness, 'profiles', 'node_modules', 'removed-runtime-dependency')
+      await mkdir(join(link, '..'), { recursive: true })
+      await symlink(join(runtimeRoot, 'node_modules', 'removed-runtime-dependency'), link)
+      const manager = createManager(layout)
+      const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'bundled Runtime fallback without saved roots' })
+
+      await expect(restore(manager, layout, snapshot.archiveName)).resolves.toBeDefined()
+
+      await expect(lstat(link)).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
+    it('drops shared fallback links from an older verified EzDSH installation across launch locations', async () => {
+      const layout = await createFixture()
+      const application = await mkdtemp(join(tmpdir(), 'ezdsh-recovery-packaged-'))
+      temporaryRoots.push(application)
+      const oldApplication = join(application, 'EzDSH.app', 'Contents', 'Resources', 'app')
+      await mkdir(join(oldApplication, 'out', 'main'), { recursive: true })
+      await mkdir(join(oldApplication, 'node_modules', 'retained-package'), { recursive: true })
+      await writeFile(join(oldApplication, 'package.json'), '{"name":"ezdsh","main":"./out/main/index.js"}\n')
+      await writeFile(join(oldApplication, 'out', 'main', 'index.js'), '// packaged Electron main\n')
+      for (const packageName of ['removed-package', 'retained-package']) {
+        const link = join(layout.harness, 'profiles', 'node_modules', packageName)
+        await mkdir(join(link, '..'), { recursive: true })
+        await symlink(join(oldApplication, 'node_modules', packageName), link)
+      }
+      const manager = createManager(layout, { trustedSymlinkRoots: [layout.root], rescueScriptPath: resolve('recovery/rescue.mjs') })
+      const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'old packaged app links restored from development' })
+
+      await expect(restore(manager, layout, snapshot.archiveName)).resolves.toBeDefined()
+
+      for (const packageName of ['removed-package', 'retained-package']) {
+        await expect(lstat(join(layout.harness, 'profiles', 'node_modules', packageName))).rejects.toMatchObject({ code: 'ENOENT' })
+      }
+      await expect(lstat(join(oldApplication, 'node_modules', 'retained-package'))).resolves.toSatisfy((entry) => entry.isDirectory())
+    })
+
+    it('discards orphan package-manager bin links only when the target package is absent', async () => {
+      const layout = await createFixture()
+      const modules = join(layout.harness, 'profiles', 'web', 'node_modules')
+      const bins = {
+        'pi-ai': '../@earendil-works/pi-ai/dist/cli.js',
+        cordis: '../@deepseek-ai/cordis/bin.js',
+        'dsh-chat-import': '../dsh-chat-import/bin/dsh-chat-import.mjs',
+        'anthropic-ai-sdk': '../@anthropic-ai/sdk/bin/cli',
+        openai: '../openai/bin/cli',
+      }
+      await mkdir(join(modules, '.bin'), { recursive: true })
+      for (const [name, target] of Object.entries(bins)) await symlink(target, join(modules, '.bin', name))
+      await mkdir(join(modules, 'working-plugin'), { recursive: true })
+      await writeFile(join(modules, 'working-plugin', 'cli.js'), '// retain installed plugin\n')
+      await symlink('../working-plugin/cli.js', join(modules, '.bin', 'working-plugin'))
+      const manager = createManager(layout)
+      const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'old orphan bin links' })
+
+      await expect(restore(manager, layout, snapshot.archiveName)).resolves.toBeDefined()
+
+      for (const name of Object.keys(bins)) await expect(lstat(join(modules, '.bin', name))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(readFile(join(modules, '.bin', 'working-plugin'), 'utf8')).resolves.toContain('retain installed plugin')
+      await expect(readlink(join(modules, '.bin', 'working-plugin'))).resolves.toBe('../working-plugin/cli.js')
+      await expect(manager.verify(snapshot.archiveName)).resolves.toMatchObject({ ok: true })
+    })
+
+    it('preserves an external skill link already present at the same live location and target', async () => {
+      const layout = await createFixture()
+      const skillRoot = await mkdtemp(join(tmpdir(), 'ezdsh-recovery-existing-skill-'))
+      temporaryRoots.push(skillRoot)
+      await writeFile(join(skillRoot, 'SKILL.md'), '# Existing user skill\n')
+      const link = join(layout.harness, 'skills', 'dbs')
+      await mkdir(join(link, '..'), { recursive: true })
+      await symlink(skillRoot, link)
+      const manager = createManager(layout)
+      const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'existing external skill link' })
+
+      await expect(restore(manager, layout, snapshot.archiveName)).resolves.toBeDefined()
+
+      await expect(readlink(link)).resolves.toBe(skillRoot)
+      await expect(readFile(join(link, 'SKILL.md'), 'utf8')).resolves.toContain('Existing user skill')
+    })
+
+    it.each(['new-location', 'changed-target', 'regular-live-directory', 'nested-location', 'broken-target'] as const)(
+      'rejects a %s external skill link without granting new external access', async (kind) => {
+        const layout = await createFixture()
+        const skillRoot = await mkdtemp(join(tmpdir(), 'ezdsh-recovery-untrusted-skill-'))
+        temporaryRoots.push(skillRoot)
+        const link = join(layout.harness, 'skills', ...(kind === 'nested-location' ? ['nested', 'dbs'] : ['dbs']))
+        const target = kind === 'broken-target' ? join(skillRoot, 'missing') : skillRoot
+        await mkdir(join(link, '..'), { recursive: true })
+        await symlink(target, link)
+        const manager = createManager(layout)
+        const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'external skill boundary' })
+        if (kind === 'new-location' || kind === 'changed-target' || kind === 'regular-live-directory') await rm(link)
+        if (kind === 'changed-target') {
+          await mkdir(join(skillRoot, 'other'))
+          await symlink(join(skillRoot, 'other'), link)
+        } else if (kind === 'regular-live-directory') await mkdir(link)
+        await writeFile(join(layout.harness, 'settings.yaml'), 'current: true\n')
+
+        await expect(restore(manager, layout, snapshot.archiveName)).rejects.toThrow(/symbolic link|Symbolic link/u)
+
+        expect(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')).toBe('current: true\n')
+      },
+    )
+
+    it.each(['installed-package', 'absolute-target', 'escaped-target', 'escaped-parent', 'broken-package'] as const)(
+      'rejects an invalid %s bin link without deleting data', async (kind) => {
+        const layout = await createFixture()
+        const outside = await mkdtemp(join(tmpdir(), 'ezdsh-recovery-bin-outside-'))
+        temporaryRoots.push(outside)
+        const modules = join(layout.harness, 'profiles', 'web', 'node_modules')
+        await mkdir(join(modules, '.bin'), { recursive: true })
+        if (kind === 'installed-package') {
+          await mkdir(join(modules, '@example', 'sdk'), { recursive: true })
+          await writeFile(join(modules, '@example', 'sdk', 'package.json'), '{"name":"@example/sdk"}\n')
+        } else if (kind === 'escaped-parent') {
+          await symlink(outside, join(modules, '@example'))
+        } else if (kind === 'broken-package') {
+          await mkdir(join(modules, '@example'), { recursive: true })
+          await symlink(join(outside, 'missing'), join(modules, '@example', 'sdk'))
+        }
+        const link = join(modules, '.bin', 'sdk')
+        await symlink(kind === 'absolute-target' ? join(modules, '@example', 'sdk', 'bin', 'cli')
+          : kind === 'escaped-target' ? '../../../../missing/bin/cli'
+          : '../@example/sdk/bin/cli', link)
+        const manager = createManager(layout)
+        const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'invalid bin boundary' })
+        await writeFile(join(layout.harness, 'settings.yaml'), 'current: true\n')
+
+        await expect(restore(manager, layout, snapshot.archiveName)).rejects.toThrow('symbolic link')
+
+        expect(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')).toBe('current: true\n')
+        await expect(lstat(link)).resolves.toSatisfy((entry) => entry.isSymbolicLink())
+      },
+    )
+
+    it.each(['outside-app', 'outside-fallback', 'different-package', 'relative-target', 'escaped-parent', 'broken-parent'] as const)(
+      'rejects a broken %s link without changing live data', async (kind) => {
+        const layout = await createFixture()
+        const trustedRoot = await mkdtemp(join(tmpdir(), 'ezdsh-recovery-link-boundary-'))
+        const outsideRoot = await mkdtemp(join(tmpdir(), 'ezdsh-recovery-link-outside-'))
+        temporaryRoots.push(trustedRoot, outsideRoot)
+        const packageName = '@deepseek-ai/dsh-client-runtime'
+        const modulesRoot = join(trustedRoot, 'node_modules')
+        await mkdir(modulesRoot, { recursive: true })
+        if (kind === 'escaped-parent' || kind === 'broken-parent') {
+          await symlink(kind === 'escaped-parent' ? outsideRoot : join(outsideRoot, 'missing'), join(modulesRoot, '@deepseek-ai'))
+        }
+        const link = kind === 'outside-fallback'
+          ? join(layout.harness, 'profiles', 'web', 'node_modules', packageName)
+          : join(layout.harness, 'profiles', 'node_modules', packageName)
+        const target = kind === 'outside-app' ? join(outsideRoot, 'node_modules', packageName)
+          : kind === 'different-package' ? join(modulesRoot, '@deepseek-ai', 'another-package')
+          : kind === 'relative-target' ? '../../missing'
+          : join(modulesRoot, packageName)
+        await mkdir(join(link, '..'), { recursive: true })
+        await symlink(target, link)
+        const manager = createManager(layout, { trustedSymlinkRoots: [trustedRoot], rescueScriptPath: resolve('recovery/rescue.mjs') })
+        const snapshot = await manager.createSnapshot({ kind: 'manual', reason: 'recovery boundary regression' })
+        await writeFile(join(layout.harness, 'settings.yaml'), 'current: true\n')
+
+        await expect(restore(manager, layout, snapshot.archiveName)).rejects.toThrow('Broken symbolic link in recovery archive')
+
+        expect(await readFile(join(layout.harness, 'settings.yaml'), 'utf8')).toBe('current: true\n')
+        await expect(readlink(link)).resolves.toBe(target)
+      },
+    )
   })
 
   it('restores an absolute dependency symlink into a bundled DSH Runtime without a saved root', async () => {

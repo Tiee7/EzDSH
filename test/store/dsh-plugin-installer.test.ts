@@ -254,6 +254,11 @@ describe('DshPluginInstaller', () => {
 
   it('disables a plugin without uninstalling its package and can enable it again', async () => {
     const profile = await makeProfile()
+    const directory = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'mode-menu-plus')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'package.json'), JSON.stringify({
+      name: 'mode-menu-plus', dsh: { bundle: { patch: './cordis.patch.yml' } },
+    }))
     await writeFile(profile.packagePath, JSON.stringify({
       name: 'web',
       dependencies: { 'mode-menu-plus': '1.0.0' },
@@ -397,6 +402,135 @@ describe('DshPluginInstaller', () => {
     expect(await readFile(join(profile.dshHome, 'profiles', 'web', 'cordis.patch.yml'), 'utf8')).toContain('disabled: true')
     await installer.setPackageEnabled('web', 'mode-menu-plus', true)
     expect(await readFile(join(profile.dshHome, 'profiles', 'web', 'cordis.patch.yml'), 'utf8')).not.toContain('disabled: true')
+  })
+
+  it('enables a client-only dependency through its patch without adding a bundle layer', async () => {
+    const profile = await makeProfile()
+    const pluginDirectory = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-skill-hub')
+    await mkdir(pluginDirectory, { recursive: true })
+    await writeFile(join(pluginDirectory, 'package.json'), JSON.stringify({
+      name: 'dsh-skill-hub', version: '1.1.0', dsh: { client: { platform: 'web' } },
+    }))
+    await writeFile(profile.packagePath, JSON.stringify({
+      dependencies: { 'dsh-skill-hub': '1.1.0' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'], disabledBundles: ['dsh-skill-hub'] } },
+    }))
+    const patchPath = join(profile.dshHome, 'profiles', 'web', 'cordis.patch.yml')
+    await writeFile(patchPath, '- insert:\n    - id: skill-hub\n      name: dsh-skill-hub\n      disabled: true\n')
+    const installer = new DshPluginInstaller({ dshHome: profile.dshHome, runCommand: async () => undefined })
+
+    await installer.setPackageEnabled('web', 'dsh-skill-hub', true)
+
+    expect(JSON.parse(await readFile(profile.packagePath, 'utf8')).dsh.profile).toEqual({
+      bundles: ['@deepseek-ai/dsh-base'], disabledBundles: [],
+    })
+    expect(await readFile(patchPath, 'utf8')).not.toContain('disabled: true')
+    expect(await installer.listActivePlugins()).toEqual([{ packageName: 'dsh-skill-hub', profile: 'web' }])
+    await installer.setPackageEnabled('web', 'dsh-skill-hub', false)
+    expect(await installer.listActivePlugins()).toEqual([])
+  })
+
+  it('repairs legacy client-only bundle entries without changing patch settings or valid bundles', async () => {
+    const profile = await makeProfile()
+    for (const [name, dsh] of Object.entries({
+      'dsh-skill-hub': { client: { platform: 'web' } },
+      'valid-plugin': { bundle: { patch: './cordis.patch.yml' } },
+    })) {
+      const directory = join(profile.dshHome, 'profiles', 'web', 'node_modules', name)
+      await mkdir(directory, { recursive: true })
+      await writeFile(join(directory, 'package.json'), JSON.stringify({ name, dsh }))
+    }
+    await writeFile(profile.packagePath, JSON.stringify({
+      dependencies: { 'dsh-skill-hub': '1.1.0', 'valid-plugin': '1.0.0' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-skill-hub', 'valid-plugin', 'missing-plugin'], disabledBundles: ['other-plugin'] } },
+    }))
+    const patchPath = join(profile.dshHome, 'profiles', 'web', 'cordis.patch.yml')
+    const patch = '- insert:\n    - id: skill-hub\n      name: dsh-skill-hub\n      config: { theme: light }\n'
+    await writeFile(patchPath, patch)
+    const installer = new DshPluginInstaller({ dshHome: profile.dshHome, runCommand: async () => undefined })
+
+    expect(await installer.repairInvalidBundleLayers('web')).toEqual(['dsh-skill-hub'])
+    expect(JSON.parse(await readFile(profile.packagePath, 'utf8')).dsh.profile).toEqual({
+      bundles: ['@deepseek-ai/dsh-base', 'valid-plugin', 'missing-plugin'], disabledBundles: ['other-plugin'],
+    })
+    expect(await readFile(patchPath, 'utf8')).toBe(patch)
+    expect(await installer.repairInvalidBundleLayers('web')).toEqual([])
+  })
+
+  it('rejects incompatible enablement before changing the profile or patch', async () => {
+    const profile = await makeProfile()
+    const pluginDirectory = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-codex-connect')
+    await mkdir(pluginDirectory, { recursive: true })
+    await writeFile(join(pluginDirectory, 'package.json'), JSON.stringify({
+      name: 'dsh-codex-connect', dsh: { bundle: { patch: './cordis.patch.yml' } },
+      peerDependencies: { '@deepseek-ai/dsh-client-ui-primitives': '0.1.5-rc.2' },
+    }))
+    const manifest = JSON.stringify({
+      dependencies: { 'dsh-codex-connect': '0.1.0-alpha.4.35' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'], disabledBundles: ['dsh-codex-connect'] } },
+    })
+    await writeFile(profile.packagePath, manifest)
+    const installer = new DshPluginInstaller({
+      dshHome: profile.dshHome, runCommand: async () => undefined,
+      runtimeEntryPath: join(profile.dshHome, 'runtime', 'bin.js'),
+    })
+    const record: InstalledRecord = {
+      kind: 'skill', id: 'dsh-codex-connect', name: 'Codex Connect', version: '0.1.0-alpha.4.35',
+      sha256: '0'.repeat(64), installedAt: '2026-09-14T00:00:00Z', pluginPackageName: 'dsh-codex-connect',
+    }
+
+    await expect(installer.assertCanEnable(record, undefined)).rejects.toThrow('@deepseek-ai/dsh-client-ui-primitives')
+    expect(await readFile(profile.packagePath, 'utf8')).toBe(manifest)
+    await expect(installer.setEnabled(record, undefined, true)).rejects.toThrow('dsh-codex-connect')
+    expect(await readFile(profile.packagePath, 'utf8')).toBe(manifest)
+    await expect(installer.setEnabled(record, undefined, false)).resolves.toBeDefined()
+  })
+
+  it('still isolates an incompatible direct plugin after repairing its legacy bundle entry', async () => {
+    const profile = await makeProfile()
+    const directory = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'direct-plugin')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'package.json'), JSON.stringify({
+      name: 'direct-plugin', dsh: { client: { platform: 'web' } },
+      peerDependencies: { '@deepseek-ai/dsh-missing-peer': '0.1.5-rc.2' },
+    }))
+    await writeFile(profile.packagePath, JSON.stringify({
+      dependencies: { 'direct-plugin': '1.0.0' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'direct-plugin'] } },
+    }))
+    const patchPath = join(profile.dshHome, 'profiles', 'web', 'cordis.patch.yml')
+    await writeFile(patchPath, '- insert:\n    - id: direct\n      name: direct-plugin\n')
+    const installer = new DshPluginInstaller({ dshHome: profile.dshHome, runCommand: async () => undefined })
+    const runtimeEntryPath = join(profile.dshHome, 'runtime', 'bin.js')
+
+    await installer.repairInvalidBundleLayers('web')
+    expect(await installer.repairIncompatiblePlugins('web', runtimeEntryPath)).toEqual([{
+      packageName: 'direct-plugin', reason: expect.stringContaining('@deepseek-ai/dsh-missing-peer'),
+    }])
+    expect(await installer.listActivePlugins()).toEqual([])
+    expect(await readFile(patchPath, 'utf8')).toContain('disabled: true')
+    expect(await installer.repairIncompatiblePlugins('web', runtimeEntryPath)).toEqual([])
+  })
+
+  it('allows a plugin whose missing DSH peer is explicitly optional', async () => {
+    const profile = await makeProfile()
+    const directory = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'optional-plugin')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'package.json'), JSON.stringify({
+      name: 'optional-plugin', dsh: { bundle: { patch: './cordis.patch.yml' } },
+      peerDependencies: { '@deepseek-ai/dsh-optional-peer': '0.1.5-rc.2' },
+      peerDependenciesMeta: { '@deepseek-ai/dsh-optional-peer': { optional: true } },
+    }))
+    await writeFile(profile.packagePath, JSON.stringify({
+      dependencies: { 'optional-plugin': '1.0.0' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'], disabledBundles: ['optional-plugin'] } },
+    }))
+    const runtimeEntryPath = join(profile.dshHome, 'runtime', 'bin.js')
+    const installer = new DshPluginInstaller({ dshHome: profile.dshHome, runtimeEntryPath, runCommand: async () => undefined })
+
+    await expect(installer.setPackageEnabled('web', 'optional-plugin', true)).resolves.toBeUndefined()
+    expect(await installer.repairIncompatiblePlugins('web', runtimeEntryPath)).toEqual([])
+    expect(await installer.listActivePlugins()).toEqual([{ packageName: 'optional-plugin', profile: 'web' }])
   })
 
   it('keeps a disabled plugin out of the layer list after another plugin command reconciles bundles', async () => {

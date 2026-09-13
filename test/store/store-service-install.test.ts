@@ -303,20 +303,71 @@ describe('install state machine', () => {
       enabled: true,
     }]))
     const enabled: boolean[] = []
+    const assertCanEnable = vi.fn(async () => { throw new Error('Runtime does not provide a required peer dependency') })
     const service = makeService([plugin], root, events, {}, undefined, {
       install: async () => ({ packageName: '@nanmicoder/dsh-agent-teams', profile: 'web', runtimeRestartRequired: false }),
       uninstall: async () => ({ runtimeRestartRequired: false }),
+      assertCanEnable,
       setEnabled: async (_record, _entry, value) => { enabled.push(value); return { runtimeRestartRequired: false } },
     })
 
     const done = await service.setPluginEnabled('skill', 'agent-teams', false)
 
     expect(done).toMatchObject({ phase: 'done', id: 'agent-teams' })
+    expect(assertCanEnable).not.toHaveBeenCalled()
     expect(enabled).toEqual([false])
     expect((await service.listInstalled()).records[0]).toMatchObject({
       id: 'agent-teams',
       enabled: false,
     })
+  })
+
+  it('reports incompatible plugin enablement before starting recovery or changing the install record', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const plugin = skillEntry({
+      id: 'codex-connect',
+      category: 'plugin',
+      files: undefined,
+      plugin: verifiedPlugin('npm:dsh-codex-connect@1.0.0', 'dsh-codex-connect'),
+    })
+    const record = {
+      kind: 'skill',
+      id: 'codex-connect',
+      version: '1.0.0',
+      sha256: '0'.repeat(64),
+      installedAt: '2026-09-13T00:00:00.000Z',
+      name: 'Codex Connect',
+      pluginPackageName: 'dsh-codex-connect',
+      pluginProfile: 'web',
+      enabled: false,
+    }
+    await mkdir(join(root.registryPath, '..'), { recursive: true })
+    const originalRegistry = JSON.stringify([record])
+    await writeFile(root.registryPath, originalRegistry)
+    const message = 'Cannot enable dsh-codex-connect: Runtime does not provide @deepseek-ai/dsh-client-ui-primitives'
+    const assertCanEnable = vi.fn(async () => { throw new Error(message) })
+    const setEnabled = vi.fn(async () => ({ runtimeRestartRequired: false }))
+    const run = vi.fn(async <T>(_input: unknown, mutate: () => Promise<T>, persist: (value: T) => Promise<void>) => {
+      const value = await mutate()
+      await persist(value)
+      return { value, transactionId: 'txn-enable' }
+    })
+    const service = makeService([plugin], root, events, {}, { report: vi.fn() }, {
+      install: async () => ({ packageName: 'dsh-codex-connect', profile: 'web' }),
+      uninstall: async () => undefined,
+      assertCanEnable,
+      setEnabled,
+    }, { run })
+
+    const failed = await service.setPluginEnabled('skill', 'codex-connect', true)
+
+    expect(failed).toMatchObject({ phase: 'failed', failureReason: 'install', message })
+    expect(events.at(-1)).toEqual(failed)
+    expect(assertCanEnable).toHaveBeenCalledWith(record, plugin)
+    expect(run).not.toHaveBeenCalled()
+    expect(setEnabled).not.toHaveBeenCalled()
+    expect(await readFile(root.registryPath, 'utf8')).toBe(originalRegistry)
   })
 
   it('exposes installed disabled profile plugins as recovery uninstall choices', async () => {

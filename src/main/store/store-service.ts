@@ -46,6 +46,8 @@ import { assertCatalogAdmission, catalogAdmission } from './catalog-admission.js
 export interface StorePluginInstaller {
   install(entry: StoreEntry): Promise<{ packageName: string; profile: string; runtimeRestartRequired?: boolean }>
   uninstall(record: InstalledRecord, entry?: StoreEntry): Promise<{ runtimeRestartRequired?: boolean } | void>
+  /** Reject known incompatibilities before recovery stops the Runtime or snapshots the profile. */
+  assertCanEnable?(record: InstalledRecord, entry: StoreEntry | undefined): Promise<void>
   setEnabled?(record: InstalledRecord, entry: StoreEntry | undefined, enabled: boolean): Promise<{ runtimeRestartRequired?: boolean } | void>
   setPackageEnabled?(profile: string, packageName: string, enabled: boolean): Promise<void>
   listActivePlugins?(): Promise<readonly { packageName: string; profile: string }[]>
@@ -647,6 +649,7 @@ export class StoreService {
     const action = enabled ? 'enable' : 'disable'
     this.publish({ kind, id, phase: 'installing', message: enabled ? 'Enabling…' : 'Disabling…' })
     try {
+      if (enabled) await this.pluginInstaller.assertCanEnable?.(record, entry)
       let result: { runtimeRestartRequired?: boolean } | void
       let recoveryTransactionId: string | undefined
       const setEnabled = this.pluginInstaller.setEnabled

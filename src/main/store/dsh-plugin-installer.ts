@@ -13,6 +13,7 @@ import { Document, parseDocument, type YAMLMap, type YAMLSeq } from 'yaml'
 import type { InstalledRecord, StoreEntry, StorePluginConfig } from '../../shared/store.js'
 import { repairInstalledDshPlugin } from './dsh-plugin-compatibility.js'
 import { compareDshVersions } from './compatibility.js'
+import { resolveRuntimeClientModuleVersion } from './runtime-client-modules.js'
 
 export interface PluginCommandRunner {
   (profile: string, args: readonly string[]): Promise<void>
@@ -27,6 +28,8 @@ export interface PluginCommandRunner {
 export interface DshPluginInstallerOptions {
   readonly dshHome: string
   readonly runCommand: PluginCommandRunner
+  /** Selected Runtime used to validate plugin activation before a restart. */
+  readonly runtimeEntryPath?: string
   /** Report whether the active Runtime must be restarted to load the package. */
   readonly isRuntimeActive?: () => boolean
 }
@@ -155,12 +158,47 @@ export class DshPluginInstaller {
     return { runtimeRestartRequired: this.options.isRuntimeActive?.() === true }
   }
 
+  /** Read-only preflight; Store calls this before stopping Runtime or taking a snapshot. */
+  async assertCanEnable(record: InstalledRecord, entry: StoreEntry | undefined): Promise<void> {
+    const config = entry?.plugin
+    if (config !== undefined) validatePluginSource(config)
+    const packageName = record.pluginPackageName ?? config?.packageName ?? (config === undefined ? undefined : packageNameFromSourceIfNpm(config.source))
+    if (packageName === undefined) throw new Error(`Cannot determine the package name for DSH plugin ${record.id}`)
+    await this.assertPackageCanEnable(record.pluginProfile ?? config?.profile ?? 'web', packageName)
+  }
+
+  private async installedPackageManifest(profile: string, packageName: string): Promise<PackageManifest | undefined> {
+    return await readPackageManifest(join(this.options.dshHome, 'profiles', profile, 'node_modules', packageName, 'package.json'))
+      ?? await readPackageManifest(join(this.options.dshHome, 'profiles', 'node_modules', packageName, 'package.json'))
+  }
+
+  private async assertPackageCanEnable(profile: string, packageName: string): Promise<PackageManifest> {
+    if (!PACKAGE_NAME.test(packageName)) throw new Error(`Invalid recorded DSH plugin package name: ${packageName}`)
+    if (!PROFILE_NAME.test(profile)) throw new Error(`Invalid recorded DSH plugin profile: ${profile}`)
+    const manifest = await this.installedPackageManifest(profile, packageName)
+    if (manifest === undefined) throw new Error(`Cannot enable DSH plugin ${packageName}: installed package metadata is missing; reinstall the plugin`)
+    const profileManifest = await readProfileManifest(this.options.dshHome, profile)
+    const patchStates = await readPatchPluginStates(join(this.options.dshHome, 'profiles', profile, 'cordis.patch.yml'))
+    if (!hasDependency(profileManifest, packageName) && !patchStates.has(packageName)) {
+      throw new Error(`DSH plugin package ${packageName} is not installed in profile ${profile}`)
+    }
+    if (!exportsBundlePatch(manifest) && !patchStates.has(packageName)) {
+      throw new Error(`Cannot enable DSH plugin ${packageName}: it declares no dsh.bundle and has no plugin entry in the profile patch`)
+    }
+    if (this.options.runtimeEntryPath !== undefined) {
+      const reason = await incompatiblePeerReason(manifest, createRequire(this.options.runtimeEntryPath))
+      if (reason !== undefined) throw new Error(`Cannot enable DSH plugin ${packageName}: ${reason}`)
+    }
+    return manifest
+  }
+
   /** Change one profile layer by package name; used by Runtime recovery for unmanaged plugins. */
   async setPackageEnabled(profile: string, packageName: string, enabled: boolean): Promise<void> {
     if (!PACKAGE_NAME.test(packageName)) throw new Error(`Invalid recorded DSH plugin package name: ${packageName}`)
     if (!PROFILE_NAME.test(profile)) throw new Error(`Invalid recorded DSH plugin profile: ${profile}`)
     const path = join(this.options.dshHome, 'profiles', profile, 'package.json')
     const manifest = await readProfileManifest(this.options.dshHome, profile)
+    const packageManifest = enabled ? await this.assertPackageCanEnable(profile, packageName) : undefined
     const patchPath = join(this.options.dshHome, 'profiles', profile, 'cordis.patch.yml')
     const patchChanged = await setPatchPluginEnabled(patchPath, packageName, enabled)
     if (!hasDependency(manifest, packageName) && !patchChanged) {
@@ -169,7 +207,7 @@ export class DshPluginInstaller {
     if (!hasDependency(manifest, packageName)) return
     const bundles = profileBundles(manifest)
     const disabledBundles = profileDisabledBundles(manifest)
-    const nextBundles = enabled
+    const nextBundles = enabled && packageManifest !== undefined && exportsBundlePatch(packageManifest)
       ? bundles.includes(packageName) ? bundles : [...bundles, packageName]
       : bundles.filter((candidate) => candidate !== packageName)
     const nextDisabledBundles = enabled
@@ -182,6 +220,28 @@ export class DshPluginInstaller {
     await writeProfileManifest(path, withProfileState(manifest, nextBundles, nextDisabledBundles))
   }
 
+  /** Remove layers created by older toggles for packages that only expose a direct plugin. */
+  async repairInvalidBundleLayers(profile: string): Promise<readonly string[]> {
+    if (!PROFILE_NAME.test(profile)) throw new Error(`Invalid DSH plugin profile: ${profile}`)
+    const manifest = await readProfileManifest(this.options.dshHome, profile)
+    const removed: string[] = []
+    for (const packageName of profileBundles(manifest)) {
+      if (isCoreDshBundle(packageName) || !PACKAGE_NAME.test(packageName)) continue
+      const installed = await this.installedPackageManifest(profile, packageName)
+      // Missing metadata remains an actionable Runtime error, never a guessed repair.
+      if (installed !== undefined && !exportsBundlePatch(installed)) removed.push(packageName)
+    }
+    if (removed.length > 0) {
+      const patchStates = await readPatchPluginStates(join(this.options.dshHome, 'profiles', profile, 'cordis.patch.yml'))
+      const disabled = new Set(profileDisabledBundles(manifest))
+      for (const name of removed) if (!patchStates.has(name)) disabled.add(name)
+      await writeProfileManifest(join(this.options.dshHome, 'profiles', profile, 'package.json'), withProfileState(
+        manifest, profileBundles(manifest).filter((name) => !removed.includes(name)), [...disabled],
+      ))
+    }
+    return removed
+  }
+
   /** Disable third-party bundles whose DSH peer API range excludes the selected Runtime. */
   async repairIncompatiblePlugins(profile: string, runtimeEntryPath: string): Promise<readonly DshIncompatiblePlugin[]> {
     if (!PROFILE_NAME.test(profile)) throw new Error(`Invalid DSH plugin profile: ${profile}`)
@@ -189,8 +249,11 @@ export class DshPluginInstaller {
     const profileRoot = join(this.options.dshHome, 'profiles', profile)
     const runtimeRequire = createRequire(runtimeEntryPath)
     const repaired: DshIncompatiblePlugin[] = []
-    for (const packageName of profileBundles(manifest)) {
-      if (isCoreDshBundle(packageName) || profileDisabledBundles(manifest).includes(packageName)) continue
+    const patchStates = await readPatchPluginStates(join(profileRoot, 'cordis.patch.yml'))
+    const candidates = new Set([...profileBundles(manifest), ...[...patchStates].filter(([, enabled]) => enabled).map(([name]) => name)])
+    for (const packageName of candidates) {
+      if (!PACKAGE_NAME.test(packageName) || isCoreDshBundle(packageName)
+        || (patchStates.get(packageName) ?? !profileDisabledBundles(manifest).includes(packageName)) === false) continue
       const packageManifest = await readPackageManifest(join(profileRoot, 'node_modules', packageName, 'package.json'))
         ?? await readPackageManifest(join(this.options.dshHome, 'profiles', 'node_modules', packageName, 'package.json'))
       if (packageManifest === undefined) continue
@@ -320,6 +383,12 @@ interface PackageManifest {
   readonly version?: string
   readonly dsh?: unknown
   readonly peerDependencies?: Readonly<Record<string, unknown>>
+  readonly peerDependenciesMeta?: Readonly<Record<string, { readonly optional?: boolean } | undefined>>
+}
+
+function exportsBundlePatch(manifest: PackageManifest): boolean {
+  const dsh = manifest.dsh as { bundle?: { patch?: unknown } } | undefined
+  return dsh?.bundle?.patch !== undefined
 }
 
 async function readProfileManifest(dshHome: string, profile: string): Promise<ProfileManifest> {
@@ -401,13 +470,16 @@ async function readPackageManifest(path: string): Promise<PackageManifest | unde
   try {
     const parsed: unknown = JSON.parse(await readFile(path, 'utf8'))
     if (typeof parsed !== 'object' || parsed === null) return undefined
-    const value = parsed as { name?: unknown; version?: unknown; dsh?: unknown; peerDependencies?: unknown }
+    const value = parsed as { name?: unknown; version?: unknown; dsh?: unknown; peerDependencies?: unknown; peerDependenciesMeta?: unknown }
     return {
       ...(typeof value.name === 'string' ? { name: value.name } : {}),
       ...(typeof value.version === 'string' ? { version: value.version } : {}),
       ...(value.dsh === undefined ? {} : { dsh: value.dsh }),
       ...(typeof value.peerDependencies === 'object' && value.peerDependencies !== null && !Array.isArray(value.peerDependencies)
         ? { peerDependencies: value.peerDependencies as Readonly<Record<string, unknown>> }
+        : {}),
+      ...(typeof value.peerDependenciesMeta === 'object' && value.peerDependenciesMeta !== null && !Array.isArray(value.peerDependenciesMeta)
+        ? { peerDependenciesMeta: value.peerDependenciesMeta as PackageManifest['peerDependenciesMeta'] }
         : {}),
     }
   } catch {
@@ -420,16 +492,19 @@ async function incompatiblePeerReason(manifest: PackageManifest, runtimeRequire:
     if (!peerName.startsWith('@deepseek-ai/dsh-') || typeof peerRangeValue !== 'string') continue
     const peerRange = peerRangeValue.trim()
     const runtimeManifestPath = resolveRuntimePackageManifest(runtimeRequire, peerName)
-    if (runtimeManifestPath === undefined) {
+    const runtimeVersion = runtimeManifestPath === undefined
+      ? await resolveRuntimeClientModuleVersion(runtimeRequire, peerName)
+      : (await readPackageManifest(runtimeManifestPath))?.version
+    if (runtimeManifestPath === undefined && runtimeVersion === undefined) {
+      if (manifest.peerDependenciesMeta?.[peerName]?.optional === true) continue
       return `${peerName} ${peerRange} is required, but the selected Runtime does not provide this package`
     }
-    const runtimeManifest = await readPackageManifest(runtimeManifestPath)
-    if (runtimeManifest?.version === undefined) {
+    if (runtimeVersion === undefined) {
       return `${peerName} ${peerRange} is required, but the selected Runtime package has no version`
     }
-    const compatible = versionSatisfiesRange(runtimeManifest.version, peerRange)
+    const compatible = versionSatisfiesRange(runtimeVersion, peerRange)
     if (compatible === false) {
-      return `${peerName} ${peerRange} is required, but the selected Runtime provides ${runtimeManifest.version}`
+      return `${peerName} ${peerRange} is required, but the selected Runtime provides ${runtimeVersion}`
     }
   }
   return undefined

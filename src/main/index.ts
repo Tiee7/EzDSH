@@ -507,6 +507,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   const pluginInstaller = new DshPluginInstaller({
     dshHome: layout.harness,
     runCommand: dshPluginCommandRunner,
+    runtimeEntryPath,
     isRuntimeActive: () => {
       const phase = runtimeManager?.snapshot().phase
       return phase === 'ready' || phase === 'starting'
@@ -578,6 +579,10 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
         console.error('[dsh-profile] failed to quarantine stale core modules:', message)
       }
       try {
+        const repairedLayers = await pluginInstaller.repairInvalidBundleLayers('web')
+        if (repairedLayers.length > 0) {
+          console.warn(`[dsh-plugin] removed invalid bundle layers; direct plugin settings preserved: ${repairedLayers.join(', ')}`)
+        }
         const repairedPlugins = await pluginInstaller.repairIncompatiblePlugins('web', runtimeEntryPath)
         for (const plugin of repairedPlugins) {
           console.warn(`[dsh-plugin] isolated incompatible plugin ${plugin.packageName}: ${plugin.reason}`)
