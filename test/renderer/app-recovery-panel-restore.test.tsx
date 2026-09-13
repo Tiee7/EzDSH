@@ -59,7 +59,7 @@ function requiredRecovery(snapshot: RecoverySnapshot | undefined = selected): Re
   }
 }
 
-async function mountApp(initialRecovery = requiredRecovery()) {
+async function mountApp(initialRecovery = requiredRecovery(), initialRuntime = failed) {
   const previous = Object.fromEntries(['window', 'document', 'navigator', 'HTMLElement', 'Node', 'Event', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT']
     .map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   const dom = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
@@ -67,12 +67,16 @@ async function mountApp(initialRecovery = requiredRecovery()) {
   let runtimeListener: ((state: RuntimeSnapshot) => void) | undefined
   let recoveryListener: ((state: RecoveryState) => void) | undefined
   let workspaceListener: ((state: WorkspaceOperationState | undefined) => void) | undefined
-  let currentRuntime = failed
+  let currentRuntime = initialRuntime
   const emitRuntime = (state: RuntimeSnapshot) => { currentRuntime = state; runtimeListener?.(state) }
   const restoreResult = deferred<RecoveryRestoreResult>()
   const startupResult = deferred<RuntimeSnapshot>()
   const operations: string[] = []
   const start = vi.fn(async () => currentRuntime)
+  const exitSafeMode = vi.fn(async () => {
+    emitRuntime(ready)
+    return ready
+  })
   const restart = vi.fn(async () => {
     operations.push('restart')
     emitRuntime(ready)
@@ -106,7 +110,7 @@ async function mountApp(initialRecovery = requiredRecovery()) {
       onWorkspaceChange: (listener: typeof workspaceListener) => { workspaceListener = listener; return () => { workspaceListener = undefined } },
     },
     updates: { getStatus: async () => ({ phase: 'idle' }), onStateChange: subscribe },
-    recovery: { getStatus: async () => initialRecovery, listSnapshots, restore, onStateChange: (listener: typeof recoveryListener) => { recoveryListener = listener; return () => { recoveryListener = undefined } } },
+    recovery: { getStatus: async () => initialRecovery, listSnapshots, restore, exitSafeMode, onStateChange: (listener: typeof recoveryListener) => { recoveryListener = listener; return () => { recoveryListener = undefined } } },
     navigation: { getConfig: async () => getDefaultNavConfig(), onStateChange: subscribe },
     notifications: { getSettings: async () => DEFAULT_NOTIFICATION_SETTINGS, onSettingsChange: subscribe, onEvent: subscribe },
   } })
@@ -123,7 +127,7 @@ async function mountApp(initialRecovery = requiredRecovery()) {
   }
   const radio = (name: string) => (Array.from(dom.document.querySelectorAll('input[type="radio"]')) as HTMLInputElement[]).find((input) => input.value === name)
   return {
-    dom, start, restart, restore, listSnapshots, confirm, operations, click, button, radio,
+    dom, start, restart, restore, exitSafeMode, listSnapshots, confirm, operations, click, button, radio,
     choose: async (name = selected.archiveName) => {
       const input = radio(name)
       if (input === undefined) throw new Error(`Missing snapshot: ${name}`)
@@ -144,6 +148,18 @@ async function mountApp(initialRecovery = requiredRecovery()) {
       })
       if (!finishInSameBatch) await act(async () => { workspaceListener?.(undefined) })
     },
+    switchWorkspaceBeforeCommit: async (finishPending: () => void) => {
+      await act(async () => {
+        workspaceListener?.({ phase: 'switching', message: 'Switching workspace' })
+        emitRuntime({ ...failed, launchDirectory: '/another-workspace' })
+        recoveryListener?.(requiredRecovery(another))
+        finishPending()
+        // Let the old IPC continuation run within this batch, before React
+        // commits the new panel key and invokes the old panel's cleanup.
+        await Promise.resolve()
+        workspaceListener?.(undefined)
+      })
+    },
     cleanup: async () => {
       await act(async () => { root.unmount() })
       for (const [key, descriptor] of Object.entries(previous)) {
@@ -154,12 +170,97 @@ async function mountApp(initialRecovery = requiredRecovery()) {
   }
 }
 
-async function withApp(check: (fixture: Awaited<ReturnType<typeof mountApp>>) => Promise<void>, state?: RecoveryState) {
-  const fixture = await mountApp(state)
+async function withApp(check: (fixture: Awaited<ReturnType<typeof mountApp>>) => Promise<void>, state?: RecoveryState, runtime?: RuntimeSnapshot) {
+  const fixture = await mountApp(state, runtime)
   try { await check(fixture) } finally { await fixture.cleanup() }
 }
 
 describe('App RecoveryPanel restore uses the shared restore flow', () => {
+  it.each(['safe', 'isolation'] as const)('retries a failed %s Runtime in the same mode and uses its returned ready state without exiting the mode', async (mode) => {
+    await withApp(async (h) => {
+      const resumed = { ...ready, mode, url: `http://127.0.0.1:4567/?mode=${mode}` }
+      // No separate runtime event: the retry response must reach App through
+      // the panel callback before it can show the recovered workspace.
+      h.restart.mockReset().mockResolvedValue(resumed)
+      expect(h.dom.document.querySelectorAll('.recovery-card').length).toBe(1)
+
+      await h.click(copy.recoveryRetryRuntime)
+
+      expect(h.exitSafeMode).not.toHaveBeenCalled()
+      expect(h.restart).toHaveBeenCalledExactlyOnceWith()
+      expect(h.dom.document.querySelectorAll('.recovery-card').length).toBe(0)
+      expect(h.dom.document.querySelector('[data-runtime-url]')?.getAttribute('data-runtime-url')).toBe(resumed.url)
+      expect(h.dom.document.body.textContent).toContain(mode === 'safe' ? copy.safeModeBadge : copy.isolationModeBadge)
+      expect(h.restore).not.toHaveBeenCalled()
+    }, requiredRecovery(), { ...failed, mode })
+  })
+
+  it.each([false, true])('waits for Main to clear required recovery after a normal retry is ready (pending plugin transaction: %s)', async (hasPendingPlugin) => {
+    const recovery: RecoveryState = hasPendingPlugin ? {
+      phase: 'recovery-required',
+      pendingTransaction: {
+        id: 'fixture-plugin-change', kind: 'plugin-change', phase: 'failed',
+        snapshotName: selected.archiveName, fromAppVersion: '1.8.1550', preparedAt: '2026-09-13T08:02:00.000Z',
+        affectedPlugin: { action: 'install', entryId: 'fixture-plugin', packageName: 'fixture-plugin', profile: 'web' },
+      },
+    } : requiredRecovery()
+    await withApp(async (h) => {
+      h.restart.mockReset().mockResolvedValue(ready)
+
+      await h.click(copy.recoveryRetryRuntime)
+
+      expect(h.exitSafeMode).not.toHaveBeenCalled()
+      expect(h.restart).toHaveBeenCalledExactlyOnceWith()
+      expect(h.dom.document.querySelectorAll('.recovery-card').length).toBe(1)
+      expect(h.dom.document.querySelectorAll('[data-runtime-url]').length).toBe(0)
+      if (hasPendingPlugin) expect(h.button('回滚此插件变更')).toBeDefined()
+      expect(h.restore).not.toHaveBeenCalled()
+
+      await h.publishRecovery({ phase: 'idle' })
+
+      expect(h.dom.document.querySelectorAll('.recovery-card').length).toBe(0)
+      expect(h.dom.document.querySelector('[data-runtime-url]')?.getAttribute('data-runtime-url')).toBe(ready.url)
+      expect(h.restart).toHaveBeenCalledOnce()
+    }, recovery)
+  })
+
+  it('ignores an old retry response after workspace switching remounts the recovery panel', async () => {
+    await withApp(async (h) => {
+      const oldRetry = deferred<RuntimeSnapshot>()
+      h.restart.mockReset().mockImplementation(() => oldRetry.promise)
+      await h.click(copy.recoveryRetryRuntime)
+      expect(h.restart).toHaveBeenCalledOnce()
+
+      await h.switchWorkspace(true)
+      await act(async () => { oldRetry.resolve({ ...ready, mode: 'safe', url: 'http://127.0.0.1:4567/?old-safe-mode' }) })
+
+      expect(h.exitSafeMode).not.toHaveBeenCalled()
+      expect(h.dom.document.querySelectorAll('.recovery-card').length).toBe(1)
+      expect(h.dom.document.querySelectorAll('[data-runtime-url]').length).toBe(0)
+      expect(h.dom.document.body.textContent).toContain(another.archiveName)
+      expect(h.dom.document.body.textContent).not.toContain(selected.archiveName)
+    }, requiredRecovery(), { ...failed, mode: 'safe' })
+  })
+
+  it('ignores an old retry response after the workspace event but before the panel unmount commits', async () => {
+    await withApp(async (h) => {
+      const oldRetry = deferred<RuntimeSnapshot>()
+      h.restart.mockReset().mockImplementation(() => oldRetry.promise)
+      await h.click(copy.recoveryRetryRuntime)
+      expect(h.restart).toHaveBeenCalledOnce()
+
+      await h.switchWorkspaceBeforeCommit(() => {
+        oldRetry.resolve({ ...ready, mode: 'safe', url: 'http://127.0.0.1:4567/?old-safe-before-commit' })
+      })
+
+      expect(h.dom.document.querySelectorAll('.recovery-card').length).toBe(1)
+      expect(h.dom.document.querySelectorAll('[data-runtime-url]').length).toBe(0)
+      expect(h.dom.document.body.textContent).toContain(another.archiveName)
+      expect(h.dom.document.body.textContent).not.toContain(selected.archiveName)
+      expect(h.exitSafeMode).not.toHaveBeenCalled()
+    }, requiredRecovery(), { ...failed, mode: 'safe' })
+  })
+
   it.each(['associated backup', 'historical selection'] as const)('previews and confirms %s once, then retains startup retry after the panel unmounts', async (entry) => {
     await withApp(async (h) => {
       expect(h.dom.document.querySelectorAll('.recovery-card').length).toBe(1)

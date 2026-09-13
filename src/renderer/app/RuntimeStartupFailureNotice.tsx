@@ -109,13 +109,13 @@ export function RuntimeStartupFailureNotice({
       ) : null}
       {safeModeError !== undefined ? <p className="runtime-failure-open-error" role="alert">{copy.runtimeSafeModeFailed}: {safeModeError}</p> : null}
       {isolationModeError !== undefined ? <p className="runtime-failure-open-error" role="alert">{copy.runtimeIsolationModeFailed}: {isolationModeError}</p> : null}
+      {openLogError !== undefined ? <p className="runtime-failure-open-error" role="alert">{copy.runtimeOpenLogFailed}: {openLogError}</p> : null}
       {expanded ? (
         <div id="runtime-startup-failure-details" className="runtime-failure-details" role="region" aria-label={copy.runtimeShowFailureDetails}>
           <p className="runtime-failure-label">{copy.runtimeFailureReason}</p>
           <pre className="runtime-failure-message">{message ?? copy.runtimeFailureUnknown}</pre>
           <p className="runtime-failure-label">{copy.runtimeLogPath}</p>
           <code className="runtime-failure-log-path">{logPath ?? copy.runtimeLogPathUnavailable}</code>
-          {openLogError !== undefined ? <p className="runtime-failure-open-error" role="alert">{copy.runtimeOpenLogFailed}: {openLogError}</p> : null}
         </div>
       ) : null}
     </div>

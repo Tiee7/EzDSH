@@ -182,6 +182,7 @@ export function App() {
   const [showRecoveryOptions, setShowRecoveryOptions] = useState(false)
   const [workspaceOperation, setWorkspaceOperation] = useState<WorkspaceOperationState | undefined>()
   const [recoveryPanelRevision, setRecoveryPanelRevision] = useState(0)
+  const recoveryPanelRevisionRef = useRef(0)
   const [recovery, setRecovery] = useState<RecoveryState>({ phase: 'idle' })
   const [recoveryLoaded, setRecoveryLoaded] = useState(false)
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ ...DEFAULT_NOTIFICATION_SETTINGS })
@@ -259,7 +260,8 @@ export function App() {
       if (!active) return
       if (state !== undefined) {
         clearRestoreFlow()
-        setRecoveryPanelRevision((revision) => revision + 1)
+        recoveryPanelRevisionRef.current += 1
+        setRecoveryPanelRevision(recoveryPanelRevisionRef.current)
       }
       setWorkspaceOperation(state)
     })
@@ -428,6 +430,8 @@ export function App() {
           runtime={runtime}
           restoreFlow={restoreFlow}
           onRecoveryModeStarted={(nextRuntime) => {
+            // Workspace events invalidate old callbacks before React commits the new key.
+            if (recoveryPanelRevision !== recoveryPanelRevisionRef.current) return
             setRuntime(nextRuntime)
             setShowRecoveryOptions(false)
           }}

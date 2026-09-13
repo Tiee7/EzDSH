@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import type { RecoveryDoctorResult, RecoverySnapshot, RecoveryState, RuntimeFailurePlugin } from '../../main/recovery/recovery-manager.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
@@ -31,6 +31,8 @@ export function RecoveryPanel({ copy, state, runtime, restoreFlow, onRecoveryMod
   const [pluginListOpen, setPluginListOpen] = useState(false)
   const [availableSnapshots, setAvailableSnapshots] = useState<RecoverySnapshot[]>([])
   const [selectedSnapshotName, setSelectedSnapshotName] = useState<string>()
+  const retryOperation = useRef({ pending: false, generation: 0 })
+  useEffect(() => () => { retryOperation.current.generation += 1 }, [])
   const busy = flow.busy || busyAction !== undefined
   const pendingTransaction = state.pendingTransaction
   const pendingPlugin = pendingTransaction?.kind === 'plugin-change' ? pendingTransaction.affectedPlugin : undefined
@@ -39,15 +41,27 @@ export function RecoveryPanel({ copy, state, runtime, restoreFlow, onRecoveryMod
   const canRestore = pendingTransaction !== undefined || state.pendingUpdate !== undefined || runtimeFailure?.latestSnapshot !== undefined
 
   const retry = async (): Promise<void> => {
-    if (busy) return
+    if (busy || retryOperation.current.pending) return
+    const operation = retryOperation.current.generation
+    retryOperation.current.pending = true
     setBusyAction('retry')
     setError(undefined)
     try {
-      await window.EzDSH.recovery.exitSafeMode()
+      const nextRuntime = await window.EzDSH.runtime.restart()
+      if (retryOperation.current.generation !== operation) return
+      if (nextRuntime.phase !== 'ready' || nextRuntime.url === undefined) {
+        throw new Error(nextRuntime.message ?? copy.runtimeStartFailed)
+      }
+      onRecoveryModeStarted?.(nextRuntime)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : copy.runtimeStartFailed)
+      if (retryOperation.current.generation === operation) {
+        setError(reason instanceof Error ? reason.message : copy.runtimeStartFailed)
+      }
     } finally {
-      setBusyAction(undefined)
+      if (retryOperation.current.generation === operation) {
+        retryOperation.current.pending = false
+        setBusyAction(undefined)
+      }
     }
   }
 

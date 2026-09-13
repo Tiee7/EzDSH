@@ -146,7 +146,11 @@ describe('persistent Safe Mode integration', () => {
     await expect(readFile(selectionPath)).resolves.toEqual(selection)
     const temporary = createRuntime(layout)
     await expect(temporary.manager.start({ mode: 'isolation', dshHome: isolated.dshHome })).resolves.toMatchObject({ phase: 'ready', mode: 'isolation' })
+    const temporaryNote = join(isolated.dshHome, 'work-in-progress.md')
+    await writeFile(temporaryNote, 'Keep this temporary work during a retry.\n')
     await expect(temporary.manager.restart()).resolves.toMatchObject({ mode: 'isolation' })
+    await expect(readFile(temporaryNote, 'utf8')).resolves.toBe('Keep this temporary work during a retry.\n')
+    await expect(readFile(selectionPath)).resolves.toEqual(selection)
     expect(temporary.resolveInitialLaunchContext).not.toHaveBeenCalled()
     for (const [, args, options] of temporary.spawnProcess.mock.calls) {
       expect(options.env?.DSH_HOME).toBe(isolated.dshHome)
@@ -154,6 +158,7 @@ describe('persistent Safe Mode integration', () => {
     }
     await temporary.manager.stop()
     await isolation.disable()
+    await expect(stat(temporaryNote)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(selectionPath)).resolves.toEqual(selection)
 
     const cold = createRuntime(layout)
