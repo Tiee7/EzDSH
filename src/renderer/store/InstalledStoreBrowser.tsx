@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import type { InstalledRecord, InstallState, StoreEntry } from '../../shared/store.js'
 import { updateAvailable } from './display.js'
+import { InstallFailureNotice } from './InstallFailureNotice.js'
 import { finishPluginRuntimeVerification, needsPluginRuntimeVerification, PluginRuntimeRestartNotice } from './PluginRuntimeRestartNotice.js'
 import './store.css'
 
@@ -67,7 +68,7 @@ function InstalledCard({
         {plugin && record.pluginSource === undefined ? <span>{copy.storeInstalledExternal}</span> : null}
       </div>
       {failed
-        ? <p className="installed-card-error" role="alert">{operation?.state.message ?? copy.storeLoadFailed}</p>
+        ? <InstallFailureNotice copy={copy} state={operation.state} />
         : null}
       {operation?.key === key && operation.state.phase === 'installing'
         ? <p className="installed-card-progress" role="status">{operation.state.message ?? copy.storePhaseInstalling}</p>

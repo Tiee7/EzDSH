@@ -6,9 +6,10 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { getAppCopy } from '../../src/shared/locale'
 import { InstalledStoreBrowser } from '../../src/renderer/store/InstalledStoreBrowser'
-import { AuditOverrideActions, EntryBadges, EntryCard, InstallFailureNotice, StoreBrowser } from '../../src/renderer/store/StoreBrowser'
+import { AuditOverrideActions, EntryBadges, EntryCard, StoreBrowser } from '../../src/renderer/store/StoreBrowser'
+import { InstallFailureNotice } from '../../src/renderer/store/InstallFailureNotice'
 import { finishPluginRuntimeVerification, needsPluginRuntimeVerification } from '../../src/renderer/store/PluginRuntimeRestartNotice'
-import type { PluginCompatibilityAssessment, StoreEntry } from '../../src/shared/store'
+import type { InstallState, PluginCompatibilityAssessment, StoreEntry } from '../../src/shared/store'
 import type { RuntimeMode, RuntimeSnapshot } from '../../src/main/runtime/runtime-types'
 
 const pluginEntry: StoreEntry = {
@@ -41,7 +42,7 @@ async function withPluginInstall(mode: RuntimeMode, check: (fixture: {
   exitSafeMode: ReturnType<typeof vi.fn>
   getStatus: ReturnType<typeof vi.fn>
   changeMode: (mode: RuntimeMode) => Promise<void>
-}) => Promise<void>, installedSurface = false, failModeRead = false, locale: 'zh' | 'en' = 'zh', compatibility?: PluginCompatibilityAssessment): Promise<void> {
+}) => Promise<void>, installedSurface = false, failModeRead = false, locale: 'zh' | 'en' = 'zh', compatibility?: PluginCompatibilityAssessment, installedOperationState?: InstallState): Promise<void> {
   const previous = Object.fromEntries(['window', 'document', 'navigator', 'HTMLElement', 'Node', 'Event', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT']
     .map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
@@ -74,7 +75,7 @@ async function withPluginInstall(mode: RuntimeMode, check: (fixture: {
           : { runtimeRestartRequired: true }),
         ...(compatibility === undefined ? {} : { compatibility }),
       })),
-      setEnabled: vi.fn(async () => ({ kind: 'skill', id: pluginEntry.id, phase: 'done', runtimeRestartRequired: true })),
+      setEnabled: vi.fn(async () => installedOperationState ?? ({ kind: 'skill', id: pluginEntry.id, phase: 'done', runtimeRestartRequired: true })),
       onStateChange: vi.fn(() => () => undefined),
     },
   } })
@@ -260,6 +261,34 @@ describe('InstalledStoreBrowser update controls', () => {
     expect(storeStylesheet).toMatch(/\.detail-install,\s*\.detail-update(?:,\s*[^{}]+)?\s*\{/)
     expect(storeStylesheet).toMatch(/\.detail-install:hover:not\(:disabled\),\s*\.detail-update:hover:not\(:disabled\)(?:,\s*[^{}]+)?\s*\{/)
     expect(storeStylesheet).toMatch(/\.detail-install:disabled,\s*\.detail-update:disabled(?:,\s*[^{}]+)?\s*\{/)
+  })
+
+  it.each([
+    ['zh', '暂不能修改其他插件', '上一项插件变更尚未验证', '请正常启动并确认上一项插件变更', '技术细节'],
+    ['en', 'Another plugin change is waiting', 'The previous plugin change is awaiting verification', 'Start normally and verify the previous plugin change', 'Technical details'],
+  ] as const)('shows the structured pending-plugin diagnosis on the installed surface in %s', async (locale, title, cause, action, details) => {
+    const raw = 'Restart Runtime before changing another DSH plugin'
+    const state: InstallState = {
+      kind: 'skill',
+      id: pluginEntry.id,
+      phase: 'failed',
+      failureReason: 'install',
+      message: raw,
+      diagnostic: {
+        code: 'pending-plugin-verification',
+        detail: raw,
+        suggestedAction: 'Start Runtime in normal mode.',
+      },
+    }
+    await withPluginInstall('safe', async ({ document }) => {
+      const card = document.querySelector('.installed-card')
+      expect(card?.querySelector('.install-failure-title')?.textContent).toBe(title)
+      expect(card?.querySelector('.install-failure-cause')?.textContent).toBe(cause)
+      expect(card?.querySelector('.install-failure-action')?.textContent).toContain(action)
+      expect(card?.querySelector('.install-failure-technical summary')?.textContent).toBe(details)
+      expect(card?.querySelector('.install-failure-technical pre')?.textContent).toBe(raw)
+      expect(card?.querySelectorAll('.installed-card-error')).toHaveLength(0)
+    }, true, false, locale, undefined, state)
   })
 
   it('refreshes the skill catalog when checking for updates', async () => {
