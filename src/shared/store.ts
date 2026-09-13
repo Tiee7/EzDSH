@@ -215,6 +215,7 @@ export type InstallFailureReason =
 
 /** Stable diagnosis codes for package-manager and catalog failures. */
 export type InstallDiagnosticCode =
+  | 'pending-plugin-verification'
   | 'catalog-entry-invalid'
   | 'invalid-dependency-name'
   | 'build-script-blocked'

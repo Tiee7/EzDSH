@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import type { InstalledRecord, InstallState, StoreEntry } from '../../shared/store.js'
 import { updateAvailable } from './display.js'
-import { PluginRuntimeRestartNotice } from './PluginRuntimeRestartNotice.js'
+import { finishPluginRuntimeVerification, needsPluginRuntimeVerification, PluginRuntimeRestartNotice } from './PluginRuntimeRestartNotice.js'
 import './store.css'
 
 interface InstalledStoreBrowserProps {
@@ -251,12 +251,14 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
           </section>
           )
         : null}
-      {operation?.state.phase === 'done' && operation.state.runtimeRestartRequired
+      {needsPluginRuntimeVerification(operation?.state)
         ? <PluginRuntimeRestartNotice
             copy={copy}
             onBusyChange={setRuntimeRestarting}
-            onNormalReady={() => { setOperation((current) => current === undefined ? current : {
-              ...current, state: { ...current.state, runtimeRestartRequired: false },
+            onNormalReady={() => { setOperation((current) => {
+              if (current === undefined) return current
+              const state = finishPluginRuntimeVerification(current.state)
+              return state === undefined ? undefined : { ...current, state }
             }) }}
           />
         : null}

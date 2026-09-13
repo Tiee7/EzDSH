@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { diagnoseInstallFailure } from '../../src/main/store/install-diagnostics'
 
 describe('diagnoseInstallFailure', () => {
+  it.each([
+    'Restart Runtime before changing another DSH plugin',
+    'Start Runtime in normal mode to verify the previous plugin change before changing another DSH plugin. Restarting Safe Mode or Isolation Mode does not verify plugins.',
+  ])('identifies a pending plugin verification instead of an unknown install failure: %s', (message) => {
+    const diagnostic = diagnoseInstallFailure(new Error(message))
+
+    expect(diagnostic.code).toBe('pending-plugin-verification')
+    expect(diagnostic.detail).toBe(message)
+    expect(diagnostic.suggestedAction).toMatch(/normal mode/i)
+  })
+
   it('identifies an invalid dependency name and does not suggest allowBuilds', () => {
     const diagnostic = diagnoseInstallFailure(new Error([
       'DSH plugin command failed (code=1, signal=null):',

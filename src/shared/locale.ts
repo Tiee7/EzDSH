@@ -614,6 +614,7 @@ export interface AppCopy {
   storeUninstalling: string
   storePhaseInstalling: string
   storeInstallFailed: string
+  storePluginChangeWaiting: string
   storeInstallCause: (code: InstallDiagnosticCode) => string
   storeInstallAction: (code: InstallDiagnosticCode) => string
   storeInstallPackage: (packageSpec: string) => string
@@ -1570,7 +1571,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeUninstalling: '正在卸载…',
     storePhaseInstalling: '正在处理…',
     storeInstallFailed: '插件安装失败',
+    storePluginChangeWaiting: '暂不能修改其他插件',
     storeInstallCause: (code) => ({
+      'pending-plugin-verification': '上一项插件变更尚未验证',
       'catalog-entry-invalid': '目录条目本身无效',
       'invalid-dependency-name': '依赖名称或别名无效',
       'build-script-blocked': '依赖需要执行构建脚本，但当前策略未批准',
@@ -1585,6 +1588,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
       unknown: '无法将包管理器输出归类为已知原因'
     }[code]),
     storeInstallAction: (code) => ({
+      'pending-plugin-verification': '请正常启动并确认上一项插件变更；安全模式或隔离模式重启不会验证插件。',
       'catalog-entry-invalid': '应从目录中移除该条目，或先修正来源元数据。',
       'invalid-dependency-name': '应修正目录条目或上游包的名称/别名；这不是构建权限问题。',
       'build-script-blocked': '应由目录维护者验证精确的构建依赖，或重新发布不需要该脚本的包。',
@@ -2551,7 +2555,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeUninstalling: 'Uninstalling…',
     storePhaseInstalling: 'Working…',
     storeInstallFailed: 'Plugin installation failed',
+    storePluginChangeWaiting: 'Another plugin change is waiting',
     storeInstallCause: (code) => ({
+      'pending-plugin-verification': 'The previous plugin change is awaiting verification',
       'catalog-entry-invalid': 'The catalog entry is invalid',
       'invalid-dependency-name': 'The dependency name or alias is invalid',
       'build-script-blocked': 'A dependency needs a build script that policy did not approve',
@@ -2566,6 +2572,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
       unknown: 'The package-manager output did not match a known cause'
     }[code]),
     storeInstallAction: (code) => ({
+      'pending-plugin-verification': 'Start normally and verify the previous plugin change. Restarting Safe Mode or Isolation Mode does not verify plugins.',
       'catalog-entry-invalid': 'Remove the entry or correct its source metadata before publishing it.',
       'invalid-dependency-name': 'Correct the catalog entry or upstream package name/alias; this is not a build-permission problem.',
       'build-script-blocked': 'The catalog maintainer must verify the exact build dependency or republish without that script.',

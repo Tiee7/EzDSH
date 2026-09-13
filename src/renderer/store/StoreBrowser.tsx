@@ -11,7 +11,7 @@ import type {
 } from '../../shared/store.js'
 import { auditLabel, auditTone, categoryLabel, entryType, entryTypeLabel, phaseLabel, updateAvailable, type StoreEntryType } from './display.js'
 import { MarkdownContent } from './MarkdownContent.js'
-import { PluginRuntimeRestartNotice } from './PluginRuntimeRestartNotice.js'
+import { finishPluginRuntimeVerification, needsPluginRuntimeVerification, PluginRuntimeRestartNotice } from './PluginRuntimeRestartNotice.js'
 import './store.css'
 
 interface StoreBrowserProps {
@@ -109,7 +109,7 @@ export function InstallFailureNotice({ copy, state }: { copy: AppCopy; state: In
   const diagnostic = state.diagnostic
   return (
     <div className="install-failure" role="alert">
-      <p className="install-failure-title">{copy.storeInstallFailed}</p>
+      <p className="install-failure-title">{diagnostic?.code === 'pending-plugin-verification' ? copy.storePluginChangeWaiting : copy.storeInstallFailed}</p>
       {diagnostic !== undefined
         ? (
           <>
@@ -528,11 +528,11 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
           {installState !== undefined && installState.id === selected.id && installState.phase === 'failed'
             ? <InstallFailureNotice copy={copy} state={installState} />
             : null}
-          {installState?.phase === 'done' && installState.id === selected.id && installState.runtimeRestartRequired
+          {installState?.id === selected.id && needsPluginRuntimeVerification(installState)
             ? <PluginRuntimeRestartNotice
                 copy={copy}
                 onBusyChange={setRuntimeRestarting}
-                onNormalReady={() => { setInstallState((current) => current === undefined ? current : { ...current, runtimeRestartRequired: false }) }}
+                onNormalReady={() => { setInstallState(finishPluginRuntimeVerification) }}
               />
             : null}
           {installState?.phase === 'confirm-wait' && installState.id === selected.id

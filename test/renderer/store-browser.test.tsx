@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { getAppCopy } from '../../src/shared/locale'
 import { InstalledStoreBrowser } from '../../src/renderer/store/InstalledStoreBrowser'
 import { AuditOverrideActions, EntryBadges, EntryCard, InstallFailureNotice, StoreBrowser } from '../../src/renderer/store/StoreBrowser'
+import { finishPluginRuntimeVerification, needsPluginRuntimeVerification } from '../../src/renderer/store/PluginRuntimeRestartNotice'
 import type { StoreEntry } from '../../src/shared/store'
 import type { RuntimeMode, RuntimeSnapshot } from '../../src/main/runtime/runtime-types'
 
@@ -96,6 +97,24 @@ async function withPluginInstall(mode: RuntimeMode, check: (fixture: {
 }
 
 describe('StoreBrowser plugin activation in recovery modes', () => {
+  it('keeps the normal-start action after another plugin change is blocked by pending verification', () => {
+    const blocked = {
+      kind: 'skill', id: 'second-plugin', phase: 'failed', failureReason: 'install',
+      diagnostic: {
+        code: 'pending-plugin-verification', detail: 'pending previous change', suggestedAction: 'Start normally',
+      },
+    } as const
+    expect(needsPluginRuntimeVerification(blocked)).toBe(true)
+    expect(finishPluginRuntimeVerification(blocked)).toBeUndefined()
+    expect(needsPluginRuntimeVerification({
+      kind: 'skill', id: 'plugin', phase: 'failed', failureReason: 'install',
+      diagnostic: { code: 'network', detail: 'offline', suggestedAction: 'Check network' },
+    })).toBe(false)
+    expect(finishPluginRuntimeVerification({
+      kind: 'skill', id: 'plugin', phase: 'done', runtimeRestartRequired: true,
+    })).toEqual({ kind: 'skill', id: 'plugin', phase: 'done', runtimeRestartRequired: false })
+  })
+
   it('retries a failed mode read before asking the user to explicitly start normally', async () => {
     await withPluginInstall('safe', async ({ document, restart, exitSafeMode, getStatus }) => {
       expect(document.body.textContent).toContain('Mode status unavailable')
@@ -285,6 +304,28 @@ describe('StoreBrowser audit override', () => {
 })
 
 describe('StoreBrowser install failure notice', () => {
+  it.each([
+    ['zh', '暂不能修改其他插件', '上一项插件变更尚未验证', '请正常启动并确认上一项插件变更', '技术细节'],
+    ['en', 'Another plugin change is waiting', 'The previous plugin change is awaiting verification', 'Start normally and verify the previous plugin change', 'Technical details'],
+  ] as const)('explains the pending plugin guard in %s without leading with the internal English error', (locale, title, cause, action, details) => {
+    const raw = 'Start Runtime in normal mode to verify the previous plugin change before changing another DSH plugin. Restarting Safe Mode or Isolation Mode does not verify plugins.'
+    const markup = renderToStaticMarkup(
+      <InstallFailureNotice
+        copy={getAppCopy(locale)}
+        state={{
+          kind: 'skill', id: 'second-plugin', phase: 'failed', failureReason: 'install', message: raw,
+          diagnostic: { code: 'pending-plugin-verification' as never, detail: raw, suggestedAction: 'Start Runtime in normal mode.' },
+        }}
+      />
+    )
+
+    expect(markup).toContain(title)
+    expect(markup).toContain(cause)
+    expect(markup).toContain(action)
+    expect(markup).toContain(details)
+    expect(markup.indexOf(cause)).toBeLessThan(markup.indexOf(raw))
+  })
+
   it('shows the command failure and the durable install log path', () => {
     const markup = renderToStaticMarkup(
       <InstallFailureNotice

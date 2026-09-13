@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import type { RuntimeMode } from '../../main/runtime/runtime-types.js'
 import type { AppCopy } from '../../shared/locale.js'
+import type { InstallState } from '../../shared/store.js'
+
+export function needsPluginRuntimeVerification(state: InstallState | undefined): boolean {
+  return (state?.phase === 'done' && state.runtimeRestartRequired === true)
+    || (state?.phase === 'failed' && state.diagnostic?.code === 'pending-plugin-verification')
+}
+
+export function finishPluginRuntimeVerification(state: InstallState | undefined): InstallState | undefined {
+  if (state?.diagnostic?.code === 'pending-plugin-verification') return undefined
+  return state === undefined ? undefined : { ...state, runtimeRestartRequired: false }
+}
 
 /** Plugin activation requires normal startup; recovery-mode restarts keep it paused. */
 export function PluginRuntimeRestartNotice({ copy, onBusyChange, onNormalReady }: {

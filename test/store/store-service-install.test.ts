@@ -225,6 +225,28 @@ describe('install state machine', () => {
     expect((await service.listInstalled()).records[0]).toMatchObject({ pluginPackageName: '@nanmicoder/dsh-agent-teams' })
   })
 
+  it('returns a structured pending-verification diagnosis when another plugin change is blocked', async () => {
+    const root = await tempRoot()
+    const events: InstallState[] = []
+    const plugin = skillEntry({
+      id: 'second-plugin', category: 'plugin', files: undefined,
+      plugin: verifiedPlugin('npm:second-plugin@1.0.0', 'second-plugin'),
+    })
+    const pending = new Error('Start Runtime in normal mode to verify the previous plugin change before changing another DSH plugin. Restarting Safe Mode or Isolation Mode does not verify plugins.')
+    const service = makeService([plugin], root, events, {}, undefined, {
+      install: async () => ({ packageName: 'second-plugin', profile: 'web' }),
+      uninstall: async () => undefined,
+    }, { run: async () => { throw pending } })
+
+    await service.install('skill', plugin.id)
+    const failed = await service.confirmInstall('skill', plugin.id, true)
+
+    expect(failed).toMatchObject({
+      phase: 'failed',
+      diagnostic: { code: 'pending-plugin-verification', detail: pending.message },
+    })
+  })
+
   it('runs a Store-managed DSH plugin uninstall inside the recovery transaction', async () => {
     const root = await tempRoot()
     const events: InstallState[] = []

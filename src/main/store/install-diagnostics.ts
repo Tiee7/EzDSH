@@ -27,6 +27,9 @@ export function diagnoseInstallFailure(error: unknown): InstallDiagnostic {
 }
 
 function classifyCode(message: string): InstallDiagnosticCode {
+  if (/Restart Runtime before changing another DSH plugin|Start Runtime in normal mode to verify the previous plugin change before changing another DSH plugin/i.test(message)) {
+    return 'pending-plugin-verification'
+  }
   const fetchStatus = /\bERR_PNPM_FETCH_(401|403|404)\b/i.exec(message)?.[1]
   if (fetchStatus === '401' || fetchStatus === '403') return 'auth'
   if (fetchStatus === '404') return 'package-not-found'
@@ -70,6 +73,7 @@ function extractPackageSpec(message: string, code: InstallDiagnosticCode): strin
 
 function suggestedAction(code: InstallDiagnosticCode): string {
   switch (code) {
+    case 'pending-plugin-verification': return 'Start Runtime in normal mode and verify the previous plugin change before changing another plugin.'
     case 'catalog-entry-invalid': return 'This catalog entry is malformed. Remove it from the catalog or correct its source metadata before asking users to install it.'
     case 'invalid-dependency-name': return 'This is an invalid package name or alias, not a build-permission problem. Correct the catalog source or the upstream package metadata; changing build permissions will not fix it.'
     case 'build-script-blocked': return 'The package needs a lifecycle build script that the current policy did not approve. The catalog must verify the exact build dependency or the package must be republished without that requirement.'
