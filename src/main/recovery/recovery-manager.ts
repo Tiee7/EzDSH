@@ -382,7 +382,10 @@ export class RecoveryManager {
   }
 
   async verify(selector: string): Promise<RecoveryVerifyResult> {
-    const snapshot = await this.resolveSnapshot(selector)
+    return this.verifySnapshot(await this.resolveSnapshot(selector))
+  }
+
+  private async verifySnapshot(snapshot: RecoverySnapshot): Promise<RecoveryVerifyResult> {
     try {
       const actualSha256 = await sha256File(snapshot.archivePath)
       return {
@@ -406,7 +409,7 @@ export class RecoveryManager {
   async restore(selector: string, dryRun: false): Promise<RecoveryRestoreResult>
   async restore(selector: string, dryRun: boolean): Promise<RecoveryDryRun | RecoveryRestoreResult> {
     const snapshot = await this.resolveSnapshot(selector)
-    const verification = await this.verify(snapshot.archiveName)
+    const verification = await this.verifySnapshot(snapshot)
     if (!verification.ok) throw new Error(`checksum verification failed for ${snapshot.archiveName}`)
     const entries = await this.archiveEntries(snapshot)
     const missingCredentials = await this.findMissingCredentials(snapshot.manifest)
@@ -653,7 +656,7 @@ export class RecoveryManager {
     if (selector.trim() === '') throw new Error('Snapshot selector cannot be empty')
     const snapshots = await this.listSnapshots()
     const candidates = selector === 'latest'
-      ? snapshots.filter((snapshot) => snapshot.manifest.kind !== 'pre-restore')
+      ? snapshots.filter((snapshot) => snapshot.manifest.kind !== 'pre-restore').slice(0, 1)
       : snapshots.filter((snapshot) => snapshot.archiveName === selector || snapshot.archiveName.startsWith(selector))
     if (candidates.length === 0) throw new Error(`Snapshot not found: ${selector}`)
     if (candidates.length > 1) throw new Error(`Snapshot selector is ambiguous: ${selector}`)

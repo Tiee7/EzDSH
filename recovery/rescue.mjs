@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 const COMPONENTS = ['harness', 'state', 'workflow']
-const SNAPSHOT_PATTERN = /^ezdsh-(manual|pre-update|pre-restore)-[^/]+\.tar\.gz$/u
+const SNAPSHOT_PATTERN = /^ezdsh-(manual|pre-update|pre-plugin-change|pre-restore)-[^/]+\.tar\.gz$/u
 const here = dirname(fileURLToPath(import.meta.url))
 const cli = parseArgs(process.argv.slice(2))
 const root = resolve(cli.root ?? dirname(here))
@@ -154,7 +154,7 @@ async function resolveSnapshot(selector) {
   if (!selector || selector.trim() === '') throw new Error('Snapshot selector cannot be empty')
   const snapshots = await listSnapshots()
   const candidates = selector === 'latest'
-    ? snapshots.filter((snapshot) => snapshot.manifest.kind !== 'pre-restore')
+    ? snapshots.filter((snapshot) => snapshot.manifest.kind !== 'pre-restore').slice(0, 1)
     : snapshots.filter((snapshot) => snapshot.archiveName === selector || snapshot.archiveName.startsWith(selector))
   if (candidates.length === 0) throw new Error(`Snapshot not found: ${selector}`)
   if (candidates.length > 1) throw new Error(`Snapshot selector is ambiguous: ${selector}`)
