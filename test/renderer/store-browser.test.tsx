@@ -326,24 +326,30 @@ describe('StoreBrowser install failure notice', () => {
     expect(markup.indexOf(cause)).toBeLessThan(markup.indexOf(raw))
   })
 
-  it('shows the command failure and the durable install log path', () => {
+  it.each([
+    ['zh', '插件操作失败', '插件安装失败', '详细操作日志', '详细安装日志'],
+    ['en', 'Plugin operation failed', 'Plugin installation failed', 'Detailed operation log', 'Detailed install log'],
+  ] as const)('uses generic operation wording for an uninstall failure in %s', (locale, title, installOnlyTitle, logLabel, installOnlyLogLabel) => {
     const markup = renderToStaticMarkup(
       <InstallFailureNotice
-        copy={getAppCopy('zh')}
+        copy={getAppCopy(locale)}
         state={{
           kind: 'skill',
           id: 'dsh-codex',
           phase: 'failed',
           failureReason: 'install',
-          message: 'ERR_PNPM_IGNORED_BUILDS: protobufjs',
+          message: 'Failed to uninstall dsh-codex',
           logPath: '/tmp/ezdsh/logs/plugins/dsh-codex.log',
         }}
       />
     )
 
     expect(markup).toContain('role="alert"')
-    expect(markup).toContain('插件安装失败')
-    expect(markup).toContain('ERR_PNPM_IGNORED_BUILDS')
+    expect(markup).toContain(title)
+    expect(markup).not.toContain(installOnlyTitle)
+    expect(markup).toContain('Failed to uninstall dsh-codex')
+    expect(markup).toContain(logLabel)
+    expect(markup).not.toContain(installOnlyLogLabel)
     expect(markup).toContain('/tmp/ezdsh/logs/plugins/dsh-codex.log')
   })
 
