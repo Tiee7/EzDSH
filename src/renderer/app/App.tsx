@@ -30,6 +30,8 @@ import { SettingsPage } from '../settings/SettingsPage.js'
 import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import { shouldKeepTabMounted } from './page-lifecycle.js'
 import { RecoveryPanel } from '../recovery/RecoveryPanel.js'
+import { RecoveryRestoreFeedback } from '../recovery/RecoveryRestoreFeedback.js'
+import { useRecoveryRestore } from '../recovery/useRecoveryRestore.js'
 import { RuntimeStartupFailureNotice } from './RuntimeStartupFailureNotice.js'
 import { isRecoveryModeActive, SafeModeCornerOverlay } from './SafeModeOverlay.js'
 import logoUrl from '../../../assets/logo.png'
@@ -160,6 +162,10 @@ export function App() {
   const [locale, setLocale] = useState<AppLocale>(DEFAULT_APP_LOCALE)
   const [languageTagVisible, setLanguageTagVisible] = useState(true)
   const copy = getAppCopy(locale)
+  const restoreFlow = useRecoveryRestore(copy)
+  const clearRestoreFlow = restoreFlow.clear
+  const onRestoreRuntimeReady = restoreFlow.onRuntimeReady
+  const automaticStartRequested = useRef(false)
   const [runtime, setRuntime] = useState<RuntimeSnapshot>()
   const [update, setUpdate] = useState<UpdateState>()
   const [loading, setLoading] = useState(true)
@@ -214,6 +220,7 @@ export function App() {
     let active = true
     const unsubscribe = window.EzDSH.runtime.onStateChange((snapshot) => {
       if (!active) return
+      if (snapshot.phase === 'ready') onRestoreRuntimeReady()
       setRuntime(snapshot)
       if (snapshot.phase === 'failed' && snapshot.message !== undefined) setRuntimeError(snapshot.message)
     })
@@ -248,7 +255,9 @@ export function App() {
       if (active) setNavConfig(config)
     })
     const unsubscribeWorkspace = window.EzDSH.settings.onWorkspaceChange((state) => {
-      if (active) setWorkspaceOperation(state)
+      if (!active) return
+      if (state !== undefined) clearRestoreFlow()
+      setWorkspaceOperation(state)
     })
     const unsubscribeNotificationSettings = window.EzDSH.notifications.onSettingsChange((next) => {
       if (active) setNotificationSettings(next)
@@ -336,7 +345,7 @@ export function App() {
       unsubscribeNotificationSettings()
       unsubscribeNotificationEvent()
     }
-  }, [ensureRuntime])
+  }, [ensureRuntime, clearRestoreFlow, onRestoreRuntimeReady])
 
   const selectLocale = useCallback(async (nextLocale: AppLocale): Promise<void> => {
     if (nextLocale === locale) return
@@ -365,10 +374,13 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (!recoveryLoaded || recovery.phase === 'restoring') return
+    if (!recoveryLoaded || recovery.phase === 'restoring' || workspaceOperation !== undefined
+      || restoreFlow.busy || restoreFlow.pendingRuntimeRestore !== undefined || automaticStartRequested.current) return
+    // Restores and workspace changes own their subsequent startup attempts.
+    automaticStartRequested.current = true
     // Main may resume a saved Safe Mode even while a normal-mode failure is unresolved.
     void ensureRuntime(true)
-  }, [ensureRuntime, recovery.phase, recoveryLoaded])
+  }, [ensureRuntime, recovery.phase, recoveryLoaded, restoreFlow.busy, restoreFlow.pendingRuntimeRestore, workspaceOperation])
 
   const visibleItems = useMemo(() => visibleNavItems(navConfig, developerMode), [developerMode, navConfig])
   const visibleIds = useMemo(() => visibleItems.map((item) => item.id), [visibleItems])
@@ -404,15 +416,20 @@ export function App() {
 
   if (recovery.phase === 'recovery-required' && (!recoveryModeActive || showRecoveryOptions)) {
     return (
-      <RecoveryPanel
-        copy={copy}
-        state={recovery}
-        runtime={runtime}
-        onRecoveryModeStarted={(nextRuntime) => {
-          setRuntime(nextRuntime)
-          setShowRecoveryOptions(false)
-        }}
-      />
+      <>
+        <RecoveryPanel
+          copy={copy}
+          state={recovery}
+          runtime={runtime}
+          restoreFeedback={<RecoveryRestoreFeedback copy={copy} flow={restoreFlow} surface="startup" />}
+          externalBusy={restoreFlow.busy}
+          onRecoveryModeStarted={(nextRuntime) => {
+            setRuntime(nextRuntime)
+            setShowRecoveryOptions(false)
+          }}
+        />
+        {workspaceLock}
+      </>
     )
   }
 
@@ -461,7 +478,7 @@ export function App() {
                 )
               case 'settings':
                 return activeTab === 'settings'
-                  ? <section key="settings" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} onOpenSession={openSessionFromSettings} onOpenRecoveryOptions={recovery.phase === 'recovery-required' ? () => { setShowRecoveryOptions(true) } : undefined} /></section>
+                  ? <section key="settings" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabSettings}><SettingsPage copy={copy} locale={locale} runtime={runtime} restoreFlow={restoreFlow} onOpenSession={openSessionFromSettings} onOpenRecoveryOptions={recovery.phase === 'recovery-required' ? () => { setShowRecoveryOptions(true) } : undefined} /></section>
                   : null
             }
           })}
@@ -504,6 +521,7 @@ export function App() {
           copy={copy}
           locale={locale}
           runtime={runtime}
+          restoreFlow={restoreFlow}
           rescueOnly
           onExitRescue={() => { setShowRecoverySettings(false) }}
         />
@@ -525,8 +543,9 @@ export function App() {
           <span className={`status-dot ${runtime?.phase === 'ready' ? 'status-dot-ready' : ''}`} />
           <span>{statusMessage}</span>
         </div>
-        {runtime?.phase === 'failed' ? <button className="retry-button" onClick={() => void ensureRuntime()}>{copy.retryStart}</button> : null}
-        {runtimeFailed ? (
+        <RecoveryRestoreFeedback copy={copy} flow={restoreFlow} surface="startup" />
+        {runtime?.phase === 'failed' && restoreFlow.pendingRuntimeRestore === undefined ? <button className="retry-button" disabled={restoreFlow.busy} onClick={() => void ensureRuntime()}>{copy.retryStart}</button> : null}
+        {runtimeFailed && !restoreFlow.busy ? (
           <RuntimeStartupFailureNotice
             copy={copy}
             message={runtimeFailureMessage}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import type { RecoveryDoctorResult, RecoverySnapshot, RecoveryState, RuntimeFailurePlugin } from '../../main/recovery/recovery-manager.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
@@ -8,6 +8,8 @@ interface RecoveryPanelProps {
   copy: AppCopy
   state: RecoveryState
   runtime?: RuntimeSnapshot
+  restoreFeedback?: ReactNode
+  externalBusy?: boolean
   onRecoveryModeStarted?: (runtime: RuntimeSnapshot) => void
 }
 
@@ -18,7 +20,7 @@ export function sortRecoverySnapshotsByDate(snapshots: readonly RecoverySnapshot
 }
 
 /** Recovery UI that remains usable while the DSH child process is unavailable. */
-export function RecoveryPanel({ copy, state, runtime, onRecoveryModeStarted }: RecoveryPanelProps): JSX.Element {
+export function RecoveryPanel({ copy, state, runtime, restoreFeedback, externalBusy = false, onRecoveryModeStarted }: RecoveryPanelProps): JSX.Element {
   const [busyAction, setBusyAction] = useState<RecoveryBusyAction>()
   const [error, setError] = useState<string>()
   const [doctor, setDoctor] = useState<RecoveryDoctorResult>()
@@ -26,7 +28,7 @@ export function RecoveryPanel({ copy, state, runtime, onRecoveryModeStarted }: R
   const [pluginListOpen, setPluginListOpen] = useState(false)
   const [availableSnapshots, setAvailableSnapshots] = useState<RecoverySnapshot[]>([])
   const [selectedSnapshotName, setSelectedSnapshotName] = useState<string>()
-  const busy = busyAction !== undefined
+  const busy = externalBusy || busyAction !== undefined
   const pendingTransaction = state.pendingTransaction
   const pendingPlugin = pendingTransaction?.kind === 'plugin-change' ? pendingTransaction.affectedPlugin : undefined
   const runtimeFailure = state.runtimeFailure
@@ -206,6 +208,7 @@ export function RecoveryPanel({ copy, state, runtime, onRecoveryModeStarted }: R
             EzDSH 已保留变更前快照。安全模式和隔离模式都不会加载任何第三方插件。
           </div>
         ) : null}
+        {restoreFeedback}
         {runtimeFailure ? (
           <div className="recovery-runtime-incident">
             <button

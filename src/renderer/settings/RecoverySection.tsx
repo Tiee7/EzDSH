@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
+import { useRecoveryRestore, type RecoveryRestoreFlow } from '../recovery/useRecoveryRestore.js'
+import { RecoveryRestoreFeedback } from '../recovery/RecoveryRestoreFeedback.js'
 import type { RecoveryDoctorResult, RecoverySnapshot, RecoveryVerifyResult } from '../../main/recovery/recovery-manager.js'
 
 interface RecoverySectionProps {
   copy: AppCopy
+  restoreFlow?: RecoveryRestoreFlow
 }
 
 export function recoveryDeleteApiAvailable(value: unknown): value is (selector: string) => Promise<void> {
@@ -33,11 +36,14 @@ export function recoveryVerificationClass(
 }
 
 /** User-facing manual backup, checksum verification, restore preview, and Session Log doctor. */
-export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
+export function RecoverySection({ copy, restoreFlow }: RecoverySectionProps): JSX.Element {
   const [snapshots, setSnapshots] = useState<RecoverySnapshot[]>([])
   const [doctor, setDoctor] = useState<RecoveryDoctorResult>()
   const [verification, setVerification] = useState<RecoveryVerifyResult>()
-  const [busy, setBusy] = useState(false)
+  const [localBusy, setBusy] = useState(false)
+  const localRestoreFlow = useRecoveryRestore(copy)
+  const flow = restoreFlow ?? localRestoreFlow
+  const busy = localBusy || flow.busy
   const [message, setMessage] = useState<string>()
   const [error, setError] = useState<string>()
   const [noteEditor, setNoteEditor] = useState<{ mode: 'create' | 'edit'; snapshot?: RecoverySnapshot; value: string }>()
@@ -140,24 +146,9 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
 
   const restore = async (snapshot: RecoverySnapshot): Promise<void> => {
     if (busy) return
-    setBusy(true)
     setError(undefined)
-    try {
-      const preview = await window.EzDSH.recovery.restore(snapshot.archiveName, true)
-      if (!preview.dryRun) throw new Error('Recovery preview returned an invalid result')
-      const credentialNote = preview.missingCredentials.length > 0
-        ? `\n\n${preview.missingCredentials.join(', ')}`
-        : ''
-      if (!window.confirm(`${snapshot.archiveName}\n\n${preview.entries.length} entries will replace the current harness and state.${credentialNote}`)) return
-      await window.EzDSH.recovery.restore(snapshot.archiveName, false)
-      await window.EzDSH.runtime.restart()
-      await refresh()
-      setMessage(copy.settingsRecoveryCreated)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : copy.recoveryRestoreFailed)
-    } finally {
-      setBusy(false)
-    }
+    setMessage(undefined)
+    await flow.restore(snapshot, refresh)
   }
 
   return (
@@ -182,6 +173,7 @@ export function RecoverySection({ copy }: RecoverySectionProps): JSX.Element {
       </div>
       {message ? <p className="settings-recovery-message" role="status">{message}</p> : null}
       {error ? <p className="settings-error settings-recovery-message" role="alert">{error}</p> : null}
+      <RecoveryRestoreFeedback copy={copy} flow={{ ...flow, busy }} onRefresh={refresh} />
       {noteEditor ? (
         <div className="settings-recovery-note-editor" role="dialog" aria-modal="true" aria-labelledby="settings-recovery-note-title">
           <div className="settings-recovery-note-editor-card">

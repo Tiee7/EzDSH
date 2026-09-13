@@ -11,6 +11,7 @@ import { NavigationSection } from './NavigationSection.js'
 import { ExternalServicesSection } from './ExternalServicesSection.js'
 import { NotificationsSection } from './NotificationsSection.js'
 import { RecoverySection } from './RecoverySection.js'
+import type { RecoveryRestoreFlow } from '../recovery/useRecoveryRestore.js'
 import { ArchivedSessionsSection } from './ArchivedSessionsSection.js'
 import { ProxySection } from './ProxySection.js'
 import { MobileRemoteSection } from './MobileRemoteSection.js'
@@ -22,6 +23,7 @@ interface SettingsPageProps {
   copy: AppCopy
   locale: AppLocale
   runtime: RuntimeSnapshot | undefined
+  restoreFlow?: RecoveryRestoreFlow
   onOpenSession?: (sessionId: string) => void
   /** Render the Runtime-independent recovery surface for a failed startup. */
   rescueOnly?: boolean
@@ -30,8 +32,12 @@ interface SettingsPageProps {
 }
 
 /** Settings page with a left-hand navigation sidebar. */
-export function SettingsPage({ copy, locale, runtime, onOpenSession, rescueOnly = false, onExitRescue, onOpenRecoveryOptions }: SettingsPageProps): JSX.Element {
-  const [activeTab, setActiveTab] = useState<SettingsTab>(rescueOnly ? 'recovery' : 'general')
+export function SettingsPage({ copy, locale, runtime, restoreFlow, onOpenSession, rescueOnly = false, onExitRescue, onOpenRecoveryOptions }: SettingsPageProps): JSX.Element {
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() =>
+    rescueOnly || restoreFlow?.busy || restoreFlow?.pendingRuntimeRestore || restoreFlow?.message || restoreFlow?.error
+      ? 'recovery'
+      : 'general',
+  )
   const [busy, setBusy] = useState(false)
   const [languageTagVisible, setLanguageTagVisible] = useState(true)
   const [languageTagBusy, setLanguageTagBusy] = useState(false)
@@ -348,7 +354,7 @@ export function SettingsPage({ copy, locale, runtime, onOpenSession, rescueOnly 
         ) : activeTab === 'notifications' ? (
           <NotificationsSection copy={copy} />
         ) : activeTab === 'recovery' ? (
-          <RecoverySection copy={copy} />
+          <RecoverySection copy={copy} restoreFlow={restoreFlow} />
         ) : activeTab === 'sessions' ? (
           <ArchivedSessionsSection copy={copy} developerMode={developerMode} onOpenSession={onOpenSession} />
         ) : activeTab === 'remote-control' ? (

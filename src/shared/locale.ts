@@ -130,6 +130,14 @@ export interface AppCopy {
   settingsRecoveryVerify: string
   settingsRecoveryVerifyHint: string
   settingsRecoveryRestore: string
+  settingsRecoveryRestoreConfirm: (name: string, createdAt: string, credentialNote: string, includesWorkflowFiles: boolean) => string
+  settingsRecoveryCredentialLabel: (kind: 'model' | 'environment' | 'qq' | 'workflow' | 'other') => string
+  settingsRecoveryMissingCredentials: (labels: readonly string[]) => string
+  settingsRecoveryInvalidResult: string
+  settingsRecoveryRestored: string
+  settingsRecoveryRestoredRuntimeFailed: string
+  settingsRecoveryRetryRuntime: string
+  settingsRecoveryRefreshFailed: string
   settingsRecoveryDelete: string
   settingsRecoveryDeleteConfirm: (name: string) => string
   settingsRecoveryBridgeOutdated: string
@@ -1077,6 +1085,14 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRecoveryVerify: '校验',
     settingsRecoveryVerifyHint: '“校验”只检查文件是否与生成时的 SHA-256 一致，不会恢复或修改任何数据。',
     settingsRecoveryRestore: '恢复',
+    settingsRecoveryRestoreConfirm: (name, createdAt, credentialNote, includesWorkflowFiles) => `还原备份“${name}”？\n创建于：${createdAt}\n\n会用备份替换当前会话、设置、凭据、插件和${includesWorkflowFiles ? '工作流数据' : '工作流配置和记录'}。执行前会另存当前状态，应用版本不会回退。${includesWorkflowFiles ? '' : '\n\n这份备份不包含工作流工作文件，现有工作文件会保留。'}${credentialNote === '' ? '' : `\n\n${credentialNote}`}`,
+    settingsRecoveryCredentialLabel: (kind) => ({ model: '模型及插件凭据', environment: '环境变量', qq: 'QQ 连接配置', workflow: '工作流凭据', other: '其他凭据' })[kind],
+    settingsRecoveryMissingCredentials: (labels) => `这份备份缺少部分凭据，恢复后需要重新授权或填写：${labels.join('、')}。`,
+    settingsRecoveryInvalidResult: '恢复未返回预期结果，请重新选择备份后重试。',
+    settingsRecoveryRestored: '备份已还原，Runtime 已启动。',
+    settingsRecoveryRestoredRuntimeFailed: '备份已还原，但 Runtime 暂未启动。请查看启动状态后重试启动，无需再次还原备份。',
+    settingsRecoveryRetryRuntime: '重试启动',
+    settingsRecoveryRefreshFailed: '备份列表未能刷新，请重新打开“备份与恢复”查看。',
     settingsRecoveryDelete: '删除备份',
     settingsRecoveryDeleteConfirm: (name) => `确定删除备份“${name}”？此操作无法撤销。`,
     settingsRecoveryBridgeOutdated: '恢复功能已更新，请完全退出并重新启动 EzDSH 后重试。',
@@ -2049,6 +2065,14 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     settingsRecoveryVerify: 'Verify',
     settingsRecoveryVerifyHint: '“Verify” only compares the archive with its recorded SHA-256 checksum. It does not restore or modify any data.',
     settingsRecoveryRestore: 'Restore',
+    settingsRecoveryRestoreConfirm: (name, createdAt, credentialNote, includesWorkflowFiles) => `Restore backup “${name}”?\nCreated: ${createdAt}\n\nThis will replace current sessions, settings, credentials, plugins, and ${includesWorkflowFiles ? 'workflow data' : 'workflow settings and records'} with the backup. We will save the current state first; the app version will not be downgraded.${includesWorkflowFiles ? '' : '\n\nThis backup does not include workflow working files; existing working files will be kept.'}${credentialNote === '' ? '' : `\n\n${credentialNote}`}`,
+    settingsRecoveryCredentialLabel: (kind) => ({ model: 'Model and plugin credentials', environment: 'Environment variables', qq: 'QQ connection settings', workflow: 'Workflow credentials', other: 'Other credentials' })[kind],
+    settingsRecoveryMissingCredentials: (labels) => `Some credentials are missing from this backup. After restoring, sign in again or re-enter: ${labels.join(', ')}.`,
+    settingsRecoveryInvalidResult: 'Recovery did not return the expected result. Select the backup again and retry.',
+    settingsRecoveryRestored: 'Backup restored. Runtime has started.',
+    settingsRecoveryRestoredRuntimeFailed: 'Backup restored, but Runtime has not started. Check the startup status and retry starting; there is no need to restore the backup again.',
+    settingsRecoveryRetryRuntime: 'Retry startup',
+    settingsRecoveryRefreshFailed: 'The backup list could not refresh. Reopen Backup & recovery to view it.',
     settingsRecoveryDelete: 'Delete backup',
     settingsRecoveryDeleteConfirm: (name) => `Delete backup “${name}”? This cannot be undone.`,
     settingsRecoveryBridgeOutdated: 'The recovery bridge was updated. Fully quit and restart EzDSH, then try again.',

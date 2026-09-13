@@ -31,6 +31,7 @@ describe('RecoveryRestoreCoordinator', () => {
     const start = vi.fn(() => { calls.push('start') })
     let startup: Promise<void> | undefined
     const options = {
+      preflight: vi.fn(async (selector: string) => { calls.push('preflight'); return { snapshotName: selector } }),
       getMode: vi.fn(() => 'safe' as const),
       stopComponents: vi.fn(() => {
         calls.push('stop')
@@ -58,14 +59,70 @@ describe('RecoveryRestoreCoordinator', () => {
     await expect(restoring).resolves.toBe(result)
     await startup
     expect(start).toHaveBeenCalledOnce()
-    expect(calls).toEqual(['stop', 'restore', 'prepare', 'start'])
+    expect(calls).toEqual(['preflight', 'stop', 'restore', 'prepare', 'start'])
   })
 
-  it.each(['stop', 'restore', 'prepare'] as const)('rejects a waiting startup when %s fails, then permits a complete retry', async (stage) => {
+  it('holds startup and concurrent restoration during preflight, then captures the mode immediately before stopping', async () => {
+    const checked = deferred<{ snapshotName: string }>()
+    const prepared = deferred<void>()
+    let currentMode: RuntimeMode = 'normal'
+    let startup: Promise<void> | undefined
+    const start = vi.fn()
+    const options = {
+      preflight: vi.fn(() => {
+        startup = coordinator.waitUntilReady().then(start)
+        return checked.promise
+      }),
+      getMode: vi.fn(() => currentMode),
+      stopComponents: vi.fn(async () => { currentMode = 'isolation' }),
+      restore: vi.fn(async () => result),
+      prepareMode: vi.fn(() => prepared.promise),
+    }
+    const coordinator = new RecoveryRestoreCoordinator(options)
+
+    const restoring = coordinator.restore('selected')
+    await Promise.resolve()
+    expect(start).not.toHaveBeenCalled()
+    expect(options.getMode).not.toHaveBeenCalled()
+    expect(options.stopComponents).not.toHaveBeenCalled()
+    expect(options.restore).not.toHaveBeenCalled()
+    await expect(coordinator.restore('another')).rejects.toThrow(/already in progress/i)
+    expect(options.preflight).toHaveBeenCalledExactlyOnceWith('selected')
+
+    currentMode = 'safe'
+    checked.resolve({ snapshotName: 'selected.tar.gz' })
+    await vi.waitFor(() => expect(options.prepareMode).toHaveBeenCalledExactlyOnceWith('safe'))
+    expect(start).not.toHaveBeenCalled()
+    prepared.resolve(undefined)
+
+    await expect(restoring).resolves.toBe(result)
+    await startup
+    expect(start).toHaveBeenCalledOnce()
+    expect(options.restore).toHaveBeenCalledExactlyOnceWith('selected.tar.gz')
+  })
+
+  it.each(['latest', 'selected'])('resolves the %s selector once and restores the exact preflight snapshot', async (selector) => {
+    const options = {
+      preflight: vi.fn(async () => ({ snapshotName: 'selected.tar.gz' })),
+      getMode: vi.fn(() => 'normal' as const),
+      stopComponents: vi.fn(async () => undefined),
+      restore: vi.fn(async () => result),
+      prepareMode: vi.fn(async () => undefined),
+    }
+    const coordinator = new RecoveryRestoreCoordinator(options)
+
+    await expect(coordinator.restore(selector)).resolves.toBe(result)
+
+    expect(options.preflight).toHaveBeenCalledExactlyOnceWith(selector)
+    expect(options.restore).toHaveBeenCalledExactlyOnceWith('selected.tar.gz')
+  })
+
+  it.each(['preflight', 'stop', 'restore', 'prepare'] as const)('rejects a waiting startup when %s fails, then permits a complete retry', async (stage) => {
     const failure = new Error(`${stage} failed`)
     const failedStage = deferred<void>()
     let fail = true
     const options = {
+      preflight: vi.fn(async (selector: string) => { if (stage === 'preflight' && fail) await failedStage.promise; return { snapshotName: selector } }),
       getMode: vi.fn(() => 'isolation' as const),
       stopComponents: vi.fn(async () => { if (stage === 'stop' && fail) await failedStage.promise }),
       restore: vi.fn(async () => { if (stage === 'restore' && fail) await failedStage.promise; return result }),
@@ -75,17 +132,22 @@ describe('RecoveryRestoreCoordinator', () => {
     const start = vi.fn()
     const restoring = coordinator.restore('selected.tar.gz')
     const startup = coordinator.waitUntilReady().then(start)
-    const restoreRejection = expect(restoring).rejects.toBe(failure)
-    const startupRejection = expect(startup).rejects.toBe(failure)
-    const target = stage === 'stop' ? options.stopComponents : stage === 'restore' ? options.restore : options.prepareMode
+    const settled = Promise.allSettled([restoring, startup])
+    const target = stage === 'preflight' ? options.preflight : stage === 'stop' ? options.stopComponents : stage === 'restore' ? options.restore : options.prepareMode
     await vi.waitFor(() => expect(target).toHaveBeenCalledOnce())
 
     failedStage.reject(failure)
 
-    await restoreRejection
-    await startupRejection
+    expect(await settled).toEqual([
+      { status: 'rejected', reason: failure },
+      { status: 'rejected', reason: failure },
+    ])
     expect(start).not.toHaveBeenCalled()
-    if (stage === 'stop') expect(options.restore).not.toHaveBeenCalled()
+    if (stage === 'preflight') {
+      expect(options.getMode).not.toHaveBeenCalled()
+      expect(options.stopComponents).not.toHaveBeenCalled()
+    }
+    if (stage === 'preflight' || stage === 'stop') expect(options.restore).not.toHaveBeenCalled()
     if (stage !== 'prepare') expect(options.prepareMode).not.toHaveBeenCalled()
 
     fail = false
@@ -99,6 +161,7 @@ describe('RecoveryRestoreCoordinator', () => {
   it('rejects concurrent restores without stopping components twice and releases the gate after success', async () => {
     const stopped = deferred<void>()
     const options = {
+      preflight: vi.fn(async (selector: string) => ({ snapshotName: selector })),
       getMode: vi.fn(() => 'safe' as const),
       stopComponents: vi.fn(() => stopped.promise),
       restore: vi.fn(async () => result),
@@ -123,6 +186,7 @@ describe('RecoveryRestoreCoordinator', () => {
     let currentMode: RuntimeMode = mode
     const prepareMode = vi.fn(async () => undefined)
     const coordinator = new RecoveryRestoreCoordinator({
+      preflight: async (selector) => ({ snapshotName: selector }),
       getMode: () => currentMode,
       stopComponents: async () => { currentMode = mode === 'normal' ? 'safe' : 'normal' },
       restore: async () => result,
@@ -141,6 +205,7 @@ describe('RecoveryRestoreCoordinator', () => {
       .mockReturnValue('normal')
     const stopComponents = vi.fn(async () => undefined)
     const coordinator = new RecoveryRestoreCoordinator({
+      preflight: async (selector) => ({ snapshotName: selector }),
       getMode,
       stopComponents,
       restore: async () => result,
@@ -159,6 +224,7 @@ describe('RecoveryRestoreCoordinator', () => {
 
   it('allows startup immediately when no restoration is pending', async () => {
     const options = {
+      preflight: vi.fn(async (selector: string) => ({ snapshotName: selector })),
       getMode: vi.fn(() => 'normal' as const),
       stopComponents: vi.fn(async () => undefined),
       restore: vi.fn(async () => result),
@@ -168,6 +234,7 @@ describe('RecoveryRestoreCoordinator', () => {
 
     await expect(coordinator.waitUntilReady()).resolves.toBeUndefined()
 
+    expect(options.preflight).not.toHaveBeenCalled()
     expect(options.getMode).not.toHaveBeenCalled()
     expect(options.stopComponents).not.toHaveBeenCalled()
   })

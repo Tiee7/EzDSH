@@ -618,6 +618,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   const workspaceRecovery = recoveryManager
   recoveryRestoreCoordinator = new RecoveryRestoreCoordinator({
     getMode: () => workspaceRuntime.snapshot().mode,
+    preflight: (selector) => workspaceRecovery.restore(selector, true),
     stopComponents: stopApplicationComponents,
     restore: (selector) => workspaceRecovery.restore(selector, false),
     prepareMode: async (mode) => {
