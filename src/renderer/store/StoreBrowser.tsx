@@ -514,7 +514,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
             ? <AuditReportView report={installState.audit} copy={copy} />
             : null}
           {installState?.compatibility?.status === 'unknown' && installState.id === selected.id
-            ? <p className="compatibility-warning" role="status">DSH 兼容性尚未由目录声明；已记录当前版本，建议先在安全模式验证。</p>
+            ? <p className="compatibility-warning" role="status">{copy.storeCompatibilityUnknown}</p>
             : null}
           {installState?.compatibility?.status === 'incompatible' && installState.id === selected.id
             ? <p className="compatibility-error" role="alert">{installState.compatibility.reason}</p>

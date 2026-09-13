@@ -615,6 +615,7 @@ export interface AppCopy {
   storePhaseInstalling: string
   storeInstallFailed: string
   storePluginChangeWaiting: string
+  storeCompatibilityUnknown: string
   storeInstallCause: (code: InstallDiagnosticCode) => string
   storeInstallAction: (code: InstallDiagnosticCode) => string
   storeInstallPackage: (packageSpec: string) => string
@@ -1572,6 +1573,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storePhaseInstalling: '正在处理…',
     storeInstallFailed: '插件操作失败',
     storePluginChangeWaiting: '暂不能修改其他插件',
+    storeCompatibilityUnknown: '无法确认此插件与当前 DSH Runtime 是否兼容。安装后请正常启动 Runtime 验证；若启动失败，可在恢复页处理该插件。',
     storeInstallCause: (code) => ({
       'pending-plugin-verification': '上一项插件变更尚未验证',
       'catalog-entry-invalid': '目录条目本身无效',
@@ -2556,6 +2558,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storePhaseInstalling: 'Working…',
     storeInstallFailed: 'Plugin operation failed',
     storePluginChangeWaiting: 'Another plugin change is waiting',
+    storeCompatibilityUnknown: 'Compatibility with the current DSH Runtime could not be confirmed. After installing, start Runtime normally to verify it; if startup fails, manage the plugin from Recovery.',
     storeInstallCause: (code) => ({
       'pending-plugin-verification': 'The previous plugin change is awaiting verification',
       'catalog-entry-invalid': 'The catalog entry is invalid',

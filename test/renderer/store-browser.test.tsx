@@ -41,7 +41,7 @@ async function withPluginInstall(mode: RuntimeMode, check: (fixture: {
   exitSafeMode: ReturnType<typeof vi.fn>
   getStatus: ReturnType<typeof vi.fn>
   changeMode: (mode: RuntimeMode) => Promise<void>
-}) => Promise<void>, installedSurface = false, failModeRead = false): Promise<void> {
+}) => Promise<void>, installedSurface = false, failModeRead = false, locale: 'zh' | 'en' = 'zh', unknownCompatibility = false): Promise<void> {
   const previous = Object.fromEntries(['window', 'document', 'navigator', 'HTMLElement', 'Node', 'Event', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT']
     .map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
@@ -65,7 +65,15 @@ async function withPluginInstall(mode: RuntimeMode, check: (fixture: {
         pluginPackageName: '@example/plugin', pluginProfile: 'web', enabled: false,
       }] : [] })),
       entry: vi.fn(async () => pluginEntry),
-      install: vi.fn(async () => ({ kind: 'skill', id: pluginEntry.id, phase: 'done', runtimeRestartRequired: true })),
+      install: vi.fn(async () => ({
+        kind: 'skill',
+        id: pluginEntry.id,
+        phase: 'done',
+        runtimeRestartRequired: true,
+        ...(unknownCompatibility
+          ? { compatibility: { status: 'unknown', runtimeVersion: '1.2.3', reason: 'The catalog does not declare a DSH runtime range.' } }
+          : {}),
+      })),
       setEnabled: vi.fn(async () => ({ kind: 'skill', id: pluginEntry.id, phase: 'done', runtimeRestartRequired: true })),
       onStateChange: vi.fn(() => () => undefined),
     },
@@ -76,8 +84,8 @@ async function withPluginInstall(mode: RuntimeMode, check: (fixture: {
   const root = createRoot(domWindow.document.getElementById('root')!)
   try {
     await act(async () => { root.render(installedSurface
-      ? <InstalledStoreBrowser copy={getAppCopy('zh')} onBack={() => undefined} />
-      : <StoreBrowser kind="skill" copy={getAppCopy('zh')} locale="zh" />) })
+      ? <InstalledStoreBrowser copy={getAppCopy(locale)} onBack={() => undefined} />
+      : <StoreBrowser kind="skill" copy={getAppCopy(locale)} locale={locale} />) })
     if (installedSurface) {
       await act(async () => { (domWindow.document.querySelector('.detail-toggle-plugin') as HTMLElement).click() })
     } else {
@@ -202,6 +210,18 @@ describe('StoreBrowser plugin activation in recovery modes', () => {
       expect(exitSafeMode).toHaveBeenCalledTimes(2)
       expect(document.querySelectorAll('.runtime-restart-notice')).toHaveLength(0)
     })
+  })
+
+  it.each([
+    ['zh', '无法确认此插件与当前 DSH Runtime 是否兼容。安装后请正常启动 Runtime 验证；若启动失败，可在恢复页处理该插件。'],
+    ['en', 'Compatibility with the current DSH Runtime could not be confirmed. After installing, start Runtime normally to verify it; if startup fails, manage the plugin from Recovery.'],
+  ] as const)('does not suggest Safe Mode as compatibility verification in %s', async (locale, expected) => {
+    await withPluginInstall('normal', async ({ document }) => {
+      const warning = document.querySelector('.compatibility-warning')
+      expect(warning?.textContent).toBe(expected)
+      expect(warning?.textContent).not.toContain('安全模式验证')
+      expect(warning?.textContent).not.toContain('Safe Mode')
+    }, false, false, locale, true)
   })
 })
 
