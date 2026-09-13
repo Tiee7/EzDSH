@@ -132,7 +132,7 @@ describe('RecoverySection backup restore flow', () => {
 
 
   it('uses the App-owned restore flow and feedback instead of starting a component-local restore', async () => {
-    const shared = { busy: false, pendingRuntimeRestore: restored, message: undefined, error: 'Data restored; startup needs retry', restore: vi.fn(async () => {}), retryRuntime: vi.fn(async () => {}), onRuntimeReady: vi.fn(), clear: vi.fn() }
+    const shared = { busy: false, pendingRuntimeRestore: restored, message: undefined, error: 'Data restored; startup needs retry', restore: vi.fn(async () => false), retryRuntime: vi.fn(async () => {}), onRuntimeReady: vi.fn(), clear: vi.fn() }
     const h = await mount('en', snapshot, shared)
     try {
       expect(h.alert()).toBe(shared.error)
@@ -245,6 +245,118 @@ describe('RecoverySection backup restore flow', () => {
       expect(h.flow().busy).toBe(false)
       expect(h.flow().pendingRuntimeRestore).toBeUndefined()
       expect(h.status()).toBe('Backup restored. Runtime has started.')
+      expect(h.alert()).toBeUndefined()
+    } finally { await h.cleanup() }
+  })
+
+
+  it('looks up an exact archive name before previewing and confirming, without choosing a newer backup', async () => {
+    const h = await mount('en', snapshot, 'managed')
+    try {
+      h.api.listSnapshots.mockResolvedValueOnce([{ ...snapshot, archiveName: 'ezdsh-manual-newer.tar.gz' }, snapshot])
+      let result: boolean | undefined
+      await act(async () => { result = await h.flow().restore(snapshot.archiveName) })
+      expect(result).toBe(true)
+      expect(h.api.restore.mock.calls).toEqual([[snapshot.archiveName, true], [snapshot.archiveName, false]])
+      expect(h.confirm).toHaveBeenCalledOnce()
+      expect(h.confirm.mock.calls[0]![0]).toContain(snapshot.manifest.createdAt)
+      expect(h.confirm.mock.calls[0]![0]).not.toContain('newer')
+    } finally { await h.cleanup() }
+  })
+
+  it.each([
+    ['zh', '这份备份已不可用，请重新选择。'],
+    ['en', 'This backup is no longer available. Select another backup.'],
+  ] as const)('reports a missing exact backup in %s without falling back to latest or modifying data', async (locale, expected) => {
+    const h = await mount(locale, snapshot, 'managed')
+    try {
+      let result: boolean | undefined
+      await act(async () => { result = await h.flow().restore('ezdsh-manual-missing.tar.gz') })
+      expect(result).toBe(false)
+      expect(h.alert()).toBe(expected)
+      expect(h.api.restore).not.toHaveBeenCalled()
+      expect(h.api.restart).not.toHaveBeenCalled()
+      expect(h.confirm).not.toHaveBeenCalled()
+      await act(async () => { result = await h.flow().restore('latest') })
+      expect(result).toBe(false)
+      expect(h.api.restore).not.toHaveBeenCalled()
+    } finally { await h.cleanup() }
+  })
+
+  it('takes the busy guard before resolving a name and ignores a lookup that finishes after clear', async () => {
+    const h = await mount('en', snapshot, 'managed')
+    let finishList!: (snapshots: RecoverySnapshot[]) => void
+    const listing = new Promise<RecoverySnapshot[]>((resolve) => { finishList = resolve })
+    try {
+      h.api.listSnapshots.mockImplementationOnce(() => listing)
+      let first!: Promise<boolean>
+      await act(async () => { first = h.flow().restore(snapshot.archiveName) })
+      expect(h.flow().busy).toBe(true)
+      let second: boolean | undefined
+      await act(async () => { second = await h.flow().restore(snapshot.archiveName) })
+      expect(second).toBe(false)
+      expect(h.api.listSnapshots).toHaveBeenCalledTimes(2)
+      await act(async () => { h.flow().clear() })
+      await act(async () => { finishList([snapshot]); expect(await first).toBe(false) })
+      expect(h.flow().busy).toBe(false)
+      expect(h.api.restore).not.toHaveBeenCalled()
+      expect(h.api.restart).not.toHaveBeenCalled()
+      expect(h.confirm).not.toHaveBeenCalled()
+      expect(h.alert()).toBeUndefined()
+    } finally { await h.cleanup() }
+  })
+
+  it.each(['ready', 'failed'] as const)('returns true after data restoration even when Runtime returns %s', async (phase) => {
+    const h = await mount('en', snapshot, 'managed')
+    try {
+      h.api.restart.mockResolvedValueOnce({ ...ready, phase })
+      let result: boolean | undefined
+      await act(async () => { result = await h.flow().restore(snapshot) })
+      expect(result).toBe(true)
+      if (phase === 'failed') expect(h.flow().pendingRuntimeRestore).toEqual(restored)
+      expect(h.api.listSnapshots).toHaveBeenCalledOnce()
+    } finally { await h.cleanup() }
+  })
+
+  it.each(['preview', 'restore'] as const)('returns false when %s fails before data was restored', async (stage) => {
+    const h = await mount('en', snapshot, 'managed')
+    try {
+      if (stage === 'preview') h.api.restore.mockRejectedValueOnce(new Error('Preview failed'))
+      else h.api.restore.mockResolvedValueOnce(preview).mockRejectedValueOnce(new Error('Restore failed'))
+      let result: boolean | undefined
+      await act(async () => { result = await h.flow().restore(snapshot) })
+      expect(result).toBe(false)
+      expect(h.api.restart).not.toHaveBeenCalled()
+    } finally { await h.cleanup() }
+  })
+
+  it('returns false on final confirmation cancellation and keeps the previous startup retry', async () => {
+    const h = await mount('en', snapshot, 'managed')
+    try {
+      h.api.restart.mockResolvedValueOnce({ ...ready, phase: 'failed' })
+      await h.restore()
+      h.confirm.mockReturnValueOnce(false)
+      let result: boolean | undefined
+      await act(async () => { result = await h.flow().restore(snapshot.archiveName) })
+      expect(result).toBe(false)
+      expect(h.flow().pendingRuntimeRestore).toEqual(restored)
+      expect(h.api.restore.mock.calls.filter(([, dryRun]) => !dryRun)).toHaveLength(1)
+      expect(h.api.restart).toHaveBeenCalledOnce()
+    } finally { await h.cleanup() }
+  })
+
+  it('returns false if the operation is invalidated after data restoration while Runtime is still starting', async () => {
+    const h = await mount('en', snapshot, 'managed')
+    let finishStartup!: (value: RuntimeSnapshot) => void
+    const startup = new Promise<RuntimeSnapshot>((resolve) => { finishStartup = resolve })
+    try {
+      h.api.restart.mockImplementationOnce(() => startup)
+      let operation!: Promise<boolean>
+      await act(async () => { operation = h.flow().restore(snapshot) })
+      expect(h.flow().pendingRuntimeRestore).toEqual(restored)
+      await act(async () => { h.flow().clear() })
+      await act(async () => { finishStartup(ready); expect(await operation).toBe(false) })
+      expect(h.status()).toBeUndefined()
       expect(h.alert()).toBeUndefined()
     } finally { await h.cleanup() }
   })

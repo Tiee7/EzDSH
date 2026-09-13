@@ -88,7 +88,8 @@ export interface AppCopy {
   recoverySelectSnapshot: string
   recoverySelectSnapshotTitle: string
   recoverySelectSnapshotHint: string
-  recoverySelectSnapshotConfirm: string
+  recoverySelectSnapshotReview: string
+  recoverySnapshotUnavailable: string
   recoverySelectSnapshotCancel: string
   recoverySnapshotsLoading: string
   recoverySnapshotsEmpty: string
@@ -1042,8 +1043,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryRestorePrevious: '恢复此故障关联的备份',
     recoverySelectSnapshot: '恢复指定备份',
     recoverySelectSnapshotTitle: '选择要恢复的备份',
-    recoverySelectSnapshotHint: '备份按创建时间从新到旧排列。恢复会替换备份所包含的会话、设置、插件和工作流数据，不回退应用版本；操作前会先保留当前状态的备份。请选择日期，再确认恢复。',
-    recoverySelectSnapshotConfirm: '确定恢复',
+    recoverySelectSnapshotHint: '备份按创建时间从新到旧排列。恢复会替换备份所包含的会话、设置、插件和工作流数据，不回退应用版本；操作前会先保留当前状态的备份。请先选择备份，再查看还原详情并确认。',
+    recoverySelectSnapshotReview: '查看还原详情',
+    recoverySnapshotUnavailable: '这份备份已不可用，请重新选择。',
     recoverySelectSnapshotCancel: '取消',
     recoverySnapshotsLoading: '正在加载备份…',
     recoverySnapshotsEmpty: '没有可用的恢复备份',
@@ -2022,8 +2024,9 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     recoveryRestorePrevious: 'Restore the backup for this recovery',
     recoverySelectSnapshot: 'Restore a specific backup',
     recoverySelectSnapshotTitle: 'Choose a backup to restore',
-    recoverySelectSnapshotHint: 'Backups are listed from newest to oldest. Restoring replaces the sessions, settings, plugins, and workflow data included in the backup; it does not downgrade the app. A backup of the current state is created first. Select a date, then confirm.',
-    recoverySelectSnapshotConfirm: 'Confirm restore',
+    recoverySelectSnapshotHint: 'Backups are listed from newest to oldest. Restoring replaces the sessions, settings, plugins, and workflow data included in the backup; it does not downgrade the app. A backup of the current state is created first. Select a backup, then review the restore details and confirm.',
+    recoverySelectSnapshotReview: 'Review restore',
+    recoverySnapshotUnavailable: 'This backup is no longer available. Select another backup.',
     recoverySelectSnapshotCancel: 'Cancel',
     recoverySnapshotsLoading: 'Loading backups…',
     recoverySnapshotsEmpty: 'No recovery backups available',

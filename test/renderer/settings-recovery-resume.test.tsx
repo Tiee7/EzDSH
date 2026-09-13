@@ -26,7 +26,7 @@ const restored: RecoveryRestoreResult = {
   preRestoreSnapshotName: 'before.tar.gz', missingCredentials: [], entries: [],
 }
 const makeFlow = (state: Partial<RecoveryRestoreFlow> = {}): RecoveryRestoreFlow => ({
-  busy: false, restore: vi.fn(async () => {}), retryRuntime: vi.fn(async () => {}), onRuntimeReady: vi.fn(), clear: vi.fn(), ...state,
+  busy: false, restore: vi.fn(async () => false), retryRuntime: vi.fn(async () => {}), onRuntimeReady: vi.fn(), clear: vi.fn(), ...state,
 })
 
 async function withSettings(run: (h: Awaited<ReturnType<typeof mount>>) => Promise<void>) {

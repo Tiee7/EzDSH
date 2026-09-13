@@ -1,26 +1,29 @@
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import type { RecoveryDoctorResult, RecoverySnapshot, RecoveryState, RuntimeFailurePlugin } from '../../main/recovery/recovery-manager.js'
 import type { RuntimeSnapshot } from '../../main/runtime/runtime-types.js'
+import { useRecoveryRestore, type RecoveryRestoreFlow } from './useRecoveryRestore.js'
+import { RecoveryRestoreFeedback } from './RecoveryRestoreFeedback.js'
 import './recovery-panel.css'
 
 interface RecoveryPanelProps {
   copy: AppCopy
   state: RecoveryState
   runtime?: RuntimeSnapshot
-  restoreFeedback?: ReactNode
-  externalBusy?: boolean
+  restoreFlow?: RecoveryRestoreFlow
   onRecoveryModeStarted?: (runtime: RuntimeSnapshot) => void
 }
 
-type RecoveryBusyAction = 'retry' | 'restore' | 'restore-snapshot' | 'list-snapshots' | 'safe-mode' | 'isolation-mode' | 'exit-safe-mode' | 'rollback-plugin' | 'disable-plugin' | 'uninstall-plugin' | 'doctor'
+type RecoveryBusyAction = 'retry' | 'list-snapshots' | 'safe-mode' | 'isolation-mode' | 'exit-safe-mode' | 'rollback-plugin' | 'disable-plugin' | 'uninstall-plugin' | 'doctor'
 
 export function sortRecoverySnapshotsByDate(snapshots: readonly RecoverySnapshot[]): RecoverySnapshot[] {
   return [...snapshots].sort((left, right) => right.manifest.createdAt.localeCompare(left.manifest.createdAt))
 }
 
 /** Recovery UI that remains usable while the DSH child process is unavailable. */
-export function RecoveryPanel({ copy, state, runtime, restoreFeedback, externalBusy = false, onRecoveryModeStarted }: RecoveryPanelProps): JSX.Element {
+export function RecoveryPanel({ copy, state, runtime, restoreFlow, onRecoveryModeStarted }: RecoveryPanelProps): JSX.Element {
+  const localRestoreFlow = useRecoveryRestore(copy)
+  const flow = restoreFlow ?? localRestoreFlow
   const [busyAction, setBusyAction] = useState<RecoveryBusyAction>()
   const [error, setError] = useState<string>()
   const [doctor, setDoctor] = useState<RecoveryDoctorResult>()
@@ -28,7 +31,7 @@ export function RecoveryPanel({ copy, state, runtime, restoreFeedback, externalB
   const [pluginListOpen, setPluginListOpen] = useState(false)
   const [availableSnapshots, setAvailableSnapshots] = useState<RecoverySnapshot[]>([])
   const [selectedSnapshotName, setSelectedSnapshotName] = useState<string>()
-  const busy = externalBusy || busyAction !== undefined
+  const busy = flow.busy || busyAction !== undefined
   const pendingTransaction = state.pendingTransaction
   const pendingPlugin = pendingTransaction?.kind === 'plugin-change' ? pendingTransaction.affectedPlugin : undefined
   const runtimeFailure = state.runtimeFailure
@@ -48,21 +51,12 @@ export function RecoveryPanel({ copy, state, runtime, restoreFeedback, externalB
     }
   }
 
-  const restore = async (selector: string, action: 'restore' | 'restore-snapshot' = 'restore', closePicker = false): Promise<void> => {
+  const restore = async (target: RecoverySnapshot | string, closePicker = false): Promise<void> => {
     if (busy) return
-    setBusyAction(action)
     setError(undefined)
-    try {
-      await window.EzDSH.recovery.restore(selector, false)
-      await window.EzDSH.runtime.start()
-      if (closePicker) {
-        setSnapshotPickerOpen(false)
-        setSelectedSnapshotName(undefined)
-      }
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : copy.recoveryRestoreFailed)
-    } finally {
-      setBusyAction(undefined)
+    if (await flow.restore(target) && closePicker) {
+      setSnapshotPickerOpen(false)
+      setSelectedSnapshotName(undefined)
     }
   }
 
@@ -208,7 +202,7 @@ export function RecoveryPanel({ copy, state, runtime, restoreFeedback, externalB
             EzDSH 已保留变更前快照。安全模式和隔离模式都不会加载任何第三方插件。
           </div>
         ) : null}
-        {restoreFeedback}
+        <RecoveryRestoreFeedback copy={copy} flow={{ ...flow, busy }} surface="startup" />
         {runtimeFailure ? (
           <div className="recovery-runtime-incident">
             <button
@@ -313,10 +307,11 @@ export function RecoveryPanel({ copy, state, runtime, restoreFeedback, externalB
                 className="recovery-primary recovery-action-button"
                 disabled={busy || selectedSnapshotName === undefined}
                 onClick={() => {
-                  if (selectedSnapshotName !== undefined) void restore(selectedSnapshotName, 'restore-snapshot', true)
+                  const selected = availableSnapshots.find((snapshot) => snapshot.archiveName === selectedSnapshotName)
+                  if (selected !== undefined) void restore(selected, true)
                 }}
               >
-                {busyAction === 'restore-snapshot' ? copy.recoveryRestoring : copy.recoverySelectSnapshotConfirm}
+                {copy.recoverySelectSnapshotReview}
               </button>
             </div>
           </section>
@@ -329,7 +324,7 @@ export function RecoveryPanel({ copy, state, runtime, restoreFeedback, externalB
           ) : null}
           {canRestore ? (
             <button type="button" className="recovery-primary recovery-action-button" disabled={busy} onClick={() => { void restore(snapshotName) }}>
-              {busyAction === 'restore' ? copy.recoveryRestoring : copy.recoveryRestorePrevious}
+              {copy.recoveryRestorePrevious}
             </button>
           ) : null}
           <button type="button" className="recovery-link recovery-action-button" disabled={busy} onClick={() => { void openSnapshotPicker() }}>

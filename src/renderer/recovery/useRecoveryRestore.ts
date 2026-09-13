@@ -10,7 +10,7 @@ interface RecoveryRestoreState {
 }
 
 export interface RecoveryRestoreFlow extends RecoveryRestoreState {
-  restore(snapshot: RecoverySnapshot, refresh?: () => Promise<void>): Promise<void>
+  restore(snapshot: RecoverySnapshot | string, refresh?: () => Promise<void>): Promise<boolean>
   retryRuntime(refresh?: () => Promise<void>): Promise<void>
   onRuntimeReady(): void
   clear(): void
@@ -78,20 +78,30 @@ export function useRecoveryRestore(copy: AppCopy): RecoveryRestoreFlow {
     }
   }
 
-  const restore = async (snapshot: RecoverySnapshot, refresh?: () => Promise<void>): Promise<void> => {
-    if (current.current.busy) return
+  const restore = async (target: RecoverySnapshot | string, refresh?: () => Promise<void>): Promise<boolean> => {
+    if (current.current.busy) return false
     const operation = ++generation.current
     publish({ busy: true, pendingRuntimeRestore: current.current.pendingRuntimeRestore })
     let restoreCompleted = false
     try {
+      let snapshot: RecoverySnapshot
+      if (typeof target === 'string') {
+        const snapshots = await window.EzDSH.recovery.listSnapshots()
+        if (generation.current !== operation) return false
+        const selected = snapshots.find((item) => item.archiveName === target)
+        if (selected === undefined) throw new Error(copy.recoverySnapshotUnavailable)
+        snapshot = selected
+      } else {
+        snapshot = target
+      }
       const preview = await window.EzDSH.recovery.restore(snapshot.archiveName, true)
-      if (generation.current !== operation) return
+      if (generation.current !== operation) return false
       if (!preview.dryRun || preview.snapshotName !== snapshot.archiveName) throw new Error(copy.settingsRecoveryInvalidResult)
       const credentialNote = missingCredentialsNote(copy, preview.missingCredentials)
-      if (!window.confirm(copy.settingsRecoveryRestoreConfirm(snapshot.archiveName, snapshot.manifest.createdAt, credentialNote, snapshot.manifest.components.includes('workflow')))) return
-      if (generation.current !== operation) return
+      if (!window.confirm(copy.settingsRecoveryRestoreConfirm(snapshot.archiveName, snapshot.manifest.createdAt, credentialNote, snapshot.manifest.components.includes('workflow')))) return false
+      if (generation.current !== operation) return false
       const result = await window.EzDSH.recovery.restore(snapshot.archiveName, false)
-      if (generation.current !== operation) return
+      if (generation.current !== operation) return false
       if (result.dryRun || result.snapshotName !== snapshot.archiveName) throw new Error(copy.settingsRecoveryInvalidResult)
       restoreCompleted = true
       publish({ busy: true, pendingRuntimeRestore: result })
@@ -101,6 +111,7 @@ export function useRecoveryRestore(copy: AppCopy): RecoveryRestoreFlow {
     } finally {
       if (generation.current === operation) publish({ ...current.current, busy: false })
     }
+    return restoreCompleted && generation.current === operation
   }
 
   return { ...state, restore, retryRuntime, onRuntimeReady, clear }

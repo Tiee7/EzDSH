@@ -181,6 +181,7 @@ export function App() {
   const [showRecoverySettings, setShowRecoverySettings] = useState(false)
   const [showRecoveryOptions, setShowRecoveryOptions] = useState(false)
   const [workspaceOperation, setWorkspaceOperation] = useState<WorkspaceOperationState | undefined>()
+  const [recoveryPanelRevision, setRecoveryPanelRevision] = useState(0)
   const [recovery, setRecovery] = useState<RecoveryState>({ phase: 'idle' })
   const [recoveryLoaded, setRecoveryLoaded] = useState(false)
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>({ ...DEFAULT_NOTIFICATION_SETTINGS })
@@ -256,7 +257,10 @@ export function App() {
     })
     const unsubscribeWorkspace = window.EzDSH.settings.onWorkspaceChange((state) => {
       if (!active) return
-      if (state !== undefined) clearRestoreFlow()
+      if (state !== undefined) {
+        clearRestoreFlow()
+        setRecoveryPanelRevision((revision) => revision + 1)
+      }
       setWorkspaceOperation(state)
     })
     const unsubscribeNotificationSettings = window.EzDSH.notifications.onSettingsChange((next) => {
@@ -418,11 +422,11 @@ export function App() {
     return (
       <>
         <RecoveryPanel
+          key={recoveryPanelRevision}
           copy={copy}
           state={recovery}
           runtime={runtime}
-          restoreFeedback={<RecoveryRestoreFeedback copy={copy} flow={restoreFlow} surface="startup" />}
-          externalBusy={restoreFlow.busy}
+          restoreFlow={restoreFlow}
           onRecoveryModeStarted={(nextRuntime) => {
             setRuntime(nextRuntime)
             setShowRecoveryOptions(false)
