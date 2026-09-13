@@ -112,7 +112,7 @@ export interface EzDSHBridge {
   }
   runtime: {
     getStatus(): Promise<RuntimeSnapshot>
-    start(): Promise<RuntimeSnapshot>
+    start(options?: { automatic?: boolean }): Promise<RuntimeSnapshot>
     restart(): Promise<RuntimeSnapshot>
     listProcesses(): Promise<DshRuntimeProcess[]>
     stopProcess(pid: number): Promise<void>

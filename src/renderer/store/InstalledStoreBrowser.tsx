@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import type { InstalledRecord, InstallState, StoreEntry } from '../../shared/store.js'
 import { updateAvailable } from './display.js'
+import { PluginRuntimeRestartNotice } from './PluginRuntimeRestartNotice.js'
 import './store.css'
 
 interface InstalledStoreBrowserProps {
@@ -97,7 +98,6 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
   const [error, setError] = useState(false)
   const [operation, setOperation] = useState<InstalledOperation | undefined>()
   const [runtimeRestarting, setRuntimeRestarting] = useState(false)
-  const [runtimeRestartError, setRuntimeRestartError] = useState<string | undefined>()
   const [catalogEntries, setCatalogEntries] = useState<readonly StoreEntry[]>([])
   const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [updateMessage, setUpdateMessage] = useState<string | undefined>()
@@ -151,8 +151,8 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
   )
 
   const operate = useCallback(async (record: InstalledRecord, action: 'toggle' | 'uninstall' | 'update'): Promise<void> => {
+    if (runtimeRestarting) return
     const key = recordKey(record)
-    setRuntimeRestartError(undefined)
     setOperation({
       key,
       state: {
@@ -185,19 +185,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
         },
       })
     }
-  }, [copy, load])
-
-  const restartRuntime = useCallback(async (): Promise<void> => {
-    setRuntimeRestarting(true)
-    setRuntimeRestartError(undefined)
-    try {
-      await window.EzDSH.runtime.restart()
-    } catch (reason) {
-      setRuntimeRestartError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setRuntimeRestarting(false)
-    }
-  }, [])
+  }, [copy, load, runtimeRestarting])
 
   return (
     <div className="installed-store">
@@ -264,15 +252,13 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
           )
         : null}
       {operation?.state.phase === 'done' && operation.state.runtimeRestartRequired
-        ? (
-          <div className="runtime-restart-notice" role="status">
-            <p>{copy.storeRuntimeRestartRequired}</p>
-            {runtimeRestartError !== undefined ? <p className="runtime-restart-error">{runtimeRestartError}</p> : null}
-            <button type="button" className="confirm-accept" disabled={runtimeRestarting} onClick={() => { void restartRuntime() }}>
-              {runtimeRestarting ? copy.storeRuntimeRestarting : copy.storeRuntimeRestartNow}
-            </button>
-          </div>
-          )
+        ? <PluginRuntimeRestartNotice
+            copy={copy}
+            onBusyChange={setRuntimeRestarting}
+            onNormalReady={() => { setOperation((current) => current === undefined ? current : {
+              ...current, state: { ...current.state, runtimeRestartRequired: false },
+            }) }}
+          />
         : null}
     </div>
   )

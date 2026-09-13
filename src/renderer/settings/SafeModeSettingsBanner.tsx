@@ -9,7 +9,7 @@ interface SafeModeSettingsBannerProps {
   onOpenRecoveryOptions?: () => void
 }
 
-/** Explains the active recovery mode and keeps its exit action at the top of Settings. */
+/** Explains continued use in Safe Mode and offers an optional return to normal startup. */
 export function SafeModeSettingsBanner({ copy, runtime, onExit, onOpenRecoveryOptions }: SafeModeSettingsBannerProps): JSX.Element | null {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -43,7 +43,7 @@ export function SafeModeSettingsBanner({ copy, runtime, onExit, onOpenRecoveryOp
         {error ? <p className="settings-error" role="alert">{exitFailedLabel}: {error}</p> : null}
       </div>
       <div className="settings-actions settings-safe-mode-actions">
-        <button className="settings-action settings-action-primary" type="button" disabled={busy} onClick={() => { void exit() }}>
+        <button className={`settings-action${isolation ? ' settings-action-primary' : ''}`} type="button" disabled={busy} onClick={() => { void exit() }}>
           {busy ? exitingLabel : exitLabel}
         </button>
         {onOpenRecoveryOptions !== undefined ? (

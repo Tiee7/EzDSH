@@ -91,6 +91,8 @@ export interface RuntimeManagerOptions {
   patchPaths?: readonly string[]
   /** Run app-level compatibility repairs before spawning the DSH child. */
   beforeStart?: (context: Readonly<ResolvedRuntimeLaunchContext>) => Promise<void>
+  /** Restore a saved launch choice on the first start without an explicit context. */
+  resolveInitialLaunchContext?: () => Promise<RuntimeLaunchContext>
 }
 
 export interface RuntimeLaunchContext {
@@ -151,6 +153,7 @@ export class RuntimeManager {
   private stopping = false
   private stopRequested = false
   private launchContext: ResolvedRuntimeLaunchContext
+  private launchContextInitialized = false
 
   constructor(private readonly config: RuntimeManagerOptions) {
     this.options = {
@@ -171,18 +174,21 @@ export class RuntimeManager {
     return () => this.listeners.delete(listener)
   }
 
-  async start(context: RuntimeLaunchContext = {}): Promise<RuntimeSnapshot> {
-    const launchContext = resolveLaunchContext(this.config.layout, context)
+  async start(context?: RuntimeLaunchContext, options: { allowNormal?: boolean } = {}): Promise<RuntimeSnapshot> {
+    const launchContext = context === undefined ? this.launchContext : resolveLaunchContext(this.config.layout, context)
     if (this.current.phase === 'ready') {
       if (sameLaunchContext(this.launchContext, launchContext)) return this.snapshot()
       throw new Error('Runtime is already ready with a different launch context')
     }
     if (this.startPromise !== undefined) return this.startPromise
 
-    this.launchContext = launchContext
+    if (context !== undefined) {
+      this.launchContext = launchContext
+      this.launchContextInitialized = true
+    }
     this.stopRequested = false
     this.stopping = false
-    this.startPromise = this.startInternal().finally(() => {
+    this.startPromise = this.startInternal(options.allowNormal !== false).finally(() => {
       this.startPromise = undefined
     })
     return this.startPromise
@@ -222,16 +228,30 @@ export class RuntimeManager {
     return this.stopPromise
   }
 
-  async restart(context: RuntimeLaunchContext = {}): Promise<RuntimeSnapshot> {
+  async restart(context?: RuntimeLaunchContext): Promise<RuntimeSnapshot> {
     await this.stop()
     return this.start(context)
   }
 
-  private async startInternal(): Promise<RuntimeSnapshot> {
+  private async startInternal(allowNormal: boolean): Promise<RuntimeSnapshot> {
     const logPath = join(this.config.layout.logs, 'harness.log')
+    let failureStage: RuntimeSnapshot['failureStage']
     try {
       await ensureUserDataLayout(this.config.layout)
       if (this.stopRequested) return this.markStopped()
+      this.setSnapshot({ phase: 'starting', mode: this.launchContext.mode, failureStage: undefined, message: '正在启动 DSH Runtime…' })
+      if (this.stopRequested) return this.markStopped()
+      if (!this.launchContextInitialized) {
+        failureStage = 'mode-selection'
+        const context = await this.config.resolveInitialLaunchContext?.()
+        if (this.stopRequested) return this.markStopped()
+        this.launchContext = resolveLaunchContext(this.config.layout, context ?? {})
+        this.launchContextInitialized = true
+        failureStage = undefined
+      }
+      if (this.current.mode !== this.launchContext.mode) this.setSnapshot({ mode: this.launchContext.mode })
+      if (this.stopRequested) return this.markStopped()
+      if (!allowNormal && this.launchContext.mode === 'normal') return this.markStopped()
       await this.config.beforeStart?.(this.launchContext)
       if (this.stopRequested) return this.markStopped()
       const firstPort = await (this.config.allocatePort ?? allocateLoopbackPort)()
@@ -250,7 +270,7 @@ export class RuntimeManager {
       throw new Error('DSH Runtime port retry limit reached')
     } catch (error) {
       if (this.stopRequested) return this.markStopped()
-      await this.fail(error, logPath)
+      await this.fail(error, logPath, failureStage)
       throw error
     }
   }
@@ -261,6 +281,7 @@ export class RuntimeManager {
     this.setSnapshot({
       phase: 'starting',
       mode: this.launchContext.mode,
+      failureStage: undefined,
       pid: undefined,
       port,
       url,
@@ -446,9 +467,9 @@ export class RuntimeManager {
     child.kill(signal)
   }
 
-  private async fail(error: unknown, logPath: string): Promise<void> {
+  private async fail(error: unknown, logPath: string, failureStage?: RuntimeSnapshot['failureStage']): Promise<void> {
     const message = error instanceof Error ? error.message : String(error)
-    this.setSnapshot({ phase: 'failed', message })
+    this.setSnapshot({ phase: 'failed', message, failureStage })
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
     try {
       await mkdir(dirname(logPath), { recursive: true, mode: 0o700 })

@@ -88,7 +88,7 @@ const bridge: EzDSHBridge = {
   },
   runtime: {
     getStatus: () => invoke('runtime:get-status'),
-    start: () => invoke('runtime:start'),
+    start: (options) => invoke('runtime:start', options),
     restart: () => invoke('runtime:restart'),
     listProcesses: () => invoke('runtime:list-processes'),
     stopProcess: (pid: number) => invoke('runtime:stop-process', pid),

@@ -199,11 +199,11 @@ export function App() {
     }
   }, [])
 
-  const ensureRuntime = useCallback(async (): Promise<void> => {
+  const ensureRuntime = useCallback(async (automatic = false): Promise<void> => {
     setErrorKey(undefined)
     setRuntimeError(undefined)
     try {
-      setRuntime(await window.EzDSH.runtime.start())
+      setRuntime(await window.EzDSH.runtime.start(automatic ? { automatic: true } : undefined))
     } catch (reason) {
       setRuntimeError(reason instanceof Error ? reason.message : String(reason))
       setErrorKey('runtime-start')
@@ -365,8 +365,9 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (!recoveryLoaded || recovery.phase === 'recovery-required') return
-    void ensureRuntime()
+    if (!recoveryLoaded || recovery.phase === 'restoring') return
+    // Main may resume a saved Safe Mode even while a normal-mode failure is unresolved.
+    void ensureRuntime(true)
   }, [ensureRuntime, recovery.phase, recoveryLoaded])
 
   const visibleItems = useMemo(() => visibleNavItems(navConfig, developerMode), [developerMode, navConfig])

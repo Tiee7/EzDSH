@@ -32,8 +32,12 @@ describe('Safe Mode UI', () => {
 
     expect(markup).toContain('安全模式运行中')
     expect(markup).toContain('保留当前工作文件夹、会话、设置和凭据')
-    expect(markup).toContain('停用所有第三方插件、Skills 和自定义 Agent 模式')
-    expect(markup).toContain('退出安全模式并正常启动')
+    expect(markup).toContain('可直接继续使用，无需退出')
+    expect(markup).toContain('不会恢复默认设置')
+    expect(markup).toContain('暂停加载第三方插件、Skills 和自定义 Agent 模式')
+    expect(markup).toContain('本工作区会记住安全模式')
+    expect(markup).toContain('恢复扩展功能并正常启动')
+    expect(markup).not.toContain('settings-action-primary')
     expect(markup).toContain('打开恢复选项')
   })
 
@@ -55,5 +59,13 @@ describe('Safe Mode UI', () => {
     expect(markup).toContain('退出隔离模式并正常启动')
     expect(copy.isolationModeBadge).toBe('隔离模式')
     expect(isRecoveryModeActive(runtime)).toBe(true)
+  })
+
+  it('explains continued use and saved settings in English too', () => {
+    const copy = getAppCopy('en')
+    expect(copy.safeModeDescription).toContain('Keep working without exiting')
+    expect(copy.safeModeDescription).toContain('does not reset your settings')
+    expect(copy.safeModeDescription).toContain('remembers Safe Mode')
+    expect(copy.safeModeExit).toBe('Restore extensions and start normally')
   })
 })

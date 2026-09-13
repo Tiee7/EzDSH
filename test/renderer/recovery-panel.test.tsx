@@ -184,7 +184,7 @@ describe('RecoveryPanel Safe Mode controls', () => {
   })
 
   it.each([
-    ['safe', '退出安全模式并正常启动'],
+    ['safe', '恢复扩展功能并正常启动'],
     ['isolation', '退出隔离模式并正常启动'],
   ] as const)('shows an exit action when the Runtime is in %s mode', (mode, exitLabel) => {
     const runtime: RuntimeSnapshot = {
@@ -222,6 +222,6 @@ describe('RecoveryPanel Safe Mode controls', () => {
       />,
     )
 
-    expect(markup).not.toContain('退出安全模式并正常启动')
+    expect(markup).not.toContain('恢复扩展功能并正常启动')
   })
 })

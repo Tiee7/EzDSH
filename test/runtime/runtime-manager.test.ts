@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   resolveRuntimeCommandPath,
   resolveRuntimeEntryPath,
-  RuntimeManager
+  RuntimeManager,
+  type RuntimeLaunchContext,
+  type RuntimeManagerOptions,
 } from '../../src/main/runtime/runtime-manager'
 import { getUserDataLayout } from '../../src/main/state/user-data'
 
@@ -16,7 +18,265 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
+async function createLaunchContextFixture(options: Partial<RuntimeManagerOptions> = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-launch-context-'))
+  roots.push(root)
+  const layout = getUserDataLayout(root)
+  const children: Array<ReturnType<typeof makeChild>> = []
+  const makeChild = () => Object.assign(new EventEmitter(), {
+    pid: 15000 + children.length,
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+    kill(signal: NodeJS.Signals): boolean {
+      this.emit('exit', 0, signal)
+      return true
+    },
+  })
+  const spawnProcess = vi.fn<NonNullable<RuntimeManagerOptions['spawnProcess']>>((_command, _args, _options) => {
+    const child = makeChild()
+    children.push(child)
+    return child as never
+  })
+  const beforeStart = vi.fn<NonNullable<RuntimeManagerOptions['beforeStart']>>(async () => undefined)
+  const allocatePort = vi.fn(async () => 4567)
+  const manager = new RuntimeManager({
+    layout,
+    runtimeEntryPath: '/dev/null',
+    command: process.execPath,
+    patchPaths: ['/app/ordinary.patch.yml'],
+    waitForHealthy: async () => undefined,
+    processKill: (pid, signal) => {
+      children.find((child) => child.pid === Math.abs(pid))?.kill(signal)
+      return true
+    },
+    ...options,
+    allocatePort,
+    beforeStart,
+    spawnProcess,
+  })
+  return { root, layout, manager, spawnProcess, beforeStart, allocatePort }
+}
+
 describe('RuntimeManager', () => {
+  it.each(['safe', 'isolation'] as const)('retains the complete %s context until explicitly switched to normal', async (mode) => {
+    const { root, layout, manager, spawnProcess, beforeStart } = await createLaunchContextFixture()
+    const context = { mode, dshHome: join(root, `${mode}-home`), profile: `${mode}-profile` }
+    try {
+      const ready = await manager.start(context)
+      await expect(manager.start()).resolves.toEqual(ready)
+      expect(spawnProcess).toHaveBeenCalledOnce()
+
+      await expect(manager.restart()).resolves.toMatchObject({ mode, phase: 'ready' })
+      await manager.stop()
+      await expect(manager.start(undefined, { allowNormal: false })).resolves.toMatchObject({ mode, phase: 'ready' })
+      expect(beforeStart.mock.calls).toEqual([[context], [context], [context]])
+      for (const [, args, options] of spawnProcess.mock.calls) {
+        expect(args).toContain(context.profile)
+        expect(args).not.toContain('--patch')
+        expect(options.env?.DSH_HOME).toBe(context.dshHome)
+      }
+
+      await expect(manager.restart({ mode: 'normal' })).resolves.toMatchObject({ mode: 'normal' })
+      const [, normalArgs, normalOptions] = spawnProcess.mock.calls.at(-1)!
+      expect(normalArgs).toContain('--patch')
+      expect(normalOptions.env?.DSH_HOME).toBe(layout.harness)
+      expect(beforeStart).toHaveBeenLastCalledWith({ mode: 'normal', dshHome: layout.harness, profile: 'web' })
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it('resolves the initial context once for concurrent starts and retains it on restart', async () => {
+    let releaseContext!: (context: RuntimeLaunchContext) => void
+    const contextReady = new Promise<RuntimeLaunchContext>((resolve) => { releaseContext = resolve })
+    const resolveInitialLaunchContext = vi.fn(() => contextReady)
+    const { layout, manager, spawnProcess } = await createLaunchContextFixture({ resolveInitialLaunchContext })
+    const context = { mode: 'safe' as const, dshHome: layout.harness, profile: 'ezdsh-safe' }
+    try {
+      const first = manager.start(undefined, { allowNormal: false })
+      const second = manager.start(undefined, { allowNormal: false })
+      releaseContext(context)
+      await expect(first).resolves.toMatchObject({ mode: 'safe', phase: 'ready' })
+      await expect(second).resolves.toMatchObject({ mode: 'safe', phase: 'ready' })
+      expect(resolveInitialLaunchContext).toHaveBeenCalledOnce()
+      expect(spawnProcess).toHaveBeenCalledOnce()
+      expect(spawnProcess.mock.calls[0][1]).toContain('ezdsh-safe')
+      await expect(manager.restart()).resolves.toMatchObject({ mode: 'safe' })
+      expect(resolveInitialLaunchContext).toHaveBeenCalledOnce()
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it.each([false, true])('pauses normal automatic startup until a manual choice is made (resolver: %s)', async (hasResolver) => {
+    const resolveInitialLaunchContext = vi.fn(async () => ({ mode: 'normal' as const }))
+    const { layout, manager, spawnProcess, beforeStart, allocatePort } = await createLaunchContextFixture({
+      ...(hasResolver ? { resolveInitialLaunchContext } : {}),
+    })
+    const onChange = vi.fn()
+    manager.onChange(onChange)
+    try {
+      const [first, second] = await Promise.all([
+        manager.start(undefined, { allowNormal: false }),
+        manager.start(undefined, { allowNormal: false }),
+      ])
+      expect(first).toMatchObject({ phase: 'stopped', mode: 'normal' })
+      expect(second).toEqual(first)
+      expect(spawnProcess).not.toHaveBeenCalled()
+      expect(beforeStart).not.toHaveBeenCalled()
+      expect(allocatePort).not.toHaveBeenCalled()
+      expect(onChange.mock.calls.some(([snapshot]) => snapshot.phase === 'failed')).toBe(false)
+      expect(resolveInitialLaunchContext).toHaveBeenCalledTimes(hasResolver ? 1 : 0)
+
+      const ready = await manager.start()
+      expect(ready).toMatchObject({ phase: 'ready', mode: 'normal' })
+      await expect(manager.start(undefined, { allowNormal: false })).resolves.toEqual(ready)
+      expect(spawnProcess).toHaveBeenCalledOnce()
+
+      await manager.stop()
+      await expect(manager.start({ mode: 'safe', dshHome: layout.harness, profile: 'ezdsh-safe' }, { allowNormal: false }))
+        .resolves.toMatchObject({ phase: 'ready', mode: 'safe' })
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it.each(['resolve', 'reject'] as const)('does not spawn when the initial context %ss after stop is requested', async (outcome) => {
+    let finishContext!: () => void
+    const contextReady = new Promise<RuntimeLaunchContext>((resolve, reject) => {
+      finishContext = () => outcome === 'resolve'
+        ? resolve({ mode: 'safe', profile: 'ezdsh-safe' })
+        : reject(new Error('Unable to read saved mode'))
+    })
+    void contextReady.catch(() => undefined)
+    const resolveInitialLaunchContext = vi.fn(() => contextReady)
+    const { manager, spawnProcess, beforeStart, allocatePort } = await createLaunchContextFixture({ resolveInitialLaunchContext })
+    const startup = manager.start(undefined, { allowNormal: false })
+    try {
+      await vi.waitFor(() => expect(resolveInitialLaunchContext).toHaveBeenCalledOnce())
+      const stopping = manager.stop()
+      finishContext()
+      await expect(startup).resolves.toMatchObject({ phase: 'stopped' })
+      await stopping
+      expect(spawnProcess).not.toHaveBeenCalled()
+      expect(beforeStart).not.toHaveBeenCalled()
+      expect(allocatePort).not.toHaveBeenCalled()
+    } finally {
+      finishContext()
+      await startup.catch(() => undefined)
+      await manager.stop()
+    }
+  })
+
+  it('reports an initial context read failure without starting normal mode and permits retry', async () => {
+    const resolveInitialLaunchContext = vi.fn<() => Promise<RuntimeLaunchContext>>()
+      .mockRejectedValueOnce(new Error('Unable to read saved mode'))
+      .mockResolvedValue({ mode: 'safe', profile: 'ezdsh-safe' })
+    const { layout, manager, spawnProcess, allocatePort } = await createLaunchContextFixture({ resolveInitialLaunchContext })
+    try {
+      await expect(manager.start(undefined, { allowNormal: false })).rejects.toThrow('Unable to read saved mode')
+      expect(manager.snapshot()).toMatchObject({ phase: 'failed', message: 'Unable to read saved mode', failureStage: 'mode-selection' })
+      expect(spawnProcess).not.toHaveBeenCalled()
+      expect(allocatePort).not.toHaveBeenCalled()
+      await expect(readFile(join(layout.logs, 'harness.log'), 'utf8')).resolves.toContain('Unable to read saved mode')
+      await expect(manager.start()).resolves.toMatchObject({ mode: 'safe', phase: 'ready' })
+      expect(manager.snapshot().failureStage).toBeUndefined()
+      expect(resolveInitialLaunchContext).toHaveBeenCalledTimes(2)
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it('allows explicit normal mode to recover after an initial context read failure', async () => {
+    const resolveInitialLaunchContext = vi.fn().mockRejectedValue(new Error('Invalid saved mode'))
+    const { manager } = await createLaunchContextFixture({ resolveInitialLaunchContext })
+    try {
+      await expect(manager.start()).rejects.toThrow('Invalid saved mode')
+      await expect(manager.restart({ mode: 'normal' })).resolves.toMatchObject({ mode: 'normal', phase: 'ready' })
+      await expect(manager.restart()).resolves.toMatchObject({ mode: 'normal', phase: 'ready' })
+      expect(resolveInitialLaunchContext).toHaveBeenCalledOnce()
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it('does not resolve saved mode when an explicit launch context is provided', async () => {
+    const resolveInitialLaunchContext = vi.fn().mockRejectedValue(new Error('Must not read saved mode'))
+    const { manager, beforeStart } = await createLaunchContextFixture({ resolveInitialLaunchContext })
+    const context = { mode: 'isolation' as const, dshHome: '/isolated/test-home', profile: 'web' }
+    try {
+      await manager.start(context)
+      await manager.restart()
+      expect(resolveInitialLaunchContext).not.toHaveBeenCalled()
+      expect(beforeStart.mock.calls).toEqual([[context], [context]])
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it('validates the initial context before any child is started', async () => {
+    const resolveInitialLaunchContext = vi.fn(async () => ({ mode: 'isolation' as const }))
+    const { manager, spawnProcess, allocatePort } = await createLaunchContextFixture({ resolveInitialLaunchContext })
+    try {
+      await expect(manager.start()).rejects.toThrow('Isolation Mode Runtime launch requires an isolated DSH home')
+      expect(manager.snapshot().phase).toBe('failed')
+      expect(manager.snapshot().failureStage).toBe('mode-selection')
+      expect(spawnProcess).not.toHaveBeenCalled()
+      expect(allocatePort).not.toHaveBeenCalled()
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it('clears selection failure attribution when a normal retry starts and reports its own failure', async () => {
+    const resolveInitialLaunchContext = vi.fn().mockRejectedValue(new Error('Invalid saved mode'))
+    const { manager, allocatePort } = await createLaunchContextFixture({ resolveInitialLaunchContext })
+    try {
+      await expect(manager.start()).rejects.toThrow('Invalid saved mode')
+      expect(manager.snapshot().failureStage).toBe('mode-selection')
+      let releasePort!: () => void
+      const portReady = new Promise<void>((resolve) => { releasePort = resolve })
+      allocatePort.mockImplementation(async () => {
+        await portReady
+        throw new Error('Unable to allocate a loopback port')
+      })
+      const restart = manager.restart({ mode: 'normal' })
+      try {
+        await vi.waitFor(() => expect(allocatePort).toHaveBeenCalledOnce())
+        expect(manager.snapshot()).toMatchObject({ phase: 'starting', mode: 'normal' })
+        expect(manager.snapshot().failureStage).toBeUndefined()
+      } finally {
+        releasePort()
+      }
+      await expect(restart).rejects.toThrow('Unable to allocate a loopback port')
+      expect(manager.snapshot()).toMatchObject({ phase: 'failed', mode: 'normal', message: 'Unable to allocate a loopback port' })
+      expect(manager.snapshot().failureStage).toBeUndefined()
+    } finally {
+      await manager.stop()
+    }
+  })
+
+  it('lets an explicit normal restart supersede an in-flight initial safe mode read', async () => {
+    let releaseContext!: (context: RuntimeLaunchContext) => void
+    const contextReady = new Promise<RuntimeLaunchContext>((resolve) => { releaseContext = resolve })
+    const resolveInitialLaunchContext = vi.fn(() => contextReady)
+    const { manager, spawnProcess, beforeStart } = await createLaunchContextFixture({ resolveInitialLaunchContext })
+    const startup = manager.start()
+    try {
+      await vi.waitFor(() => expect(resolveInitialLaunchContext).toHaveBeenCalledOnce())
+      const restart = manager.restart({ mode: 'normal' })
+      releaseContext({ mode: 'safe', profile: 'ezdsh-safe' })
+      await expect(startup).resolves.toMatchObject({ phase: 'stopped' })
+      await expect(restart).resolves.toMatchObject({ phase: 'ready', mode: 'normal' })
+      expect(spawnProcess).toHaveBeenCalledOnce()
+      expect(beforeStart).toHaveBeenCalledWith(expect.objectContaining({ mode: 'normal', profile: 'web' }))
+    } finally {
+      releaseContext({ mode: 'safe', profile: 'ezdsh-safe' })
+      await startup.catch(() => undefined)
+      await manager.stop()
+    }
+  })
+
   it('does not spawn a Runtime after shutdown is requested during startup', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-runtime-start-stop-race-'))
     roots.push(root)
@@ -110,6 +370,7 @@ describe('RuntimeManager', () => {
 
     await expect(manager.start()).rejects.toThrow(/mode-menu-plus.*missed the module table/i)
     expect(manager.snapshot().message).toMatch(/mode-menu-plus.*missed the module table/i)
+    expect(manager.snapshot().failureStage).toBeUndefined()
   })
 
   it('uses the published Runtime during development when it is available', async () => {

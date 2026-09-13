@@ -643,6 +643,11 @@ export interface AppCopy {
   storeRuntimeRestarting: string
   storeRuntimeRestartDeferred: string
   storeRuntimeRestartFailed: string
+  storeRuntimeNormalStartRequired: string
+  storeRuntimeNormalStartNow: string
+  storeRuntimeKeepCurrentMode: string
+  storeRuntimeNormalStartDeferred: string
+  storeRuntimeCheckMode: string
   storeAuditReport: string
   storeAuditFindingsNone: string
   storeAuditExternalUrls: string
@@ -986,8 +991,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     runtimeEnteringIsolationMode: '正在启动隔离模式…',
     safeModeBadge: '安全模式',
     safeModeTitle: '安全模式运行中',
-    safeModeDescription: '安全模式保留当前工作文件夹、会话、设置和凭据，但只加载内置 Runtime 组件，并停用所有第三方插件、Skills 和自定义 Agent 模式；正常 web profile 不会被改写。',
-    safeModeExit: '退出安全模式并正常启动',
+    safeModeDescription: '可直接继续使用，无需退出。安全模式保留当前工作文件夹、会话、设置和凭据，不会恢复默认设置；模型等共享设置的修改仍会保存。仅加载内置组件，暂停加载第三方插件、Skills 和自定义 Agent 模式。本工作区会记住安全模式，重启或下次打开时仍保持。',
+    safeModeExit: '恢复扩展功能并正常启动',
     safeModeExiting: '正在退出安全模式并重启 Runtime…',
     safeModeExitFailed: '退出安全模式失败',
     safeModeOpenRecovery: '打开恢复选项',
@@ -1611,6 +1616,11 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeRuntimeRestarting: '正在重启 Runtime…',
     storeRuntimeRestartDeferred: '插件已安装，稍后重启 Runtime 后生效。',
     storeRuntimeRestartFailed: 'Runtime 重启失败，请稍后重试。',
+    storeRuntimeNormalStartRequired: '插件变更已保存，当前模式暂不加载扩展。普通重启仍会保持当前模式。可继续使用；需要应用并检查插件变更时，再选择正常启动。启动成功前，其他插件变更会等待。',
+    storeRuntimeNormalStartNow: '正常启动并应用插件变更',
+    storeRuntimeKeepCurrentMode: '继续当前模式',
+    storeRuntimeNormalStartDeferred: '可以继续使用当前模式。插件变更已保存，扩展仍暂停加载；正常启动成功后，才能继续修改其他插件。',
+    storeRuntimeCheckMode: '重新检查运行模式',
     storeAuditReport: '检测结果',
     storeAuditFindingsNone: '未发现问题',
     storeAuditExternalUrls: '外链地址',
@@ -1953,8 +1963,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     runtimeEnteringIsolationMode: 'Starting Isolation Mode…',
     safeModeBadge: 'Safe Mode',
     safeModeTitle: 'Safe Mode is active',
-    safeModeDescription: 'Safe Mode keeps the current working directory, sessions, settings, and credentials, but loads only built-in Runtime components and disables all third-party plugins, Skills, and custom Agent modes. The normal web profile is not rewritten.',
-    safeModeExit: 'Exit Safe Mode and start normally',
+    safeModeDescription: 'Keep working without exiting. Safe Mode preserves your workspace, sessions, settings, and credentials; it does not reset your settings. Changes to shared settings, such as models, are saved. Only built-in components load; third-party plugins, Skills, and custom Agent modes are paused. This workspace remembers Safe Mode across restarts and reopening the app.',
+    safeModeExit: 'Restore extensions and start normally',
     safeModeExiting: 'Exiting Safe Mode and restarting Runtime…',
     safeModeExitFailed: 'Could not exit Safe Mode',
     safeModeOpenRecovery: 'Open recovery options',
@@ -2578,6 +2588,11 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeRuntimeRestarting: 'Restarting Runtime…',
     storeRuntimeRestartDeferred: 'The plugin is installed and will be active after you restart Runtime.',
     storeRuntimeRestartFailed: 'Runtime restart failed. Try again later.',
+    storeRuntimeNormalStartRequired: 'The plugin change is saved, but extensions are paused in the current mode. An ordinary restart keeps this mode. Keep working, or start normally to apply and check the change. Other plugin changes wait until normal startup succeeds.',
+    storeRuntimeNormalStartNow: 'Start normally and apply plugin change',
+    storeRuntimeKeepCurrentMode: 'Keep current mode',
+    storeRuntimeNormalStartDeferred: 'Keep working in the current mode. The plugin change is saved and extensions remain paused. Normal startup must succeed before changing another plugin.',
+    storeRuntimeCheckMode: 'Check Runtime mode again',
     storeAuditReport: 'Audit result',
     storeAuditFindingsNone: 'No issues found',
     storeAuditExternalUrls: 'External URLs',

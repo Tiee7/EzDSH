@@ -11,6 +11,7 @@ export interface RuntimeSnapshot {
   logPath: string
   startedAt?: string
   message?: string
+  failureStage?: 'mode-selection'
 }
 
 export interface DshRuntimeProcess {

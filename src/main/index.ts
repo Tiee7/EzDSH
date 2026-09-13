@@ -140,6 +140,7 @@ import {
   type RecoveryState,
 } from './recovery/recovery-manager.js'
 import { PluginRecoveryCoordinator } from './recovery/plugin-recovery-coordinator.js'
+import { RecoveryRestoreCoordinator } from './recovery/recovery-restore-coordinator.js'
 import { ProxyService } from './proxy/proxy-service.js'
 import type { ProxyProfileInput, ProxySettingsSnapshot } from '../shared/proxy.js'
 import type { ProxyTestResult } from '../shared/proxy.js'
@@ -157,6 +158,7 @@ let recoveryManager: RecoveryManager | undefined
 let isolationModeController: IsolationModeController | undefined
 let safeModeProfileController: SafeModeProfileController | undefined
 let pluginRecoveryCoordinator: PluginRecoveryCoordinator | undefined
+let recoveryRestoreCoordinator: RecoveryRestoreCoordinator | undefined
 let userDataLayout: UserDataLayout | undefined
 let workspaceConfigPath: string | undefined
 let developerModePath: string | undefined
@@ -439,7 +441,7 @@ function bindWorkspaceServiceListeners(): void {
         const message = error instanceof Error ? error.message : String(error)
         console.error('[recovery] failed to commit recovery transaction:', message)
       })
-    } else if (snapshot.phase === 'failed' && snapshot.mode === 'normal') {
+    } else if (snapshot.phase === 'failed' && snapshot.mode === 'normal' && snapshot.failureStage !== 'mode-selection') {
       void handleRuntimeBootFailure(snapshot).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error)
         console.error('[recovery] failed to record boot failure:', message)
@@ -541,6 +543,8 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     ownershipStore: runtimeOwnershipStore,
   })
   await runtimeProcessManager.stopOwnedOrphans()
+  const workspaceSafeModeProfile = new SafeModeProfileController({ layout })
+  safeModeProfileController = workspaceSafeModeProfile
   runtimeManager = new RuntimeManager({
     layout,
     runtimeEntryPath,
@@ -550,6 +554,12 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     patchPaths: [join(app.getAppPath(), 'plugins', 'chat-search', 'cordis.patch.yml')],
     runtimeOwnership: runtimeOwnershipStore,
     getEnvironment: () => proxyService?.getRuntimeEnvironment() ?? { ...process.env },
+    resolveInitialLaunchContext: async () => {
+      const safeMode = await workspaceSafeModeProfile.restoreIfEnabled()
+      return safeMode === undefined
+        ? { mode: 'normal' }
+        : { mode: 'safe', dshHome: safeMode.dshHome, profile: safeMode.profile }
+    },
     beforeStart: async (context) => {
       if (context.mode !== 'normal') return
       try {
@@ -601,9 +611,20 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     const message = error instanceof Error ? error.message : String(error)
     console.error('[mobile-remote] failed to start:', message)
   })
-  isolationModeController = new IsolationModeController({ layout })
-  await isolationModeController.initialize()
-  safeModeProfileController = new SafeModeProfileController({ layout })
+  const workspaceIsolationMode = new IsolationModeController({ layout })
+  isolationModeController = workspaceIsolationMode
+  await workspaceIsolationMode.initialize()
+  const workspaceRuntime = runtimeManager
+  const workspaceRecovery = recoveryManager
+  recoveryRestoreCoordinator = new RecoveryRestoreCoordinator({
+    getMode: () => workspaceRuntime.snapshot().mode,
+    stopComponents: stopApplicationComponents,
+    restore: (selector) => workspaceRecovery.restore(selector, false),
+    prepareMode: async (mode) => {
+      if (mode === 'safe') await workspaceSafeModeProfile.enable()
+      if (mode === 'isolation') await workspaceIsolationMode.enable('manual')
+    },
+  })
   pluginRecoveryCoordinator = new PluginRecoveryCoordinator({
     runtime: runtimeManager,
     recovery: recoveryManager,
@@ -1190,10 +1211,16 @@ function registerIpcHandlers(): void {
     if (runtimeManager === undefined) return failure(new Error('Runtime manager is not ready'))
     return success(runtimeManager.snapshot())
   })
-  ipcMain.handle('runtime:start', async (): Promise<IpcResult<RuntimeSnapshot>> => {
+  ipcMain.handle('runtime:start', async (_event, options?: { automatic?: boolean }): Promise<IpcResult<RuntimeSnapshot>> => {
     try {
       if (runtimeManager === undefined) throw new Error('Runtime manager is not ready')
-      return success(await runtimeManager.start())
+      if (options !== undefined && (options === null || typeof options !== 'object'
+        || (options.automatic !== undefined && typeof options.automatic !== 'boolean'))) {
+        throw new Error('Invalid Runtime start options')
+      }
+      await recoveryRestoreCoordinator?.waitUntilReady()
+      const allowNormal = options?.automatic !== true || recoveryManager?.snapshot().phase !== 'recovery-required'
+      return success(await runtimeManager.start(undefined, { allowNormal }))
     } catch (error) {
       return failure(error)
     }
@@ -1201,6 +1228,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('runtime:restart', async (): Promise<IpcResult<RuntimeSnapshot>> => {
     try {
       if (runtimeManager === undefined) throw new Error('Runtime manager is not ready')
+      await recoveryRestoreCoordinator?.waitUntilReady()
       return success(await runtimeManager.restart())
     } catch (error) {
       return failure(error)
@@ -2208,8 +2236,8 @@ function registerIpcHandlers(): void {
       if (recoveryManager === undefined) throw new Error('Recovery manager is not ready')
       if (typeof selector !== 'string' || typeof dryRun !== 'boolean') throw new Error('Invalid recovery restore input')
       if (dryRun) return success(await recoveryManager.restore(selector, true))
-      await stopApplicationComponents()
-      return success(await recoveryManager.restore(selector, false))
+      if (recoveryRestoreCoordinator === undefined) throw new Error('Recovery restore is not ready')
+      return success(await recoveryRestoreCoordinator.restore(selector))
     } catch (error) {
       return failure(error)
     }
@@ -2217,8 +2245,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle('recovery:enter-safe-mode', async (): Promise<IpcResult<RuntimeSnapshot>> => {
     try {
       if (safeModeProfileController === undefined || runtimeManager === undefined) throw new Error('Safe Mode is not ready')
-      const snapshot = runtimeManager.snapshot()
-      if (snapshot.phase === 'ready' || snapshot.phase === 'starting') await runtimeManager.stop()
+      await recoveryRestoreCoordinator?.waitUntilReady()
+      await runtimeManager.stop()
       await isolationModeController?.disable()
       const safeMode = await safeModeProfileController.enable()
       return success(await runtimeManager.start({ mode: 'safe', dshHome: safeMode.dshHome, profile: safeMode.profile }))
@@ -2229,7 +2257,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle('recovery:enter-isolation-mode', async (): Promise<IpcResult<RuntimeSnapshot>> => {
     try {
       if (pluginRecoveryCoordinator === undefined || runtimeManager === undefined) throw new Error('Isolation Mode is not ready')
-      await safeModeProfileController?.disable()
+      await recoveryRestoreCoordinator?.waitUntilReady()
+      // Temporary isolation must not erase the workspace's saved Safe Mode choice.
       await pluginRecoveryCoordinator.startIsolationMode('manual')
       return success(runtimeManager.snapshot())
     } catch (error) {
@@ -2239,6 +2268,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('recovery:exit-safe-mode', async (): Promise<IpcResult<RuntimeSnapshot>> => {
     try {
       if (isolationModeController === undefined || safeModeProfileController === undefined || runtimeManager === undefined) throw new Error('Recovery modes are not ready')
+      await recoveryRestoreCoordinator?.waitUntilReady()
       await runtimeManager.stop()
       await isolationModeController.disable()
       await safeModeProfileController.disable()

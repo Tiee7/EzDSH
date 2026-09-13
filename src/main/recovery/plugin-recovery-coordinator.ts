@@ -60,9 +60,10 @@ export class PluginRecoveryCoordinator {
     options: PluginRecoveryRunOptions = {},
   ): Promise<PluginRecoveryOutcome<T>> {
     if (this.options.recovery.hasPendingTransaction !== undefined && await this.options.recovery.hasPendingTransaction()) {
-      throw new Error('Restart Runtime before changing another DSH plugin')
+      throw new Error('Start Runtime in normal mode to verify the previous plugin change before changing another DSH plugin. Restarting Safe Mode or Isolation Mode does not verify plugins.')
     }
-    const wasRunning = this.options.runtime.snapshot().phase === 'ready'
+    const snapshot = this.options.runtime.snapshot()
+    const wasRunning = snapshot.phase === 'ready'
     const deferRuntimeRestart = options.deferRuntimeRestart === true && wasRunning
     if (wasRunning && !deferRuntimeRestart) await this.options.runtime.stop()
     const transaction = await this.options.recovery.preparePluginChange(input)
@@ -72,9 +73,15 @@ export class PluginRecoveryCoordinator {
       mutationCompleted = true
       await persist(value)
       if (wasRunning && !deferRuntimeRestart) {
-        await this.options.runtime.start({ mode: 'normal' })
-        await this.options.recovery.completePendingTransaction()
-      } else if (!wasRunning) {
+        if (snapshot.mode === 'normal') {
+          await this.options.runtime.start({ mode: 'normal' })
+          await this.options.recovery.completePendingTransaction()
+        } else {
+          // Keep the complete recovery-mode context. A successful restricted
+          // boot does not establish that the changed normal-profile plugin works.
+          await this.options.runtime.start()
+        }
+      } else if (!wasRunning && snapshot.mode === 'normal') {
         await this.options.recovery.completePendingTransaction()
       }
       return { value, transactionId: transaction.id }
@@ -93,8 +100,9 @@ export class PluginRecoveryCoordinator {
   async startIsolationMode(reason: IsolationModeReason): Promise<void> {
     if (this.isolationModeStart !== undefined) return this.isolationModeStart
     this.isolationModeStart = (async () => {
-      const snapshot = this.options.runtime.snapshot()
-      if (snapshot.phase === 'ready' || snapshot.phase === 'starting') await this.options.runtime.stop()
+      // Preparation can still have an idle snapshot while a saved mode is being
+      // resolved. Always settle that startup before replacing its launch context.
+      await this.options.runtime.stop()
       const isolationMode = await this.options.isolationMode.enable(reason)
       await this.options.runtime.start({ mode: 'isolation', dshHome: isolationMode.dshHome })
     })().finally(() => {

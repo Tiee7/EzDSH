@@ -11,6 +11,7 @@ import type {
 } from '../../shared/store.js'
 import { auditLabel, auditTone, categoryLabel, entryType, entryTypeLabel, phaseLabel, updateAvailable, type StoreEntryType } from './display.js'
 import { MarkdownContent } from './MarkdownContent.js'
+import { PluginRuntimeRestartNotice } from './PluginRuntimeRestartNotice.js'
 import './store.css'
 
 interface StoreBrowserProps {
@@ -208,9 +209,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
   const [refreshError, setRefreshError] = useState(false)
   const [refreshErrorMessage, setRefreshErrorMessage] = useState<string | undefined>()
   const [refreshRejected, setRefreshRejected] = useState<readonly StoreCatalogRejection[]>([])
-  const [runtimeRestartDeferred, setRuntimeRestartDeferred] = useState(false)
   const [runtimeRestarting, setRuntimeRestarting] = useState(false)
-  const [runtimeRestartError, setRuntimeRestartError] = useState<string | undefined>()
 
   const installedById = useMemo(() => {
     const map = new Map<string, InstalledRecord>()
@@ -236,8 +235,6 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
       setInstalled(installedList.records)
       setSelected(undefined)
       setInstallState(undefined)
-      setRuntimeRestartDeferred(false)
-      setRuntimeRestartError(undefined)
     } catch {
       setError(true)
     } finally {
@@ -287,8 +284,6 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
 
   const installById = useCallback(async (id: string, allowAuditBlock = false): Promise<void> => {
     setInstallState(undefined)
-    setRuntimeRestartDeferred(false)
-    setRuntimeRestartError(undefined)
     try {
       const detail = await window.EzDSH.store.entry(kind, id)
       setSelected(detail)
@@ -325,19 +320,6 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
     void installById(deepLinkTarget.id)
   }, [deepLinkTarget, kind, installById])
 
-  const restartRuntime = useCallback(async (): Promise<void> => {
-    setRuntimeRestarting(true)
-    setRuntimeRestartError(undefined)
-    try {
-      await window.EzDSH.runtime.restart()
-      setRuntimeRestartDeferred(true)
-    } catch (reason) {
-      setRuntimeRestartError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setRuntimeRestarting(false)
-    }
-  }, [])
-
   const confirmInstall = useCallback(async (accepted: boolean): Promise<void> => {
     if (selected === undefined || installState === undefined) return
     try {
@@ -351,8 +333,6 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
   }, [kind, selected, installState, refreshInstalled])
 
   const uninstall = useCallback(async (entry: StoreEntry): Promise<void> => {
-    setRuntimeRestartDeferred(false)
-    setRuntimeRestartError(undefined)
     try {
       setInstallState({ kind, id: entry.id, phase: 'installing', message: copy.storeUninstall })
       const state = await window.EzDSH.store.uninstall(kind, entry.id)
@@ -365,8 +345,6 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
   }, [kind, copy, refreshInstalled])
 
   const update = useCallback(async (entry: StoreEntry): Promise<void> => {
-    setRuntimeRestartDeferred(false)
-    setRuntimeRestartError(undefined)
     try {
       setInstallState({ kind, id: entry.id, phase: 'installing', message: copy.storeUpdate })
       const state = await window.EzDSH.store.update(kind, entry.id)
@@ -379,8 +357,6 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
   }, [kind, copy, refreshInstalled])
 
   const setPluginEnabled = useCallback(async (entry: StoreEntry, enabled: boolean): Promise<void> => {
-    setRuntimeRestartDeferred(false)
-    setRuntimeRestartError(undefined)
     try {
       setInstallState({ kind, id: entry.id, phase: 'installing', message: enabled ? copy.storeEnablingPlugin : copy.storeDisablingPlugin })
       const state = await window.EzDSH.store.setEnabled(kind, entry.id, enabled)
@@ -482,8 +458,6 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
               onSelect={() => {
                 setSelected(entry)
                 setInstallState(undefined)
-                setRuntimeRestartDeferred(false)
-                setRuntimeRestartError(undefined)
               }}
             />
           ))}
@@ -554,24 +528,12 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
           {installState !== undefined && installState.id === selected.id && installState.phase === 'failed'
             ? <InstallFailureNotice copy={copy} state={installState} />
             : null}
-          {installState?.phase === 'done' && installState.id === selected.id && installState.runtimeRestartRequired && !runtimeRestartDeferred
-            ? (
-              <div className="runtime-restart-notice" role="status">
-                <p>{copy.storeRuntimeRestartRequired}</p>
-                {runtimeRestartError !== undefined ? <p className="runtime-restart-error">{runtimeRestartError || copy.storeRuntimeRestartFailed}</p> : null}
-                <div className="runtime-restart-actions">
-                  <button type="button" className="confirm-accept" disabled={runtimeRestarting} onClick={() => { void restartRuntime() }}>
-                    {runtimeRestarting ? copy.storeRuntimeRestarting : copy.storeRuntimeRestartNow}
-                  </button>
-                  <button type="button" className="confirm-cancel" disabled={runtimeRestarting} onClick={() => { setRuntimeRestartDeferred(true) }}>
-                    {copy.storeRuntimeRestartLater}
-                  </button>
-                </div>
-              </div>
-              )
-            : null}
-          {installState?.phase === 'done' && installState.id === selected.id && installState.runtimeRestartRequired && runtimeRestartDeferred
-            ? <p className="runtime-restart-deferred" role="status">{copy.storeRuntimeRestartDeferred}</p>
+          {installState?.phase === 'done' && installState.id === selected.id && installState.runtimeRestartRequired
+            ? <PluginRuntimeRestartNotice
+                copy={copy}
+                onBusyChange={setRuntimeRestarting}
+                onNormalReady={() => { setInstallState((current) => current === undefined ? current : { ...current, runtimeRestartRequired: false }) }}
+              />
             : null}
           {installState?.phase === 'confirm-wait' && installState.id === selected.id
             ? (
