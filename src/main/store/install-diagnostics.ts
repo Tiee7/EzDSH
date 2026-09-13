@@ -27,15 +27,20 @@ export function diagnoseInstallFailure(error: unknown): InstallDiagnostic {
 }
 
 function classifyCode(message: string): InstallDiagnosticCode {
+  const fetchStatus = /\bERR_PNPM_FETCH_(401|403|404)\b/i.exec(message)?.[1]
+  if (fetchStatus === '401' || fetchStatus === '403') return 'auth'
+  if (fetchStatus === '404') return 'package-not-found'
+
   if (/Catalog entry rejected|Unsupported DSH plugin source|Invalid DSH plugin (?:package name|profile)/i.test(message)) return 'catalog-entry-invalid'
   if (/ERR_PNPM_INVALID_DEPENDENCY_NAME|invalid (?:alias|dependency)\b/i.test(message)) return 'invalid-dependency-name'
   if (/ERR_PNPM_IGNORED_BUILDS|Ignored build scripts/i.test(message)) return 'build-script-blocked'
-  if (/ERR_PNPM_FETCH_404|\b404\b|No matching version found|not found in (?:the )?registry/i.test(message)) return 'package-not-found'
-  if (/ERR_PNPM_FETCH|ENOTFOUND|ECONN(?:RESET|REFUSED)|ETIMEDOUT|timed? out|network/i.test(message)) return 'network'
-  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication|private repository|permission to .* denied/i.test(message)) return 'auth'
-  if (/lockfile|supply-chain|integrity|checksum|ERR_PNPM_TARBALL_INTEGRITY|ERR_PNPM_LOCKFILE/i.test(message)) return 'lockfile-policy'
   if (/EACCES|EPERM|permission denied|access is denied/i.test(message)) return 'permission'
-  if (/Bundled pnpm is missing|pnpm not found|ENOENT/i.test(message)) return 'runtime-prerequisite'
+  if (/Bundled pnpm is missing/i.test(message)) return 'runtime-prerequisite'
+  if (/\bENOENT\b/i.test(message)) return 'unknown'
+  if (/lockfile|supply-chain|integrity|checksum|ERR_PNPM_TARBALL_INTEGRITY|ERR_PNPM_LOCKFILE/i.test(message)) return 'lockfile-policy'
+  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication|private repository|permission to .* denied/i.test(message)) return 'auth'
+  if (/\b404\b|No matching version found|not found in (?:the )?registry/i.test(message)) return 'package-not-found'
+  if (/ERR_PNPM_FETCH|ENOTFOUND|ECONN(?:RESET|REFUSED)|ETIMEDOUT|timed? out|network/i.test(message)) return 'network'
   if (/prepare|preinstall|postinstall|build script|lifecycle script|exit code [1-9]\d*/i.test(message)) return 'build-failed'
   if (/was not added to profile|Cannot determine the package name added/i.test(message)) return 'postcondition'
   return 'unknown'

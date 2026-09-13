@@ -31,7 +31,7 @@
 | `test/renderer/recovery-panel.test.tsx` | 更新故意改变的可见文案断言，保留交互覆盖 |
 | `test/renderer/recovery-copy.test.ts` | 保护候选与确认冲突的区分、恢复范围及模式边界 |
 
-以上路径均相对仓库根 `/Users/snake/Documents/ChatGPT/ezdsh`。本文中的代码是实施内容，尚未写入产品源码。
+以上路径均相对仓库根 `/Users/snake/Documents/ChatGPT/ezdsh`。下列任务已在隔离工作区实施并审查；代码块保留原计划，最终边界补充与验证见文末执行记录。
 
 ### Task 1: 安装诊断优先采用具体错误证据
 
@@ -43,7 +43,7 @@
 - Consumes: 现有 `diagnoseInstallFailure(error: unknown): InstallDiagnostic`。
 - Produces: 同一接口、同一 `InstallDiagnosticCode` 联合类型；401/403 输出 `auth`，一般 ENOENT 输出 `unknown`。
 
-- [ ] **Step 1: 追加回归用例。** 以下代码直接追加到现有测试文件，不删除已有 3 项测试。
+- [x] **Step 1: 追加回归用例。** 以下代码直接追加到现有测试文件，不删除已有 3 项测试。
 
 ```ts
 describe('environment diagnosis evidence', () => {
@@ -73,7 +73,7 @@ describe('environment diagnosis evidence', () => {
 })
 ```
 
-- [ ] **Step 2: 运行新增测试，确认当前误分类会失败。**
+- [x] **Step 2: 运行新增测试，确认当前误分类会失败。**
 
 ```bash
 ./node_modules/.bin/vitest run test/store/install-diagnostics.test.ts
@@ -81,7 +81,7 @@ describe('environment diagnosis evidence', () => {
 
 预期：401/403、混合提示优先级、一般 ENOENT 的用例在当前代码失败；失败应与对应预期类别不一致有关。
 
-- [ ] **Step 3: 用下列完整函数替换 `classifyCode`。** 其余函数与公共类型保持原状。
+- [x] **Step 3: 用下列完整函数替换 `classifyCode`。** 其余函数与公共类型保持原状。
 
 ```ts
 function classifyCode(message: string): InstallDiagnosticCode {
@@ -106,7 +106,7 @@ function classifyCode(message: string): InstallDiagnosticCode {
 
 本任务保留其余历史字符串兼容规则，因此不是完备的环境诊断器。`unknown` 是有意保守处理：Git 缺失、普通文件缺失、磁盘和证书问题应由后续带步骤、路径和结构化错误码的检查器确定，不在这里凭字符串自动安装或修复。
 
-- [ ] **Step 4: 验证分类与安装集成。**
+- [x] **Step 4: 验证分类与安装集成。**
 
 ```bash
 ./node_modules/.bin/vitest run test/store/install-diagnostics.test.ts test/store/install-reporter.test.ts test/store/store-service-install.test.ts
@@ -116,7 +116,7 @@ git diff --check
 
 预期：针对本变更的测试通过，类型不变。若类型检查因既有并行工作失败，记录具体文件和证据，不能标记整个工作区通过。
 
-- [ ] **Step 5: 只提交本任务文件。**
+- [x] **Step 5: 只提交本任务文件。**
 
 ```bash
 git add src/main/store/install-diagnostics.ts test/store/install-diagnostics.test.ts
@@ -134,7 +134,7 @@ git commit --only src/main/store/install-diagnostics.ts test/store/install-diagn
 - Consumes: 现有 `getAppCopy('zh' | 'en')`。
 - Produces: 原有文案键和值类型；`RecoveryPanel` 与 `RuntimeStartupFailureNotice` 自动读取新文字，不新增动作。
 
-- [ ] **Step 1: 新建以下完整文案回归测试。**
+- [x] **Step 1: 新建以下完整文案回归测试。**
 
 ```ts
 import { describe, expect, it } from 'vitest'
@@ -166,7 +166,7 @@ describe('recovery copy evidence and scope', () => {
 })
 ```
 
-- [ ] **Step 2: 确认新测试在原文案失败。**
+- [x] **Step 2: 确认新测试在原文案失败。**
 
 ```bash
 ./node_modules/.bin/vitest run test/renderer/recovery-copy.test.ts
@@ -174,7 +174,7 @@ describe('recovery copy evidence and scope', () => {
 
 预期：3 项失败，原因均为旧文案未满足事实/范围提示。
 
-- [ ] **Step 3: 替换中文和英文对象中的以下现有值。** 不添加重复键，不改 AppCopy 接口。
+- [x] **Step 3: 替换中文和英文对象中的以下现有值。** 不添加重复键，不改 AppCopy 接口。
 
 中文：
 
@@ -206,7 +206,7 @@ recoveryPluginChoiceHint: 'These are installed plugins that can be managed, not 
 
 这些文案不把“原数据仍在”扩大为“所有操作绝不改动数据”，也不声称安全模式是只读模式。恢复前保留备份失败时，后端应停止后续替换；完整预览与服务编排仍属于设计的第 1B 步。
 
-- [ ] **Step 4: 更新已有交互测试中的旧文字。** 在 `test/renderer/recovery-panel.test.tsx` 全部替换以下三对字面量，其他断言与点击过程保留。
+- [x] **Step 4: 更新已有交互测试中的旧文字。** 在 `test/renderer/recovery-panel.test.tsx` 全部替换以下三对字面量，其他断言与点击过程保留。
 
 ```text
 删除冲突的插件
@@ -221,7 +221,7 @@ recoveryPluginChoiceHint: 'These are installed plugins that can be managed, not 
 
 将测试名 `opens the plugin list from the explicit delete-conflicting-plugins action` 改为 `opens installed plugin candidates without asserting a conflict`。将缺失按钮的测试错误文本 `delete-conflicting-plugins action should render` 改为 `installed-plugin action should render`。
 
-- [ ] **Step 5: 验证文案、页面交互与构建。**
+- [x] **Step 5: 验证文案、页面交互与构建。**
 
 ```bash
 ./node_modules/.bin/vitest run test/renderer/recovery-copy.test.ts test/renderer/recovery-panel.test.tsx test/renderer/runtime-startup-failure.test.tsx test/renderer/safe-mode-ui.test.tsx test/store/install-diagnostics.test.ts
@@ -232,7 +232,7 @@ git diff --check
 
 预期：原有恢复入口、插件候选展开、备份选择、模式退出仍可操作；中英文文案通过。视觉核查限定为隔离开发数据环境：小窗口和中英文下能完整阅读长范围提示，无裁切；不重启用户当前发行应用。
 
-- [ ] **Step 6: 只提交本任务文件。**
+- [x] **Step 6: 只提交本任务文件。**
 
 ```bash
 git add src/shared/locale.ts test/renderer/recovery-panel.test.tsx test/renderer/recovery-copy.test.ts
@@ -247,10 +247,28 @@ git commit --only src/shared/locale.ts test/renderer/recovery-panel.test.tsx tes
 
 既有测试基线中的外部服务旧文案断言失败保留为单独事项，不能为本片通过而删掉该断言或把整个测试集标为通过。
 
-## 计划片段验证记录（2026-09-13）
+## 实施前的计划片段验证记录（2026-09-13）
 
-在独立临时镜像中提取本文代码与文案，未修改仓库产品源码，也未安装依赖。
+规划阶段在独立临时镜像中提取本文代码与文案；以下是当时的历史结果，不代表后续实现的最终验证。
 
 - 原代码加计划新增测试：20 项中 13 失败、7 通过，失败覆盖当前误分类与旧文案。
 - 提取期间恢复按钮名称发生同步差异；按本文最终字面量同步后，直接受影响的诊断、文案和恢复页 3 文件共 31 项全部通过。其余 4 文件共 40 项此前已通过，且未因该同步再次修改。
-- 这是对实施片段的可执行性检查，不等于产品改动落地。执行本计划时仍须在当时工作区完成规定测试、typecheck、build 和隔离数据下的视觉检查。
+- 这是对实施片段的可执行性检查，不等于产品改动落地。实际实现的测试、typecheck、build 和隔离数据下的视觉检查另列于下。
+
+## 实际执行记录（2026-09-13）
+
+- 隔离分支 `codex/environment-diagnostics` 从 `0feec48` 创建。Task 1 提交 `67a331d`，Task 2 提交 `9970a59`；两项均完成先失败、后通过的测试验证与独立审查。
+- 最后核查补充路径关键词反例，提交 `fb9260f`：EACCES/EPERM 优先于宽泛 lockfile 匹配；普通 ENOENT 即使路径包含 lockfile/pnpm 也保持 unknown；明确的内置 pnpm 缺失与完整性错误仍按其证据分类。新增 6 项测试，追加阶段先有 3 项失败、修复后相关 55 项通过；增量审查无阻塞问题。该调整补充了上方原计划中的函数优先级。
+- 将三个提交的 5 个目标文件同步回主工作区后，以下组合测试独立运行，7 文件、77/77 通过。主工作区 typecheck、build、diffcheck 通过；构建有 Workflow 模块静态/动态导入并存的非失败提示。
+- 真实组件以模拟本地 API 在浏览器预览。恢复页中英文、插件候选展开、倒序备份选择与确认前的完整影响提示可用；未选择备份时确认禁用，选择后启用。RecoveryPanel 在 420px 单组件压力检查中提示无裁切；启动失败页按应用实际最小窗口 960×640 检查，处理按钮及展开详情可见。没有点击真实还原、重启当前发行应用或修改用户恢复数据。
+- 整体审查与最终增量审查均无 Critical/Important 问题。非阻塞测试建议保留：英文文案本身正确，但 locale 单元测试未对“恢复前备份”和“无升级归因”做完整对称断言。
+- 主工作区原有暂存内容在同步与验证前后保持一致；本次只提交指定产品、测试和说明文件。尚未推送或发布。
+
+```bash
+./node_modules/.bin/vitest run test/store/install-diagnostics.test.ts test/store/install-reporter.test.ts test/store/store-service-install.test.ts test/renderer/recovery-copy.test.ts test/renderer/recovery-panel.test.tsx test/renderer/runtime-startup-failure.test.tsx test/renderer/safe-mode-ui.test.tsx
+npm run typecheck
+npm run build
+git diff --check
+```
+
+本批分类仍包含历史字符串兼容规则，同一日志混合多个独立错误时依赖优先级，不是完整的结构化根因分析。恢复服务重建、Web 就绪验证、故障外壳与统一推荐动作仍未实现。

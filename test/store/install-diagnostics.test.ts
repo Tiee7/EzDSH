@@ -38,3 +38,40 @@ describe('diagnoseInstallFailure', () => {
     expect(diagnostic.detail).toContain('404')
   })
 })
+
+describe('environment diagnosis evidence', () => {
+  it.each([
+    ['[ERR_PNPM_FETCH_401] GET https://registry.example/pkg - 401', 'auth'],
+    ['[ERR_PNPM_FETCH_403] GET https://registry.example/pkg - 403', 'auth'],
+    ['[ERR_PNPM_FETCH_401]', 'auth'],
+    ['[ERR_PNPM_FETCH_403]', 'auth'],
+    ['[ERR_PNPM_FETCH_404] GET https://registry.example/pkg - 404', 'package-not-found'],
+    ['[ERR_PNPM_FETCH_401] package not found in registry; network error', 'auth'],
+    ['[ERR_PNPM_TARBALL_INTEGRITY] checksum mismatch after network retry', 'lockfile-policy'],
+    ['EACCES: permission denied while retrying network install', 'permission'],
+    ['spawn git ENOENT', 'unknown'],
+    ['ENOENT: no such file or directory, open /tmp/profile/package.json', 'unknown'],
+    ['Bundled pnpm is missing at /app/node_modules/pnpm/bin/pnpm.cjs', 'runtime-prerequisite'],
+    ['ENOTFOUND registry.example', 'network'],
+    ['ETIMEDOUT while fetching package', 'network'],
+  ] as const)('classifies %s as %s', (message, expected) => {
+    expect(diagnoseInstallFailure(new Error(message)).code).toBe(expected)
+  })
+
+  it('does not prescribe rebuilding EzDSH for a missing external command', () => {
+    const result = diagnoseInstallFailure(new Error('spawn git ENOENT'))
+    expect(result.suggestedAction).not.toMatch(/update or rebuild EzDSH/i)
+    expect(result.detail).toContain('spawn git ENOENT')
+  })
+
+  it.each([
+    ['EACCES: permission denied, open /tmp/pnpm-lockfile.yaml', 'permission'],
+    ['EPERM: operation not permitted, rename /tmp/pnpm-lockfile.yaml', 'permission'],
+    ['ENOENT: no such file or directory, open /tmp/pnpm-lockfile.yaml', 'unknown'],
+    ['ENOENT: no such file or directory, open /tmp/pnpm/package.json', 'unknown'],
+    ['Bundled pnpm is missing at /app/node_modules/pnpm/bin/pnpm.cjs', 'runtime-prerequisite'],
+    ['[ERR_PNPM_TARBALL_INTEGRITY] lockfile checksum mismatch', 'lockfile-policy'],
+  ] as const)('prioritizes concrete filesystem evidence in %s as %s', (message, expected) => {
+    expect(diagnoseInstallFailure(new Error(message)).code).toBe(expected)
+  })
+})

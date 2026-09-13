@@ -88,14 +88,14 @@ describe('RecoveryPanel Safe Mode controls', () => {
     )
 
     expect(markup).toContain('recovery-shell recovery-scroll-region')
-    expect(markup).toContain('删除冲突的插件')
+    expect(markup).toContain('查看已安装插件')
     expect(markup).not.toContain('停用「Mode Menu Plus」并继续启动')
-    expect(markup).toContain('恢复上一份环境')
+    expect(markup).toContain('恢复此故障关联的备份')
     expect(markup).toContain('failed to import loader entry (mode-menu-plus)')
     expect(markup).toContain('/tmp/harness.log')
   })
 
-  it('opens the plugin list from the explicit delete-conflicting-plugins action', async () => {
+  it('opens installed plugin candidates without asserting a conflict', async () => {
     const previousGlobals = {
       window: globalThis.window,
       document: globalThis.document,
@@ -141,14 +141,14 @@ describe('RecoveryPanel Safe Mode controls', () => {
       })
 
       const button = Array.from(domWindow.document.querySelectorAll('button'))
-        .find((candidate) => candidate.textContent === '删除冲突的插件')
-      if (button === undefined) throw new Error('delete-conflicting-plugins action should render')
+        .find((candidate) => candidate.textContent === '查看已安装插件')
+      if (button === undefined) throw new Error('installed-plugin action should render')
       expect(button.closest('.recovery-runtime-incident')).not.toBeNull()
       expect(domWindow.document.body.textContent).not.toContain('Mode Menu Plus')
 
       await act(async () => { button.click() })
 
-      expect(domWindow.document.body.textContent).toContain('以下插件来自当前 profile；它们不一定是本次故障原因。')
+      expect(domWindow.document.body.textContent).toContain('以下是可管理的已安装插件，不代表它们导致了本次故障。')
       expect(domWindow.document.body.textContent).toContain('「Mode Menu Plus」已停用')
       expect(domWindow.document.body.textContent).toContain('卸载「Mode Menu Plus」并重新启动')
       expect(domWindow.document.body.textContent).not.toContain('停用「Mode Menu Plus」并继续启动')
