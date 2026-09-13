@@ -1089,3 +1089,11 @@
   background: rgba(227, 103, 103, 0.12);
   color: #ec9e9e;
 }
+
+.compatibility-error-message {
+  margin: 0;
+}
+
+.compatibility-error-technical {
+  margin-top: 6px;
+}

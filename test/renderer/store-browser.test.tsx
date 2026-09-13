@@ -8,7 +8,7 @@ import { getAppCopy } from '../../src/shared/locale'
 import { InstalledStoreBrowser } from '../../src/renderer/store/InstalledStoreBrowser'
 import { AuditOverrideActions, EntryBadges, EntryCard, InstallFailureNotice, StoreBrowser } from '../../src/renderer/store/StoreBrowser'
 import { finishPluginRuntimeVerification, needsPluginRuntimeVerification } from '../../src/renderer/store/PluginRuntimeRestartNotice'
-import type { StoreEntry } from '../../src/shared/store'
+import type { PluginCompatibilityAssessment, StoreEntry } from '../../src/shared/store'
 import type { RuntimeMode, RuntimeSnapshot } from '../../src/main/runtime/runtime-types'
 
 const pluginEntry: StoreEntry = {
@@ -41,7 +41,7 @@ async function withPluginInstall(mode: RuntimeMode, check: (fixture: {
   exitSafeMode: ReturnType<typeof vi.fn>
   getStatus: ReturnType<typeof vi.fn>
   changeMode: (mode: RuntimeMode) => Promise<void>
-}) => Promise<void>, installedSurface = false, failModeRead = false, locale: 'zh' | 'en' = 'zh', unknownCompatibility = false): Promise<void> {
+}) => Promise<void>, installedSurface = false, failModeRead = false, locale: 'zh' | 'en' = 'zh', compatibility?: PluginCompatibilityAssessment): Promise<void> {
   const previous = Object.fromEntries(['window', 'document', 'navigator', 'HTMLElement', 'Node', 'Event', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT']
     .map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
@@ -68,11 +68,11 @@ async function withPluginInstall(mode: RuntimeMode, check: (fixture: {
       install: vi.fn(async () => ({
         kind: 'skill',
         id: pluginEntry.id,
-        phase: 'done',
-        runtimeRestartRequired: true,
-        ...(unknownCompatibility
-          ? { compatibility: { status: 'unknown', runtimeVersion: '1.2.3', reason: 'The catalog does not declare a DSH runtime range.' } }
-          : {}),
+        phase: compatibility?.status === 'incompatible' ? 'failed' : 'done',
+        ...(compatibility?.status === 'incompatible'
+          ? { failureReason: 'incompatible', message: compatibility.reason }
+          : { runtimeRestartRequired: true }),
+        ...(compatibility === undefined ? {} : { compatibility }),
       })),
       setEnabled: vi.fn(async () => ({ kind: 'skill', id: pluginEntry.id, phase: 'done', runtimeRestartRequired: true })),
       onStateChange: vi.fn(() => () => undefined),
@@ -221,7 +221,27 @@ describe('StoreBrowser plugin activation in recovery modes', () => {
       expect(warning?.textContent).toBe(expected)
       expect(warning?.textContent).not.toContain('安全模式验证')
       expect(warning?.textContent).not.toContain('Safe Mode')
-    }, false, false, locale, true)
+    }, false, false, locale, {
+      status: 'unknown',
+      runtimeVersion: '1.2.3',
+      reason: 'The catalog does not declare a DSH runtime range.',
+    })
+  })
+
+  it.each([
+    ['zh', '当前 DSH Runtime（0.1.1-rc.2）不在该插件声明的支持范围内。请更新 Runtime 或选择兼容的插件版本后重试；安全模式无法解决版本不兼容。'],
+    ['en', 'The current DSH Runtime (0.1.1-rc.2) is outside the range declared by this plugin. Update Runtime or choose a compatible plugin version, then retry; Safe Mode cannot resolve a version mismatch.'],
+  ] as const)('shows one actionable incompatibility notice in %s', async (locale, expected) => {
+    const reason = 'Requires DSH 0.2.0 or later.'
+    await withPluginInstall('normal', async ({ document }) => {
+      expect(document.querySelector('.compatibility-error-message')?.textContent).toBe(expected)
+      expect(document.querySelector('.compatibility-error-technical pre')?.textContent).toBe(reason)
+      expect(document.querySelectorAll('.install-failure')).toHaveLength(0)
+    }, false, false, locale, {
+      status: 'incompatible',
+      runtimeVersion: '0.1.1-rc.2',
+      reason,
+    })
   })
 })
 

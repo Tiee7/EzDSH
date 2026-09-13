@@ -517,7 +517,15 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
             ? <p className="compatibility-warning" role="status">{copy.storeCompatibilityUnknown}</p>
             : null}
           {installState?.compatibility?.status === 'incompatible' && installState.id === selected.id
-            ? <p className="compatibility-error" role="alert">{installState.compatibility.reason}</p>
+            ? (
+              <div className="compatibility-error" role="alert">
+                <p className="compatibility-error-message">{copy.storeCompatibilityIncompatible(installState.compatibility.runtimeVersion)}</p>
+                <details className="install-failure-technical compatibility-error-technical">
+                  <summary>{copy.storeInstallTechnicalDetails}</summary>
+                  <pre className="install-failure-message">{installState.compatibility.reason}</pre>
+                </details>
+              </div>
+              )
             : null}
           {installState !== undefined && installState.id === selected.id
             ? <p className={`install-phase phase-${installState.phase}`}>
@@ -525,7 +533,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
                 {installState.phase !== 'failed' && installState.message !== undefined ? ` — ${installState.message}` : ''}
               </p>
             : null}
-          {installState !== undefined && installState.id === selected.id && installState.phase === 'failed'
+          {installState !== undefined && installState.id === selected.id && installState.phase === 'failed' && installState.failureReason !== 'incompatible'
             ? <InstallFailureNotice copy={copy} state={installState} />
             : null}
           {installState?.id === selected.id && needsPluginRuntimeVerification(installState)
