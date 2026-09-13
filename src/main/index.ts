@@ -1585,6 +1585,21 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('external-services:select-directory', async (): Promise<IpcResult<string | undefined>> => {
+    try {
+      const options: Electron.OpenDialogOptions = {
+        title: getAppCopy(localeService?.snapshot() ?? DEFAULT_APP_LOCALE).externalServicesDirectoryTitle,
+        properties: ['openDirectory'],
+      }
+      const window = mainWindow !== undefined && !mainWindow.isDestroyed() ? mainWindow : undefined
+      const result = window === undefined
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(window, options)
+      return success(result.canceled ? undefined : result.filePaths[0])
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('external-services:list', async (): Promise<IpcResult<Awaited<ReturnType<ExternalServiceManager['list']>>>> => {
     try {
       if (externalServiceManager === undefined) throw new Error('External service manager is not ready')

@@ -812,6 +812,22 @@ export interface AppCopy {
   externalServicesStop: string
   externalServicesRestart: string
   externalServicesSave: string
+  externalServicesSaveAndRetry: string
+  externalServicesChooseFolder: string
+  externalServicesDirectoryTitle: string
+  externalServicesChangeCwd: string
+  externalServicesChangeCommand: string
+  externalServicesFailureDetails: string
+  externalServicesCwdMissing: string
+  externalServicesCwdNotDirectory: string
+  externalServicesCwdInaccessible: string
+  externalServicesCommandNotFound: string
+  externalServicesCommandNotExecutable: string
+  externalServicesCommandUnavailable: string
+  externalServicesStartupUnknown: string
+  externalServicesSaveFailed: string
+  externalServicesStartFailed: string
+  externalServicesSelectDirectoryFailed: string
   externalServicesCancel: string
   externalServicesName: string
   externalServicesCommand: string
@@ -1764,6 +1780,22 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     externalServicesStop: '停止',
     externalServicesRestart: '重启',
     externalServicesSave: '保存',
+    externalServicesSaveAndRetry: '保存并重试',
+    externalServicesChooseFolder: '选择文件夹',
+    externalServicesDirectoryTitle: '选择外部服务的工作目录',
+    externalServicesChangeCwd: '修改工作目录',
+    externalServicesChangeCommand: '修改启动命令',
+    externalServicesFailureDetails: '失败详情',
+    externalServicesCwdMissing: '工作目录不存在。',
+    externalServicesCwdNotDirectory: '工作目录指向了文件，请选择文件夹。',
+    externalServicesCwdInaccessible: '无法访问工作目录，请选择可访问的文件夹。',
+    externalServicesCommandNotFound: '找不到启动命令，请检查命令或填写可执行文件的完整路径。',
+    externalServicesCommandNotExecutable: '启动命令没有执行权限，请检查可执行文件。',
+    externalServicesCommandUnavailable: '启动命令无法运行，请检查可执行文件及其运行环境。',
+    externalServicesStartupUnknown: '服务未能启动，请查看失败详情。',
+    externalServicesSaveFailed: '无法保存服务，已保留你的修改。',
+    externalServicesStartFailed: '服务未能启动，请查看下方失败详情。',
+    externalServicesSelectDirectoryFailed: '无法打开文件夹选择窗口，请手动填写路径。',
     externalServicesCancel: '取消',
     externalServicesName: '名称',
     externalServicesCommand: '命令',
@@ -2715,6 +2747,22 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     externalServicesStop: 'Stop',
     externalServicesRestart: 'Restart',
     externalServicesSave: 'Save',
+    externalServicesSaveAndRetry: 'Save and retry',
+    externalServicesChooseFolder: 'Choose folder',
+    externalServicesDirectoryTitle: 'Choose the working directory for the external service',
+    externalServicesChangeCwd: 'Change working directory',
+    externalServicesChangeCommand: 'Change start command',
+    externalServicesFailureDetails: 'Failure details',
+    externalServicesCwdMissing: 'The working directory does not exist.',
+    externalServicesCwdNotDirectory: 'The working directory points to a file. Choose a folder.',
+    externalServicesCwdInaccessible: 'The working directory cannot be accessed. Choose an accessible folder.',
+    externalServicesCommandNotFound: 'The start command was not found. Check the command or enter the full path to the executable.',
+    externalServicesCommandNotExecutable: 'The start command does not have execute permission. Check the executable.',
+    externalServicesCommandUnavailable: 'The start command could not run. Check the executable and its runtime environment.',
+    externalServicesStartupUnknown: 'The service could not start. Review the failure details.',
+    externalServicesSaveFailed: 'Could not save the service. Your changes are still here.',
+    externalServicesStartFailed: 'The service could not start. Review the failure details below.',
+    externalServicesSelectDirectoryFailed: 'Could not open the folder picker. Enter the path manually.',
     externalServicesCancel: 'Cancel',
     externalServicesName: 'Name',
     externalServicesCommand: 'Command',

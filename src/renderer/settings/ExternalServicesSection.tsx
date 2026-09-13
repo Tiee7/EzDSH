@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   ExternalServiceCreateInput,
   ExternalServiceSnapshot,
@@ -6,7 +6,7 @@ import type {
   ExternalServiceUpdateInput,
 } from '../../shared/external-services.js'
 import type { AppCopy } from '../../shared/locale.js'
-import { normalizeExternalServiceCommand } from './external-services-display.js'
+import { describeExternalServiceStartupIssue, normalizeExternalServiceCommand } from './external-services-display.js'
 
 interface ExternalServicesSectionProps {
   copy: AppCopy
@@ -71,7 +71,7 @@ function serviceInput(draft: Draft): ExternalServiceCreateInput | ExternalServic
     name,
     command: normalizedCommand.command,
     args: normalizedCommand.args,
-    ...(draft.cwd.trim() === '' ? {} : { cwd: draft.cwd.trim() }),
+    cwd: draft.cwd.trim(),
     env,
     autoStart: draft.autoStart,
   }
@@ -100,6 +100,20 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [busyId, setBusyId] = useState<string>()
   const [error, setError] = useState<string>()
+  const [repairField, setRepairField] = useState<'cwd' | 'command'>()
+  const [selectingDirectory, setSelectingDirectory] = useState(false)
+  const operationPending = useRef(false)
+  const editGeneration = useRef(0)
+  const commandInput = useRef<HTMLInputElement>(null)
+  const cwdInput = useRef<HTMLInputElement>(null)
+  const formBusy = busyId !== undefined || selectingDirectory
+
+  useEffect(() => {
+    if (editingId !== undefined && repairField !== undefined) {
+      const target = repairField === 'cwd' ? cwdInput.current : commandInput.current
+      target?.focus()
+    }
+  }, [editingId, repairField])
 
   useEffect(() => {
     let active = true
@@ -118,6 +132,7 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
     })
     return () => {
       active = false
+      editGeneration.current += 1
       unsubscribe()
     }
   }, [copy.externalServicesFailed])
@@ -127,71 +142,117 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
   }
 
   const beginAdd = (): void => {
+    if (operationPending.current || editingId !== undefined) return
+    editGeneration.current += 1
     setEditingId('new')
+    setRepairField(undefined)
     setDraft({ ...EMPTY_DRAFT })
     setError(undefined)
   }
 
-  const beginEdit = (service: ExternalServiceSnapshot): void => {
+  const beginEdit = (service: ExternalServiceSnapshot, field?: 'cwd' | 'command'): void => {
+    if (operationPending.current || editingId !== undefined) return
+    editGeneration.current += 1
     setEditingId(service.id)
+    setRepairField(field)
     setDraft(draftFromService(service))
     setError(undefined)
   }
 
   const cancelEdit = (): void => {
+    editGeneration.current += 1
     setEditingId(undefined)
+    setRepairField(undefined)
     setDraft({ ...EMPTY_DRAFT })
     setError(undefined)
   }
 
+  const selectDirectory = async (): Promise<void> => {
+    if (operationPending.current || editingId === undefined) return
+    operationPending.current = true
+    const generation = editGeneration.current
+    setSelectingDirectory(true)
+    setError(undefined)
+    try {
+      const selected = await window.EzDSH.externalServices.selectDirectory()
+      if (generation === editGeneration.current && selected !== undefined) setField('cwd', selected)
+    } catch {
+      if (generation === editGeneration.current) setError(copy.externalServicesSelectDirectoryFailed)
+    } finally {
+      operationPending.current = false
+      setSelectingDirectory(false)
+    }
+  }
+
+  const updateSnapshot = (next: ExternalServiceSnapshot): void => {
+    setServices((current) => current.some((service) => service.id === next.id)
+      ? current.map((service) => service.id === next.id ? next : service)
+      : [...current, next])
+  }
+
   const save = async (): Promise<void> => {
+    if (operationPending.current || editingId === undefined) return
     const input = serviceInput(draft)
     if (typeof input === 'string') {
       setError(input === 'name' ? copy.externalServicesNameRequired : input === 'command' ? copy.externalServicesCommandRequired : copy.externalServicesEnvInvalid)
       return
     }
-    setBusyId(editingId ?? 'new')
+    operationPending.current = true
+    setBusyId(editingId)
     setError(undefined)
+    let retrying = false
     try {
-      const saved = editingId !== undefined && editingId !== 'new'
+      const saved = editingId !== 'new'
         ? await window.EzDSH.externalServices.update(editingId, input as ExternalServiceUpdateInput)
         : await window.EzDSH.externalServices.create(input as ExternalServiceCreateInput)
-      setServices((current) => {
-        const index = current.findIndex((service) => service.id === saved.id)
-        if (index < 0) return [...current, saved]
-        return current.map((service) => service.id === saved.id ? saved : service)
-      })
+      updateSnapshot(saved)
+      if (repairField !== undefined) {
+        retrying = true
+        const next = await window.EzDSH.externalServices.start(saved.id)
+        updateSnapshot(next)
+        if (next.state === 'failed') {
+          setError(copy.externalServicesStartFailed)
+          return
+        }
+      }
       cancelEdit()
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : copy.externalServicesFailed)
+    } catch {
+      setError(retrying ? copy.externalServicesStartFailed : copy.externalServicesSaveFailed)
     } finally {
+      operationPending.current = false
       setBusyId(undefined)
     }
   }
 
-  const runAction = async (id: string, action: () => Promise<ExternalServiceSnapshot>): Promise<void> => {
+  const runAction = async (id: string, action: () => Promise<ExternalServiceSnapshot>, failureMessage = copy.externalServicesFailed): Promise<void> => {
+    if (operationPending.current || editingId !== undefined) return
+    operationPending.current = true
     setBusyId(id)
     setError(undefined)
     try {
       const next = await action()
-      setServices((current) => current.map((service) => service.id === next.id ? next : service))
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : copy.externalServicesFailed)
+      updateSnapshot(next)
+    } catch {
+      setError(failureMessage)
     } finally {
+      operationPending.current = false
       setBusyId(undefined)
     }
   }
 
   const remove = async (service: ExternalServiceSnapshot): Promise<void> => {
+    if (operationPending.current || editingId !== undefined) return
     if (!window.confirm(`${copy.externalServicesDelete}: ${service.name}?`)) return
+    operationPending.current = true
     setBusyId(service.id)
     setError(undefined)
     try {
       await window.EzDSH.externalServices.remove(service.id)
       setServices((current) => current.filter((item) => item.id !== service.id))
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : copy.externalServicesFailed)
+    } catch {
+      setError(copy.externalServicesFailed)
     } finally {
+      operationPending.current = false
       setBusyId(undefined)
     }
   }
@@ -210,7 +271,7 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
             <h2 className="settings-card-title">{copy.settingsExternalServices}</h2>
             <p className="settings-card-description">{copy.settingsExternalServicesHint}</p>
           </div>
-          <button type="button" className="settings-action" onClick={beginAdd} disabled={editingId !== undefined}>
+          <button type="button" className="settings-action" onClick={beginAdd} disabled={editingId !== undefined || formBusy}>
             {copy.externalServicesAdd}
           </button>
         </div>
@@ -221,38 +282,41 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
           <div className="external-service-form">
             <label>
               {copy.externalServicesName}
-              <input value={draft.name} onChange={(event) => { setField('name', event.target.value) }} />
+              <input disabled={formBusy} aria-label={copy.externalServicesName} value={draft.name} onChange={(event) => { setField('name', event.target.value) }} />
             </label>
             <label>
               {copy.externalServicesCommand}
-              <input value={draft.command} onChange={(event) => { setField('command', event.target.value) }} placeholder="node" />
+              <input ref={commandInput} disabled={formBusy} aria-label={copy.externalServicesCommand} value={draft.command} onChange={(event) => { setField('command', event.target.value) }} placeholder="node" />
               <span className="external-service-field-hint">{copy.externalServicesCommandHint}</span>
             </label>
             <label>
               {copy.externalServicesArgs}
-              <textarea rows={3} value={draft.args} onChange={(event) => { setField('args', event.target.value) }} />
+              <textarea disabled={formBusy} rows={3} value={draft.args} onChange={(event) => { setField('args', event.target.value) }} />
               <span className="external-service-field-hint">{copy.externalServicesArgsHint}</span>
             </label>
             <label>
               {copy.externalServicesCwd}
-              <input value={draft.cwd} onChange={(event) => { setField('cwd', event.target.value) }} />
+              <input ref={cwdInput} disabled={formBusy} aria-label={copy.externalServicesCwd} value={draft.cwd} onChange={(event) => { setField('cwd', event.target.value) }} />
             </label>
+            <button type="button" className="settings-action" disabled={formBusy} onClick={() => { void selectDirectory() }}>
+              {copy.externalServicesChooseFolder}
+            </button>
             <label>
               {copy.externalServicesEnv}
-              <textarea rows={3} value={draft.env} onChange={(event) => { setField('env', event.target.value) }} />
+              <textarea disabled={formBusy} rows={3} value={draft.env} onChange={(event) => { setField('env', event.target.value) }} />
               <span className="external-service-field-hint">{copy.externalServicesEnvHint}</span>
             </label>
             <label className="external-service-check">
-              <input type="checkbox" checked={draft.autoStart} onChange={(event) => { setField('autoStart', event.target.checked) }} />
+              <input disabled={formBusy} type="checkbox" checked={draft.autoStart} onChange={(event) => { setField('autoStart', event.target.checked) }} />
               {copy.externalServicesAutoStart}
             </label>
             <p className="external-service-security-hint">{copy.externalServicesSecurityHint}</p>
             {error ? <p className="settings-error">{error}</p> : null}
             <div className="settings-actions">
-              <button type="button" className="settings-action" disabled={busyId !== undefined} onClick={() => { void save() }}>
-                {copy.externalServicesSave}
+              <button type="button" className="settings-action" disabled={formBusy} onClick={() => { void save() }}>
+                {repairField !== undefined ? copy.externalServicesSaveAndRetry : copy.externalServicesSave}
               </button>
-              <button type="button" className="settings-action" disabled={busyId !== undefined} onClick={cancelEdit}>
+              <button type="button" className="settings-action" disabled={formBusy} onClick={cancelEdit}>
                 {copy.externalServicesCancel}
               </button>
             </div>
@@ -267,7 +331,10 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
       ) : (
         <div className="external-service-list">
           {services.map((service) => {
-            const busy = busyId === service.id
+            const busy = formBusy || editingId !== undefined
+            const issue = service.state === 'failed'
+              ? describeExternalServiceStartupIssue(copy, service.startupIssue ?? { code: 'unknown' })
+              : undefined
             const active = service.state === 'running' || service.state === 'starting' || service.state === 'stopping'
             return (
               <article className="external-service-row" key={service.id}>
@@ -278,7 +345,18 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
                     <span className="external-service-state">{stateLabel(copy, service.state)}</span>
                   </div>
                   <code className="external-service-command">{commandLabel(service)}</code>
-                  {service.error ? <p className="settings-error external-service-error" role="alert">{service.error}</p> : null}
+                  {issue ? (
+                    <div>
+                      <p className="settings-error external-service-error" role="alert">{issue.summary}</p>
+                      {issue.field ? <button type="button" className="settings-action" disabled={busy} onClick={() => { beginEdit(service, issue.field) }}>
+                        {issue.field === 'cwd' ? copy.externalServicesChangeCwd : copy.externalServicesChangeCommand}
+                      </button> : null}
+                    </div>
+                  ) : null}
+                  {service.error ? <details>
+                    <summary>{copy.externalServicesFailureDetails}</summary>
+                    <pre className="external-service-error">{service.error}</pre>
+                  </details> : null}
                   {service.pid !== undefined ? <p className="external-service-meta">PID {service.pid}</p> : null}
                 </div>
                 <div className="external-service-controls">
@@ -286,8 +364,8 @@ export function ExternalServicesSection({ copy }: ExternalServicesSectionProps):
                     <input type="checkbox" checked={service.autoStart} disabled={busy} onChange={() => { void toggleAutoStart(service) }} />
                     {copy.externalServicesAutoStart}
                   </label>
-                  {active ? <button type="button" className="settings-action external-service-process-action" disabled={busy || service.state !== 'running'} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.stop(service.id)) }}>{copy.externalServicesStop}<span className="external-service-action-icon external-service-action-icon-stop" aria-hidden="true">■</span></button> : <button type="button" className="settings-action external-service-process-action" disabled={busy} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.start(service.id)) }}>{copy.externalServicesStart}<span className="external-service-action-icon external-service-action-icon-start" aria-hidden="true">▶</span></button>}
-                  <button type="button" className="settings-action" disabled={busy || service.state !== 'running'} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.restart(service.id)) }}>{copy.externalServicesRestart}</button>
+                  {active ? <button type="button" className="settings-action external-service-process-action" disabled={busy || service.state !== 'running'} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.stop(service.id)) }}>{copy.externalServicesStop}<span className="external-service-action-icon external-service-action-icon-stop" aria-hidden="true">■</span></button> : <button type="button" className="settings-action external-service-process-action" disabled={busy} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.start(service.id), copy.externalServicesStartFailed) }}>{copy.externalServicesStart}<span className="external-service-action-icon external-service-action-icon-start" aria-hidden="true">▶</span></button>}
+                  <button type="button" className="settings-action" disabled={busy || service.state !== 'running'} onClick={() => { void runAction(service.id, () => window.EzDSH.externalServices.restart(service.id), copy.externalServicesStartFailed) }}>{copy.externalServicesRestart}</button>
                   <button type="button" className="settings-action" disabled={busy} onClick={() => { beginEdit(service) }}>{copy.externalServicesEdit}</button>
                   <button type="button" className="settings-action" disabled={busy} onClick={() => { void remove(service) }}>{copy.externalServicesDelete}</button>
                 </div>

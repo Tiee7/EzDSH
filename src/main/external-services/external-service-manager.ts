@@ -1,14 +1,16 @@
-import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
+import { accessSync, constants, createWriteStream, existsSync, lstatSync, statSync, type WriteStream } from 'node:fs'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { normalizeCommandLine } from '../../shared/command-line.js'
 import type {
   ExternalServiceCreateInput,
   ExternalServiceDefinition,
   ExternalServiceSnapshot,
   ExternalServiceState,
+  ExternalServiceStartupIssue,
   ExternalServiceUpdateInput,
 } from '../../shared/external-services.js'
 
@@ -17,6 +19,7 @@ export type {
   ExternalServiceDefinition,
   ExternalServiceSnapshot,
   ExternalServiceState,
+  ExternalServiceStartupIssue,
   ExternalServiceUpdateInput,
 } from '../../shared/external-services.js'
 
@@ -43,9 +46,18 @@ interface RuntimeState {
   exitCode?: number | null
   signal?: string
   error?: string
+  startupIssue?: ExternalServiceStartupIssue
+}
+
+interface SpawnContext {
+  command: string
+  args: readonly string[]
+  cwd?: string
+  environment: NodeJS.ProcessEnv
 }
 
 interface ManagedChild {
+  spawnContext: SpawnContext
   child: ChildProcess
   stopping: boolean
   closed: boolean
@@ -126,7 +138,7 @@ export class ExternalServiceManager {
       || JSON.stringify(current.env) !== JSON.stringify(next.env)
     if (processChanged && this.children.has(id)) await this.stop(id)
     this.definitions.set(id, next)
-    if (!this.runtime.has(id)) this.runtime.set(id, { state: 'stopped' })
+    if (processChanged || !this.runtime.has(id)) this.runtime.set(id, { state: 'stopped' })
     await this.persist()
     this.emit()
     return this.snapshot(id)
@@ -150,25 +162,39 @@ export class ExternalServiceManager {
 
     this.setRuntime(id, { state: 'starting', error: undefined, exitCode: undefined, signal: undefined })
     let child: ChildProcess
-    const environment = { ...process.env, ...definition.env }
-    const command = this.options.isPackaged === true
-      ? resolveExternalServiceCommand(definition.command, environment)
-      : definition.command
-    const spawnOptions: SpawnOptions = {
-      cwd: definition.cwd,
-      env: environment,
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const context: SpawnContext = {
+      command: definition.command,
+      args: [...definition.args],
+      environment: { ...process.env, ...definition.env },
     }
+    let cwdFailure: ReturnType<typeof inspectWorkingDirectory>
     try {
-      child = this.spawnProcess(command, definition.args, spawnOptions)
+      // Keep preflight synchronous so concurrent starts cannot pass the child guard
+      // while another start is still resolving its directory or executable.
+      context.cwd = resolveWorkingDirectory(definition.cwd)
+      cwdFailure = inspectWorkingDirectory(context.cwd)
+      if (cwdFailure !== undefined) throw cwdFailure.error
+      if (this.options.isPackaged === true) {
+        context.command = resolveExternalServiceCommand(context.command, context.environment, context.cwd)
+      }
+      child = this.spawnProcess(context.command, context.args, {
+        cwd: definition.cwd === undefined ? undefined : context.cwd,
+        env: context.environment,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
     } catch (error) {
-      const reason = formatSpawnError(error, command, definition.args, definition.cwd, environment)
-      this.setRuntime(id, { state: 'failed', error: reason })
+      const reason = formatSpawnError(error, context)
+      this.setRuntime(id, {
+        state: 'failed',
+        error: reason,
+        startupIssue: cwdFailure?.issue ?? diagnoseSpawnError(error, context),
+      })
       throw new Error(reason, { cause: error })
     }
 
     let resolveExit!: () => void
     const managed: ManagedChild = {
+      spawnContext: context,
       child,
       stopping: false,
       closed: false,
@@ -281,9 +307,8 @@ export class ExternalServiceManager {
       || (!managed.stopping && exitCode !== undefined && exitCode !== null && exitCode !== 0)
       || (!managed.stopping && signal !== undefined)
     if (failed) {
-      const definition = this.requireDefinition(id)
       const reason = error !== undefined
-        ? formatSpawnError(error, definition.command, definition.args, definition.cwd, { ...process.env, ...definition.env })
+        ? formatSpawnError(error, managed.spawnContext)
         : signal !== undefined
           ? `External service terminated by ${signal}`
           : `External service exited with code ${String(exitCode)}`
@@ -293,6 +318,7 @@ export class ExternalServiceManager {
         exitCode,
         signal,
         error: appendOutput(reason, managed.output),
+        ...(error === undefined ? {} : { startupIssue: diagnoseSpawnError(error, managed.spawnContext) }),
       })
       return
     }
@@ -325,16 +351,16 @@ export class ExternalServiceManager {
   }
 }
 
-function resolveExternalServiceCommand(command: string, environment: NodeJS.ProcessEnv): string {
+function resolveExternalServiceCommand(command: string, environment: NodeJS.ProcessEnv, cwd: string): string {
   if (command.includes('/') || command.includes('\\')) return command
   const path = environment.PATH ?? ''
-  const direct = findOnPath(command, path)
+  const direct = findOnPath(command, path, cwd, environment)
   if (direct !== undefined) return direct
 
   // GUI-launched macOS apps do not inherit the user's shell PATH. Ask the
   // login shell for it only when the inherited PATH cannot resolve the command.
   const shellPath = process.platform === 'darwin' ? readLoginShellPath() : undefined
-  const fromShell = shellPath === undefined ? undefined : findOnPath(command, shellPath)
+  const fromShell = shellPath === undefined ? undefined : findOnPath(command, shellPath, cwd, environment)
   if (fromShell !== undefined) {
     environment.PATH = [shellPath, path].filter(Boolean).join(':')
     return fromShell
@@ -343,24 +369,92 @@ function resolveExternalServiceCommand(command: string, environment: NodeJS.Proc
   // Windows package managers are .cmd shims and cannot be spawned by their
   // extensionless name when shell execution is disabled.
   if (process.platform === 'win32') {
-    const windowsCommand = findOnPath(`${command}.cmd`, path)
+    const windowsCommand = findOnPath(`${command}.cmd`, path, cwd, environment)
     if (windowsCommand !== undefined) return windowsCommand
   }
   return command
 }
 
-function findOnPath(command: string, path: string): string | undefined {
-  const delimiter = process.platform === 'win32' ? ';' : ':'
+function findOnPath(command: string, path: string, cwd: string, environment: NodeJS.ProcessEnv): string | undefined {
+  return commandCandidates(command, path, cwd, environment).find((candidate) => existsSync(candidate))
+}
+
+function commandCandidates(command: string, path: string, cwd: string, environment: NodeJS.ProcessEnv): string[] {
+  if (command.includes('/') || (process.platform === 'win32' && command.includes('\\'))) return [resolve(cwd, command)]
   const extensions = process.platform === 'win32' && !/[.]\w+$/u.test(command)
-    ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';')
+    ? (environment.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';')
     : ['']
-  for (const directory of path.split(delimiter).filter(Boolean)) {
-    for (const extension of extensions) {
-      const candidate = join(directory, `${command}${extension}`)
-      if (existsSync(candidate)) return candidate
+  // Empty and relative PATH entries are relative to the child's cwd, not EzDSH's.
+  return path.split(delimiter).flatMap((directory) => extensions.map((extension) => resolve(cwd, directory, `${command}${extension}`)))
+}
+
+function resolveWorkingDirectory(cwd: string | undefined): string {
+  if (cwd === undefined) return process.cwd()
+  if (cwd === '~') return homedir()
+  const homeRelative = cwd.startsWith('~/') || (process.platform === 'win32' && cwd.startsWith('~\\'))
+  return resolve(homeRelative ? join(homedir(), cwd.slice(2)) : cwd)
+}
+
+function inspectWorkingDirectory(cwd: string): { issue: ExternalServiceStartupIssue; error: unknown } | undefined {
+  try {
+    if (!statSync(cwd).isDirectory()) {
+      throw Object.assign(new Error(`Working directory is not a directory: ${cwd}`), { code: 'ENOTDIR' })
+    }
+    accessSync(cwd, constants.X_OK)
+    return undefined
+  } catch (error) {
+    const code = errorObjectCode(error)
+    return {
+      issue: {
+        code: code === 'ENOENT' ? 'cwd-missing'
+          : code === 'ENOTDIR' ? 'cwd-not-directory'
+            : code === 'EACCES' || code === 'EPERM' ? 'cwd-inaccessible' : 'unknown',
+        path: cwd,
+      },
+      error,
     }
   }
-  return undefined
+}
+
+function diagnoseSpawnError(error: unknown, context: SpawnContext): ExternalServiceStartupIssue {
+  const code = errorObjectCode(error)
+  if (context.cwd === undefined || !['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(code ?? '')) return { code: 'unknown' }
+  // A directory may disappear or lose access after preflight; ENOENT alone does
+  // not prove that the executable is missing, nor does EACCES prove its permissions.
+  const cwdFailure = inspectWorkingDirectory(context.cwd)
+  if (cwdFailure !== undefined) return cwdFailure.issue
+
+  const unavailable: ExternalServiceStartupIssue = { code: 'command-unavailable', path: context.command }
+  const explicitPath = context.command.includes('/') || (process.platform === 'win32' && context.command.includes('\\'))
+  // Windows has extra search locations and implicit executable extensions; its
+  // lookup and access rules cannot be proved with this POSIX filesystem check.
+  if (process.platform === 'win32' || (!explicitPath && context.environment.PATH === undefined)) return unavailable
+  const candidates = commandCandidates(context.command, context.environment.PATH ?? '', context.cwd, context.environment)
+  let blockedExecutable: string | undefined
+  for (const candidate of candidates) {
+    try {
+      const stat = statSync(candidate)
+      if (code === 'ENOENT' || code === 'ENOTDIR') return unavailable // An existing script can have a missing interpreter.
+      if (!stat.isFile()) return unavailable
+      try {
+        accessSync(candidate, constants.X_OK)
+        return unavailable
+      } catch (accessError) {
+        if (['EACCES', 'EPERM'].includes(errorObjectCode(accessError) ?? '')) blockedExecutable = candidate
+        else return unavailable
+      }
+    } catch (statError) {
+      if (!['ENOENT', 'ENOTDIR'].includes(errorObjectCode(statError) ?? '')) return unavailable
+      try {
+        lstatSync(candidate) // A broken symlink still names an existing command entry.
+        return unavailable
+      } catch (linkError) {
+        if (!['ENOENT', 'ENOTDIR'].includes(errorObjectCode(linkError) ?? '')) return unavailable
+      }
+    }
+  }
+  if (blockedExecutable !== undefined) return { code: 'command-not-executable', path: blockedExecutable }
+  return code === 'ENOENT' || code === 'ENOTDIR' ? { code: 'command-not-found', path: context.command } : unavailable
 }
 
 function readLoginShellPath(): string | undefined {
@@ -378,20 +472,14 @@ function readLoginShellPath(): string | undefined {
   }
 }
 
-function formatSpawnError(
-  error: unknown,
-  command: string,
-  args: readonly string[],
-  cwd: string | undefined,
-  environment: NodeJS.ProcessEnv,
-): string {
+function formatSpawnError(error: unknown, context: SpawnContext): string {
   const code = errorObjectCode(error)
-  const executable = command.includes('/') || command.includes('\\') ? command : `"${command}"`
-  const context = [`command: ${[command, ...args].join(' ')}`, `cwd: ${cwd ?? process.cwd()}`, `PATH: ${environment.PATH ?? '(empty)'}`].join('\n')
-  if (code === 'ENOENT') {
-    return `Unable to start external service: executable ${executable} was not found.\n${context}\nInstall the executable or use its absolute path.`
-  }
-  return `Unable to start external service (${code ?? messageOf(error)}).\n${context}`
+  const details = [
+    `command: ${[context.command, ...context.args].join(' ')}`,
+    `cwd: ${context.cwd ?? '(unavailable)'}`,
+    `PATH: ${context.environment.PATH ?? '(empty)'}`,
+  ].join('\n')
+  return `Unable to start external service${code === undefined ? '' : ` (${code})`}: ${messageOf(error)}.\n${details}`
 }
 
 function errorObjectCode(error: unknown): string | undefined {

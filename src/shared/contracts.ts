@@ -246,6 +246,7 @@ export interface EzDSHBridge {
     testProxy(id: string): Promise<ProxyTestResult>
   }
   externalServices: {
+    selectDirectory(): Promise<string | undefined>
     list(): Promise<ExternalServiceSnapshot[]>
     create(input: ExternalServiceCreateInput): Promise<ExternalServiceSnapshot>
     update(id: string, input: ExternalServiceUpdateInput): Promise<ExternalServiceSnapshot>

@@ -266,6 +266,7 @@ const bridge: EzDSHBridge = {
     }
   },
   externalServices: {
+    selectDirectory: () => invoke<string | undefined>('external-services:select-directory'),
     list: () => invoke<ExternalServiceSnapshot[]>('external-services:list'),
     create: (input: ExternalServiceCreateInput) => invoke<ExternalServiceSnapshot>('external-services:create', input),
     update: (id: string, input: ExternalServiceUpdateInput) => invoke<ExternalServiceSnapshot>('external-services:update', id, input),

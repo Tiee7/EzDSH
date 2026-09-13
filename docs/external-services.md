@@ -36,6 +36,35 @@ The settings page reads one snapshot when it opens and subscribes to process
 events while it remains mounted. EzDSH does not poll external services or send
 process updates to the renderer when the management page is closed.
 
+## Recovering from a startup failure
+
+EzDSH checks the working directory before attempting to start the command. The
+failure message distinguishes a missing folder, a path that is a file, and a
+folder it cannot access. Where executable lookup can be verified, it also
+distinguishes a missing command from a command that cannot run. A missing script
+interpreter or a broken symbolic link is not treated as proof that the command
+has not been installed. Original process errors remain available under Failure
+details.
+
+Choose **Change working directory** or **Change start command** beside the
+diagnosis. The corresponding field receives focus. **Choose folder** changes
+only the draft; **Save and retry** first saves the settings and then attempts to
+start that service. Canceling or failing to save does not start it. Ordinary
+Add/Edit → Save still saves without starting.
+
+Clearing the working directory removes its previous value and returns to
+inheriting EzDSH's process directory. An explicit `~` or `~/...` is resolved
+against the current user's home directory; relative directories are resolved
+against the current process directory. Environment variables and other Shell
+expressions in the directory are not expanded. EzDSH never creates a missing
+service directory or changes its permissions as part of this check.
+
+Diagnostics belong to the current launch attempt, not persisted configuration.
+Changing process settings clears the previous diagnosis. A running state still
+indicates a created process rather than an application-specific health check.
+Windows executable lookup is reported conservatively when absence or execute
+permissions cannot be proven; Windows packaged behavior needs platform testing.
+
 ## Workbench example
 
 The Workbench can be registered as an external service with values equivalent to:
