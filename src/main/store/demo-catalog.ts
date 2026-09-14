@@ -341,10 +341,8 @@ const DEMO_SKILLS: readonly DemoSkill[] = [
 
 // ---- Preset payloads ----
 //
-// Compositions stay fully declarative: the audit engine blocks `!!js`
-// expressions in store-installed presets, so platform conditionals and
-// code-evaluated paths (the shipped presets' `disabled: !!js` rows and
-// `customSkillDirs` hooks) are deliberately absent.
+// Shell rows use the exact platform conditions accepted by the audit so the
+// model-facing dialect matches the host executor on macOS and Windows.
 
 const DEEP_RESEARCH_COMPOSITION = `# The \`deep-research\` agent preset: a web-first research agent built on the
 # standard toolset. Search and fetch are always on, and the persona installs a
@@ -352,7 +350,7 @@ const DEEP_RESEARCH_COMPOSITION = `# The \`deep-research\` agent preset: a web-f
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |
+    prefix: |
       You are a research agent operating in Deep Research mode, powered by {{model}}. Your working directory is {{cwd}}.
 
       You investigate questions with the live web: design queries, read multiple independent sources, and synthesize findings the reader can act on. Every claim in your output traces to a fetched source; distinguish what sources say, what you inferred, and what remains unknown or contested.
@@ -366,6 +364,10 @@ const DEEP_RESEARCH_COMPOSITION = `# The \`deep-research\` agent preset: a web-f
     maxBytes: 65536
 - id: tool-bash
   name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
 - id: tool-fs-search
@@ -408,7 +410,7 @@ const CODE_REVIEW_COMPOSITION = `# The \`code-review\` agent preset: a read-only
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |
+    prefix: |
       You are a code review agent operating in Code Review mode, powered by {{model}}. Your working directory is {{cwd}}.
 
       You review changes and codebases, and you do not modify them. Never edit files, run formatters or code generators, commit, or push. Read-only inspection commands (status, diff, log, show, grep, tests that do not rewrite tracked files) are your instruments.
@@ -424,6 +426,10 @@ const CODE_REVIEW_COMPOSITION = `# The \`code-review\` agent preset: a read-only
     maxBytes: 65536
 - id: tool-bash
   name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
 - id: tool-fs-search
@@ -466,7 +472,7 @@ const DATA_ANALYSIS_COMPOSITION = `# The \`data-analysis\` agent preset: an anal
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |
+    prefix: |
       You are a data analysis agent operating in Data Analysis mode, powered by {{model}}. Your working directory is {{cwd}}.
 
       You answer questions with data: probe before assuming, profile before modeling, and show the evidence behind every number you report. The reader must be able to re-run your steps and get the same result.
@@ -482,6 +488,10 @@ const DATA_ANALYSIS_COMPOSITION = `# The \`data-analysis\` agent preset: an anal
     maxBytes: 65536
 - id: tool-bash
   name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
 - id: tool-fs-search

@@ -132,6 +132,116 @@ describe('auditBundle preset composition rules', () => {
     return skillEntry({ kind: 'preset' })
   }
 
+  function auditComposition(content: string) {
+    return auditBundle(presetEntry(), [textFile('demo/agent.cordis.yml', content)])
+  }
+
+  const platformExpression = "process.platform === 'win32'"
+  const skillPathExpression = "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
+
+  it('allows only the shipped platform conditions on real loader rows, including groups', () => {
+    const report = auditComposition(`- name: cordis:group
+  group: true
+  disabled: !!js ${platformExpression}
+  config:
+    - name: '@deepseek-ai/dsh-tool-pwsh'
+      disabled: !!js process.platform !== "win32"
+`)
+    expect(report.verdict).toBe('pass')
+  })
+
+  it('allows the shipped relative skills-directory expression only for skill-filesystem', () => {
+    const report = auditComposition(`- name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js "${skillPathExpression}"
+`)
+    expect(report.verdict).toBe('pass')
+  })
+
+  it('allows the exact list-agents subpath without allowing any other first-party subpath', () => {
+    expect(auditComposition("- name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'\n").verdict).toBe('pass')
+    for (const plugin of ['@deepseek-ai/dsh-tool-subagent-control/other', '@deepseek-ai/dsh-tool-subagent-control/list-agents/extra', '@deepseek-ai/dsh-other/list-agents']) {
+      const report = auditComposition(`- name: '${plugin}'\n`)
+      expect(report.verdict, plugin).toBe('block')
+      expect(report.findings.some((finding) => finding.rule === 'preset-plugin-unknown')).toBe(true)
+    }
+  })
+
+  it('does not treat quoted documentation or multiline persona prose as YAML expressions or plugin rows', () => {
+    const report = auditComposition(`- name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: |
+      Example: !!js process.exit(99)
+      - name: evil-example-in-documentation
+`)
+    expect(report.verdict).toBe('pass')
+  })
+
+  it.each([
+    "process.platform === 'win32' || process.exit(99)",
+    "process.platform === 'win32'; process.exit(99)",
+    "process.platform === 'linux'",
+    "process.platform == 'win32'",
+    "(() => process.platform === 'win32')()"
+  ])('blocks platform expressions outside the exact fixed allowlist: %s', (expression) => {
+    const report = auditComposition(`- name: '@deepseek-ai/dsh-tool-bash'\n  disabled: !!js ${JSON.stringify(expression)}\n`)
+    expect(report.verdict).toBe('block')
+    expect(report.findings.some((finding) => finding.rule === 'preset-js-expression')).toBe(true)
+  })
+
+  it.each([
+    "process.getBuiltinModule('node:fs').fileURLToPath(new URL('skills/', baseUrl))",
+    "process.getBuiltinModule('node:url').fileURLToPath(new URL('../', baseUrl))",
+    "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl)); process.exit(99)"
+  ])('blocks skills-directory expressions outside the exact fixed allowlist: %s', (expression) => {
+    const report = auditComposition(`- name: '@deepseek-ai/dsh-skill-filesystem'\n  config:\n    customSkillDirs:\n      - !!js ${JSON.stringify(expression)}\n`)
+    expect(report.verdict).toBe('block')
+  })
+
+  it('blocks approved expression text in any unapproved field or similarly named nested data', () => {
+    for (const composition of [
+      `- name: '@deepseek-ai/dsh-tool-bash'\n  config:\n    disabled: !!js ${platformExpression}\n`,
+      `- name: '@deepseek-ai/dsh-persona'\n  config:\n    prefix: !!js ${JSON.stringify(skillPathExpression)}\n`,
+      `- name: '@deepseek-ai/dsh-persona'\n  config:\n    customSkillDirs:\n      - !!js ${JSON.stringify(skillPathExpression)}\n`,
+      `- name: '@deepseek-ai/dsh-skill-filesystem'\n  config:\n    other:\n      customSkillDirs:\n        - !!js ${JSON.stringify(skillPathExpression)}\n`,
+      `- name: '@deepseek-ai/dsh-persona'\n  config:\n    - name: '@deepseek-ai/dsh-tool-bash'\n      disabled: !!js ${platformExpression}\n`
+    ]) {
+      const report = auditComposition(composition)
+      expect(report.verdict, composition).toBe('block')
+      expect(report.findings.some((finding) => finding.rule === 'preset-js-expression')).toBe(true)
+    }
+  })
+
+  it('blocks an unsafe tag even when the composition also contains an approved one', () => {
+    const report = auditComposition(`- name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js ${platformExpression}
+- name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js "${skillPathExpression}"
+      - !!js process.exit(99)
+`)
+    expect(report.verdict).toBe('block')
+    expect(report.findings.some((finding) => finding.rule === 'preset-js-expression')).toBe(true)
+  })
+
+  it('blocks alternate YAML tag spelling and anchored expressions reused at another location', () => {
+    for (const composition of [
+      "- name: '@deepseek-ai/dsh-persona'\n  config: !<tag:yaml.org,2002:js> process.exit(99)\n",
+      `- name: '@deepseek-ai/dsh-tool-bash'\n  disabled: &shared !!js ${platformExpression}\n  config: { prefix: *shared }\n`
+    ]) {
+      const report = auditComposition(composition)
+      expect(report.verdict).toBe('block')
+      expect(report.findings.some((finding) => finding.rule === 'preset-js-expression')).toBe(true)
+    }
+  })
+
+  it('blocks malformed composition YAML rather than allowing an uninspectable expression', () => {
+    const report = auditComposition(`- name: '@deepseek-ai/dsh-tool-bash'\n  disabled: !!js ${platformExpression}\n  broken: [\n`)
+    expect(report.verdict).toBe('block')
+  })
+
   it('blocks js-tagged YAML in a preset composition', () => {
     const report = auditBundle(presetEntry(), [
       textFile('demo/agent.cordis.yml', '- id: x\n  name: ./x.mjs\n  disabled: !!js process.exit(1)\n')
@@ -152,7 +262,7 @@ describe('auditBundle preset composition rules', () => {
     const report = auditBundle(presetEntry(), [
       textFile('demo/agent.cordis.yml', [
         '- id: a',
-        '  name: @deepseek-ai/dsh-todo',
+        "  name: '@deepseek-ai/dsh-todo'",
         '- id: b',
         '  name: community-plugin',
         '- id: c',

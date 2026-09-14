@@ -45,6 +45,7 @@ import { createDemoFetch } from './store/demo-catalog.js'
 import { DshPluginInstaller, type PluginCommandRunner } from './store/dsh-plugin-installer.js'
 import { parseDshCommand } from '../shared/dsh-command.js'
 import { repairInstalledDshPlugin, repairLegacyModeMenuPlus } from './store/dsh-plugin-compatibility.js'
+import { repairLegacyPresetPersonas } from './store/preset-compatibility.js'
 import { importCodexAuth } from './store/codex-auth-importer.js'
 import {
   applyDshPluginCompatibilityWorkaround,
@@ -563,6 +564,18 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     },
     beforeStart: async (context) => {
       if (context.mode !== 'normal') return
+      try {
+        const presets = await repairLegacyPresetPersonas(layout.harness)
+        for (const preset of presets.repaired) {
+          console.warn(`[dsh-preset] migrated legacy persona for ${preset.id}; backup: ${preset.backupPath}`)
+        }
+        for (const preset of presets.failed) {
+          console.error(`[dsh-preset] failed to migrate ${preset.id}: ${preset.error}`)
+        }
+      } catch (error) {
+        // An unreadable preset directory must not prevent Runtime recovery.
+        console.error('[dsh-preset] failed to check legacy personas:', error instanceof Error ? error.message : String(error))
+      }
       try {
         const repairedModules = await repairProfileModuleDrift({
           dshHome: layout.harness,

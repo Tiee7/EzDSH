@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 import { auditBundle, auditMcpConfig } from '../../src/main/store/audit'
 import { downloadBundle } from '../../src/main/store/downloader'
 import {
@@ -84,6 +85,12 @@ describe('demo catalog install pipeline', () => {
       ])
       const report = auditBundle(entry, bundle)
       expect(report.verdict).not.toBe('block')
+      const rows = parse(bundle.files[0].bytes.toString(), {
+        customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value }]
+      }) as Array<{ name: string; config?: Record<string, unknown> }>
+      const persona = rows.find((row) => row.name === '@deepseek-ai/dsh-persona')
+      expect(persona?.config?.prefix).toEqual(expect.any(String))
+      expect(persona?.config).not.toHaveProperty('text')
     }
   })
 

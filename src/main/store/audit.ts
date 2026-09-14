@@ -11,6 +11,7 @@
 import type { DownloadedBundle, DownloadedFile } from './downloader.js'
 import type { AuditFinding, AuditReport, AuditVerdict, StoreEntry, StoreMcpConfig } from '../../shared/store.js'
 import { pluginSourceUrl, validatePluginSource } from './dsh-plugin-installer.js'
+import { isMap, isScalar, isSeq, parseDocument, visit, type Scalar } from 'yaml'
 
 export interface AuditOptions {
   /** Additional preset plugin names declared trusted by the server catalog. */
@@ -134,26 +135,77 @@ function auditTextFile(file: DownloadedFile, findings: AuditFinding[], urls: Set
 // ---- Preset composition rules ----
 
 const PRESET_PLUGIN_WHITELIST = /^(@deepseek-ai\/dsh-[a-z0-9-]+|cordis:[a-z0-9-]+|\.{1,2}\/[^\s]+)$/
+const PRESET_PLUGIN_SUBPATHS = new Set(['@deepseek-ai/dsh-tool-subagent-control/list-agents'])
+const JS_TAG = 'tag:yaml.org,2002:js'
+
+// These are exact strings, not a JavaScript parser or evaluator. Only the
+// Runtime's shipped platform switches and preset-local skills path are allowed.
+const PLATFORM_EXPRESSIONS = new Set([
+  "process.platform === 'win32'",
+  'process.platform === "win32"',
+  "process.platform !== 'win32'",
+  'process.platform !== "win32"'
+])
+const SKILL_DIRECTORY_EXPRESSIONS = new Set(
+  ["'", '"'].flatMap((moduleQuote) => ["'", '"'].map((pathQuote) =>
+    `process.getBuiltinModule(${moduleQuote}node:url${moduleQuote}).fileURLToPath(new URL(${pathQuote}skills/${pathQuote}, baseUrl))`
+  ))
+)
 
 function auditPresetComposition(file: DownloadedFile, findings: AuditFinding[], options: AuditOptions): void {
   const text = file.bytes.toString('utf8')
-  if (/!!js\b/.test(text)) {
-    findings.push({ severity: 'block', rule: 'preset-js-expression', file: file.path, detail: 'Preset composition declares a !!js expression; local presets must stay declarative.' })
+  const document = parseDocument(text, {
+    customTags: [{ tag: JS_TAG, resolve: (value: string) => value }]
+  })
+  if (document.errors.length > 0 || !isSeq(document.contents)) {
+    findings.push({ severity: 'block', rule: 'preset-composition-invalid', file: file.path, detail: 'Preset composition must be valid YAML containing a loader entry list.' })
+    return
   }
   const extra = new Set(options.extraPresetPlugins ?? [])
-  for (const match of text.matchAll(/^\s*-?\s*(?:id:\s*\S+\s*\n\s*)?name:\s*(['"]?)([^'"\n]+)\1/gm)) {
-    const pluginName = match[2]?.trim() ?? ''
-    if (pluginName === '') continue
-    if (extra.has(pluginName)) continue
-    if (!PRESET_PLUGIN_WHITELIST.test(pluginName)) {
-      findings.push({
-        severity: 'block',
-        rule: 'preset-plugin-unknown',
-        file: file.path,
-        detail: `Plugin "${pluginName}" is not in the trusted preset plugin list.`
-      })
+  const allowedExpressions = new Set<Scalar>()
+  const allowExpression = (value: unknown, expressions: Set<string>): void => {
+    if (isScalar(value) && value.tag === JS_TAG && !value.anchor && typeof value.value === 'string' && expressions.has(value.value.trim())) {
+      allowedExpressions.add(value)
     }
   }
+  const auditRows = (rows: unknown, allowExpressions = true): void => {
+    if (!isSeq(rows)) {
+      findings.push({ severity: 'block', rule: 'preset-composition-invalid', file: file.path, detail: 'Preset group config must contain a loader entry list.' })
+      return
+    }
+    for (const row of rows.items) {
+      if (!isMap(row) || typeof row.get('name') !== 'string') {
+        findings.push({ severity: 'block', rule: 'preset-composition-invalid', file: file.path, detail: 'Preset loader entries must declare a plugin name.' })
+        continue
+      }
+      const pluginName = row.get('name') as string
+      if (!extra.has(pluginName) && !PRESET_PLUGIN_WHITELIST.test(pluginName) && !PRESET_PLUGIN_SUBPATHS.has(pluginName)) {
+        findings.push({ severity: 'block', rule: 'preset-plugin-unknown', file: file.path, detail: `Plugin "${pluginName}" is not in the trusted preset plugin list.` })
+      }
+      // An anchored expression or ancestor can also be used in an unapproved
+      // location through an alias. Keep such shared structures blocked.
+      const canAllow = allowExpressions && !rows.anchor && !row.anchor && !row.has('<<')
+      if (canAllow) allowExpression(row.get('disabled', true), PLATFORM_EXPRESSIONS)
+      const config = row.get('config', true)
+      if (row.get('group') === true) {
+        auditRows(config, canAllow)
+      } else if (canAllow && pluginName === '@deepseek-ai/dsh-skill-filesystem' && isMap(config) && !config.anchor && !config.has('<<')) {
+        const directories = config.get('customSkillDirs', true)
+        if (isSeq(directories) && !directories.anchor) {
+          for (const directory of directories.items) allowExpression(directory, SKILL_DIRECTORY_EXPRESSIONS)
+        }
+      }
+    }
+  }
+  auditRows(document.contents)
+  visit(document, {
+    Value(_key, node) {
+      if (node.tag === JS_TAG && (!isScalar(node) || !allowedExpressions.has(node))) {
+        findings.push({ severity: 'block', rule: 'preset-js-expression', file: file.path, detail: 'Preset composition declares a !!js expression outside the approved platform condition or preset skills-directory fields.' })
+        return visit.BREAK
+      }
+    }
+  })
 }
 
 // ---- Public API ----

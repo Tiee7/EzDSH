@@ -12,10 +12,10 @@ import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import type { DownloadedBundle, DownloadedFile } from './downloader.js'
 import { presetsDir } from './install-paths.js'
+import { normalizeLegacyPresetPersona, PRESET_ID_PATTERN } from './preset-compatibility.js'
 import type { StoreEntry } from '../../shared/store.js'
 
-/** Preset id grammar enforced by dsh-agent-presets discovery. */
-export const PRESET_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+export { PRESET_ID_PATTERN } from './preset-compatibility.js'
 
 /** Display-metadata file whose `trust` key never survives a local install. */
 const METADATA_FILE = 'preset.yml'
@@ -73,6 +73,8 @@ export async function installPresetBundle(
     let bytes = file.bytes
     if (file.path === `${presetId}/${METADATA_FILE}`) {
       bytes = stripTrustKey(bytes)
+    } else if (insidePreset === COMPOSITION_FILE) {
+      bytes = normalizeLegacyPresetPersona(bytes)
     }
     targets.push({ file, target: join(presetsDir(dshHome), file.path), bytes })
   }

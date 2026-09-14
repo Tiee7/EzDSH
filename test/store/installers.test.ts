@@ -120,10 +120,20 @@ describe('skill install', () => {
 })
 
 describe('preset install', () => {
+  it('normalizes legacy persona text when installing a verified preset bundle', async () => {
+    const home = await tempHome()
+    const composition = "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: |\n      Research carefully.\n"
+    const source = textFile('demo/agent.cordis.yml', composition)
+    await installPresetBundle(home, entry({ id: 'demo', kind: 'preset' }), [source])
+    expect(await readFile(join(home, '.agent-presets', 'demo', 'agent.cordis.yml'), 'utf8'))
+      .toBe(composition.replace('    text:', '    prefix:'))
+    expect(source.bytes.toString()).toBe(composition)
+  })
+
   it('writes the composition and metadata under the presets directory', async () => {
     const home = await tempHome()
     await installPresetBundle(home, entry({ id: 'demo', kind: 'preset' }), [
-      textFile('demo/agent.cordis.yml', '- id: todo\n  name: @deepseek-ai/dsh-todo\n'),
+      textFile('demo/agent.cordis.yml', "- id: todo\n  name: '@deepseek-ai/dsh-todo'\n"),
       textFile('demo/preset.yml', 'name: 标准模式\ndescription: 完整\norder: 1\n')
     ])
     const presetsDir = join(home, '.agent-presets', 'demo')
@@ -140,7 +150,7 @@ describe('preset install', () => {
   it('strips a trust field a locally installed preset must not claim', async () => {
     const home = await tempHome()
     await installPresetBundle(home, entry({ id: 'demo', kind: 'preset' }), [
-      textFile('demo/agent.cordis.yml', '- id: todo\n  name: @deepseek-ai/dsh-todo\n'),
+      textFile('demo/agent.cordis.yml', "- id: todo\n  name: '@deepseek-ai/dsh-todo'\n"),
       textFile('demo/preset.yml', 'name: x\ntrust: system\n')
     ])
     const metadata = await readFile(join(home, '.agent-presets', 'demo', 'preset.yml'), 'utf8')
