@@ -1,264 +1,98 @@
-RED
+# Task 3 — Structural loop recovery safety
 
-- Added `test/workflow/workflow-deployment-service.test.ts` first, before implementation.
-- First RED verification command:
+Status: complete. Commit: `4c20f19` (`fix: make workflow loops recovery safe`).
 
-```text
-$ npx vitest run test/workflow/workflow-deployment-service.test.ts
+## Scope
 
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
+Changed only the five files assigned in task-3-brief.md: shared Workflow types, run store, run service, and the two specified test files. No UI changes, loop concurrency, approval/form execution support, or Task 1/2 feature changes. Read the full test-driven-development skill and its testing-anti-patterns reference before implementation.
 
-FAIL  test/workflow/workflow-deployment-service.test.ts
-Error: Cannot find module '../../src/main/workflow/workflow-deployment-service.js'
+## RED evidence
 
-Test Files  1 failed (1)
-Tests  no tests
-```
+Initial command: `npx vitest run test/workflow/workflow-safe-execution.test.ts test/workflow/workflow-run-service.test.ts`.
 
-GREEN
+Observed 9 failed / 82 passed (91 total), before production edits:
 
-- Created `src/main/workflow/workflow-deployment-service.ts` with `publish(input)`, `start(releaseId,input,options)`, and `rollback(releaseId)`.
-- Extended `src/main/workflow/workflow-run-service.ts` with Main-only `startReleased(releaseId,input,options)` plus `resolveReleasedWorkflow` support.
-- Release-backed runs now resolve workflow snapshots from immutable releases instead of falling back to the current editable workflow store.
-- Release-backed run records now persist `environmentId`, `releaseId`, and generated `traceId`, while connector grants remain narrowed to the release/environment intersection.
+1. Different managed writes for A/B both received `${runId}:body`, instead of separate iteration 0/1 keys.
+2. A successful first item followed by a transient second-item write produced `failed`, despite the body declaring an idempotent retry policy. The body bypassed the ordinary retry pipeline.
+3. A lost write response produced `failed` instead of `paused`; the owning loop handled the exception without respecting the nested effect journal.
+4. Reloading a persisted completed iteration returned recomputed `A!` instead of persisted `saved-A`, proving completed work was replayed.
+5. Two successful compensated writes produced no compensation stack, because body completion bypassed registration.
+6–9. Nested prepared, dispatched, incomplete confirmed, and unknown effects all recovered as `queued` instead of `paused`. Recovery inspected only top-level node states.
 
-验证
+After initial GREEN (91/91), two compatibility failures were added and observed before their fixes (2 failed / 91 passed):
 
-```text
-$ npx vitest run test/workflow/workflow-deployment-service.test.ts
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
-✓ test/workflow/workflow-deployment-service.test.ts (6 tests)
-Test Files  1 passed (1)
-Tests  6 passed (6)
-```
+10. A legacy partial loop with an already confirmed/completed body write but no iteration history allowed resume. There is insufficient evidence to infer which prior iterations completed, so replay is unsafe.
+11. A persisted iteration containing `nodeStates: null` was loaded as valid. Recursive recovery would traverse invalid data.
 
-```text
-$ npx vitest run test/workflow/workflow-deployment-service.test.ts test/workflow/workflow-run-service.test.ts test/workflow/workflow-worker-integration.test.ts test/workflow/workflow-release-store.test.ts test/workflow/workflow-operations.test.ts
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
-✓ test/workflow/workflow-operations.test.ts (7 tests)
-✓ test/workflow/workflow-release-store.test.ts (8 tests)
-✓ test/workflow/workflow-deployment-service.test.ts (6 tests)
-✓ test/workflow/workflow-worker-integration.test.ts (5 tests)
-✓ test/workflow/workflow-run-service.test.ts (52 tests)
-Test Files  5 passed (5)
-Tests  78 passed (78)
-```
+Self-review found another concrete failure and reproduced it before fixing it:
 
-```text
-$ npm run typecheck
-> ezdsh@1.8.1536 typecheck
-> tsc --noEmit -p tsconfig.node.json
-exit 0
-```
+12. `failureStrategy: continue` with a failed GET followed by a successful GET stayed `failed`, not `completed` (focused run: 1 failed / 73 skipped). Saving the body failure as a terminal run released its lease before the loop continued, causing subsequent snapshots to be rejected as stale. A safe continuing failure now retains the running record/lease.
 
-commit hash
+An existing linear-chain test also detected an intermediate implementation regression: the current-iteration top-level inspection projection did not show the second iteration's running first node and pending successor. Fixed the projection while keeping effects exclusively in nested durable states; existing test passed unchanged.
 
-- `58dc844c1991724158fa3720a996fdf3f0ac77c9`
+## Implementation
 
-concerns
+- Optional `loopIterations` lives on the owner node state. Each checkpoint stores zero-based index, stable iteration ID, original item, state, per-body-node states, and completed iteration output.
+- Execution scope `{ loopNodeId, iterationIndex, iterationId }` accompanies nested states, node/effect/retry events, and compensation entries.
+- Managed write keys inside loops are `${runId}:loop:${loopNodeId}:iteration:${iterationIndex}:node:${bodyNodeId}`. Non-loop keys stay `${runId}:${nodeId}`. GET behavior is unchanged.
+- Structural body nodes now use `executeReadyNode` and `executeNodeWithRetry`, so attempts, delay/requeue, output diagnostics, effect phases, cancellation, and compensation share the ordinary pipeline.
+- Before body execution, the owner is marked resumable in the same snapshot that may later queue/pause the body. A stopped body outcome bypasses the owner's retry policy, preventing a parent loop retry from replaying an ambiguous child effect.
+- Each body input and identity are persisted before dispatch; effect phases and final output/compensation registration are persisted through the existing pipeline. Iteration completion is separately checkpointed, allowing recovery even if a body completed but the loop had not yet collected its result.
+- Completed iterations reuse stored outputs. An incomplete iteration reuses completed body outputs and only executes unfinished nodes. Loop execution remains sequential and capped.
+- Recovery and lost-lease release recursively inspect/reset nested states. Confirmed effects with incomplete body output remain unsafe and pause. Ordinary confirmed/completed body states survive recovery.
+- Resume rejects nested uncertain effects. Unsupported loop approval/wait-input nodes fail without entering an approval wait state.
+- Existing top-level body states remain a current-iteration projection for existing consumers. Their effect field is omitted because nested journal entries are authoritative; this prevents stale summary fields from reclassifying already completed effects as uncertain on the next iteration.
+- Compensation deduplicates by source node and iteration identity, runs in reverse stack order, and resolves each compensation's input against its own iteration output.
+- Safe `continue` failures retain the lease and produce one error result for the failed iteration. Ambiguous effects, cancellation, scheduled retry and invalid output diagnostics still stop the loop; they are not swallowed by `continue`.
 
-- `WorkflowRunServiceOptions.resolveReleasedWorkflow` is implemented and covered in tests, but app-level wiring to construct and expose deployment services is still separate work.
+## Compatibility
 
----
+- Changes are additive optional fields. Existing records without loop checkpoints still load; no schema-version bump, destructive migration, or history rewriting.
+- Existing completed loops and unstarted loops retain their prior behavior. Legacy AI-instruction loops without body edges keep the compatibility path.
+- A legacy interrupted structural loop with evidence of an effectful body having started/completed cannot be reconstructed safely from its last top-level state. Manual resume rejects it; claimed execution pauses before replay. The error explains that per-iteration history is missing and manual verification is required. No guessed checkpoint migration is performed.
+- Pure/read-only legacy loops can continue under existing replay behavior; old data cannot supply nonexistent completed-iteration history.
+- The loader validates nested checkpoint shape, integer/nonduplicate indices and IDs, JSON-compatible input/output, and nested node states. Malformed records follow the existing loader behavior of being excluded; no new deletion step was added.
+- There is no downgrade migration: an older executor that does not understand checkpoints cannot provide the new recovery guarantees. Run unfinished checkpointed workflows with this version or newer.
 
-Review Round 2
+## Verification
 
-RED
+- Final focused command: `npx vitest run test/workflow/workflow-safe-execution.test.ts test/workflow/workflow-run-service.test.ts` — **96 passed, 2 files**.
+- `npm run typecheck` — passed, exit 0.
+- `git diff --check` — passed.
+- Final `npm run test:workflow:p0` — **245 passed, 15 files** (after final recovery assertions).
+- Initial P0 run under concurrent typecheck had one Python3 helper timeout: 241 passed / 1 failed. The helper reported `run did not finish in time`; there was no Python runtime error or Workflow assertion failure. Repeating P0 without simultaneous typecheck passed all 243 tests, including Python. No timeout/test implementation was changed to hide this result.
+- P0 still emits the existing React `act` deprecation/environment warnings in renderer tests. These warnings were not changed by this task.
 
-- Added a failing idempotency regression test to `test/workflow/workflow-safe-execution.test.ts` proving the same `workflowId + workflowRevision + idempotencyKey` must not deduplicate across different `releaseId` or `environmentId`.
-- Added a failing deployment regression test to `test/workflow/workflow-deployment-service.test.ts` proving a parent release without top-level connectors must still publish child managed-connector grants and pass them into the child run.
+Additional verification extends initial RED cases: persisted incomplete-iteration completed-body outputs also survive reload; retry attempts are `[1, 2]` and retry events identify iteration 1; compensation inputs are B then A and a second compensation call does not repeat them; lost-lease release pauses nested dispatched effects; completed confirmed effects remain intact while unfinished read state resets to pending.
 
-```text
-$ npx vitest run test/workflow/workflow-safe-execution.test.ts test/workflow/workflow-deployment-service.test.ts
+## Self-review and limits
 
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
+- Reused the real WorkflowStore/RunStore/Worker/Service in tests. Only external connector and sub-workflow execution boundaries are injected; connector responses use their complete typed shape.
+- Reviewed the effect-dispatch-to-output gap: nested confirmed-but-incomplete states are never automatically replayed.
+- Reviewed body-complete-to-iteration-complete gap: persisted completed body output is reused and the iteration is finalized without dispatching it again.
+- Reviewed retry of B after completed A: A is skipped, B retains the same key/attempt history, and no owner retry policy bypasses the body outcome.
+- Reviewed invalid JSON behavior: the shared `WorkflowNodeOutputError` handling is retained, including raw output on failed state and stopping before downstream propagation. Existing diagnostic regression tests pass.
+- Reviewed known-scope exclusions: no new loop concurrency, nesting or approval/form support; no UI edits; no automatic compensation/reconciliation of unknown effects.
+- Remote systems must honor idempotency keys for idempotent write retry guarantees; this task does not claim exactly-once external execution for arbitrary APIs.
+- Whole-run JSON persistence remains unchanged; adding per-iteration states increases record size within the existing iteration cap. No separate journal database or persistence redesign was introduced.
 
-FAIL  test/workflow/workflow-deployment-service.test.ts
-  expected [] to deeply equal [{ connectorId: 'api', operations: ['read'] }]
+## Final result
 
-FAIL  test/workflow/workflow-safe-execution.test.ts
-  expected 'run-release-a' to be 'run-release-b'
+Committed as `4c20f19` (`fix: make workflow loops recovery safe`). The commit contains exactly the five assigned production/test files. `.superpowers`, `.workbuddy-ai`, and all unrelated files were excluded. This report remains uncommitted as instructed. Final focused suite: 96 passed. Final P0 suite: 245 passed. Typecheck and diff whitespace validation passed.
 
-Test Files  2 failed (2)
-Tests  2 failed | 20 passed (22)
-```
+## Review follow-up — handled final-item failures
 
-GREEN
+Review supplied a reproducible Important finding: a `continue` loop whose last (or only) item fails completes its owner/output nodes, but leaves its top-level body inspection projection `failed`. The final run-wide `hasFailure` check interpreted that handled failure as an unhandled run failure.
 
-- Updated `src/main/workflow/workflow-run-store.ts` so explicit idempotency equivalence now includes `environmentId` and `releaseId`, while ad-hoc runs still deduplicate as before when both are absent.
-- Updated `src/main/workflow/workflow-deployment-service.ts` to recursively resolve sub-workflows during publish, reject cyclic/missing child references via workflow resolution, collect descendant managed connector grants allowed by the target environment, and merge those grants into the release snapshot policy so release integrity stays valid.
-- Kept release context out of public `WorkflowRunOptions` and IPC surfaces; grant propagation still rides on the existing internal `startReleased` and `executeSubWorkflow` path.
+RED: added two cases before implementation (A succeeds/B fails; only B fails). Both expected `completed` and received `failed`. Command: `npx vitest run test/workflow/workflow-run-service.test.ts -t 'final item fails'`; result **2 failed / 1 passed / 74 skipped**. The third case establishes that the same error in a stop loop still fails the run.
 
-```text
-$ npx vitest run test/workflow/workflow-safe-execution.test.ts test/workflow/workflow-deployment-service.test.ts
+Fix: the final status check excludes body projections only when their owning loop both declares `failureStrategy: continue` and has completed. It does not exclude ordinary failed nodes or body states of incomplete/non-continue loops. No iteration states, top-level inspection errors, outputs, or events are erased. The new tests verify the completed error result, preserved failed nested/top-level body states, and scoped `node-failed` event.
 
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
+GREEN:
 
-✓ test/workflow/workflow-deployment-service.test.ts (7 tests)
-✓ test/workflow/workflow-safe-execution.test.ts (15 tests)
+- `npx vitest run test/workflow/workflow-safe-execution.test.ts test/workflow/workflow-run-service.test.ts`: **99 passed, 2 files**.
+- `npm run test:workflow:p0`: **248 passed, 15 files**. Existing React act warnings remain; no failure/retry was needed for this review follow-up.
+- `npm run typecheck`: passed, exit 0.
+- `git diff --check`: passed, exit 0.
 
-Test Files  2 passed (2)
-Tests  22 passed (22)
-```
-
-验证
-
-```text
-$ npx vitest run test/workflow/workflow-deployment-service.test.ts test/workflow/workflow-run-service.test.ts test/workflow/workflow-worker-integration.test.ts test/workflow/workflow-release-store.test.ts test/workflow/workflow-operations.test.ts
-
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
-
-✓ test/workflow/workflow-operations.test.ts (7 tests)
-✓ test/workflow/workflow-release-store.test.ts (8 tests)
-✓ test/workflow/workflow-worker-integration.test.ts (5 tests)
-✓ test/workflow/workflow-deployment-service.test.ts (7 tests)
-✓ test/workflow/workflow-run-service.test.ts (52 tests)
-
-Test Files  5 passed (5)
-Tests  79 passed (79)
-```
-
-```text
-$ npm run typecheck
-> ezdsh@1.8.1536 typecheck
-> tsc --noEmit -p tsconfig.node.json
-exit 0
-```
-
-```text
-$ git diff --check
-exit 0
-```
-
-commit hash
-
-- `4cabffbd559abeeffe3bebbfc5c47762187a5d45`
-
-concerns
-
-- Descendant connector permissions are now merged into the immutable release snapshot policy to satisfy release-integrity invariants. This is confined to the release snapshot and does not mutate the source workflow, but it does mean a parent release snapshot can advertise connectors that are only consumed by pinned descendants.
-
----
-
-Review Round 3
-
-RED
-
-- Added failing release-integrity coverage in `test/workflow/workflow-operations.test.ts` and `test/workflow/workflow-release-store.test.ts` for dependency snapshots being part of the immutable digest.
-- Added a failing deployment regression in `test/workflow/workflow-deployment-service.test.ts` proving a published parent release must keep running against the published child snapshot after the child source workflow is updated or removed, and must reject missing/cyclic child dependencies.
-
-```text
-$ npx vitest run test/workflow/workflow-operations.test.ts test/workflow/workflow-release-store.test.ts test/workflow/workflow-deployment-service.test.ts
-
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
-
-FAIL  test/workflow/workflow-operations.test.ts
-  TypeError: (0 , computeWorkflowReleaseSha256) is not a function
-
-FAIL  test/workflow/workflow-release-store.test.ts
-  TypeError: (0 , computeWorkflowReleaseSha256) is not a function
-
-FAIL  test/workflow/workflow-deployment-service.test.ts
-  expected undefined to deeply equal [ 'workflow-child-pinned@1' ]
-
-Test Files  3 failed (3)
-Tests  4 failed | 22 passed (26)
-```
-
-GREEN
-
-- Extended `WorkflowRelease` normalization/integrity so `workflowDependencies` are normalized, cloned, and included in a release-wide SHA-256 digest, while root-only releases remain compatible.
-- Updated `src/main/workflow/workflow-release-store.ts` to clone/persist dependency snapshots and reject persisted releases whose dependency snapshots no longer match the saved digest.
-- Reworked `src/main/workflow/workflow-deployment-service.ts` publish flow to recursively collect pinned sub-workflow snapshots, reject missing/cyclic descendants, pin sub-workflow versions inside release snapshots, and carry descendant managed connector grants into the immutable release grant ceiling.
-- Updated `src/main/workflow/workflow-run-service.ts` so release-backed runs resolve both root and dependency definitions from the immutable release, and release-backed sub-workflow nodes execute pinned child snapshots instead of drifting back to the live workflow store.
-
-```text
-$ npx vitest run test/workflow/workflow-operations.test.ts test/workflow/workflow-release-store.test.ts test/workflow/workflow-deployment-service.test.ts test/workflow/workflow-run-service.test.ts
-
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
-
-✓ test/workflow/workflow-operations.test.ts (8 tests)
-✓ test/workflow/workflow-release-store.test.ts (9 tests)
-✓ test/workflow/workflow-deployment-service.test.ts (9 tests)
-✓ test/workflow/workflow-run-service.test.ts (52 tests)
-
-Test Files  4 passed (4)
-Tests  78 passed (78)
-```
-
-验证
-
-```text
-$ npx vitest run test/workflow/workflow-deployment-service.test.ts test/workflow/workflow-run-service.test.ts test/workflow/workflow-worker-integration.test.ts test/workflow/workflow-release-store.test.ts test/workflow/workflow-operations.test.ts test/workflow/workflow-safe-execution.test.ts --testTimeout=20000
-
-RUN  v3.2.7 /Users/snake/Documents/ChatGPT/ezdsh
-
-✓ test/workflow/workflow-operations.test.ts (8 tests) 18ms
-✓ test/workflow/workflow-release-store.test.ts (9 tests) 73ms
-✓ test/workflow/workflow-worker-integration.test.ts (5 tests) 218ms
-✓ test/workflow/workflow-deployment-service.test.ts (9 tests) 358ms
-✓ test/workflow/workflow-run-service.test.ts (52 tests) 968ms
-✓ test/workflow/workflow-safe-execution.test.ts (15 tests) 2119ms
-
-Test Files  6 passed (6)
-Tests  98 passed (98)
-```
-
-```text
-$ npm run typecheck -- --pretty false
-> ezdsh@1.8.1536 typecheck
-> tsc --noEmit -p tsconfig.node.json --pretty false
-exit 0
-```
-
-```text
-$ git diff --check
-exit 0
-```
-
-commit hash
-
-- `a4d16ba4cc5b89d7a08848d0b2b34c8c4de7c273`
-
-concerns
-
-- No new functional concerns beyond the release snapshot now explicitly carrying descendant workflow definitions as Main-only immutable data.
-
----
-
-## DSH Runtime RC1 RPC compatibility hardening
-
-### Verified contract
-
-- The published `dsh-v0.1.2-rc.1` source uses slash RPC routes with an outer
-  `payload: { args: ... }` envelope. Session/workspace commands receive named
-  `request` arguments; `session/list` instead receives `_request`; the model
-  catalog is `session/modelCatalog`; history is `session/page` and needs a
-  session address plus an exact `throughSeq` cursor.
-- Legacy unary workspace list/unarchive and per-session model routes are not
-  present in RC1. The main-process client now rejects those calls explicitly
-  instead of calling invented/removed routes. Prompt completion likewise
-  reports that RC1 requires `session/follow`, rather than silently polling the
-  removed history endpoint.
-
-### TDD and security fixes
-
-- Added failing mapping tests before implementation, then mapped supported
-  public operations to the RC1 routes and argument shapes while preserving all
-  clean-URL legacy fixtures.
-- Added failing readiness tests for a 303 without `dsh-auth-*` and a token URL
-  that returns 200. Tokenized Runtime readiness now requires exactly the 303
-  exchange and the auth-cookie family.
-- Runtime output retains the tokenized URL only in memory; the persisted
-  `harness.log` redacts `token=` values.
-
-### Verification
-
-- `npx vitest run test/runtime/health-check.test.ts test/runtime/runtime-manager.test.ts test/channel-bridge/dsh-session.test.ts`
-  - passed: 3 files, 38 tests.
-- `git diff --check`
-  - passed.
-- `npm run typecheck`
-  - attempted; currently blocked by in-progress, out-of-scope edits in
-    `src/main/notifications/runtime-notification-service.ts` at line 162
-    (`summary` possibly undefined). This task did not modify that file.
+Review follow-up commit: `fc6542a` (`fix: preserve handled loop failure outcomes`). Only `src/main/workflow/workflow-run-service.ts` and `test/workflow/workflow-run-service.test.ts` are included; this appended report remains uncommitted.
