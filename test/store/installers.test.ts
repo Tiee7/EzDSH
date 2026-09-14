@@ -4,11 +4,13 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   installSkillBundle,
+  updateSkillBundle,
   uninstallSkill,
   SKILL_ID_PATTERN
 } from '../../src/main/store/skill-installer'
 import {
   installPresetBundle,
+  updatePresetBundle,
   uninstallPreset
 } from '../../src/main/store/preset-installer'
 import type { DownloadedFile } from '../../src/main/store/downloader'
@@ -117,6 +119,20 @@ describe('skill install', () => {
     const home = await tempHome()
     await expect(uninstallSkill(home, 'ghost')).resolves.toBe(false)
   })
+
+  it('restores the previous skill when persisting the update fails', async () => {
+    const home = await tempHome()
+    await installSkillBundle(home, entry({ id: 'demo' }), [textFile('demo/SKILL.md', 'old')])
+
+    await expect(updateSkillBundle(
+      home,
+      entry({ id: 'demo', version: '1.0.1' }),
+      [textFile('demo/SKILL.md', 'new')],
+      async () => { throw new Error('registry unavailable') }
+    )).rejects.toThrow('registry unavailable')
+
+    expect(await readFile(join(home, 'skills', 'demo', 'SKILL.md'), 'utf8')).toBe('old')
+  })
 })
 
 describe('preset install', () => {
@@ -164,5 +180,21 @@ describe('preset install', () => {
     ])
     expect(await uninstallPreset(home, 'demo')).toBe(true)
     expect(await readdir(join(home, '.agent-presets'))).toEqual([])
+  })
+
+  it('restores the previous preset when persisting the update fails', async () => {
+    const home = await tempHome()
+    await installPresetBundle(home, entry({ id: 'demo', kind: 'preset' }), [
+      textFile('demo/agent.cordis.yml', '- id: old\n')
+    ])
+
+    await expect(updatePresetBundle(
+      home,
+      entry({ id: 'demo', kind: 'preset', version: '1.0.1' }),
+      [textFile('demo/agent.cordis.yml', '- id: new\n')],
+      async () => { throw new Error('registry unavailable') }
+    )).rejects.toThrow('registry unavailable')
+
+    expect(await readFile(join(home, '.agent-presets', 'demo', 'agent.cordis.yml'), 'utf8')).toBe('- id: old\n')
   })
 })

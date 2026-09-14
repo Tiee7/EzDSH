@@ -127,6 +127,7 @@ const bridge: EzDSHBridge = {
     categories: (kind) => invoke('store:categories', kind),
     install: (kind, id) => invoke('store:install', kind, id),
     installAnyway: (kind, id) => invoke('store:install-anyway', kind, id),
+    updateAnyway: (kind, id) => invoke('store:update-anyway', kind, id),
     confirmInstall: (kind, id, accepted) => invoke('store:confirm-install', kind, id, accepted),
     update: (kind, id) => invoke('store:update', kind, id),
     uninstall: (kind, id) => invoke('store:uninstall', kind, id),

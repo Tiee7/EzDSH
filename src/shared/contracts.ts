@@ -139,6 +139,8 @@ export interface EzDSHBridge {
     install(kind: StoreKind, id: string): Promise<InstallState>
     /** Re-run the audit and install once despite a blocking verdict, only after explicit user action. */
     installAnyway(kind: StoreKind, id: string): Promise<InstallState>
+    /** Re-run the audit and update once despite a blocking verdict, only after explicit user action. */
+    updateAnyway(kind: StoreKind, id: string): Promise<InstallState>
     /** Answer a `confirm-wait` prompt; `accepted: false` cancels with `user-cancelled`. */
     confirmInstall(kind: StoreKind, id: string, accepted: boolean): Promise<InstallState>
     update(kind: StoreKind, id: string): Promise<InstallState>

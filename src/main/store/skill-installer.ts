@@ -11,6 +11,7 @@
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import type { DownloadedBundle, DownloadedFile } from './downloader.js'
+import { replaceDirectoryWithRollback } from './directory-replacement.js'
 import { skillsDir } from './install-paths.js'
 import type { StoreEntry } from '../../shared/store.js'
 
@@ -75,6 +76,30 @@ export async function installSkillBundle(
     await rm(skillRoot, { recursive: true, force: true })
     throw error
   }
+}
+
+/** Replace an installed Store skill and restore it if the registry write fails. */
+export async function updateSkillBundle(
+  dshHome: string,
+  skillEntry: StoreEntry,
+  bundle: DownloadedBundle | readonly DownloadedFile[],
+  persist: () => Promise<void>,
+): Promise<{ backupPath?: string }> {
+  if (!SKILL_ID_PATTERN.test(skillEntry.id)) {
+    throw new Error(`Skill id ${JSON.stringify(skillEntry.id)} is not kebab-case`)
+  }
+  const skillRoot = join(skillsDir(dshHome), skillEntry.id)
+  return replaceDirectoryWithRollback({
+    dshHome,
+    kind: 'skill',
+    id: skillEntry.id,
+    target: skillRoot,
+    prepareReplacement: async (stagingHome) => {
+      await installSkillBundle(stagingHome, skillEntry, bundle)
+      return join(skillsDir(stagingHome), skillEntry.id)
+    },
+    persist,
+  })
 }
 
 /**

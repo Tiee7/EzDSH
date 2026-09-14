@@ -32,8 +32,8 @@ import { InstallRegistry } from './install-registry.js'
 import { readCatalogCache, writeCatalogCache, type CachedCatalog } from './catalog-cache.js'
 import { demoCategories, demoEntries } from './demo-catalog.js'
 import { webProfilePatchFile } from './install-paths.js'
-import { installSkillBundle, SkillConflictError, uninstallSkill } from './skill-installer.js'
-import { installPresetBundle, PresetConflictError, uninstallPreset } from './preset-installer.js'
+import { installSkillBundle, SkillConflictError, uninstallSkill, updateSkillBundle } from './skill-installer.js'
+import { installPresetBundle, PresetConflictError, uninstallPreset, updatePresetBundle } from './preset-installer.js'
 import { installMcpEntry, uninstallMcpEntry } from './mcp-installer.js'
 import { InstallErrorReporter, type InstallErrorReport } from './install-reporter.js'
 import { diagnoseInstallFailure } from './install-diagnostics.js'
@@ -496,82 +496,95 @@ export class StoreService {
     return this.runInstall(parked.entry, parked.audit, parked.bundle, parked.compatibility)
   }
 
-  /** Update one already-installed DSH profile plugin as a single recoverable mutation. */
+  /** Update an already-installed catalog entry, stopping on a blocking audit. */
   async update(kind: StoreKind, id: string): Promise<InstallState> {
+    return this.updateEntry(kind, id, false)
+  }
+
+  /** Update once despite a blocking audit verdict, after explicit user action. */
+  async updateAnyway(kind: StoreKind, id: string): Promise<InstallState> {
+    return this.updateEntry(kind, id, true)
+  }
+
+  private async updateEntry(kind: StoreKind, id: string, allowAuditBlock: boolean): Promise<InstallState> {
     if (this.dshHome === undefined || this.registryPath === undefined) {
       throw new Error('Store update is not available in this build')
     }
-    const registry = this.ensureRegistry()
-    const record = await this.findInstalledRecord(kind, id)
-    if (record === undefined) {
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: `${id} is not installed` })
-    }
-    let entry: StoreEntry
+    const key = `${kind}:${id}`
+    if (this.inFlight.has(key)) throw new Error(`A Store operation for ${key} is already in progress`)
+    this.inFlight.add(key)
     try {
-      entry = await this.entry(kind, id)
-    } catch (error) {
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'download', message: describe(error) })
-    }
-    if (entry.plugin === undefined && (kind === 'skill' || kind === 'preset')) {
-      let bundle: DownloadedBundle
+      const registry = this.ensureRegistry()
+      const record = await this.findInstalledRecord(kind, id)
+      if (record === undefined) {
+        return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: `${id} is not installed` })
+      }
+      let entry: StoreEntry
       try {
-        bundle = await downloadBundle(entry.files ?? [], { fetchImpl: this.fetchImpl })
-        const audit = auditBundle(entry, bundle)
-        if (audit.verdict === 'block') return this.finish({ kind, id, phase: 'failed', failureReason: 'audit-blocked', audit, message: 'The audit blocked this entry' })
-        this.publish({ kind, id, phase: 'installing', message: 'Updating…', audit })
-        if (kind === 'skill') {
-          await uninstallSkill(this.dshHome, id)
-          await installSkillBundle(this.dshHome, entry, bundle)
-        } else {
-          await uninstallPreset(this.dshHome, id)
-          await installPresetBundle(this.dshHome, entry, bundle)
-        }
-        await registry.upsert(installedRecord(entry, bundle, undefined, undefined))
-        return this.finish({ kind, id, phase: 'done', audit })
+        entry = await this.entry(kind, id)
       } catch (error) {
-        return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
+        return this.finish({ kind, id, phase: 'failed', failureReason: 'download', message: describe(error) })
       }
-    }
-    if (kind !== 'skill' || entry.plugin === undefined || record.pluginPackageName === undefined || this.pluginInstaller === undefined) {
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: 'Only installed catalog entries support updates' })
-    }
-    const compatibility = assessPluginCompatibility(this.dshRuntimeVersion(), entry.plugin.compatibility)
-    if (compatibility.status === 'incompatible') {
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'incompatible', compatibility, message: compatibility.reason })
-    }
-    const audit = auditPluginSource(entry)
-    if (audit.verdict === 'block') {
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'audit-blocked', audit, compatibility, message: 'The audit blocked this entry' })
-    }
+      if (entry.plugin === undefined && (kind === 'skill' || kind === 'preset')) {
+        let bundle: DownloadedBundle
+        try {
+          bundle = await downloadBundle(entry.files ?? [], { fetchImpl: this.fetchImpl })
+          const audit = auditBundle(entry, bundle)
+          if (audit.verdict === 'block' && !allowAuditBlock) {
+            return this.finish({ kind, id, phase: 'failed', failureReason: 'audit-blocked', audit, message: 'The audit blocked this entry' })
+          }
+          this.publish({ kind, id, phase: 'installing', message: 'Updating…', audit })
+          const persist = async (): Promise<void> => { await registry.upsert(installedRecord(entry, bundle, undefined, undefined)) }
+          if (kind === 'skill') await updateSkillBundle(this.dshHome, entry, bundle, persist)
+          else await updatePresetBundle(this.dshHome, entry, bundle, persist)
+          return this.finish({ kind, id, phase: 'done', audit })
+        } catch (error) {
+          return this.finish({ kind, id, phase: 'failed', failureReason: 'install', message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
+        }
+      }
+      if (kind !== 'skill' || entry.plugin === undefined || record.pluginPackageName === undefined || this.pluginInstaller === undefined) {
+        return this.finish({ kind, id, phase: 'failed', failureReason: 'conflict', message: 'Only installed catalog entries support updates' })
+      }
+      const compatibility = assessPluginCompatibility(this.dshRuntimeVersion(), entry.plugin.compatibility)
+      if (compatibility.status === 'incompatible') {
+        return this.finish({ kind, id, phase: 'failed', failureReason: 'incompatible', compatibility, message: compatibility.reason })
+      }
+      const audit = auditPluginSource(entry)
+      if (audit.verdict === 'block' && !allowAuditBlock) {
+        return this.finish({ kind, id, phase: 'failed', failureReason: 'audit-blocked', audit, compatibility, message: 'The audit blocked this entry' })
+      }
 
-    this.publish({ kind, id, phase: 'installing', message: 'Updating…', compatibility })
-    try {
-      let pluginInstall: { packageName: string; profile: string; runtimeRestartRequired?: boolean }
-      let recoveryTransactionId: string | undefined
-      if (this.pluginRecovery === undefined) {
-        pluginInstall = await this.pluginInstaller.install(entry)
+      this.publish({ kind, id, phase: 'installing', message: 'Updating…', compatibility })
+      try {
+        let pluginInstall: { packageName: string; profile: string; runtimeRestartRequired?: boolean }
+        let recoveryTransactionId: string | undefined
+        if (this.pluginRecovery === undefined) {
+          pluginInstall = await this.pluginInstaller.install(entry)
           await registry.upsert(preservePluginEnabled(installedRecord(entry, undefined, pluginInstall, compatibility), record))
-      } else {
-        const outcome = await this.pluginRecovery.run(
-          pluginChangeInput(entry, 'update', record),
-          () => this.pluginInstaller?.install(entry) ?? Promise.reject(new Error('DSH plugin installer is not available in this build')),
-          async (result) => registry.upsert(preservePluginEnabled(installedRecord(entry, undefined, result, compatibility), record)),
-        )
-        pluginInstall = outcome.value
-        recoveryTransactionId = outcome.transactionId
+        } else {
+          const outcome = await this.pluginRecovery.run(
+            pluginChangeInput(entry, 'update', record),
+            () => this.pluginInstaller?.install(entry) ?? Promise.reject(new Error('DSH plugin installer is not available in this build')),
+            async (result) => registry.upsert(preservePluginEnabled(installedRecord(entry, undefined, result, compatibility), record)),
+          )
+          pluginInstall = outcome.value
+          recoveryTransactionId = outcome.transactionId
+        }
+        return this.finish({
+          kind,
+          id,
+          phase: 'done',
+          audit,
+          compatibility,
+          ...(recoveryTransactionId === undefined ? {} : { recoveryTransactionId }),
+          ...(pluginInstall.runtimeRestartRequired ? { runtimeRestartRequired: true } : {}),
+        })
+      } catch (error) {
+        this.reportInstallError(kind, id, 'write_failed', describe(error), { stage: 'update', failureReason: 'install' })
+        return this.finish({ kind, id, phase: 'failed', failureReason: 'install', audit, compatibility, message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
       }
-      return this.finish({
-        kind,
-        id,
-        phase: 'done',
-        audit,
-        compatibility,
-        ...(recoveryTransactionId === undefined ? {} : { recoveryTransactionId }),
-        ...(pluginInstall.runtimeRestartRequired ? { runtimeRestartRequired: true } : {}),
-      })
-    } catch (error) {
-      this.reportInstallError(kind, id, 'write_failed', describe(error), { stage: 'update', failureReason: 'install' })
-      return this.finish({ kind, id, phase: 'failed', failureReason: 'install', audit, compatibility, message: describe(error), diagnostic: diagnoseInstallFailure(error), ...logPathFromError(error) })
+    } finally {
+      this.inFlight.delete(key)
     }
   }
 

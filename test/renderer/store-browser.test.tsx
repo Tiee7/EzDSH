@@ -364,11 +364,91 @@ describe('InstalledStoreBrowser update controls', () => {
 describe('StoreBrowser audit override', () => {
   it('places the temporary override in the confirmation action row', () => {
     const markup = renderToStaticMarkup(
-      <AuditOverrideActions copy={getAppCopy('zh')} disabled={false} onInstallAnyway={() => {}} />
+      <AuditOverrideActions copy={getAppCopy('zh')} disabled={false} operation="install" onProceed={() => {}} />
     )
 
     expect(markup).toContain('class="confirm-row"')
     expect(markup).toContain('>仍要安装<')
+  })
+
+  it('continues an audit-blocked catalog update through updateAnyway', async () => {
+    const previousGlobals = {
+      window: globalThis.window,
+      document: globalThis.document,
+      navigator: globalThis.navigator,
+      HTMLElement: globalThis.HTMLElement,
+      Node: globalThis.Node,
+      Event: globalThis.Event,
+      MouseEvent: globalThis.MouseEvent,
+    }
+    const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    const domWindow = createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
+    const preset: StoreEntry = {
+      id: 'dsh-expert-mode', kind: 'preset', name: '专家模式', description: 'Expert', category: 'mode',
+      auditLevel: 'verified', version: '1.0.1', files: [],
+    }
+    const updateAnyway = vi.fn(async () => ({ kind: 'preset', id: preset.id, phase: 'done' as const }))
+    const installAnyway = vi.fn(async () => ({ kind: 'preset', id: preset.id, phase: 'done' as const }))
+    const update = vi.fn(async () => ({
+      kind: 'preset', id: preset.id, phase: 'failed' as const, failureReason: 'audit-blocked' as const,
+      audit: { verdict: 'block' as const, findings: [], externalUrls: [] },
+    }))
+    ;(domWindow as unknown as { EzDSH: unknown }).EzDSH = {
+      store: {
+        categories: vi.fn(async () => []),
+        list: vi.fn(async () => ({ entries: [preset], page: 1, pageCount: 1 })),
+        listInstalled: vi.fn(async () => ({ records: [{
+          kind: 'preset', id: preset.id, name: preset.name, version: '1.0.0', sha256: '0'.repeat(64), installedAt: '2026-09-14T00:00:00.000Z'
+        }] })),
+        entry: vi.fn(async () => preset),
+        update,
+        updateAnyway,
+        installAnyway,
+        onStateChange: vi.fn(() => () => undefined),
+      },
+    }
+    Object.assign(globalThis, {
+      window: domWindow,
+      document: domWindow.document,
+      HTMLElement: domWindow.HTMLElement,
+      Node: domWindow.Node,
+      Event: domWindow.Event,
+      MouseEvent: domWindow.MouseEvent,
+    })
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: domWindow.navigator })
+
+    const root = createRoot(domWindow.document.getElementById('root')!)
+    try {
+      await act(async () => {
+        root.render(<StoreBrowser kind="preset" copy={getAppCopy('zh')} locale="zh" />)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      const card = domWindow.document.querySelector('.entry-card') as HTMLElement | null
+      expect(card).not.toBeNull()
+      await act(async () => { card?.click() })
+      const updateButton = domWindow.document.querySelector('.detail-actions .detail-install') as HTMLElement | null
+      expect(updateButton).toBeTruthy()
+      await act(async () => {
+        updateButton?.click()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      expect(update).toHaveBeenCalledWith('preset', preset.id)
+      const override = Array.from(domWindow.document.querySelectorAll('button')).find((button) => button.textContent === '仍要更新')
+      expect(domWindow.document.body.textContent).toContain('仍要更新')
+      expect(override).toBeDefined()
+      await act(async () => { override?.click() })
+
+      expect(updateAnyway).toHaveBeenCalledWith('preset', preset.id)
+      expect(installAnyway).not.toHaveBeenCalled()
+    } finally {
+      await act(async () => { root.unmount() })
+      const { navigator: previousNavigator, ...previousGlobalsWithoutNavigator } = previousGlobals
+      Object.assign(globalThis, previousGlobalsWithoutNavigator)
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: previousNavigator })
+      if (previousActEnvironment === undefined) delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+      else (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
+    }
   })
 })
 

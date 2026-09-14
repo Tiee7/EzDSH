@@ -11,6 +11,7 @@
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import type { DownloadedBundle, DownloadedFile } from './downloader.js'
+import { replaceDirectoryWithRollback } from './directory-replacement.js'
 import { presetsDir } from './install-paths.js'
 import { normalizeLegacyPresetPersona, PRESET_ID_PATTERN } from './preset-compatibility.js'
 import type { StoreEntry } from '../../shared/store.js'
@@ -90,6 +91,30 @@ export async function installPresetBundle(
     await rm(presetRoot, { recursive: true, force: true })
     throw error
   }
+}
+
+/** Replace an installed Store preset and restore it if the registry write fails. */
+export async function updatePresetBundle(
+  dshHome: string,
+  presetEntry: StoreEntry,
+  bundle: DownloadedBundle | readonly DownloadedFile[],
+  persist: () => Promise<void>,
+): Promise<{ backupPath?: string }> {
+  if (!PRESET_ID_PATTERN.test(presetEntry.id)) {
+    throw new Error(`Preset id ${JSON.stringify(presetEntry.id)} does not match ${PRESET_ID_PATTERN.source}`)
+  }
+  const presetRoot = join(presetsDir(dshHome), presetEntry.id)
+  return replaceDirectoryWithRollback({
+    dshHome,
+    kind: 'preset',
+    id: presetEntry.id,
+    target: presetRoot,
+    prepareReplacement: async (stagingHome) => {
+      await installPresetBundle(stagingHome, presetEntry, bundle)
+      return join(presetsDir(stagingHome), presetEntry.id)
+    },
+    persist,
+  })
 }
 
 /**

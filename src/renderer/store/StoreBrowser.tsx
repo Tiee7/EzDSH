@@ -92,15 +92,16 @@ function AuditReportView({ report, copy }: { report: AuditReport; copy: AppCopy 
   )
 }
 
-export function AuditOverrideActions({ copy, disabled, onInstallAnyway }: {
+export function AuditOverrideActions({ copy, disabled, operation, onProceed }: {
   copy: AppCopy
   disabled: boolean
-  onInstallAnyway: () => void
+  operation: 'install' | 'update'
+  onProceed: () => void
 }): JSX.Element {
   return (
     <div className="confirm-row">
-      <button type="button" className="confirm-accept" disabled={disabled} onClick={onInstallAnyway}>
-        {copy.storeInstallAnyway}
+      <button type="button" className="confirm-accept" disabled={disabled} onClick={onProceed}>
+        {operation === 'update' ? copy.storeUpdateAnyway : copy.storeInstallAnyway}
       </button>
     </div>
   )
@@ -183,6 +184,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
   const [refreshErrorMessage, setRefreshErrorMessage] = useState<string | undefined>()
   const [refreshRejected, setRefreshRejected] = useState<readonly StoreCatalogRejection[]>([])
   const [runtimeRestarting, setRuntimeRestarting] = useState(false)
+  const [auditOverrideOperation, setAuditOverrideOperation] = useState<'install' | 'update'>('install')
 
   const installedById = useMemo(() => {
     const map = new Map<string, InstalledRecord>()
@@ -257,6 +259,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
 
   const installById = useCallback(async (id: string, allowAuditBlock = false): Promise<void> => {
     setInstallState(undefined)
+    setAuditOverrideOperation('install')
     try {
       const detail = await window.EzDSH.store.entry(kind, id)
       setSelected(detail)
@@ -319,8 +322,21 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
 
   const update = useCallback(async (entry: StoreEntry): Promise<void> => {
     try {
+      setAuditOverrideOperation('update')
       setInstallState({ kind, id: entry.id, phase: 'installing', message: copy.storeUpdate })
       const state = await window.EzDSH.store.update(kind, entry.id)
+      setInstallState(state)
+      if (state.phase === 'done') void refreshInstalled()
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setInstallState({ kind, id: entry.id, phase: 'failed', message })
+    }
+  }, [kind, copy, refreshInstalled])
+
+  const updateAnyway = useCallback(async (entry: StoreEntry): Promise<void> => {
+    try {
+      setInstallState({ kind, id: entry.id, phase: 'installing', message: copy.storeUpdate })
+      const state = await window.EzDSH.store.updateAnyway(kind, entry.id)
       setInstallState(state)
       if (state.phase === 'done') void refreshInstalled()
     } catch (reason) {
@@ -533,7 +549,15 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
             : null}
           {installState !== undefined && installState.id === selected.id && installState.phase === 'failed' && installState.failureReason === 'audit-blocked'
             ? (
-              <AuditOverrideActions copy={copy} disabled={busy} onInstallAnyway={() => { void installAnyway(selected) }} />
+              <AuditOverrideActions
+                copy={copy}
+                disabled={busy}
+                operation={auditOverrideOperation}
+                onProceed={() => {
+                  if (auditOverrideOperation === 'update') void updateAnyway(selected)
+                  else void installAnyway(selected)
+                }}
+              />
               )
             : null}
           <div className="detail-actions">

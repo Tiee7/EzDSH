@@ -4,6 +4,7 @@ import type { InstalledRecord, InstallState, StoreEntry } from '../../shared/sto
 import { updateAvailable } from './display.js'
 import { InstallFailureNotice } from './InstallFailureNotice.js'
 import { finishPluginRuntimeVerification, needsPluginRuntimeVerification, PluginRuntimeRestartNotice } from './PluginRuntimeRestartNotice.js'
+import { AuditOverrideActions } from './StoreBrowser.js'
 import './store.css'
 
 interface InstalledStoreBrowserProps {
@@ -31,6 +32,7 @@ function InstalledCard({
   onToggle,
   onUninstall,
   onUpdate,
+  onUpdateAnyway,
   entry,
   runtimeRestarting,
 }: {
@@ -42,6 +44,7 @@ function InstalledCard({
   readonly onToggle: (record: InstalledRecord) => void
   readonly onUninstall: (record: InstalledRecord) => void
   readonly onUpdate: (record: InstalledRecord) => void
+  readonly onUpdateAnyway: (record: InstalledRecord) => void
 }): JSX.Element {
   const plugin = isPlugin(record)
   const key = recordKey(record)
@@ -71,6 +74,9 @@ function InstalledCard({
       </div>
       {failed
         ? <InstallFailureNotice copy={copy} state={operation.state} />
+        : null}
+      {failed && operation.state.failureReason === 'audit-blocked'
+        ? <AuditOverrideActions copy={copy} disabled={busy} operation="update" onProceed={() => { onUpdateAnyway(record) }} />
         : null}
       {operation?.key === key && operation.state.phase === 'installing'
         ? <p className="installed-card-progress" role="status">{operation.state.message ?? copy.storePhaseInstalling}</p>
@@ -157,7 +163,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
     [records],
   )
 
-  const operate = useCallback(async (record: InstalledRecord, action: 'toggle' | 'uninstall' | 'update'): Promise<void> => {
+  const operate = useCallback(async (record: InstalledRecord, action: 'toggle' | 'uninstall' | 'update' | 'update-anyway'): Promise<void> => {
     if (runtimeRestarting) return
     const key = recordKey(record)
     setOperation({
@@ -168,7 +174,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
         phase: 'installing',
         message: action === 'uninstall'
           ? copy.storeUninstalling
-          : action === 'update' ? copy.storeUpdate
+          : action === 'update' || action === 'update-anyway' ? copy.storeUpdate
           : record.enabled === false ? copy.storeEnablingPlugin : copy.storeDisablingPlugin,
       },
     })
@@ -177,6 +183,8 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
         ? await window.EzDSH.store.uninstall(record.kind, record.id)
         : action === 'update'
           ? await window.EzDSH.store.update(record.kind, record.id)
+          : action === 'update-anyway'
+            ? await window.EzDSH.store.updateAnyway(record.kind, record.id)
           : await window.EzDSH.store.setEnabled(record.kind, record.id, record.enabled === false)
       setOperation({ key, state })
       if (state.phase === 'done') await load()
@@ -231,6 +239,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
                   runtimeRestarting={runtimeRestarting}
                    onToggle={(item) => { void operate(item, 'toggle') }}
                    onUpdate={(item) => { void operate(item, 'update') }}
+                   onUpdateAnyway={(item) => { void operate(item, 'update-anyway') }}
                   onUninstall={(item) => { void operate(item, 'uninstall') }}
                 />
               ))}
@@ -253,6 +262,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
                   runtimeRestarting={runtimeRestarting}
                    onToggle={(item) => { void operate(item, 'toggle') }}
                    onUpdate={(item) => { void operate(item, 'update') }}
+                   onUpdateAnyway={(item) => { void operate(item, 'update-anyway') }}
                   onUninstall={(item) => { void operate(item, 'uninstall') }}
                 />
               ))}

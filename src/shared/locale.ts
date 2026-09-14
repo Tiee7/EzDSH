@@ -648,6 +648,7 @@ export interface AppCopy {
   storeConfirmTitle: string
   storeConfirmInstall: string
   storeInstallAnyway: string
+  storeUpdateAnyway: string
   storeCancel: string
   storeRuntimeRestartRequired: string
   storeRuntimeRestartNow: string
@@ -1635,6 +1636,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeConfirmTitle: '安全检测报告',
     storeConfirmInstall: '确认安装',
     storeInstallAnyway: '仍要安装',
+    storeUpdateAnyway: '仍要更新',
     storeCancel: '取消',
     storeRuntimeRestartRequired: '插件已安装，需要重启 Runtime 后才能生效。',
     storeRuntimeRestartNow: '立即重启',
@@ -2621,6 +2623,7 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     storeConfirmTitle: 'Security audit report',
     storeConfirmInstall: 'Confirm install',
     storeInstallAnyway: 'Install anyway',
+    storeUpdateAnyway: 'Update anyway',
     storeCancel: 'Cancel',
     storeRuntimeRestartRequired: 'The plugin is installed and will be active after restarting Runtime.',
     storeRuntimeRestartNow: 'Restart now',

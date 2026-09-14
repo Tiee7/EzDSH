@@ -1470,6 +1470,14 @@ function registerIpcHandlers(): void {
       return failure(error)
     }
   })
+  ipcMain.handle('store:update-anyway', async (_event, kind: StoreKind, id: string): Promise<IpcResult<Awaited<ReturnType<StoreService['updateAnyway']>>>> => {
+    try {
+      if (storeService === undefined) throw new Error('Store service is not ready')
+      return success(await storeService.updateAnyway(kind, id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
   ipcMain.handle('store:uninstall', async (_event, kind: StoreKind, id: string): Promise<IpcResult<Awaited<ReturnType<StoreService['uninstall']>>>> => {
     try {
       if (storeService === undefined) throw new Error('Store service is not ready')
