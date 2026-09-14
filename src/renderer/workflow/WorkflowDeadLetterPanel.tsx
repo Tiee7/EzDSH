@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EzDSHBridge } from '../../shared/contracts.js'
 import type { AppLocale } from '../../shared/locale.js'
-import { workflowRecoveryReasonText, type WorkflowDeadLetterPage, type WorkflowRecoveryPreview, type WorkflowRecoveryExecuteRequest, type WorkflowRecoveryResult } from '../../shared/workflow-dead-letter.js'
+import type { WorkflowDeadLetterPage, WorkflowRecoveryPreview, WorkflowRecoveryExecuteRequest, WorkflowRecoveryResult } from '../../shared/workflow-dead-letter.js'
+import { failureCategoryLabel, recoveryDecisionLabel, recoveryOutcomeLabel, recoveryReasonLabel, runStateLabel } from './workflow-evidence-labels.js'
 
 interface Props { workflowId?: string; environmentId?: string; locale?: AppLocale; active?: boolean }
 
@@ -78,9 +79,9 @@ function WorkflowDeadLetterTarget({ workflowId, environmentId, locale = 'zh', ac
     finally { finish(id) }
   }
   const resultText = (result: WorkflowRecoveryResult): string => {
-    if (result.status === 'queued') return en ? 'Queued for execution; completion is not confirmed' : '已排队等待执行，尚未确认完成'
-    if (result.status === 'already-accepted') return en ? 'Already accepted; check the current run state' : '此请求已接受，请查看运行当前状态'
-    return `${result.status}: ${workflowRecoveryReasonText[result.reason]}`
+    const outcome = recoveryOutcomeLabel(result.status, locale)
+    if (result.status === 'queued' || result.status === 'already-accepted') return outcome
+    return `${outcome}: ${recoveryReasonLabel(result.reason, locale)}`
   }
   return <section className="workflow-panel-card workflow-dead-letter-panel">
     <button type="button" data-dlq-action="toggle" aria-expanded={open} disabled={!active || busy} onClick={() => { setOpen(!open); if (!open) void load() }}>{en ? 'Dead-letter runs' : '异常运行与恢复'}</button>
@@ -102,7 +103,7 @@ function WorkflowDeadLetterTarget({ workflowId, environmentId, locale = 'zh', ac
           return <tr key={item.runId}>
             <td><input type="checkbox" aria-label={item.runId} value={item.runId} checked={selected.includes(item.runId)} disabled={busy || selected.length >= 20 && !selected.includes(item.runId)} onChange={(event) => select(item.runId, event.target.checked)} /></td>
             <td><code>{item.runId}</code><div>{item.workflowId} · v{item.workflowRevision}</div><div>{item.environmentId ?? (en ? 'Local' : '本地')} · {item.releaseId ?? (en ? 'Saved revision' : '保存版本')}</div>{item.traceId === undefined ? null : <div>{item.traceId}</div>}</td>
-            <td>{item.status}<div>{workflowRecoveryReasonText[decision.reason]}</div><small>{item.failureCategory}</small>{item.retentionHold ? <div>{en ? 'Audit evidence retained' : '审计证据保留中'}</div> : null}</td>
+            <td>{runStateLabel(item.status, locale)} · {recoveryDecisionLabel(decision.decision, locale)}<div>{recoveryReasonLabel(decision.reason, locale)}</div><small>{failureCategoryLabel(item.failureCategory, locale)}</small>{item.retentionHold ? <div>{en ? 'Audit evidence retained' : '审计证据保留中'}</div> : null}</td>
             <td role={result === undefined ? undefined : 'status'}>{result === undefined ? '—' : resultText(result)}</td>
           </tr>
         })}</tbody>

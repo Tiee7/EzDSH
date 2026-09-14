@@ -230,7 +230,7 @@ describe('release operational health', () => {
     ;(globalThis as { EzDSH?: unknown }).EzDSH = bridge
     const root = createRoot(domWindow.document.getElementById('root')!)
     vi.useFakeTimers()
-    const render = async (target = workflow, active = true): Promise<void> => { await act(async () => { root.render(<workflowPage.WorkflowReleasePanel copy={getAppCopy('zh')} locale="en" workflow={target} active={active} />) }) }
+    const render = async (target = workflow, active = true, locale: 'zh' | 'en' = 'en'): Promise<void> => { await act(async () => { root.render(<workflowPage.WorkflowReleasePanel copy={getAppCopy(locale)} locale={locale} workflow={target} active={active} />) }) }
     await render()
     let unmounted = false
     return {
@@ -261,6 +261,55 @@ describe('release operational health', () => {
   })
 
   const connectorEvidence = (state: WorkflowConnectorHealthEvidence['state'] = 'unchecked'): WorkflowConnectorHealthEvidence => ({ workflowId: workflow.id, environmentId: environment.id, connectorId: 'authorized-api', releaseId: 'health-release', state, reason: state === 'unchecked' ? 'not-checked' : 'status-expected', ...(state === 'reachable' ? { status: 200, observedAt: '2026-09-12T00:02:00Z', expiresAt: '2026-09-12T00:03:00Z' } : {}) })
+  it.each(['zh', 'en'] as const)('preserves sanitized rate-limit feedback across uncached health reads in %s and clears it on the next check', async (locale) => {
+    const view = await mount(vi.fn(async () => ({ ...healthy(), connectors: [connectorEvidence()] })))
+    const feedback = locale === 'en' ? 'Too many checks. Please try again later.' : '检查过于频繁，请稍后重试。'
+    try {
+      await view.render(workflow, true, locale)
+      view.bridge.workflowReleases.checkConnectorHealth.mockResolvedValue({ ...connectorEvidence('blocked'), reason: 'rate-limited', error: 'SECRET-LIMIT' } as WorkflowConnectorHealthEvidence)
+      await view.click(locale === 'en' ? 'Check authorized-api' : '检查 authorized-api')
+      expect(view.text()).toContain(feedback)
+      await view.tick()
+      expect(view.text()).toContain(feedback)
+      expect(view.text()).not.toContain('SECRET-LIMIT')
+      view.bridge.workflowReleases.checkConnectorHealth.mockResolvedValue(connectorEvidence('reachable'))
+      await view.click(locale === 'en' ? 'Check authorized-api' : '检查 authorized-api')
+      expect(view.text()).not.toContain(feedback)
+    } finally { await view.cleanup() }
+  })
+
+  it.each(['target', 'hidden', 'unmount', 'foreign-result'] as const)('does not retain rate-limit feedback after %s', async (change) => {
+    const view = await mount(vi.fn(async (query) => ({ ...healthy(query.workflowId), connectors: [connectorEvidence()] })))
+    const pending = deferred<WorkflowConnectorHealthEvidence>()
+    try {
+      view.bridge.workflowReleases.checkConnectorHealth.mockReturnValue(pending.promise)
+      await view.click('Check authorized-api')
+      if (change === 'target') { await view.render(createDefaultWorkflow('Other')); await view.render(workflow) }
+      if (change === 'hidden') await view.render(workflow, false)
+      if (change === 'unmount') await view.unmount()
+      await act(async () => { pending.resolve({ ...connectorEvidence('blocked'), reason: 'rate-limited', ...(change === 'foreign-result' ? { connectorId: 'foreign-api' } : {}) }) })
+      expect(view.text()).not.toContain('Too many checks. Please try again later.')
+    } finally { pending.resolve(connectorEvidence()); await view.cleanup() }
+  })
+
+  it.each(['zh', 'en'] as const)('localizes connector state and reason codes with a safe unknown fallback in %s', async (locale) => {
+    const states = ['disabled', 'unchecked', 'checking', 'stale', 'reachable', 'failed', 'blocked'] as const
+    const stateLabels = locale === 'en' ? ['Disabled', 'Not checked', 'Checking', 'Expired', 'Reachable', 'Failed', 'Blocked'] : ['已关闭', '尚未检查', '检查中', '已过期', '可连接', '检查失败', '已阻止']
+    const reasons = ['probe-disabled', 'not-checked', 'checking', 'expired', 'status-expected', 'unexpected-status', 'redirect-blocked', 'timeout', 'dns-failed', 'request-failed', 'access-denied', 'configuration-invalid', 'credential-unavailable', 'credential-scope-denied', 'egress-blocked', 'target-changed', 'rate-limited'] as const
+    const reasonLabels = locale === 'en' ? ['Health check disabled', 'No check has run', 'Check in progress', 'Check evidence expired', 'Expected HTTP status received', 'Unexpected HTTP status received', 'Redirect blocked', 'Check timed out', 'DNS lookup failed', 'Request failed', 'Access denied', 'Invalid configuration', 'Credential unavailable', 'Credential scope denied', 'Outbound access blocked', 'Check target changed', 'Too many checks. Please try again later.'] : ['健康检查已关闭', '尚未执行检查', '正在检查', '检查证据已过期', '返回预期 HTTP 状态码', '返回非预期 HTTP 状态码', '重定向已阻止', '检查超时', '域名解析失败', '请求失败', '访问被拒绝', '配置无效', '凭证不可用', '凭证权限范围不允许', '对外访问已阻止', '检查目标已变化', '检查过于频繁，请稍后重试。']
+    const connectors = reasons.map((reason, i) => ({ ...connectorEvidence(states[i % states.length]!), connectorId: `api-${i}`, reason }))
+    connectors.push({ ...connectorEvidence(), connectorId: 'unknown-api', state: 'SECRET-STATE', reason: 'toString' } as never)
+    const view = await mount(vi.fn(async () => ({ ...healthy(), connectors })))
+    try {
+      await view.render(workflow, true, locale)
+      const text = view.document.querySelector('.workflow-connector-health')!.textContent!
+      for (const label of [...stateLabels, ...reasonLabels]) expect(text).toContain(label)
+      expect(text).toContain(locale === 'en' ? 'Unknown state' : '未知状态')
+      expect(text).toContain(locale === 'en' ? 'Details unavailable' : '详情不可用')
+      expect(text).not.toContain('SECRET-STATE'); expect(text).not.toContain('toString')
+      for (const reason of reasons.filter((reason) => reason.includes('-'))) expect(text).not.toContain(reason)
+    } finally { await view.cleanup() }
+  })
   it.each(['zh', 'en'] as const)('loads, localizes and saves opt-in connector probe settings in %s', async (locale) => {
     const view = await mount()
     const container = view.document.createElement('div'); view.document.body.appendChild(container)
@@ -295,17 +344,17 @@ describe('release operational health', () => {
     const getHealth = vi.fn(async () => ({ ...healthy(), connectors: [connectorEvidence()] }))
     const view = await mount(getHealth)
     try {
-      expect(view.text()).toContain('authorized-api'); expect(view.text()).toContain('unchecked')
+      expect(view.text()).toContain('authorized-api'); expect(view.text()).toContain('Not checked')
       expect(view.text()).toContain('Only checks the configured GET path; does not prove writes or business delivery.')
       await view.tick(); expect(view.bridge.workflowReleases.checkConnectorHealth).not.toHaveBeenCalled()
       const pending = deferred<WorkflowConnectorHealthEvidence>()
       view.bridge.workflowReleases.checkConnectorHealth.mockReturnValue(pending.promise)
       await view.click('Check authorized-api')
-      expect(view.text()).toContain('checking')
+      expect(view.text()).toContain('Checking')
       expect(view.bridge.workflowReleases.checkConnectorHealth).toHaveBeenCalledWith({ workflowId: workflow.id, environmentId: environment.id, connectorId: 'authorized-api' })
       getHealth.mockResolvedValue({ ...healthy(), connectors: [connectorEvidence('reachable')] })
       await act(async () => { pending.resolve(connectorEvidence('reachable')) })
-      expect(view.text()).toContain('reachable'); expect(view.text()).toContain('2026-09-12T00:03:00Z')
+      expect(view.text()).toContain('Reachable'); expect(view.text()).toContain('2026-09-12T00:03:00Z')
       expect(view.text()).toContain('Health: healthy')
     } finally { await view.cleanup() }
   })
@@ -323,7 +372,7 @@ describe('release operational health', () => {
       const before = getHealth.mock.calls.length
       await act(async () => { pending.resolve(connectorEvidence('reachable')) })
       expect(getHealth).toHaveBeenCalledTimes(before)
-      expect(view.text()).not.toContain('reachable')
+      expect(view.text()).not.toContain('Reachable')
     } finally { pending.resolve(connectorEvidence('reachable')); await view.cleanup() }
   })
 

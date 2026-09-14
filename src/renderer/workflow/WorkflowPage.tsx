@@ -77,6 +77,7 @@ import {
 } from '../../shared/workflow.js'
 import { WorkflowGenerationPage } from './WorkflowGenerationPage.js'
 import { WorkflowDeadLetterPanel } from './WorkflowDeadLetterPanel.js'
+import { connectorReasonLabel, connectorStateLabel } from './workflow-evidence-labels.js'
 import './workflow.css'
 
 export { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
@@ -119,6 +120,7 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
   const [healthError, setHealthError] = useState(false)
   const [checkingConnector, setCheckingConnector] = useState<string>()
   const [connectorCheckError, setConnectorCheckError] = useState(false)
+  const [rateLimitedConnector, setRateLimitedConnector] = useState<{ connectorId: string; releaseId?: string }>()
   const connectorCheckGenerationRef = useRef(0)
   const [documentVisible, setDocumentVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden')
   const visible = active && documentVisible
@@ -244,6 +246,7 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     connectorCheckGenerationRef.current += 1
     setCheckingConnector(undefined)
     setConnectorCheckError(false)
+    setRateLimitedConnector(undefined)
     setHealth(undefined)
     setHealthError(false)
     refreshHealth()
@@ -265,10 +268,14 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
     const ownsCheck = (): boolean => healthEnabledRef.current && generation === connectorCheckGenerationRef.current && ownsReleaseTarget(targetWorkflowId, targetEnvironmentId)
     setCheckingConnector(connectorId)
     setConnectorCheckError(false)
+    setRateLimitedConnector(undefined)
     try {
       const result = await bridge.workflowReleases.checkConnectorHealth({ workflowId: targetWorkflowId, environmentId: targetEnvironmentId, connectorId })
       if (!ownsCheck()) return
       if (!result || result.workflowId !== targetWorkflowId || result.environmentId !== targetEnvironmentId || result.connectorId !== connectorId) throw new Error('Connector target mismatch')
+      // Rate limiting is request feedback, not cached reachability evidence.
+      // Keep only its identity and render fixed text against the fresh snapshot.
+      if (result.reason === 'rate-limited') setRateLimitedConnector({ connectorId, releaseId: result.releaseId })
       // Re-read Main's current authorized list/cache rather than merging a late
       // response into an obsolete release or connector configuration.
     } catch {
@@ -392,7 +399,8 @@ export function WorkflowReleasePanel({ copy, workflow, workflows = [], locale = 
       <p className="workflow-muted">{locale === 'en' ? 'Only checks the configured GET path; does not prove writes or business delivery.' : '只验证指定 GET 检查路径，不证明 write 或业务交付。'}</p>
       {connectorCheckError ? <p className="workflow-error" role="alert">{locale === 'en' ? 'Connector check unavailable. Retry explicitly.' : '连接器检查不可用，请手动重试。'}</p> : null}
       {(health?.connectors ?? []).filter((connector) => connector.workflowId === selectedWorkflow?.id && connector.environmentId === environmentId && health?.release.state === 'active' && connector.releaseId === health.release.id).map((connector) => <div className="workflow-release-row" key={connector.connectorId}>
-        <div><strong>{connector.connectorId}</strong> · {checkingConnector === connector.connectorId ? 'checking' : connector.state} · {connector.reason}{connector.status === undefined ? '' : ` · HTTP ${connector.status}`}
+        <div><strong>{connector.connectorId}</strong> · {connectorStateLabel(checkingConnector === connector.connectorId ? 'checking' : connector.state, locale)} · {connectorReasonLabel(connector.reason, locale)}{connector.status === undefined ? '' : ` · HTTP ${connector.status}`}
+          {rateLimitedConnector?.connectorId === connector.connectorId && rateLimitedConnector.releaseId === connector.releaseId ? <p role="status">{connectorReasonLabel('rate-limited', locale)}</p> : null}
           <div><small>{locale === 'en' ? 'Observed' : '观测'}: {connector.observedAt ?? '—'} · {locale === 'en' ? 'Expires' : '过期'}: {connector.expiresAt ?? '—'}</small></div>
         </div>
         <button type="button" onClick={() => void checkConnector(connector.connectorId)} disabled={!visible || checkingConnector !== undefined || connector.state === 'disabled' || connector.state === 'checking'}>{locale === 'en' ? `Check ${connector.connectorId}` : `检查 ${connector.connectorId}`}</button>
