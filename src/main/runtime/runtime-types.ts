@@ -4,6 +4,8 @@ export type RuntimeMode = 'normal' | 'safe' | 'isolation'
 export interface RuntimeSnapshot {
   phase: RuntimePhase
   mode: RuntimeMode
+  /** Version of the DSH Runtime selected for launch. */
+  version?: string
   pid?: number
   port?: number
   url?: string

@@ -161,7 +161,7 @@ export class RuntimeManager {
       stopTimeoutMs: config.stopTimeoutMs ?? 5_000,
       portRetryCount: config.portRetryCount ?? 20
     }
-    this.current = initialSnapshot(config.layout)
+    this.current = { ...initialSnapshot(config.layout), version: config.runtimeVersion }
     this.launchContext = { mode: 'normal', dshHome: config.layout.harness, profile: 'web' }
   }
 

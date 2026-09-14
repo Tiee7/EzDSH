@@ -7,11 +7,12 @@ interface RuntimeSectionProps {
   runtime: RuntimeSnapshot | undefined
 }
 
-/** Runtime status row: phase, port, restart, log, and data directory actions. */
+/** Runtime status row: version, phase, port, restart, log, and data directory actions. */
 export function RuntimeSection({ copy, runtime }: RuntimeSectionProps): JSX.Element {
   const [restarting, setRestarting] = useState(false)
   const [error, setError] = useState<string>()
   const phase = runtime?.phase
+  const version = runtime?.version?.trim()
   const ready = phase === 'ready'
   const phaseLabel = phase === 'starting'
     ? copy.starting
@@ -40,6 +41,7 @@ export function RuntimeSection({ copy, runtime }: RuntimeSectionProps): JSX.Elem
         <p className="settings-label">{copy.settingsRuntimeSection}</p>
         <p className="settings-hint">
           <span className={`settings-dot ${ready ? 'settings-dot-ready' : ''}`} aria-hidden="true" />
+          DSH Runtime{version && version !== 'unknown' ? ` v${version}` : ''}{' · '}
           {phaseLabel}
           {runtime?.port !== undefined ? ` · ${copy.settingsRuntimePort} ${runtime.port}` : ''}
         </p>
