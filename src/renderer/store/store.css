@@ -1035,13 +1035,25 @@
 }
 
 .detail-toggle-plugin {
-  border: 1px solid var(--ezdsh-active-border);
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   border-radius: 8px;
   padding: 8px 14px;
-  background: var(--ezdsh-input-background);
-  color: var(--ezdsh-button-text);
+  background: color-mix(in srgb, currentColor 12%, transparent);
   font-size: 13px;
   cursor: pointer;
+}
+
+.detail-enable-plugin {
+  color: var(--ezdsh-accent-green);
+}
+
+.detail-disable-plugin {
+  color: var(--ezdsh-accent-red);
+}
+
+.detail-toggle-plugin:hover:not(:disabled) {
+  border-color: color-mix(in srgb, currentColor 55%, transparent);
+  background: color-mix(in srgb, currentColor 18%, transparent);
 }
 
 .detail-actions {

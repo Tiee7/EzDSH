@@ -549,9 +549,9 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
                 )
               : (
                 <>
-                  {updateAvailable(selectedInstalled, selected)
+                  {updateAvailable(selectedInstalled, selected) && !busy && !runtimeRestarting
                     ? (
-                      <button className="detail-install" disabled={busy || runtimeRestarting} onClick={() => { void update(selected) }}>
+                      <button className="detail-install" onClick={() => { void update(selected) }}>
                         {copy.storeUpdate}
                       </button>
                       )
@@ -559,7 +559,7 @@ export function StoreBrowser({ kind, fixedCategory, copy, locale, deepLinkTarget
                   {selected.plugin !== undefined && selectedInstalled.pluginPackageName !== undefined
                     ? (
                       <button
-                        className="detail-toggle-plugin"
+                        className={`detail-toggle-plugin ${selectedInstalled.enabled === false ? 'detail-enable-plugin' : 'detail-disable-plugin'}`}
                         disabled={busy || runtimeRestarting}
                         onClick={() => { void setPluginEnabled(selected, selectedInstalled.enabled === false) }}
                       >

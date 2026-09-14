@@ -32,18 +32,20 @@ function InstalledCard({
   onUninstall,
   onUpdate,
   entry,
+  runtimeRestarting,
 }: {
   readonly record: InstalledRecord
   readonly copy: AppCopy
   readonly operation?: InstalledOperation
   readonly entry?: StoreEntry
+  readonly runtimeRestarting: boolean
   readonly onToggle: (record: InstalledRecord) => void
   readonly onUninstall: (record: InstalledRecord) => void
   readonly onUpdate: (record: InstalledRecord) => void
 }): JSX.Element {
   const plugin = isPlugin(record)
   const key = recordKey(record)
-  const busy = operation?.key === key && operation.state.phase === 'installing'
+  const busy = runtimeRestarting || (operation?.key === key && operation.state.phase === 'installing')
   const failed = operation?.key === key && operation.state.phase === 'failed'
   const updateReady = entry !== undefined && updateAvailable(record, entry)
   return (
@@ -74,12 +76,16 @@ function InstalledCard({
         ? <p className="installed-card-progress" role="status">{operation.state.message ?? copy.storePhaseInstalling}</p>
         : null}
       <div className="installed-card-actions">
-         <button type="button" className="detail-update" disabled={busy || !updateReady} onClick={() => { onUpdate(record) }}>
-           {copy.storeUpdate}{updateReady ? ` · v${entry?.version}` : ''}
-         </button>
+        {updateReady && !busy
+          ? (
+            <button type="button" className="detail-update" onClick={() => { onUpdate(record) }}>
+              {copy.storeUpdate}{` · v${entry.version}`}
+            </button>
+            )
+          : null}
         {plugin
           ? (
-            <button type="button" className="detail-toggle-plugin" disabled={busy} onClick={() => { onToggle(record) }}>
+            <button type="button" className={`detail-toggle-plugin ${record.enabled === false ? 'detail-enable-plugin' : 'detail-disable-plugin'}`} disabled={busy} onClick={() => { onToggle(record) }}>
               {record.enabled === false ? copy.storeEnablePlugin : copy.storeDisablePlugin}
             </button>
             )
@@ -222,6 +228,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
                   copy={copy}
                   operation={operation}
                   entry={entriesById.get(record.id)}
+                  runtimeRestarting={runtimeRestarting}
                    onToggle={(item) => { void operate(item, 'toggle') }}
                    onUpdate={(item) => { void operate(item, 'update') }}
                   onUninstall={(item) => { void operate(item, 'uninstall') }}
@@ -243,6 +250,7 @@ export function InstalledStoreBrowser({ copy, onBack }: InstalledStoreBrowserPro
                   copy={copy}
                   operation={operation}
                   entry={entriesById.get(record.id)}
+                  runtimeRestarting={runtimeRestarting}
                    onToggle={(item) => { void operate(item, 'toggle') }}
                    onUpdate={(item) => { void operate(item, 'update') }}
                   onUninstall={(item) => { void operate(item, 'uninstall') }}
