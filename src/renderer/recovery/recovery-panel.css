@@ -331,9 +331,15 @@
 }
 
 .recovery-link {
-  border: 1px solid transparent;
+  border: 1px solid rgba(185, 202, 255, 0.45);
   background: transparent;
-  color: #b9caff;
+  color: #dce7ff;
+}
+
+.recovery-link:hover:not(:disabled),
+.recovery-link:focus-visible:not(:disabled) {
+  border-color: rgba(185, 202, 255, 0.82);
+  color: #ffffff;
 }
 
 .recovery-safe-mode {
