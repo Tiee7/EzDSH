@@ -319,4 +319,33 @@ describe('WorkItemStore', () => {
       commandId: dispatched.commandId, replayed: true
     })
   })
+
+  it('rejects an object with a Proxy prototype without traversing that prototype', async () => {
+    const store = new WorkItemStore(await temporaryStateDirectory())
+    await store.initialize()
+    const created = await store.create(request)
+    let prototypeTrapCalls = 0
+    const proxyPrototype = new Proxy({}, {
+      getPrototypeOf(target) {
+        prototypeTrapCalls += 1
+        return Reflect.getPrototypeOf(target)
+      }
+    })
+    const suspicious = Object.create(proxyPrototype) as Record<string, unknown>
+    suspicious.value = 'opaque'
+    const dispatch = (input: unknown) => store.recordDispatchIntent({
+      requestId: 'proxy-prototype',
+      taskId: created.task.id,
+      expectedRevision: 1,
+      executor: { kind: 'employee', employeeId: 'researcher' },
+      mode: 'initial',
+      input
+    })
+
+    await expect(dispatch(suspicious)).rejects.toMatchObject({
+      name: 'WorkItemStoreInputError', code: 'UNSUPPORTED_INPUT', path: '$.input'
+    })
+    expect(prototypeTrapCalls).toBe(0)
+    await expect(dispatch({ value: 'opaque' })).resolves.toMatchObject({ replayed: false })
+  })
 })

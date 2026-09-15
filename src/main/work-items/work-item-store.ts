@@ -142,11 +142,11 @@ class CanonicalEncoder {
         .map((key) => this.property(value, key, `${path}.${key}`))
       return `a:${reference}:[${items.join(',')}]:{${extras.join(',')}}`
     }
-    if (value instanceof Date) {
+    if (utilTypes.isDate(value)) {
       assertExactBuiltin(value, Date.prototype, [], path)
       return `d:${reference}:${dateGetTime.call(value).toString()}`
     }
-    if (value instanceof RegExp) {
+    if (utilTypes.isRegExp(value)) {
       assertExactBuiltin(value, RegExp.prototype, ['lastIndex'], path)
       const lastIndex = Object.getOwnPropertyDescriptor(value, 'lastIndex')
       if (!lastIndex || !('value' in lastIndex) || !regexpSource || !regexpFlags) {
@@ -154,20 +154,20 @@ class CanonicalEncoder {
       }
       return `x:${reference}:${JSON.stringify(regexpSource.call(value))}:${JSON.stringify(regexpFlags.call(value))}:${this.encode(lastIndex.value, `${path}.lastIndex`)}`
     }
-    if (value instanceof Map) {
+    if (utilTypes.isMap(value)) {
       assertExactBuiltin(value, Map.prototype, [], path)
       const entries = Array.from(mapEntries.call(value), ([key, item], index) =>
         `${this.encode(key, `${path}.<key:${index}>`)}=>${this.encode(item, `${path}.<value:${index}>`)}`
       )
       return `m:${reference}:[${entries.join(',')}]`
     }
-    if (value instanceof Set) {
+    if (utilTypes.isSet(value)) {
       assertExactBuiltin(value, Set.prototype, [], path)
       return `t:${reference}:[${Array.from(setValues.call(value), (item, index) =>
         this.encode(item, `${path}.<value:${index}>`)
       ).join(',')}]`
     }
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Error) {
+    if (utilTypes.isAnyArrayBuffer(value) || ArrayBuffer.isView(value) || utilTypes.isNativeError(value)) {
       throw new WorkItemStoreInputError(path, `${path} has a structured-clone type without safe canonical support`)
     }
 
