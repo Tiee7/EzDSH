@@ -27,6 +27,11 @@ export interface EmployeeRunCreateInput {
   record: EmployeeRunRecord
 }
 
+export interface EmployeeRunTransitionResult {
+  run: EmployeeRunRecord
+  updated: boolean
+}
+
 export class EmployeeRunStoreConflictError extends Error {
   readonly code: 'COMMAND_ID_CONFLICT' | 'RUN_NOT_FOUND'
 
@@ -137,18 +142,27 @@ export class EmployeeRunStore {
   }
 
   async update(runId: string, update: EmployeeRunUpdate): Promise<EmployeeRunRecord> {
+    return (await this.transition(runId, () => update)).run
+  }
+
+  async transition(
+    runId: string,
+    decide: (current: EmployeeRunRecord) => EmployeeRunUpdate | undefined,
+  ): Promise<EmployeeRunTransitionResult> {
     return this.mutate(async () => {
       const current = ownValue(this.state.runs, runId)
       if (current === undefined) {
         throw new EmployeeRunStoreConflictError('RUN_NOT_FOUND', `Employee run ${runId} was not found`)
       }
+      const update = decide(clone(current))
+      if (update === undefined) return { run: clone(current), updated: false }
       const nextRun: EmployeeRunRecord = { ...clone(current), ...clone(update) }
       const next = clone(this.state)
       setOwnValue(next.runs, runId, nextRun)
       await this.commit(next)
       const result = clone(nextRun)
       this.emit({ kind: 'updated', run: result })
-      return result
+      return { run: result, updated: true }
     })
   }
 

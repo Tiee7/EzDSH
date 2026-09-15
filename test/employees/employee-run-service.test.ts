@@ -257,6 +257,76 @@ describe('EmployeeRunService', () => {
     await vi.waitFor(async () => expect((await service.get(started.run.runId))?.status).toBe('completed'))
   })
 
+  it('never submits a prompt after queued cancellation wins the dispatch claim race', async () => {
+    const client: EmployeeRunClient = {
+      createSession: vi.fn().mockResolvedValue({ sessionId: 'session-1' }),
+      sendPrompt: vi.fn().mockResolvedValue({ text: '不应执行' }),
+    }
+    const { service, store } = await createRunService({ client })
+    const dispatchRead = deferred<void>()
+    const resumeDispatch = deferred<void>()
+    const realGet = store.get.bind(store)
+    vi.spyOn(store, 'get').mockImplementationOnce(async (runId) => {
+      const snapshot = await realGet(runId)
+      dispatchRead.resolve()
+      await resumeDispatch.promise
+      return snapshot
+    })
+    const started = await service.start(request())
+    await dispatchRead.promise
+
+    const cancellation = await service.cancel(started.run.runId, '排队时取消')
+    expect(cancellation).toMatchObject({
+      status: 'cancelled',
+      dispatchStage: 'cancelled-before-dispatch',
+    })
+    resumeDispatch.resolve()
+    await vi.waitFor(() => expect(service.listSessionLocks()).toEqual([]))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(client.sendPrompt).not.toHaveBeenCalled()
+    expect(await realGet(started.run.runId)).toMatchObject({
+      status: 'cancelled',
+      dispatchStage: 'cancelled-before-dispatch',
+    })
+  })
+
+  it('returns the durable terminal record when completion wins a stale cancel race', async () => {
+    const response = deferred<{ text: string }>()
+    const client: EmployeeRunClient = {
+      createSession: vi.fn().mockResolvedValue({ sessionId: 'session-1' }),
+      sendPrompt: vi.fn(() => response.promise),
+      cancelSession: vi.fn().mockResolvedValue(undefined),
+    }
+    const { service, store } = await createRunService({ client })
+    const started = await service.start(request())
+    await vi.waitFor(async () => expect((await service.get(started.run.runId))?.status).toBe('running'))
+    const cancelRead = deferred<void>()
+    const resumeCancel = deferred<void>()
+    const realGet = store.get.bind(store)
+    vi.spyOn(store, 'get').mockImplementationOnce(async (runId) => {
+      const snapshot = await realGet(runId)
+      cancelRead.resolve()
+      await resumeCancel.promise
+      return snapshot
+    })
+
+    const cancellationPromise = service.cancel(started.run.runId, '迟到的取消')
+    await cancelRead.promise
+    response.resolve({ text: '先完成' })
+    await vi.waitFor(async () => expect(await realGet(started.run.runId)).toMatchObject({
+      status: 'completed',
+      output: '先完成',
+    }))
+    resumeCancel.resolve()
+    const cancellation = await cancellationPromise
+
+    expect(cancellation).toMatchObject({ status: 'completed', output: '先完成' })
+    expect(await realGet(started.run.runId)).toMatchObject({ status: 'completed', output: '先完成' })
+    expect(client.cancelSession).not.toHaveBeenCalled()
+    expect(service.listSessionLocks()).toEqual([])
+  })
+
   it('does not miss a terminal update that lands while terminal waiting begins', async () => {
     const response = deferred<{ text: string }>()
     const client: EmployeeRunClient = {

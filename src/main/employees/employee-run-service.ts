@@ -83,33 +83,38 @@ export class EmployeeRunService {
 
   async cancel(runId: string, reason = 'Employee run cancellation requested'): Promise<EmployeeRunRecord> {
     this.assertInitialized()
-    const current = await this.requireRun(runId)
-    if (TERMINAL_STATUSES.has(current.status)) return current
+    await this.requireRun(runId)
     const now = new Date().toISOString()
-    if (current.status === 'queued' && current.dispatchStage === 'recorded') {
-      const cancelled = await this.options.store.update(runId, {
-        status: 'cancelled',
-        dispatchStage: 'cancelled-before-dispatch',
+    const transition = await this.options.store.transition(runId, (current) => {
+      if (TERMINAL_STATUSES.has(current.status) || current.status === 'cancelling') return undefined
+      if (current.status === 'queued' && current.dispatchStage === 'recorded') {
+        return {
+          status: 'cancelled',
+          dispatchStage: 'cancelled-before-dispatch',
+          cancelReason: reason,
+          cancelRequestedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        }
+      }
+      return {
+        status: 'cancelling',
+        dispatchStage: 'cancel-requested',
         cancelReason: reason,
         cancelRequestedAt: now,
-        completedAt: now,
         updatedAt: now,
-      })
-      this.releaseSessionLock(current.sessionId, runId)
-      return cancelled
-    }
-    const cancelling = await this.options.store.update(runId, {
-      status: 'cancelling',
-      dispatchStage: 'cancel-requested',
-      cancelReason: reason,
-      cancelRequestedAt: now,
-      updatedAt: now,
+      }
     })
+    if (transition.run.status === 'cancelled') {
+      this.releaseSessionLock(transition.run.sessionId, runId)
+      return transition.run
+    }
+    if (!transition.updated || transition.run.status !== 'cancelling') return transition.run
     const client = this.options.createClient()
     if (client.cancelSession !== undefined) {
-      await client.cancelSession(current.sessionId).catch(() => undefined)
+      await client.cancelSession(transition.run.sessionId).catch(() => undefined)
     }
-    return cancelling
+    return transition.run
   }
 
   async forceUnlockSession(sessionId: string): Promise<void> {
@@ -122,12 +127,15 @@ export class EmployeeRunService {
     const run = await this.options.store.get(lock.runId)
     if (run && !TERMINAL_STATUSES.has(run.status)) {
       const now = new Date().toISOString()
-      await this.options.store.update(run.runId, {
-        status: 'cancelling',
-        dispatchStage: 'cancel-requested',
-        cancelReason: 'Employee run was force-unlocked',
-        cancelRequestedAt: now,
-        updatedAt: now,
+      await this.options.store.transition(run.runId, (current) => {
+        if (TERMINAL_STATUSES.has(current.status)) return undefined
+        return {
+          status: 'cancelling',
+          dispatchStage: 'cancel-requested',
+          cancelReason: 'Employee run was force-unlocked',
+          cancelRequestedAt: now,
+          updatedAt: now,
+        }
       })
     }
     this.releaseSessionLock(normalizedSessionId, lock.runId)
@@ -256,14 +264,20 @@ export class EmployeeRunService {
 
   private async dispatch(initial: EmployeeRunRecord, client: EmployeeRunClient): Promise<void> {
     try {
-      const latest = await this.requireRun(initial.runId)
-      if (latest.status === 'cancelled') return
+      await this.requireRun(initial.runId)
       const now = new Date().toISOString()
-      await this.options.store.update(initial.runId, {
-        status: 'running',
-        dispatchStage: 'prompt-in-flight',
-        updatedAt: now,
+      const claim = await this.options.store.transition(initial.runId, (current) => {
+        if (current.status !== 'queued' || current.dispatchStage !== 'recorded') return undefined
+        return {
+          status: 'running',
+          dispatchStage: 'prompt-in-flight',
+          updatedAt: now,
+        }
       })
+      if (!claim.updated) {
+        this.releaseSessionLock(initial.sessionId, initial.runId)
+        return
+      }
     } catch (error) {
       await this.recordDispatchFailure(initial.runId, error)
       this.releaseSessionLock(initial.sessionId, initial.runId)
@@ -277,22 +291,24 @@ export class EmployeeRunService {
         : defaultPrompt(initial.employeeSnapshot, task, initial.projectId, initial.sessionId)
       const response = await client.sendPrompt(initial.sessionId, prompt)
       const now = new Date().toISOString()
-      if (this.forceUnlockedRunIds.has(initial.runId)) {
-        await this.options.store.update(initial.runId, {
-          status: 'failed',
-          dispatchStage: 'failed',
-          error: 'Employee run was force-unlocked',
+      await this.options.store.transition(initial.runId, (current) => {
+        if (TERMINAL_STATUSES.has(current.status)) return undefined
+        if (this.forceUnlockedRunIds.has(initial.runId)) {
+          return {
+            status: 'failed',
+            dispatchStage: 'failed',
+            error: 'Employee run was force-unlocked',
+            updatedAt: now,
+            completedAt: now,
+          }
+        }
+        return {
+          status: 'completed',
+          dispatchStage: 'completed',
+          output: response.text.trim(),
           updatedAt: now,
           completedAt: now,
-        })
-        return
-      }
-      await this.options.store.update(initial.runId, {
-        status: 'completed',
-        dispatchStage: 'completed',
-        output: response.text.trim(),
-        updatedAt: now,
-        completedAt: now,
+        }
       })
     } catch (error) {
       const message = this.forceUnlockedRunIds.has(initial.runId)
@@ -307,13 +323,15 @@ export class EmployeeRunService {
 
   private async recordDispatchFailure(runId: string, error: unknown): Promise<void> {
     const now = new Date().toISOString()
-    await this.options.store.update(runId, {
-      status: 'failed',
-      dispatchStage: 'failed',
-      error: messageOf(error),
-      updatedAt: now,
-      completedAt: now,
-    }).catch(() => undefined)
+    await this.options.store.transition(runId, (current) => TERMINAL_STATUSES.has(current.status)
+      ? undefined
+      : {
+          status: 'failed',
+          dispatchStage: 'failed',
+          error: messageOf(error),
+          updatedAt: now,
+          completedAt: now,
+        }).catch(() => undefined)
   }
 
   private async resolveSession(client: EmployeeRunClient, context: EmployeeRunContext): Promise<{
