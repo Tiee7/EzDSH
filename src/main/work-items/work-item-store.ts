@@ -43,7 +43,7 @@ export interface WorkItemCreateReceipt {
   replayed: boolean
 }
 
-export type WorkDispatchStage = 'recorded' | 'outcome-unknown'
+export type WorkDispatchStage = 'recorded' | 'dispatching' | 'linked' | 'outcome-unknown'
 
 export interface WorkDispatchIntentReceipt {
   requestId: string
@@ -318,7 +318,7 @@ export class WorkItemStore {
         })
       }
       const commandId = randomUUID()
-      const runId = randomUUID()
+      const runId = ''
       snapshot.runs.push({
         taskId: request.taskId,
         attemptId,
@@ -363,6 +363,44 @@ export class WorkItemStore {
     return snapshot ? copy(snapshot) : undefined
   }
 
+  async claimDispatch(requestId: string, commandId: string): Promise<WorkDispatchIntentReceipt> {
+    return this.updateDispatch(requestId, commandId, (receipt, snapshot, run) => {
+      if (receipt.stage !== 'recorded') return undefined
+      run.rawStatus = 'dispatching'
+      run.observedAt = new Date().toISOString()
+      return { ...receipt, stage: 'dispatching', snapshot }
+    })
+  }
+
+  async linkDispatch(
+    requestId: string,
+    commandId: string,
+    execution: Pick<WorkTaskSnapshot['runs'][number], 'runId' | 'status' | 'rawStatus' | 'capabilities'>
+  ): Promise<WorkDispatchIntentReceipt> {
+    if (execution.runId.trim() === '') throw new Error('Executor run id is required for dispatch linkage')
+    return this.updateDispatch(requestId, commandId, (receipt, snapshot, run) => {
+      if (receipt.stage === 'linked') {
+        if (receipt.runId !== execution.runId) {
+          throw new WorkItemStoreConflictError('REQUEST_ID_CONFLICT', `Dispatch ${requestId} is already linked to another run`)
+        }
+        return undefined
+      }
+      Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      return { ...receipt, runId: execution.runId, stage: 'linked', snapshot }
+    })
+  }
+
+  async markDispatchOutcomeUnknown(requestId: string, commandId: string, rawStatus: string): Promise<WorkDispatchIntentReceipt> {
+    return this.updateDispatch(requestId, commandId, (receipt, snapshot, run) => {
+      if (receipt.stage === 'linked') return undefined
+      run.status = 'interrupted'
+      run.rawStatus = rawStatus
+      run.observedAt = new Date().toISOString()
+      run.capabilities = { cancel: false, resume: false, append: false }
+      return { ...receipt, stage: 'outcome-unknown', snapshot }
+    })
+  }
+
   async list(query: WorkItemQuery = {}): Promise<WorkTaskSnapshot[]> {
     this.assertInitialized()
     return Object.values(this.state.tasks).filter((snapshot) => {
@@ -380,6 +418,37 @@ export class WorkItemStore {
   onChanged(listener: (snapshot: WorkTaskSnapshot) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  private async updateDispatch(
+    requestId: string,
+    commandId: string,
+    decide: (
+      receipt: WorkDispatchIntentReceipt,
+      snapshot: WorkTaskSnapshot,
+      run: WorkTaskSnapshot['runs'][number]
+    ) => WorkDispatchIntentReceipt | undefined
+  ): Promise<WorkDispatchIntentReceipt> {
+    return this.mutate(async () => {
+      const stored = ownValue(this.state.requests, requestId)
+      if (stored?.kind !== 'dispatch' || stored.receipt.commandId !== commandId) {
+        throw new WorkItemStoreConflictError('REQUEST_ID_CONFLICT', `Dispatch ${requestId} does not match command ${commandId}`)
+      }
+      const snapshot = copy(ownValue(this.state.tasks, stored.receipt.taskId))
+      if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${stored.receipt.taskId} was not found`)
+      const run = snapshot.runs.find((candidate) => candidate.commandId === commandId)
+      if (run === undefined) throw new Error(`Dispatch ${requestId} has no durable run reference`)
+      const current = { ...copy(stored.receipt), snapshot }
+      const decided = decide(current, snapshot, run)
+      if (decided === undefined) return copy(current)
+      const receipt = { ...decided, snapshot }
+      const next = copy(this.state)
+      setOwnValue(next.tasks, receipt.taskId, snapshot)
+      setOwnValue(next.requests, requestId, { kind: 'dispatch', digest: stored.digest, receipt })
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(receipt)
+    })
   }
 
   private replay<T extends WorkItemCreateReceipt | WorkDispatchIntentReceipt>(

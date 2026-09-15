@@ -36,6 +36,7 @@ import type {
   WorkflowRunLease,
   WorkflowCompensationEntry,
   WorkflowEffectReconciliationTarget,
+  WorkflowRunTaskAssociation,
 } from '../../shared/workflow.js'
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
@@ -409,7 +410,12 @@ export class WorkflowRunService {
     }
   }
 
-  async start(workflowId: string, input: WorkflowValue, options: WorkflowRunOptions = {}): Promise<WorkflowRunRecord> {
+  async start(
+    workflowId: string,
+    input: WorkflowValue,
+    options: WorkflowRunOptions = {},
+    workTask?: WorkflowRunTaskAssociation,
+  ): Promise<WorkflowRunRecord> {
     await this.initialize()
     this.assertAccepting()
     if (!isWorkflowValue(input)) throw new Error('Workflow 输入必须是 JSON-safe 值')
@@ -421,13 +427,21 @@ export class WorkflowRunService {
       if (workflow === undefined) throw new Error(`Workflow not found: ${workflowId}`)
       assertValidWorkflow(workflow, '启动运行')
       const effectiveInput = normalizeWorkflowLaunchInput(workflow, input)
-      const record = this.createRecord(workflow, effectiveInput, options)
+      const record = this.createRecord(workflow, effectiveInput, options, undefined, workTask)
       const enqueued = await this.enqueue(record, '运行已排队')
       this.worker.wake()
       return cloneWorkflow(enqueued)
     } finally {
       releaseWorkflow()
     }
+  }
+
+  /** Query a durable top-level run by the stable command supplied by a Main caller. */
+  async findByIdempotencyKey(idempotencyKey: string): Promise<WorkflowRunRecord | undefined> {
+    await this.initialize()
+    const key = idempotencyKey.trim()
+    if (key === '') return undefined
+    return this.options.runStore.list().find((record) => record.origin?.kind !== 'child' && record.idempotencyKey === key)
   }
 
   async startReleased(releaseId: string, input: WorkflowValue, options: WorkflowRunOptions = {}): Promise<WorkflowRunRecord> {
@@ -1317,6 +1331,7 @@ export class WorkflowRunService {
     input: WorkflowValue,
     options: WorkflowRunOptions,
     release?: WorkflowRelease,
+    workTask?: WorkflowRunTaskAssociation,
   ): WorkflowRunRecord {
     const model = normalizeModelSelection(options.model)
     const hasManagedConnector = workflow.nodes.some((node) => node.type === 'http' && node.config.connectorId !== undefined)
@@ -1327,6 +1342,16 @@ export class WorkflowRunService {
       : options.connectorGrants === undefined
         ? cloneConnectorGrants(release.connectorGrants)
         : intersectConnectorGrants(release.connectorGrants, options.connectorGrants)
+    const employeeNodeSnapshots = workflow.nodes.flatMap((node) => {
+      if (node.type !== 'employee') return []
+      const employee = this.options.resolveEmployee(node.config.employeeId)
+      return employee === undefined ? [] : [{
+        nodeId: node.id,
+        employeeId: employee.id,
+        employeeVersion: employee.version,
+        employeeSnapshot: cloneWorkflow(employee),
+      }]
+    })
     return {
       id: `run-${randomUUID()}`,
       workflowId: workflow.id,
@@ -1337,6 +1362,8 @@ export class WorkflowRunService {
         traceId: `trace-${randomUUID()}`,
       }),
       ...(options.idempotencyKey?.trim() === undefined || options.idempotencyKey.trim() === '' ? {} : { idempotencyKey: options.idempotencyKey.trim() }),
+      ...(workTask === undefined ? {} : { workTask: cloneWorkflow(workTask) }),
+      employeeNodeSnapshots,
       ...(options.effectIdempotencyKey?.trim() === undefined || options.effectIdempotencyKey.trim() === '' ? {} : { effectIdempotencyKey: options.effectIdempotencyKey.trim() }),
       origin: { kind: 'top-level' },
       status: 'queued',
@@ -2242,9 +2269,15 @@ export class WorkflowRunService {
         return childOutput
       }
       case 'employee': {
-        const employee = this.options.resolveEmployee(node.config.employeeId)
+        const currentEmployee = this.options.resolveEmployee(node.config.employeeId)
+        if (currentEmployee === undefined) throw new Error(`Employee "${node.config.employeeId}" was not found`)
+        if (!currentEmployee.enabled) throw new Error(`Employee "${node.config.employeeId}" is disabled`)
+        const employee = record.employeeNodeSnapshots === undefined
+          ? currentEmployee
+          : record.employeeNodeSnapshots
+            .find((snapshot) => snapshot.nodeId === node.id && snapshot.employeeId === node.config.employeeId)
+            ?.employeeSnapshot
         if (employee === undefined) throw new Error(`Employee "${node.config.employeeId}" was not found`)
-        if (!employee.enabled) throw new Error(`Employee "${node.config.employeeId}" is disabled`)
         const sessionId = await this.getInternalSession(record, active, 'employee', node.id, node.config.employeeId)
         await this.markEffect(record, state, node, 'prepared')
         await this.markEffect(record, state, node, 'dispatched')

@@ -34,4 +34,20 @@ export class WorkItemService {
   recordDispatchIntent(input: WorkTaskExecuteRequest): Promise<WorkDispatchIntentReceipt> {
     return this.store.recordDispatchIntent(validateWorkTaskExecuteRequest(input))
   }
+
+  claimDispatch(requestId: string, commandId: string): Promise<WorkDispatchIntentReceipt> {
+    return this.store.claimDispatch(requestId, commandId)
+  }
+
+  linkDispatch(
+    requestId: string,
+    commandId: string,
+    execution: Pick<WorkTaskSnapshot['runs'][number], 'runId' | 'status' | 'rawStatus' | 'capabilities'>
+  ): Promise<WorkDispatchIntentReceipt> {
+    return this.store.linkDispatch(requestId, commandId, execution)
+  }
+
+  markDispatchOutcomeUnknown(requestId: string, commandId: string, rawStatus: string): Promise<WorkDispatchIntentReceipt> {
+    return this.store.markDispatchOutcomeUnknown(requestId, commandId, rawStatus)
+  }
 }

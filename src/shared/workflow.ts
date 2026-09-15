@@ -623,6 +623,23 @@ export interface WorkflowRunEvent {
   message?: string
 }
 
+/** Main-process business identity attached only by the WorkTask execution bridge. */
+export interface WorkflowRunTaskAssociation {
+  taskId: string
+  attemptId: string
+  requirementVersion: number
+  commandId: string
+  sourceRunId?: string
+}
+
+/** Immutable employee profile used by one direct employee node in this run. */
+export interface WorkflowEmployeeNodeSnapshot {
+  nodeId: string
+  employeeId: string
+  employeeVersion: number
+  employeeSnapshot: EmployeeSnapshot
+}
+
 /** Include durable loop body states when inspecting effects or restoring a run. */
 export function workflowAllNodeRunStates(states: WorkflowNodeRunState[]): WorkflowNodeRunState[] {
   return states.flatMap((state) => [state, ...(state.loopIterations ?? []).flatMap((iteration) => workflowAllNodeRunStates(iteration.nodeStates))])
@@ -640,6 +657,10 @@ export interface WorkflowRunRecord {
   traceId?: string
   /** Caller-supplied de-duplication key. Omitted runs are never inferred to be equivalent. */
   idempotencyKey?: string
+  /** Trusted Main-only WorkTask association. Legacy and ad-hoc runs omit it. */
+  workTask?: WorkflowRunTaskAssociation
+  /** Fixed profiles for direct employee nodes. Legacy runs may omit this evidence. */
+  employeeNodeSnapshots?: WorkflowEmployeeNodeSnapshot[]
   /** Stable remote-effect identity, independent from the local run attempt identity. */
   effectIdempotencyKey?: string
   /** Persisted child lineage; optional for records created before recursion hardening. */
