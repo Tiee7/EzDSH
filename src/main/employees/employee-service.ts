@@ -16,6 +16,7 @@ import type {
   EmployeeUpdateInput,
   EmployeeWorkflowStep,
 } from '../../shared/employees.js'
+import type { EmployeeRunObservationEvent, EmployeeRunObservationResult } from '../../shared/employee-runs.js'
 import { EMPLOYEE_CAPABILITIES, EMPLOYEE_SCHEMA_VERSION, employeeDisplayName } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
 import { extractJsonDocument } from '../workflow/dsh-workflow-adapter.js'
@@ -26,7 +27,16 @@ export interface EmployeeRunClient {
   createSession(params: { cwd: string; workspaceId?: string }): Promise<{ sessionId: string }>
   renameSession?(sessionId: string, title: string): Promise<void>
   sendPrompt(sessionId: string, text: string): Promise<{ text: string }>
-  cancelSession?(sessionId: string): Promise<void>
+  /** WB-04 observation-capable clients implement all three optional methods. */
+  getObservationCursor?(sessionId: string): Promise<number>
+  submitPrompt?(sessionId: string, text: string, requestId: string): Promise<{ accepted: boolean }>
+  observeTurn?(sessionId: string, options: {
+    afterSeq: number
+    requestId: string
+    onEvent?: (event: EmployeeRunObservationEvent) => void | Promise<void>
+  }): Promise<EmployeeRunObservationResult>
+  requestCancelSession?(sessionId: string): Promise<{ accepted: boolean }>
+  cancelSession?(sessionId: string): Promise<void | { accepted: boolean }>
   listWorkspaces?(): Promise<Array<{
     workspaceId: string
     path: string

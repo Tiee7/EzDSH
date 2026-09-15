@@ -5,6 +5,7 @@ import type { EmployeeDefinition, EmployeeRunResult, EmployeeSessionLock } from 
 import type {
   EmployeeRunContext,
   EmployeeRunEvent,
+  EmployeeRunObservationResult,
   EmployeeRunRecord,
   EmployeeRunRoundInput,
   EmployeeRunStartReceipt,
@@ -21,6 +22,10 @@ export interface EmployeeRunServiceOptions {
   resolveEmployee: (employeeId: string) => EmployeeDefinition | undefined
   buildPrompt?: (employee: EmployeeDefinition, task: string, projectId?: string, sessionId?: string) => string
 }
+
+type ObservationCapableEmployeeRunClient = EmployeeRunClient & Required<Pick<EmployeeRunClient,
+  'getObservationCursor' | 'submitPrompt' | 'observeTurn'
+>>
 
 export class EmployeeRunInputError extends Error {
   readonly code = 'UNSUPPORTED_INPUT' as const
@@ -41,6 +46,8 @@ export class EmployeeRunService {
   private readonly sessionLockListeners = new Set<(locks: EmployeeSessionLock[]) => void>()
   private initialized = false
   private startTail: Promise<void> = Promise.resolve()
+  private readonly observingRunIds = new Set<string>()
+  private readonly runOperationTails = new Map<string, Promise<void>>()
 
   constructor(private readonly options: EmployeeRunServiceOptions) {}
 
@@ -48,6 +55,8 @@ export class EmployeeRunService {
     if (this.initialized) return
     await this.options.store.initialize()
     this.initialized = true
+    await this.restoreActiveSessionLocks()
+    queueMicrotask(() => { void this.reconcileActiveRuns() })
   }
 
   async start(input: EmployeeRunStartRequest): Promise<EmployeeRunStartReceipt> {
@@ -83,6 +92,10 @@ export class EmployeeRunService {
 
   async cancel(runId: string, reason = 'Employee run cancellation requested'): Promise<EmployeeRunRecord> {
     this.assertInitialized()
+    return this.serializeRunOperation(runId, () => this.cancelOnce(runId, reason))
+  }
+
+  private async cancelOnce(runId: string, reason: string): Promise<EmployeeRunRecord> {
     await this.requireRun(runId)
     const now = new Date().toISOString()
     const transition = await this.options.store.transition(runId, (current) => {
@@ -111,10 +124,56 @@ export class EmployeeRunService {
     }
     if (!transition.updated || transition.run.status !== 'cancelling') return transition.run
     const client = this.options.createClient()
-    if (client.cancelSession !== undefined) {
-      await client.cancelSession(transition.run.sessionId).catch(() => undefined)
+    if (client.cancelSession === undefined) {
+      return (await this.options.store.transition(runId, (current) => {
+        if (current.status !== 'cancelling') return undefined
+        return {
+          cancelRequestState: 'unsupported',
+          cancelRequestError: 'Runtime does not support session cancellation',
+          updatedAt: new Date().toISOString(),
+        }
+      })).run
     }
-    return transition.run
+    try {
+      const response = client.requestCancelSession === undefined
+        ? await client.cancelSession(transition.run.sessionId)
+        : await client.requestCancelSession(transition.run.sessionId)
+      if (response !== undefined && !response.accepted) {
+        return (await this.options.store.transition(runId, (current) => {
+          if (current.status !== 'cancelling') return undefined
+          return {
+            cancelRequestState: 'failed',
+            cancelRequestError: 'Runtime did not accept session cancellation',
+            updatedAt: new Date().toISOString(),
+          }
+        })).run
+      }
+      return (await this.options.store.transition(runId, (current) => {
+        if (current.status !== 'cancelling') return undefined
+        return {
+          cancelRequestState: 'accepted',
+          cancelRequestError: undefined,
+          updatedAt: new Date().toISOString(),
+        }
+      })).run
+    } catch (error) {
+      return (await this.options.store.transition(runId, (current) => {
+        if (current.status !== 'cancelling') return undefined
+        return {
+          cancelRequestState: 'failed',
+          cancelRequestError: messageOf(error),
+          updatedAt: new Date().toISOString(),
+        }
+      })).run
+    }
+  }
+
+  /** Reattach observers to persisted runs without ever submitting their prompt again. */
+  async reconcileActiveRuns(): Promise<EmployeeRunRecord[]> {
+    this.assertInitialized()
+    const runs = (await this.options.store.list()).filter((run) => run.status === 'running' || run.status === 'cancelling')
+    for (const run of runs) this.beginObservation(run, this.options.createClient())
+    return runs
   }
 
   async forceUnlockSession(sessionId: string): Promise<void> {
@@ -123,8 +182,20 @@ export class EmployeeRunService {
     if (normalizedSessionId === '') throw new Error('Employee session is required')
     const lock = this.sessionLocks.get(normalizedSessionId)
     if (lock === undefined) return
+    await this.serializeRunOperation(lock.runId, () => this.forceUnlockOnce(normalizedSessionId, lock))
+  }
+
+  private async forceUnlockOnce(sessionId: string, lock: EmployeeSessionLock): Promise<void> {
     const now = new Date().toISOString()
     const transition = await this.options.store.transition(lock.runId, (current) => {
+      if (current.status === 'interrupted' && current.dispatchStage === 'outcome-unknown') {
+        if (current.cancelReason === FORCE_UNLOCK_REASON) return undefined
+        return {
+          cancelReason: FORCE_UNLOCK_REASON,
+          cancelRequestedAt: now,
+          updatedAt: now,
+        }
+      }
       if (TERMINAL_STATUSES.has(current.status)) return undefined
       if (current.status === 'queued' && current.dispatchStage === 'recorded') {
         return {
@@ -146,10 +217,10 @@ export class EmployeeRunService {
       }
     })
     if (!transition.updated) return
-    this.releaseSessionLock(normalizedSessionId, lock.runId)
+    this.releaseSessionLock(sessionId, lock.runId)
     const client = this.options.createClient()
     if (client.cancelSession !== undefined) {
-      await client.cancelSession(normalizedSessionId).catch(() => undefined)
+      await client.cancelSession(sessionId).catch(() => undefined)
     }
   }
 
@@ -246,6 +317,7 @@ export class EmployeeRunService {
       sessionEvidence: session.evidence,
       status: 'queued',
       dispatchStage: 'recorded',
+      promptRequestId: randomUUID(),
       partialOutput: '',
       output: '',
       createdAt: now,
@@ -271,6 +343,10 @@ export class EmployeeRunService {
   }
 
   private async dispatch(initial: EmployeeRunRecord, client: EmployeeRunClient): Promise<void> {
+    if (supportsObservation(client)) {
+      await this.dispatchObservable(initial, client)
+      return
+    }
     try {
       await this.requireRun(initial.runId)
       const now = new Date().toISOString()
@@ -323,6 +399,195 @@ export class EmployeeRunService {
     } finally {
       this.releaseSessionLock(initial.sessionId, initial.runId)
     }
+  }
+
+  private async dispatchObservable(initial: EmployeeRunRecord, client: ObservationCapableEmployeeRunClient): Promise<void> {
+    let cursor: number
+    try {
+      cursor = await client.getObservationCursor(initial.sessionId)
+      const claim = await this.options.store.transition(initial.runId, (current) => {
+        if (current.status !== 'queued' || current.dispatchStage !== 'recorded') return undefined
+        return {
+          status: 'running',
+          dispatchStage: 'prompt-in-flight',
+          observationCursor: cursor,
+          observerState: 'pending',
+          updatedAt: new Date().toISOString(),
+        }
+      })
+      if (!claim.updated) {
+        this.releaseSessionLock(initial.sessionId, initial.runId)
+        return
+      }
+    } catch (error) {
+      await this.recordDispatchFailure(initial.runId, error)
+      this.releaseSessionLock(initial.sessionId, initial.runId)
+      return
+    }
+
+    const task = describeTask(initial.task, initial.round)
+    const prompt = this.options.buildPrompt
+      ? this.options.buildPrompt(initial.employeeSnapshot, task, initial.projectId, initial.sessionId)
+      : defaultPrompt(initial.employeeSnapshot, task, initial.projectId, initial.sessionId)
+    const submitted = await this.serializeRunOperation(initial.runId, async () => {
+      const beforeSubmit = await this.requireRun(initial.runId)
+      if (beforeSubmit.status !== 'running' || beforeSubmit.dispatchStage !== 'prompt-in-flight') return false
+      try {
+        const submission = await client.submitPrompt(initial.sessionId, prompt, initial.promptRequestId)
+        if (!submission.accepted) {
+          await this.recordDispatchFailure(initial.runId, new Error('DSH Runtime rejected the employee prompt'))
+          this.releaseSessionLock(initial.sessionId, initial.runId)
+          return false
+        }
+        await this.options.store.transition(initial.runId, (current) => {
+          if (TERMINAL_STATUSES.has(current.status)) return undefined
+          return {
+            promptAcceptedAt: new Date().toISOString(),
+            observerState: 'observing',
+            updatedAt: new Date().toISOString(),
+          }
+        })
+        return true
+      } catch (error) {
+        await this.recordObserverStop(initial.runId, 'disconnected', messageOf(error), cursor)
+        return false
+      }
+    })
+    if (!submitted) return
+
+    const current = await this.requireRun(initial.runId)
+    this.beginObservation(current, client)
+  }
+
+  private beginObservation(run: EmployeeRunRecord, client: EmployeeRunClient): void {
+    if (this.observingRunIds.has(run.runId)) return
+    this.observingRunIds.add(run.runId)
+    void this.observeExisting(run, client).finally(() => {
+      this.observingRunIds.delete(run.runId)
+    })
+  }
+
+  private async observeExisting(initial: EmployeeRunRecord, client: EmployeeRunClient): Promise<void> {
+    if (!supportsObservation(client) || initial.observationCursor === undefined) {
+      await this.recordObserverStop(
+        initial.runId,
+        'unsupported',
+        initial.observationCursor === undefined
+          ? 'Persisted run has no pre-submission history cursor; outcome cannot be reconciled safely'
+          : 'Runtime client cannot observe an existing turn',
+        initial.observationCursor,
+      )
+      return
+    }
+    try {
+      await this.options.store.transition(initial.runId, (current) => {
+        if (TERMINAL_STATUSES.has(current.status)) return undefined
+        return { observerState: 'observing', observationError: undefined, updatedAt: new Date().toISOString() }
+      })
+      const result = await client.observeTurn(initial.sessionId, {
+        afterSeq: initial.observationCursor,
+        requestId: initial.promptRequestId,
+        onEvent: async ({ cursor, delta }) => {
+          await this.options.store.transition(initial.runId, (current) => {
+            if (TERMINAL_STATUSES.has(current.status)) return undefined
+            return {
+              observationCursor: Math.max(current.observationCursor ?? -1, cursor),
+              ...(delta === undefined ? {} : { partialOutput: `${current.partialOutput}${delta}` }),
+              updatedAt: new Date().toISOString(),
+            }
+          })
+        },
+      })
+      await this.applyObservationResult(initial.runId, result)
+    } catch (error) {
+      const current = await this.requireRun(initial.runId)
+      await this.recordObserverStop(initial.runId, 'disconnected', messageOf(error), current.observationCursor)
+    }
+  }
+
+  private async applyObservationResult(runId: string, result: EmployeeRunObservationResult): Promise<void> {
+    if (result.outcome === 'timeout' || result.outcome === 'disconnected') {
+      await this.recordObserverStop(runId, result.outcome, result.error ?? `Employee run observer ${result.outcome}`, result.cursor, result.output)
+      return
+    }
+    const now = new Date().toISOString()
+    const transition = await this.options.store.transition(runId, (current) => {
+      if (TERMINAL_STATUSES.has(current.status)) return undefined
+      if (current.status === 'cancelling' && current.cancelReason === FORCE_UNLOCK_REASON) {
+        return {
+          status: 'failed',
+          dispatchStage: 'failed',
+          observationCursor: Math.max(current.observationCursor ?? -1, result.cursor),
+          observerState: 'completed',
+          observationError: undefined,
+          terminalEvidence: result.terminalEvidence,
+          output: current.output,
+          error: FORCE_UNLOCK_REASON,
+          updatedAt: now,
+          completedAt: now,
+        }
+      }
+      const base = {
+        observationCursor: Math.max(current.observationCursor ?? -1, result.cursor),
+        observerState: 'completed' as const,
+        observationError: undefined,
+        terminalEvidence: result.terminalEvidence,
+        output: result.output.trim(),
+        updatedAt: now,
+        completedAt: now,
+      }
+      if (result.outcome === 'completed') return { ...base, status: 'completed' as const, dispatchStage: 'completed' as const }
+      if (result.outcome === 'cancelled') return { ...base, status: 'cancelled' as const, dispatchStage: 'cancelled' as const }
+      return {
+        ...base,
+        status: 'failed' as const,
+        dispatchStage: 'failed' as const,
+        error: result.error ?? `Employee run ended with ${result.terminalEvidence?.reasonKind ?? 'unknown'} reason`,
+      }
+    })
+    if (transition.updated) this.releaseSessionLock(transition.run.sessionId, transition.run.runId)
+  }
+
+  private async recordObserverStop(
+    runId: string,
+    state: 'timeout' | 'disconnected' | 'unsupported',
+    error: string,
+    cursor?: number,
+    output = '',
+  ): Promise<void> {
+    await this.options.store.transition(runId, (current) => {
+      if (TERMINAL_STATUSES.has(current.status)) return undefined
+      const now = new Date().toISOString()
+      return {
+        ...(current.status === 'cancelling' ? {} : { status: 'interrupted' as const }),
+        dispatchStage: 'outcome-unknown',
+        observerState: state,
+        observationError: error,
+        ...(cursor === undefined ? {} : { observationCursor: Math.max(current.observationCursor ?? -1, cursor) }),
+        ...(output === '' ? {} : { partialOutput: output }),
+        updatedAt: now,
+      }
+    }).catch(() => undefined)
+  }
+
+  private async restoreActiveSessionLocks(): Promise<void> {
+    const active = (await this.options.store.list())
+      .filter((run) => (
+        run.status === 'running'
+        || run.status === 'cancelling'
+        || (run.status === 'interrupted' && run.dispatchStage === 'outcome-unknown')
+      ) && run.cancelReason !== FORCE_UNLOCK_REASON)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    for (const run of active) {
+      if (this.sessionLocks.has(run.sessionId)) continue
+      this.sessionLocks.set(run.sessionId, {
+        sessionId: run.sessionId,
+        employeeId: run.employeeId,
+        runId: run.runId,
+        startedAt: run.createdAt,
+      })
+    }
+    if (active.length > 0) this.emitSessionLocks()
   }
 
   private async recordDispatchFailure(runId: string, error: unknown): Promise<void> {
@@ -400,6 +665,17 @@ export class EmployeeRunService {
     const run = await this.options.store.get(runId)
     if (run === undefined) throw new EmployeeRunStoreConflictError('RUN_NOT_FOUND', `Employee run ${runId} was not found`)
     return run
+  }
+
+  private async serializeRunOperation<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.runOperationTails.get(runId) ?? Promise.resolve()
+    const result = previous.then(operation)
+    const tail = result.then(() => undefined, () => undefined)
+    this.runOperationTails.set(runId, tail)
+    void tail.finally(() => {
+      if (this.runOperationTails.get(runId) === tail) this.runOperationTails.delete(runId)
+    })
+    return result
   }
 
   private assertInitialized(): void {
@@ -540,4 +816,10 @@ function defaultPrompt(
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function supportsObservation(client: EmployeeRunClient): client is ObservationCapableEmployeeRunClient {
+  return client.getObservationCursor !== undefined
+    && client.submitPrompt !== undefined
+    && client.observeTurn !== undefined
 }

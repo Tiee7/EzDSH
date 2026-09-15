@@ -39,6 +39,7 @@ function record(overrides: Partial<EmployeeRunRecord> = {}): EmployeeRunRecord {
     sessionEvidence: 'created',
     status: 'queued',
     dispatchStage: 'recorded',
+    promptRequestId: 'prompt-request-1',
     partialOutput: '',
     output: '',
     createdAt: now,

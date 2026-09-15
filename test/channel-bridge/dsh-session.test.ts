@@ -467,8 +467,12 @@ describe('DshSessionClient', () => {
     })
     const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
 
+    await expect(client.requestCancelSession('session-1')).resolves.toEqual({ accepted: true })
     await expect(client.cancelSession('session-1')).resolves.toBeUndefined()
-    expect(requests).toEqual([expect.objectContaining({ method: 'session.cancel', payload: { sessionId: 'session-1' } })])
+    expect(requests).toEqual([
+      expect.objectContaining({ method: 'session.cancel', payload: { sessionId: 'session-1' } }),
+      expect.objectContaining({ method: 'session.cancel', payload: { sessionId: 'session-1' } }),
+    ])
 
     vi.unstubAllGlobals()
   })
@@ -821,6 +825,79 @@ describe('DshSessionClient', () => {
     const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 50, pollIntervalMs: 10 })
     await expect(client.sendPrompt('session-1', 'hi')).rejects.toThrow('DSH session turn timed out')
 
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the legacy prompt body unchanged unless a stable request id is supplied', async () => {
+    const bodies: Array<{ payload: Record<string, unknown> }> = []
+    vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as { payload: Record<string, unknown> })
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ok({ accepted: true }),
+        text: async () => '',
+      } as Response
+    })
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000 })
+
+    await client.queuePrompt('session-1', 'old call')
+    await client.submitPrompt('session-1', 'recoverable call', 'stable-request-1')
+
+    expect(bodies[0]?.payload).toEqual({
+      sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'old call' }],
+    })
+    expect(bodies[1]?.payload).toEqual({
+      requestId: 'stable-request-1',
+      sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'recoverable call' }],
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('observes an existing turn without prompting and deduplicates repeated history events', async () => {
+    const first = ok({
+      events: [{
+        event: {
+          type: 'assistant/message', seq: 3, time: 3,
+          data: { message: { role: 'assistant', content: [{ type: 'text', text: '一次' }] } },
+        },
+      }],
+      hasMore: false,
+    })
+    const second = ok({
+      events: [
+        {
+          event: {
+            type: 'assistant/message', seq: 3, time: 3,
+            data: { message: { role: 'assistant', content: [{ type: 'text', text: '一次' }] } },
+          },
+        },
+        { event: { type: 'turn/end', seq: 4, time: 4, data: { reason: { kind: 'completed' } } } },
+      ],
+      hasMore: false,
+    })
+    const requests: string[] = []
+    let index = 0
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      requests.push(String(input))
+      const body = index++ === 0 ? first : second
+      return { ok: true, status: 200, json: async () => body, text: async () => '' } as Response
+    })
+    const events: Array<{ cursor: number; delta?: string }> = []
+    const client = new DshSessionClient({ baseUrl: 'http://localhost', timeoutMs: 1000, pollIntervalMs: 1 })
+
+    await expect(client.observeTurn('session-1', {
+      afterSeq: 2,
+      requestId: 'stable-request-1',
+      onEvent: (event) => events.push(event),
+    })).resolves.toEqual({
+      outcome: 'completed',
+      cursor: 4,
+      output: '一次',
+      terminalEvidence: { type: 'turn/end', seq: 4, reasonKind: 'completed' },
+    })
+    expect(events).toEqual([{ cursor: 3, delta: '一次' }, { cursor: 4 }])
+    expect(requests.every((url) => url.endsWith('/api/session.history'))).toBe(true)
     vi.unstubAllGlobals()
   })
 })

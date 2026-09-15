@@ -26,6 +26,23 @@ export interface DshSendResult {
   text: string
 }
 
+export interface DshObservationEvent {
+  cursor: number
+  delta?: string
+}
+
+export interface DshTurnObservationResult {
+  outcome: 'completed' | 'cancelled' | 'failed' | 'timeout' | 'disconnected'
+  cursor: number
+  output: string
+  terminalEvidence?: {
+    type: 'turn/end'
+    seq: number
+    reasonKind: string
+  }
+  error?: string
+}
+
 export interface DshSessionSummary {
   sessionId: string
   updatedAt: number
@@ -257,8 +274,12 @@ export class DshSessionClient {
     return this.post<WorkspaceArchiveResponse>('/api/workspace.unarchiveSession', { sessionId })
   }
 
+  async requestCancelSession(sessionId: string): Promise<{ accepted: boolean }> {
+    return this.post<{ accepted: boolean }>('/api/session.cancel', { sessionId })
+  }
+
   async cancelSession(sessionId: string): Promise<void> {
-    await this.post<{ accepted: true }>('/api/session.cancel', { sessionId })
+    await this.requestCancelSession(sessionId)
   }
 
   async listWorkspaces(): Promise<DshWorkspaceSummary[]> {
@@ -383,13 +404,93 @@ export class DshSessionClient {
     })
   }
 
-  async queuePrompt(sessionId: string, text: string): Promise<SessionPromptResponse> {
+  async queuePrompt(sessionId: string, text: string, requestId?: string): Promise<SessionPromptResponse> {
     return this.post<SessionPromptResponse>('/api/session.prompt', {
-      ...this.modernRuntime ? { requestId: randomUUID() } : {},
+      ...(requestId === undefined
+        ? (this.modernRuntime ? { requestId: randomUUID() } : {})
+        : { requestId }),
       sessionId,
       mode: 'queue',
       content: [{ type: 'text', text }],
     } satisfies SessionPromptRequest)
+  }
+
+  /** Capture the durable history boundary before submitting a new turn. */
+  async getObservationCursor(sessionId: string): Promise<number> {
+    return this.getCurrentMaxSeq(sessionId)
+  }
+
+  /** Submit exactly one prompt using a caller-stable request identifier. */
+  async submitPrompt(sessionId: string, text: string, requestId: string): Promise<{ accepted: boolean }> {
+    const response = await this.queuePrompt(sessionId, text, requestId)
+    return { accepted: response.accepted === true }
+  }
+
+  /**
+   * Observe an already-submitted turn without sending another prompt.
+   * A timeout or history failure ends only this observer and is not execution-stop evidence.
+   */
+  async observeTurn(sessionId: string, options: {
+    afterSeq: number
+    requestId: string
+    onEvent?: (event: DshObservationEvent) => void | Promise<void>
+    onPoll?: (elapsedMs: number) => void
+    timeoutMs?: number
+  }): Promise<DshTurnObservationResult> {
+    const startedAt = Date.now()
+    const deadline = startedAt + (options.timeoutMs ?? this.options.timeoutMs)
+    const collectedEvents: DshSessionEvent[] = []
+    const seenSeqs = new Set<number>()
+    let cursor = options.afterSeq
+
+    while (Date.now() < deadline) {
+      let history: DshSessionHistoryResponse
+      try {
+        history = await this.getSessionHistory(sessionId)
+      } catch (error) {
+        return {
+          outcome: 'disconnected',
+          cursor,
+          output: extractAssistantText(collectedEvents),
+          error: messageOf(error),
+        }
+      }
+
+      const events = history.events
+        .map((entry) => entry.event)
+        .filter((event) => event.seq > options.afterSeq && !seenSeqs.has(event.seq))
+        .sort((left, right) => left.seq - right.seq)
+      for (const event of events) {
+        seenSeqs.add(event.seq)
+        cursor = Math.max(cursor, event.seq)
+        collectedEvents.push(event)
+        const delta = extractAssistantText([event])
+        await options.onEvent?.({ cursor, ...(delta === '' ? {} : { delta }) })
+      }
+
+      const turnEnd = collectedEvents.find((event) => event.type === 'turn/end')
+      if (turnEnd !== undefined) {
+        const reasonKind = turnEndReasonKind(turnEnd)
+        const outcome = classifyTurnEnd(reasonKind)
+        return {
+          outcome,
+          cursor,
+          output: extractAssistantText(collectedEvents),
+          terminalEvidence: { type: 'turn/end', seq: turnEnd.seq, reasonKind },
+          ...(outcome === 'failed' ? { error: turnEndError(turnEnd, reasonKind) } : {}),
+        }
+      }
+
+      options.onPoll?.(Date.now() - startedAt)
+      await sleep(this.pollIntervalMs)
+    }
+
+    return {
+      outcome: 'timeout',
+      cursor,
+      output: extractAssistantText(collectedEvents),
+      error: 'DSH session turn observation timed out',
+    }
   }
 
   async sendPromptAsync(
@@ -404,40 +505,24 @@ export class DshSessionClient {
     callbacks.onAcknowledged()
 
     const startTime = Date.now()
-    const deadline = startTime + options.timeoutMs
     let nextStatusTime = startTime + options.statusIntervalMs
-    const collectedEvents: DshSessionEvent[] = []
-    const seenSeqs = new Set<number>()
-
-    while (Date.now() < deadline) {
-      const history = await this.getSessionHistory(sessionId)
-
-      const events = history.events.map((entry) => entry.event)
-      for (const event of events) {
-        if (event.seq > sinceSeq && !seenSeqs.has(event.seq)) {
-          seenSeqs.add(event.seq)
-          collectedEvents.push(event)
-          const delta = extractAssistantText([event])
-          if (delta !== '') callbacks.onDelta?.(delta)
+    const observation = await this.observeTurn(sessionId, {
+      afterSeq: sinceSeq,
+      requestId: 'legacy-send-prompt-async',
+      timeoutMs: options.timeoutMs,
+      onPoll: (elapsedMs) => {
+        const now = startTime + elapsedMs
+        if (now >= nextStatusTime) {
+          callbacks.onProgress(elapsedMs)
+          nextStatusTime = now + options.statusIntervalMs
         }
-      }
-
-      const turnEnd = collectedEvents.find((event) => event.type === 'turn/end')
-      if (turnEnd !== undefined) {
-        callbacks.onComplete(extractAssistantText(collectedEvents))
-        return
-      }
-
-      const now = Date.now()
-      if (now >= nextStatusTime) {
-        callbacks.onProgress(now - startTime)
-        nextStatusTime = now + options.statusIntervalMs
-      }
-
-      await sleep(this.pollIntervalMs)
-    }
-
-    callbacks.onError('DSH session turn timed out')
+      },
+      onEvent: ({ delta }) => {
+        if (delta !== undefined) callbacks.onDelta?.(delta)
+      },
+    })
+    if (observation.outcome === 'completed' || observation.terminalEvidence?.reasonKind === 'unknown') callbacks.onComplete(observation.output)
+    else callbacks.onError(observation.outcome === 'timeout' ? 'DSH session turn timed out' : observation.error ?? `DSH session turn ended: ${observation.outcome}`)
   }
 
   private async getCurrentMaxSeq(sessionId: string): Promise<number> {
@@ -684,6 +769,32 @@ function extractAssistantText(events: DshSessionEvent[]): string {
   }
 
   return parts.join('').trim()
+}
+
+function turnEndReasonKind(event: DshSessionEvent): string {
+  if (!isRecord(event.data) || !isRecord(event.data.reason) || typeof event.data.reason.kind !== 'string') {
+    return 'unknown'
+  }
+  return event.data.reason.kind
+}
+
+function classifyTurnEnd(reasonKind: string): DshTurnObservationResult['outcome'] {
+  if (reasonKind === 'completed') return 'completed'
+  if (reasonKind === 'aborted') return 'cancelled'
+  return 'failed'
+}
+
+function turnEndError(event: DshSessionEvent, reasonKind: string): string {
+  if (isRecord(event.data) && isRecord(event.data.reason)) {
+    const reason = event.data.reason
+    if (isRecord(reason.error) && typeof reason.error.message === 'string') return reason.error.message
+    if (typeof reason.message === 'string') return reason.message
+  }
+  return `DSH session turn ended with reason ${reasonKind}`
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function isTextBlock(value: unknown): value is { type: 'text'; text: string } {

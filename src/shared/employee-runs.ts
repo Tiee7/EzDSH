@@ -14,6 +14,7 @@ export type EmployeeRunDispatchStage =
   | 'prompt-in-flight'
   | 'cancel-requested'
   | 'cancelled-before-dispatch'
+  | 'cancelled'
   | 'completed'
   | 'failed'
   | 'outcome-unknown'
@@ -50,6 +51,35 @@ export interface EmployeeRunStartRequest {
 
 export type EmployeeRunSessionEvidence = 'created' | 'runtime-workspace' | 'trusted-main'
 
+export type EmployeeRunObserverState =
+  | 'pending'
+  | 'observing'
+  | 'completed'
+  | 'timeout'
+  | 'disconnected'
+  | 'unsupported'
+
+export type EmployeeRunCancelRequestState = 'accepted' | 'failed' | 'unsupported'
+
+export interface EmployeeRunTerminalEvidence {
+  type: 'turn/end'
+  seq: number
+  reasonKind: string
+}
+
+export interface EmployeeRunObservationEvent {
+  cursor: number
+  delta?: string
+}
+
+export interface EmployeeRunObservationResult {
+  outcome: 'completed' | 'cancelled' | 'failed' | 'timeout' | 'disconnected'
+  cursor: number
+  output: string
+  terminalEvidence?: EmployeeRunTerminalEvidence
+  error?: string
+}
+
 export interface EmployeeRunRecord {
   runId: string
   commandId: string
@@ -70,6 +100,14 @@ export interface EmployeeRunRecord {
   sessionEvidence: EmployeeRunSessionEvidence
   status: EmployeeExecutionStatus
   dispatchStage: EmployeeRunDispatchStage
+  promptRequestId: string
+  promptAcceptedAt?: string
+  observationCursor?: number
+  observerState?: EmployeeRunObserverState
+  observationError?: string
+  terminalEvidence?: EmployeeRunTerminalEvidence
+  cancelRequestState?: EmployeeRunCancelRequestState
+  cancelRequestError?: string
   partialOutput: string
   output: string
   error?: string
@@ -99,6 +137,13 @@ export interface EmployeeRunEvent {
 export type EmployeeRunUpdate = Partial<Pick<EmployeeRunRecord,
   | 'status'
   | 'dispatchStage'
+  | 'promptAcceptedAt'
+  | 'observationCursor'
+  | 'observerState'
+  | 'observationError'
+  | 'terminalEvidence'
+  | 'cancelRequestState'
+  | 'cancelRequestError'
   | 'partialOutput'
   | 'output'
   | 'error'
