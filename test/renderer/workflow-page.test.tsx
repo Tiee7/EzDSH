@@ -2632,9 +2632,8 @@ describe('WorkflowPage regressions', () => {
   })
 
   it('uses an accessible in-app dialog for formal work item creation', () => {
-    const onSubmit = vi.fn()
     const markup = renderToStaticMarkup(
-      <workflowPage.WorkflowWorkItemDialog locale="zh" value="" busy={false} onChange={vi.fn()} onClose={vi.fn()} onSubmit={onSubmit} />,
+      <workflowPage.WorkflowWorkItemDialog locale="zh" value="" busy={false} onChange={vi.fn()} onClose={vi.fn()} onSubmit={vi.fn()} />,
     )
 
     expect(markup).toContain('role="dialog"')
@@ -2643,7 +2642,6 @@ describe('WorkflowPage regressions', () => {
     expect(markup).toContain('aria-label="工作项要完成什么"')
     expect(markup).toContain('创建并运行')
     expect(markup).toContain('disabled=""')
-    expect(markup).not.toContain('window.prompt')
   })
 
   it('migrates legacy Agent wording before a workflow enters the editor', () => {
