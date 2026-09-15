@@ -30,6 +30,7 @@ const TAB_LABELS: Record<AppTab, (copy: AppCopy) => string> = {
   presets: (c) => c.tabPresets,
   docs: (c) => c.tabDocs,
   employees: (c) => c.tabEmployees,
+  'work-items': (c) => c.tabWorkItems,
   settings: (c) => c.tabSettings
 }
 

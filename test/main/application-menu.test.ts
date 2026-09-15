@@ -147,7 +147,7 @@ describe('application menu navigate section', () => {
       accelerator?: string
     }>
 
-    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Workflow', 'Skills', 'Preset', '使用手册', '员工', '设置'])
+    expect(items.map((item) => item.label)).toEqual(['DeepSeek Harness', 'Workflow', 'Skills', 'Preset', '使用手册', '员工', '工作项', '设置'])
     expect(items.map((item) => item.accelerator)).toEqual([
       'CmdOrCtrl+1',
       'CmdOrCtrl+2',
@@ -155,8 +155,16 @@ describe('application menu navigate section', () => {
       'CmdOrCtrl+4',
       'CmdOrCtrl+5',
       'CmdOrCtrl+6',
+      'CmdOrCtrl+7',
       'CmdOrCtrl+0'
     ])
+  })
+
+  it('omits Work Items from the ordinary menu and shortcuts', () => {
+    const template = getApplicationMenuTemplate({ locale: 'zh' })
+    const navigate = template.find((item) => item.label === '前往')
+    const items = (navigate?.submenu ?? []).filter((item) => 'accelerator' in item) as Array<{ label?: string }>
+    expect(items.map((item) => item.label)).not.toContain('工作项')
   })
 
   it('omits hidden tabs while preserving the visible page order', () => {

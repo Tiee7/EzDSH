@@ -165,6 +165,8 @@ export interface AppCopy {
   tabPresets: string
   tabDocs: string
   tabEmployees: string
+  tabWorkItems: string
+  workItemsPreview: string
   tabSettings: string
   employeesTitle: string
   employeesHint: string
@@ -1125,6 +1127,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     tabPresets: 'Preset',
     tabDocs: '使用手册',
     tabEmployees: '员工',
+    tabWorkItems: '工作项',
+    workItemsPreview: '工作项预览页面正在构建中。',
     tabSettings: '设置',
     employeesTitle: 'AI 员工',
     employeesHint: '把可复用的专业角色定义为员工档案，统一管理业务边界、执行规范、质量标准和技能 ID。',
@@ -2112,6 +2116,8 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     tabPresets: 'Preset',
     tabDocs: 'Docs',
     tabEmployees: 'Employees',
+    tabWorkItems: 'Work Items',
+    workItemsPreview: 'The Work Items preview page is under construction.',
     tabSettings: 'Settings',
     employeesTitle: 'AI employees',
     employeesHint: 'Define reusable professional roles as employee profiles with business boundaries, operating guidelines, quality standards, and skill IDs.',

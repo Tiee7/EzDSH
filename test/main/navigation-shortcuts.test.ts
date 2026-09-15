@@ -47,6 +47,8 @@ describe('navigation shortcuts', () => {
     const config = getDefaultNavConfig()
     expect(getNavigationTargetForInput(input({ key: '6', code: 'Digit6' }), config, 'darwin')).toBeUndefined()
     expect(getNavigationTargetForInput(input({ key: '6', code: 'Digit6' }), config, 'darwin', true)).toBe('employees')
+    expect(getNavigationTargetForInput(input({ key: '7', code: 'Digit7' }), config, 'darwin')).toBeUndefined()
+    expect(getNavigationTargetForInput(input({ key: '7', code: 'Digit7' }), config, 'darwin', true)).toBe('work-items')
   })
 
   it('ignores input that is not the platform shortcut keydown', () => {

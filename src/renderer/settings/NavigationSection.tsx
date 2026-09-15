@@ -37,6 +37,8 @@ export function builtinLabel(id: AppTab, copy: AppCopy): string {
       return copy.tabDocs
     case 'employees':
       return copy.tabEmployees
+    case 'work-items':
+      return copy.tabWorkItems
     case 'settings':
       return copy.tabSettings
   }

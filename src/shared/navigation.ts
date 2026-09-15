@@ -1,11 +1,11 @@
 /** Top-level tabs shared by the renderer tab bar, the preload bridge, and the native application menu. */
-export const APP_TABS = ['harness', 'workflow', 'store', 'presets', 'docs', 'employees', 'settings'] as const
+export const APP_TABS = ['harness', 'workflow', 'store', 'presets', 'docs', 'employees', 'work-items', 'settings'] as const
 
 /** One top-level navigation target. */
 export type AppTab = (typeof APP_TABS)[number]
 
 /** Tabs reserved for developer-mode features. */
-export const DEVELOPER_ONLY_TABS: readonly AppTab[] = ['workflow', 'employees']
+export const DEVELOPER_ONLY_TABS: readonly AppTab[] = ['workflow', 'employees', 'work-items']
 
 /** Return whether `value` is a valid {@link AppTab}. */
 export function isAppTab(value: unknown): value is AppTab {

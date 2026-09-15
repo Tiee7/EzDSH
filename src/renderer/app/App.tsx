@@ -27,6 +27,7 @@ import { EMPLOYEES_REFRESH_EVENT, EmployeesPage } from '../employees/EmployeesPa
 import { WorkflowPage } from '../workflow/WorkflowPage.js'
 import { DocsPage } from '../docs/DocsPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
+import { WorkItemsPreviewPage } from '../work-items/WorkItemsPreviewPage.js'
 import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import { shouldKeepTabMounted } from './page-lifecycle.js'
 import { RecoveryPanel } from '../recovery/RecoveryPanel.js'
@@ -52,6 +53,8 @@ function builtinTabLabel(id: AppTab, copy: AppCopy): string {
       return copy.tabDocs
     case 'employees':
       return copy.tabEmployees
+    case 'work-items':
+      return copy.tabWorkItems
     case 'settings':
       return copy.tabSettings
   }
@@ -477,6 +480,10 @@ export function App() {
               case 'employees':
                 return shouldKeepTabMounted(item.id) || activeTab === 'employees'
                   ? <section key="employees" className={`workspace-pane ${activeTab === 'employees' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabEmployees}><EmployeesPage key={employeesRefreshKey} copy={copy} /></section>
+                  : null
+              case 'work-items':
+                return activeTab === 'work-items'
+                  ? <section key="work-items" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabWorkItems}><WorkItemsPreviewPage copy={copy} /></section>
                   : null
               case 'docs':
                 return (

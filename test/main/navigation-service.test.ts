@@ -26,7 +26,7 @@ describe('navigation service', () => {
     await service.setConfig(custom)
     const reloaded = new NavigationService(dir)
     await reloaded.initialize()
-    expect(reloaded.getConfig().items.map((i) => i.id)).toEqual(['harness', 'workflow', 'store', 'presets', 'docs', 'employees', 'c1', 'settings'])
+    expect(reloaded.getConfig().items.map((i) => i.id)).toEqual(['harness', 'workflow', 'store', 'presets', 'docs', 'employees', 'work-items', 'c1', 'settings'])
   })
 
   it('rejects an invalid config without persisting', async () => {
@@ -43,6 +43,6 @@ describe('navigation service', () => {
     await writeFile(join(dir, 'navigation.json'), JSON.stringify({ items: [{ kind: 'builtin', id: 'store', visible: false }] }))
     const service = new NavigationService(dir)
     await service.initialize()
-    expect(service.getConfig().items.map((i) => i.id)).toEqual(['harness', 'store', 'workflow', 'presets', 'docs', 'employees', 'settings'])
+    expect(service.getConfig().items.map((i) => i.id)).toEqual(['harness', 'store', 'workflow', 'presets', 'docs', 'employees', 'work-items', 'settings'])
   })
 })

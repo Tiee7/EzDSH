@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as app from '../../src/renderer/app/App.js'
+import { WorkItemsPreviewPage } from '../../src/renderer/work-items/WorkItemsPreviewPage.js'
 import { builtinLabel, isNavItemMovable } from '../../src/renderer/settings/NavigationSection.js'
 import { getAppCopy } from '../../src/shared/locale.js'
 import {
@@ -16,12 +17,26 @@ import {
 } from '../../src/shared/navigation'
 
 describe('application tabs', () => {
-  it('keeps the seven top-level tabs in a stable order', () => {
-    expect([...APP_TABS]).toEqual(['harness', 'workflow', 'store', 'presets', 'docs', 'employees', 'settings'])
+  it('keeps eight top-level tabs in a stable order', () => {
+    expect([...APP_TABS]).toEqual(['harness', 'workflow', 'store', 'presets', 'docs', 'employees', 'work-items', 'settings'])
   })
 
   it('shows the Workflow title in the navigation settings list', () => {
     expect(builtinLabel('workflow', getAppCopy('zh'))).toBe('Workflow')
+  })
+
+  it('shows the Work Items title in the navigation settings list', () => {
+    expect(builtinLabel('work-items', getAppCopy('zh'))).toBe('工作项')
+  })
+
+  it('provides a labeled developer preview route for Work Items', () => {
+    const page = WorkItemsPreviewPage({ copy: getAppCopy('zh') })
+    expect(page.type).toBe('div')
+    expect(page.props.className).toBe('work-items-preview-page')
+    expect(page.props.children[0].props.children).toBe('工作项')
+    expect(page.props.children[1].props.children).toBe(getAppCopy('zh').workItemsPreview)
+    const englishPage = WorkItemsPreviewPage({ copy: getAppCopy('en') })
+    expect(englishPage.props.children[1].props.children).toBe(getAppCopy('en').workItemsPreview)
   })
 
   it('allows employees to be reordered while keeping core tabs fixed', () => {
@@ -57,7 +72,7 @@ describe('application tabs', () => {
 })
 
 describe('navigation config', () => {
-  it('defaults to seven built-in tabs with harness, employees, and settings locked', () => {
+  it('defaults to eight built-in tabs with harness, employees, and settings locked', () => {
     const config = getDefaultNavConfig()
     expect(config.items.map((i) => i.id)).toEqual([...APP_TABS])
     for (const item of config.items) expect(isBuiltinNavItem(item)).toBe(true)
@@ -71,6 +86,7 @@ describe('navigation config', () => {
 
     expect(visible(config).map((i) => i.id)).toEqual(['harness', 'store', 'presets', 'docs', 'settings'])
     expect(visible(config, true).map((i) => i.id)).toEqual([...APP_TABS])
+    expect(visible(config).map((i) => i.id)).not.toContain('work-items')
   })
 
   it('guards built-in and custom item kinds', () => {
@@ -133,16 +149,18 @@ describe('navigation config', () => {
       ]
     })
     const ids = normalized.items.map((i) => i.id)
-    expect(ids).toEqual(['harness', 'store', 'c1', 'workflow', 'presets', 'docs', 'employees', 'settings'])
+    expect(ids).toEqual(['harness', 'store', 'c1', 'workflow', 'presets', 'docs', 'employees', 'work-items', 'settings'])
     expect(isVisibleNavItem(normalized.items[1])).toBe(false)
     expect(isVisibleNavItem(normalized.items[0])).toBe(true) // harness pinned first and locked visible
   })
 
   it('pins only harness first and settings last so employees can be reordered', () => {
     const config = getDefaultNavConfig()
-    const scrambled = [config.items[6], config.items[2], config.items[3], config.items[0], config.items[5], config.items[4], config.items[1]]
+    const settings = config.items.find((item) => item.id === 'settings')!
+    const workItems = config.items.find((item) => item.id === 'work-items')!
+    const scrambled = [settings, workItems, config.items[2], config.items[3], config.items[0], config.items[5], config.items[4], config.items[1]]
     const pinned = pinFixedTabs(scrambled)
-    expect(pinned.map((i) => i.id)).toEqual(['harness', 'store', 'presets', 'employees', 'docs', 'workflow', 'settings'])
+    expect(pinned.map((i) => i.id)).toEqual(['harness', 'work-items', 'store', 'presets', 'employees', 'docs', 'workflow', 'settings'])
   })
 
   it('rejects invalid set-config payloads', () => {
