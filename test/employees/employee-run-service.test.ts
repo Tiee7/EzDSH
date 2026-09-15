@@ -257,6 +257,46 @@ describe('EmployeeRunService', () => {
     await vi.waitFor(async () => expect((await service.get(started.run.runId))?.status).toBe('completed'))
   })
 
+  it('keeps the lock and normal completion when force-unlock persistence fails', async () => {
+    const directory = await temporaryDirectory()
+    const response = deferred<{ text: string }>()
+    let replacements = 0
+    const store = new EmployeeRunStore(directory, {
+      rename: async (from, to) => {
+        replacements += 1
+        if (replacements === 3) throw new Error('simulated force-unlock persistence failure')
+        await rename(from, to)
+      },
+    })
+    const client: EmployeeRunClient = {
+      createSession: vi.fn().mockResolvedValue({ sessionId: 'session-1' }),
+      sendPrompt: vi.fn(() => response.promise),
+      cancelSession: vi.fn().mockResolvedValue(undefined),
+    }
+    const { service } = await createRunService({ directory, client, store })
+    const started = await service.start(request())
+    await vi.waitFor(async () => expect(await service.get(started.run.runId)).toMatchObject({ status: 'running' }))
+
+    await expect(service.forceUnlockSession('session-1')).rejects.toThrow('simulated force-unlock persistence failure')
+
+    const afterFailure = await service.get(started.run.runId)
+    expect(afterFailure).toMatchObject({ status: 'running' })
+    expect(afterFailure).not.toHaveProperty('error')
+    expect(service.listSessionLocks()).toEqual([expect.objectContaining({
+      sessionId: 'session-1',
+      runId: started.run.runId,
+    })])
+    expect(client.cancelSession).not.toHaveBeenCalled()
+    response.resolve({ text: '正常完成' })
+    const terminal = await service.waitForTerminal(started.run.runId)
+    expect(terminal).toMatchObject({
+      status: 'completed',
+      output: '正常完成',
+    })
+    expect(terminal).not.toHaveProperty('error')
+    await vi.waitFor(() => expect(service.listSessionLocks()).toEqual([]))
+  })
+
   it('never submits a prompt after queued cancellation wins the dispatch claim race', async () => {
     const client: EmployeeRunClient = {
       createSession: vi.fn().mockResolvedValue({ sessionId: 'session-1' }),

@@ -34,6 +34,7 @@ export class EmployeeRunInputError extends Error {
 const TERMINAL_STATUSES = new Set<EmployeeRunRecord['status']>([
   'completed', 'failed', 'cancelled', 'interrupted',
 ])
+const FORCE_UNLOCK_REASON = 'Employee run was force-unlocked'
 
 export class EmployeeRunService {
   private readonly sessionLocks = new Map<string, EmployeeSessionLock>()
@@ -124,19 +125,32 @@ export class EmployeeRunService {
     const lock = this.sessionLocks.get(normalizedSessionId)
     if (lock === undefined) return
     this.forceUnlockedRunIds.add(lock.runId)
-    const run = await this.options.store.get(lock.runId)
-    if (run && !TERMINAL_STATUSES.has(run.status)) {
+    try {
+      const run = await this.requireRun(lock.runId)
+      if (TERMINAL_STATUSES.has(run.status)) {
+        this.forceUnlockedRunIds.delete(lock.runId)
+        this.releaseSessionLock(normalizedSessionId, lock.runId)
+        return
+      }
       const now = new Date().toISOString()
-      await this.options.store.transition(run.runId, (current) => {
+      const transition = await this.options.store.transition(run.runId, (current) => {
         if (TERMINAL_STATUSES.has(current.status)) return undefined
         return {
           status: 'cancelling',
           dispatchStage: 'cancel-requested',
-          cancelReason: 'Employee run was force-unlocked',
+          cancelReason: FORCE_UNLOCK_REASON,
           cancelRequestedAt: now,
           updatedAt: now,
         }
       })
+      if (!transition.updated) {
+        this.forceUnlockedRunIds.delete(lock.runId)
+        this.releaseSessionLock(normalizedSessionId, lock.runId)
+        return
+      }
+    } catch (error) {
+      this.forceUnlockedRunIds.delete(lock.runId)
+      throw error
     }
     this.releaseSessionLock(normalizedSessionId, lock.runId)
     const client = this.options.createClient()
@@ -293,11 +307,15 @@ export class EmployeeRunService {
       const now = new Date().toISOString()
       await this.options.store.transition(initial.runId, (current) => {
         if (TERMINAL_STATUSES.has(current.status)) return undefined
-        if (this.forceUnlockedRunIds.has(initial.runId)) {
+        if (
+          this.forceUnlockedRunIds.has(initial.runId)
+          && current.status === 'cancelling'
+          && current.cancelReason === FORCE_UNLOCK_REASON
+        ) {
           return {
             status: 'failed',
             dispatchStage: 'failed',
-            error: 'Employee run was force-unlocked',
+            error: FORCE_UNLOCK_REASON,
             updatedAt: now,
             completedAt: now,
           }
@@ -312,7 +330,7 @@ export class EmployeeRunService {
       })
     } catch (error) {
       const message = this.forceUnlockedRunIds.has(initial.runId)
-        ? 'Employee run was force-unlocked'
+        ? FORCE_UNLOCK_REASON
         : messageOf(error)
       await this.recordDispatchFailure(initial.runId, new Error(message))
     } finally {
