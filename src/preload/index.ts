@@ -1,3 +1,4 @@
+import type { EmployeeWorkMethod, EmployeeWorkMethodCreate, EmployeeWorkMethodUpdate } from '../shared/employee-methods.js'
 import { contextBridge, ipcRenderer } from 'electron'
 import type { DeepLinkInstallTarget, DeepLinkSessionTarget, EzDSHBridge } from '../shared/contracts.js'
 import type { IpcResult } from '../shared/errors.js'
@@ -156,6 +157,14 @@ const bridge: EzDSHBridge = {
     },
   },
   employees: {
+    methods: {
+      list: (employeeId: string) => invoke<EmployeeWorkMethod[]>('employees:methods:list', employeeId),
+      get: (employeeId: string, id: string) => invoke<EmployeeWorkMethod | undefined>('employees:methods:get', employeeId, id),
+      create: (employeeId: string, input: EmployeeWorkMethodCreate) => invoke<EmployeeWorkMethod>('employees:methods:create', employeeId, input),
+      update: (employeeId: string, id: string, input: EmployeeWorkMethodUpdate) => invoke<EmployeeWorkMethod>('employees:methods:update', employeeId, id, input),
+      remove: (employeeId: string, id: string, expectedVersion: number) => invoke<void>('employees:methods:remove', employeeId, id, expectedVersion),
+      snapshot: (employeeId: string, id: string) => invoke<EmployeeWorkMethod>('employees:methods:snapshot', employeeId, id),
+    },
     list: () => invoke<EmployeeSnapshot[]>('employees:list'),
     listProjects: () => invoke<EmployeeProjectSummary[]>('employees:list-projects'),
     listSessions: (projectId?: string) => invoke<EmployeeSessionSummary[]>('employees:list-sessions', projectId),

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import * as app from '../../src/renderer/app/App.js'
-import { WorkItemsPreviewPage } from '../../src/renderer/work-items/WorkItemsPreviewPage.js'
+import { WorkItemsPage } from '../../src/renderer/work-items/WorkItemsPage.js'
 import { builtinLabel, isNavItemMovable } from '../../src/renderer/settings/NavigationSection.js'
 import { getAppCopy } from '../../src/shared/locale.js'
 import {
@@ -29,14 +31,11 @@ describe('application tabs', () => {
     expect(builtinLabel('work-items', getAppCopy('zh'))).toBe('工作项')
   })
 
-  it('provides a labeled developer preview route for Work Items', () => {
-    const page = WorkItemsPreviewPage({ copy: getAppCopy('zh') })
-    expect(page.type).toBe('div')
-    expect(page.props.className).toBe('work-items-preview-page')
-    expect(page.props.children[0].props.children).toBe('工作项')
-    expect(page.props.children[1].props.children).toBe(getAppCopy('zh').workItemsPreview)
-    const englishPage = WorkItemsPreviewPage({ copy: getAppCopy('en') })
-    expect(englishPage.props.children[1].props.children).toBe(getAppCopy('en').workItemsPreview)
+  it('provides a labeled durable Work Items route', () => {
+    const markup = renderToStaticMarkup(createElement(WorkItemsPage, { copy: getAppCopy('zh') }))
+    expect(markup).toContain('work-items-page')
+    expect(markup).toContain('工作项')
+    expect(markup).toContain(getAppCopy('zh').workItemsTitle)
   })
 
   it('allows employees to be reordered while keeping core tabs fixed', () => {

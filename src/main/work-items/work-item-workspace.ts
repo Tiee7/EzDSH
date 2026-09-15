@@ -25,6 +25,10 @@ export interface WorkItemWorkspaceEmployeeRunPort {
   cancelWorkItemRun(runId: string): Promise<EmployeeRunRecord>
 }
 
+export interface WorkItemWorkspaceEmployeeMethodPort {
+  snapshot(employeeId: string, methodId: string): Promise<import('../../shared/employee-methods.js').EmployeeWorkMethod>
+}
+
 export interface WorkItemWorkspaceWorkflowRunPort extends WorkflowTaskRunPort {
   watch(listener: (record: WorkflowRunRecord) => void): () => void
 }
@@ -32,6 +36,7 @@ export interface WorkItemWorkspaceWorkflowRunPort extends WorkflowTaskRunPort {
 export interface WorkItemWorkspaceOptions {
   layout: UserDataLayout
   employeeRuns: WorkItemWorkspaceEmployeeRunPort
+  employeeMethods?: WorkItemWorkspaceEmployeeMethodPort
   workflowRuns: WorkItemWorkspaceWorkflowRunPort
   assertExecutionAvailable?: (operation: WorkItemExecutionOperation, request: unknown) => void
   onChanged?: (snapshot: WorkTaskSnapshot) => void
@@ -60,6 +65,7 @@ export function initializeWorkItemWorkspaceScope(
           start: (request) => options.employeeRuns.startWorkItemRun(request),
           list: () => options.employeeRuns.listWorkItemRuns(),
         },
+        employeeMethods: options.employeeMethods,
         workflowBridge,
         defaultCwd: options.layout.root,
       })

@@ -1,3 +1,4 @@
+import type { EmployeeWorkMethodCreate, EmployeeWorkMethodUpdate } from '../shared/employee-methods.js'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, safeStorage, shell, WebContentsView } from 'electron'
 import { existsSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
@@ -708,6 +709,11 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   })
   employeeService = new EmployeeService({
     configPath: join(layout.state, 'employees.json'),
+    methodWorkflowExists: async (id, revision) => {
+      if (!workflowStore) return false
+      await workflowStore.initialize()
+      return workflowStore.getRevision(id, revision) !== undefined
+    },
     cwd: layout.root,
     lightweightClient,
     getLocale: () => localeService?.snapshot() ?? DEFAULT_APP_LOCALE,
@@ -799,6 +805,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     layout,
     workflowRuns: workspaceWorkflowRunService,
     employeeRuns: workspaceEmployeeService,
+    employeeMethods: workspaceEmployeeService.methods,
     assertExecutionAvailable: assertWorkItemExecutionAvailable,
     onChanged: emitWorkItemState,
     onObserverError: logWorkItemObserverError,
@@ -1179,6 +1186,7 @@ async function reopenWorkItemWorkspaceScope(): Promise<void> {
     layout,
     workflowRuns: workspaceWorkflowRunService,
     employeeRuns: workspaceEmployeeService,
+    employeeMethods: workspaceEmployeeService.methods,
     assertExecutionAvailable: assertWorkItemExecutionAvailable,
     onChanged: emitWorkItemState,
     onObserverError: logWorkItemObserverError,
@@ -1799,6 +1807,66 @@ function registerIpcHandlers(): void {
   ipcMain.handle('external-services:unwatch', (event): IpcResult<void> => {
     externalServiceWatchers.delete(event.sender.id)
     return success(undefined)
+  })
+  ipcMain.handle('employees:methods:list', async (_event, employeeId: string) => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.initialize()
+      return success(await employeeService.methods.list(employeeId))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:methods:get', async (_event, employeeId: string, id: string) => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.initialize()
+      return success(await employeeService.methods.get(employeeId, id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:methods:create', async (_event, employeeId: string, input: EmployeeWorkMethodCreate) => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.initialize()
+      return success(await employeeService.methods.create(employeeId, input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:methods:update', async (_event, employeeId: string, id: string, input: EmployeeWorkMethodUpdate) => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.initialize()
+      return success(await employeeService.methods.update(employeeId, id, input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:methods:remove', async (_event, employeeId: string, id: string, expectedVersion: number) => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.initialize()
+      return success(await employeeService.methods.remove(employeeId, id, expectedVersion))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('employees:methods:snapshot', async (_event, employeeId: string, id: string) => {
+    try {
+      requireDeveloperModeFeature()
+      if (employeeService === undefined) throw new Error('Employee service is not ready')
+      await employeeService.initialize()
+      return success(await employeeService.methods.snapshot(employeeId, id))
+    } catch (error) {
+      return failure(error)
+    }
   })
   ipcMain.handle('employees:list', async (): Promise<IpcResult<Awaited<ReturnType<EmployeeService['list']>>>> => {
     try {

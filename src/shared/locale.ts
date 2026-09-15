@@ -167,6 +167,44 @@ export interface AppCopy {
   tabEmployees: string
   tabWorkItems: string
   workItemsPreview: string
+  workItemsTitle: string
+  workItemsHint: string
+  workItemsRefresh: string
+  workItemsRefreshing: string
+  workItemsLoading: string
+  workItemsEmptyTitle: string
+  workItemsEmptyHint: string
+  workItemsRuntimeOffline: string
+  workItemsReadOnly: string
+  workItemsDetails: string
+  workItemsCloseDetails: string
+  workItemsRedo: string
+  workItemsHandoff: string
+  workItemsSelectTask: string
+  workItemsGoal: string
+  workItemsAcceptance: string
+  workItemsCurrentRequirement: string
+  workItemsRequirementsHistory: string
+  workItemsRequirementVersion: (version: number) => string
+  workItemsAttempts: string
+  workItemsNoAttempts: string
+  workItemsRuns: string
+  workItemsNoRuns: string
+  workItemsArtifacts: string
+  workItemsNoArtifacts: string
+  workItemsActions: string
+  workItemsNoActions: string
+  workItemsNotAvailable: string
+  workItemsUpdatedAt: (time: string) => string
+  workItemsUnassigned: string
+  workItemsExecutorEmployee: (id: string) => string
+  workItemsExecutorWorkflow: (id: string, revision?: number) => string
+  workItemsAttemptReason: (reason: string) => string
+  workItemsRunStatus: (status: string) => string
+  workItemsTaskStatus: (status: string) => string
+  workItemsArtifactVersion: (contentVersion: number, requirementVersion: number) => string
+  workItemsActionKind: (kind: string) => string
+  workItemsActionState: (status: string) => string
   tabSettings: string
   employeesTitle: string
   employeesHint: string
@@ -1129,6 +1167,44 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     tabEmployees: '员工',
     tabWorkItems: '工作项',
     workItemsPreview: '工作项预览页面正在构建中。',
+    workItemsTitle: '持续工作台',
+    workItemsHint: '这里显示 Main 持久保存的任务、执行历史、成果和待处理事项。状态与动作以执行服务的记录为准。',
+    workItemsRefresh: '刷新任务',
+    workItemsRefreshing: '正在刷新…',
+    workItemsLoading: '正在读取已保存的工作项…',
+    workItemsEmptyTitle: '还没有工作项',
+    workItemsEmptyHint: '从后续的员工或 Workflow 正式入口创建任务后，它会保存在这里。',
+    workItemsRuntimeOffline: 'Runtime 当前不可用；仍可查看本机已保存的任务记录。',
+    workItemsReadOnly: '本期只读',
+    workItemsDetails: '任务详情',
+    workItemsCloseDetails: '关闭详情',
+    workItemsRedo: '再做一版',
+    workItemsHandoff: '交接',
+    workItemsSelectTask: '从左侧选择一个已保存的工作项。',
+    workItemsGoal: '目标',
+    workItemsAcceptance: '验收标准',
+    workItemsCurrentRequirement: '当前要求',
+    workItemsRequirementsHistory: '要求历史',
+    workItemsRequirementVersion: (version) => `要求 v${version}`,
+    workItemsAttempts: '执行轮次',
+    workItemsNoAttempts: '还没有执行轮次。',
+    workItemsRuns: '执行记录',
+    workItemsNoRuns: '还没有执行记录。',
+    workItemsArtifacts: '成果',
+    workItemsNoArtifacts: '还没有成果。',
+    workItemsActions: '待处理事项',
+    workItemsNoActions: '没有待处理事项。',
+    workItemsNotAvailable: '当前记录没有可显示的数据。',
+    workItemsUpdatedAt: (time) => `更新于 ${time}`,
+    workItemsUnassigned: '未归入项目',
+    workItemsExecutorEmployee: (id) => `员工 · ${id}`,
+    workItemsExecutorWorkflow: (id, revision) => `流程 · ${id}${revision === undefined ? '' : ` · v${revision}`}`,
+    workItemsAttemptReason: (reason) => ({ initial: '首次执行', redo: '重新执行', handoff: '交接执行', 'requirements-changed': '要求变更' }[reason] ?? reason),
+    workItemsRunStatus: (status) => ({ queued: '排队中', running: '运行中', waiting: '等待处理', paused: '已暂停', cancelling: '取消中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }[status] ?? status),
+    workItemsTaskStatus: (status) => ({ open: '开放', active: '执行中', review: '待验收', completed: '已完成', cancelled: '已取消' }[status] ?? status),
+    workItemsArtifactVersion: (contentVersion, requirementVersion) => `成果 v${contentVersion} · 要求 v${requirementVersion}`,
+    workItemsActionKind: (kind) => ({ approval: '审批', question: '问题', recovery: '恢复' }[kind] ?? kind),
+    workItemsActionState: (status) => ({ open: '待处理', resolved: '已处理', superseded: '已被替代' }[status] ?? status),
     tabSettings: '设置',
     employeesTitle: 'AI 员工',
     employeesHint: '把可复用的专业角色定义为员工档案，统一管理业务边界、执行规范、质量标准和技能 ID。',
@@ -2118,6 +2194,44 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     tabEmployees: 'Employees',
     tabWorkItems: 'Work Items',
     workItemsPreview: 'The Work Items preview page is under construction.',
+    workItemsTitle: 'Continuous workbench',
+    workItemsHint: 'View Main-owned durable tasks, execution history, deliverables, and pending actions. Status and actions come from the execution service.',
+    workItemsRefresh: 'Refresh tasks',
+    workItemsRefreshing: 'Refreshing…',
+    workItemsLoading: 'Loading saved work items…',
+    workItemsEmptyTitle: 'No work items yet',
+    workItemsEmptyHint: 'Tasks created from the later employee or Workflow entry points will appear here.',
+    workItemsRuntimeOffline: 'Runtime is unavailable; locally saved task records remain readable.',
+    workItemsReadOnly: 'Read-only this release',
+    workItemsDetails: 'Task details',
+    workItemsCloseDetails: 'Close details',
+    workItemsRedo: 'Make another version',
+    workItemsHandoff: 'Hand off',
+    workItemsSelectTask: 'Select a saved work item from the list.',
+    workItemsGoal: 'Goal',
+    workItemsAcceptance: 'Acceptance',
+    workItemsCurrentRequirement: 'Current requirement',
+    workItemsRequirementsHistory: 'Requirement history',
+    workItemsRequirementVersion: (version) => `Requirement v${version}`,
+    workItemsAttempts: 'Attempts',
+    workItemsNoAttempts: 'No attempts yet.',
+    workItemsRuns: 'Runs',
+    workItemsNoRuns: 'No runs yet.',
+    workItemsArtifacts: 'Deliverables',
+    workItemsNoArtifacts: 'No deliverables yet.',
+    workItemsActions: 'Pending actions',
+    workItemsNoActions: 'No pending actions.',
+    workItemsNotAvailable: 'This record has no displayable data.',
+    workItemsUpdatedAt: (time) => `Updated ${time}`,
+    workItemsUnassigned: 'Unassigned project',
+    workItemsExecutorEmployee: (id) => `Employee · ${id}`,
+    workItemsExecutorWorkflow: (id, revision) => `Workflow · ${id}${revision === undefined ? '' : ` · v${revision}`}`,
+    workItemsAttemptReason: (reason) => ({ initial: 'Initial run', redo: 'Redo', handoff: 'Handoff', 'requirements-changed': 'Requirements changed' }[reason] ?? reason),
+    workItemsRunStatus: (status) => ({ queued: 'Queued', running: 'Running', waiting: 'Waiting', paused: 'Paused', cancelling: 'Cancelling', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted' }[status] ?? status),
+    workItemsTaskStatus: (status) => ({ open: 'Open', active: 'Active', review: 'In review', completed: 'Completed', cancelled: 'Cancelled' }[status] ?? status),
+    workItemsArtifactVersion: (contentVersion, requirementVersion) => `Artifact v${contentVersion} · requirement v${requirementVersion}`,
+    workItemsActionKind: (kind) => ({ approval: 'Approval', question: 'Question', recovery: 'Recovery' }[kind] ?? kind),
+    workItemsActionState: (status) => ({ open: 'Open', resolved: 'Resolved', superseded: 'Superseded' }[status] ?? status),
     tabSettings: 'Settings',
     employeesTitle: 'AI employees',
     employeesHint: 'Define reusable professional roles as employee profiles with business boundaries, operating guidelines, quality standards, and skill IDs.',

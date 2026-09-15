@@ -7,6 +7,7 @@ import {
   type WorkRunControlRequest,
   type WorkRunStatus,
   type WorkTaskSnapshot,
+  type WorkExecutor,
 } from '../../shared/work-items.js'
 import type { WorkflowApprovalDecisionRequest, WorkflowResumeRequest, WorkflowRunEvent, WorkflowRunRecord } from '../../shared/workflow.js'
 import { WorkItemService } from './work-item-service.js'
@@ -41,7 +42,7 @@ export class WorkActionService {
     const snapshot = await this.options.workItems.get(record.workTask.taskId)
     if (snapshot === undefined) return undefined
     const reference = snapshot.runs.find((run) => run.runId === record.id)
-    if (reference === undefined || reference.executor.kind !== 'workflow'
+    if (reference === undefined || !isWorkflowBackedExecutor(reference.executor)
       || reference.commandId !== record.workTask.commandId
       || reference.attemptId !== record.workTask.attemptId
       || reference.requirementVersion !== record.workTask.requirementVersion) {
@@ -95,7 +96,7 @@ export class WorkActionService {
     if (action === undefined || action.nodeId === undefined) throw new Error(`Action ${intent.actionId} has no Workflow approval target`)
     if (action.kind !== 'approval') throw new Error(`Action ${intent.actionId} is not a Workflow approval`)
     const reference = intent.snapshot.runs.find((candidate) => candidate.runId === action.runId)
-    if (reference === undefined || reference.executor.kind !== 'workflow') throw new Error(`Workflow run ${action.runId} was not found for action ${action.id}`)
+    if (reference === undefined || !isWorkflowBackedExecutor(reference.executor)) throw new Error(`Workflow run ${action.runId} was not found for action ${action.id}`)
     let decided: WorkflowRunRecord
     try {
       const current = await this.options.workflowBridge.get?.(action.runId)
@@ -122,7 +123,7 @@ export class WorkActionService {
     if (intent.stage === 'processed') return intent.snapshot
     const reference = intent.snapshot.runs.find((candidate) => candidate.runId === request.runId)
     if (reference === undefined) throw new Error(`Run ${request.runId} was not found on task ${request.taskId}`)
-    if (reference.executor.kind === 'employee') {
+    if (reference.executor.kind === 'employee' && reference.executor.methodId === undefined) {
       const current = await this.options.employeeRuns.get?.(request.runId)
       if (current === undefined) throw new Error(`Employee run ${request.runId} was not found`)
       assertEmployeeAssociation(current, reference, request.taskId)
@@ -170,6 +171,10 @@ export class WorkActionService {
     void tail.finally(() => { if (this.requestTails.get(requestId) === tail) this.requestTails.delete(requestId) })
     return result
   }
+}
+
+function isWorkflowBackedExecutor(executor: WorkExecutor): boolean {
+  return executor.kind === 'workflow' || (executor.kind === 'employee' && executor.methodId !== undefined)
 }
 
 function hasWorkflowResumeReceipt(record: WorkflowRunRecord, request: WorkRunControlRequest): boolean {

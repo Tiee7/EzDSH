@@ -20,7 +20,8 @@ import {
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
-  type WorkTaskSnapshot
+  type WorkTaskSnapshot,
+  type WorkExecutor
 } from '../../shared/work-items.js'
 
 export class WorkItemStoreConflictError extends Error {
@@ -34,6 +35,10 @@ export class WorkItemStoreConflictError extends Error {
     this.name = 'WorkItemStoreConflictError'
     this.code = code
   }
+}
+
+function isWorkflowBackedExecutor(executor: WorkExecutor): boolean {
+  return executor.kind === 'workflow' || (executor.kind === 'employee' && executor.methodId !== undefined)
 }
 
 export class WorkItemStoreInputError extends Error {
@@ -807,6 +812,14 @@ export class WorkItemStore {
       const snapshot = copy(current)
       const now = new Date().toISOString()
       let attemptId = snapshot.task.activeAttemptId
+      if (request.mode === 'handoff') {
+        if (!attemptId || !snapshot.attempts.some((attempt) => attempt.id === attemptId)) {
+          throw new WorkItemStoreConflictError('ATTEMPT_NOT_FOUND', 'No active attempt is available to hand off')
+        }
+        if (request.sourceRunId && !snapshot.runs.some((run) => run.runId === request.sourceRunId)) {
+          throw new WorkItemStoreConflictError('RUN_NOT_FOUND', 'The handoff source run does not belong to this task')
+        }
+      }
       if (request.mode === 'continue-attempt') {
         if (!attemptId || !snapshot.attempts.some((attempt) => attempt.id === attemptId)) {
           throw new WorkItemStoreConflictError('ATTEMPT_NOT_FOUND', 'No active attempt is available to continue')
@@ -817,7 +830,7 @@ export class WorkItemStore {
           id: attemptId,
           taskId: request.taskId,
           requirementVersion: snapshot.task.currentRequirementVersion,
-          reason: request.mode === 'redo' ? 'redo' : 'initial',
+          reason: request.mode === 'redo' ? 'redo' : request.mode === 'handoff' ? 'handoff' : 'initial',
           responsibility: request.executor,
           createdAt: now
         })
@@ -926,7 +939,7 @@ export class WorkItemStore {
       if (current === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${taskId} was not found`)
       const snapshot = copy(current)
       const run = snapshot.runs.find((candidate) => candidate.runId === runId)
-      if (run === undefined || run.executor.kind !== 'workflow') {
+      if (run === undefined || !isWorkflowBackedExecutor(run.executor)) {
         throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Workflow run ${runId} was not found on task ${taskId}`)
       }
       for (const action of actions) {
@@ -975,7 +988,7 @@ export class WorkItemStore {
       if (action.sourceEventId !== request.expectedSourceEventId) throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${request.actionId} source event is stale`)
       if (action.requirementVersion !== request.expectedRequirementVersion) throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${request.actionId} requirement version is stale`)
       const run = snapshot.runs.find((candidate) => candidate.runId === action.runId)
-      if (run === undefined || run.executor.kind !== 'workflow' || run.requirementVersion !== action.requirementVersion) {
+      if (run === undefined || !isWorkflowBackedExecutor(run.executor) || run.requirementVersion !== action.requirementVersion) {
         throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Workflow run ${action.runId} no longer matches action ${action.id}`)
       }
       const activeClaim = Object.values(this.state.requests).find((stored): stored is Extract<StoredReceipt, { kind: 'action-answer' }> =>

@@ -635,6 +635,30 @@
   box-shadow: 0 0 0 2px var(--ezdsh-active-background);
 }
 
+.employees-work-item-mode {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  border: 1px solid var(--ezdsh-panel-border);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--ezdsh-text-body);
+  font-size: 11px;
+}
+
+.employees-work-item-mode legend {
+  padding: 0 4px;
+  color: var(--ezdsh-text-faint);
+  font-size: 10px;
+}
+
+.employees-work-item-mode label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 500;
+}
+
 .employees-run-actions {
   display: flex;
   align-items: center;

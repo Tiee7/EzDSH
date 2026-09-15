@@ -77,6 +77,27 @@ function workflowBridge(initial: WorkflowRunRecord) {
 }
 
 describe('WorkActionService', () => {
+  it('closes an approval action for a workflow-backed employee method', async () => {
+    const directory = await stateDirectory()
+    const workItems = new WorkItemService(new WorkItemStore(directory))
+    await workItems.initialize()
+    const created = await workItems.create({ requestId: 'method-task', title: 'Method task', goal: 'Run method', acceptance: 'Approve result', scope: { resourceRefs: [] } })
+    const intent = await workItems.recordDispatchIntent({
+      requestId: 'method-dispatch', taskId: created.task.id, expectedRevision: created.task.revision,
+      executor: { kind: 'employee', employeeId: 'researcher', methodId: 'method-1', methodVersion: 2 }, mode: 'initial', input: null,
+    })
+    const linked = await workItems.linkDispatch(intent.requestId, intent.commandId, { runId: 'workflow-run-1', status: 'waiting', rawStatus: 'waiting-approval', capabilities: { cancel: true, resume: false, append: false } })
+    const run = waitingRun(intent.commandId, 'method-approval')
+    run.workTask = { taskId: linked.snapshot.task.id, attemptId: linked.snapshot.attempts[0]!.id, requirementVersion: 1, commandId: intent.commandId }
+    const workflows = workflowBridge(run)
+    const service = new WorkActionService({ workItems, employeeRuns: {}, workflowBridge: workflows })
+    const observed = await service.observeWorkflowRun(run)
+    const action = observed!.actions[0]!
+    const answered = await service.answerAction({ requestId: 'method-answer', taskId: linked.snapshot.task.id, actionId: action.id, expectedSourceEventId: action.sourceEventId, expectedRequirementVersion: 1, answer: true })
+    expect(workflows.approveExpected).toHaveBeenCalledOnce()
+    expect(answered.actions[0]?.status).toBe('resolved')
+  })
+
   it('answers the same durable action from two callers with one Workflow decision', async () => {
     const fixture = await taskFixture()
     const run = waitingRun(fixture.commandId, 'approval-event-1')

@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import type {
   EmployeeCapability,
   EmployeeCreateInput,
@@ -28,6 +28,7 @@ import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
 import { extractJsonDocument } from '../workflow/dsh-workflow-adapter.js'
 import { EmployeeRunStore } from './employee-run-store.js'
 import { EmployeeRunService } from './employee-run-service.js'
+import { WorkMethodService } from './work-method-service.js'
 
 export interface EmployeeRunClient {
   createSession(params: { cwd: string; workspaceId?: string }): Promise<{ sessionId: string }>
@@ -58,6 +59,7 @@ export interface EmployeeServiceOptions {
   createClient: () => EmployeeRunClient
   lightweightClient?: EmployeeGenerationClient
   getLocale?: () => AppLocale
+  methodWorkflowExists?: (id: string, revision: number) => boolean | Promise<boolean>
 }
 
 export interface EmployeeGenerationClient {
@@ -226,12 +228,18 @@ export const DEFAULT_EMPLOYEES: readonly EmployeeDefinition[] = [
 ]
 
 export class EmployeeService {
+  readonly methods: WorkMethodService
   private readonly employees = new Map<string, EmployeeDefinition>()
   private readonly listeners = new Set<EmployeeListener>()
   private readonly runService: EmployeeRunService
   private initialized = false
 
   constructor(private readonly options: EmployeeServiceOptions) {
+    this.methods = new WorkMethodService({
+      configPath: join(dirname(options.configPath), 'employee-methods.json'),
+      ownerExists: (employeeId) => this.employees.has(employeeId),
+      workflowExists: options.methodWorkflowExists ?? (() => false),
+    })
     this.runService = new EmployeeRunService({
       store: new EmployeeRunStore(dirname(options.configPath)),
       cwd: options.cwd,

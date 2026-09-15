@@ -697,7 +697,7 @@ function normalizeStartRequest(input: EmployeeRunStartRequest): EmployeeRunStart
 }
 
 function normalizeTask(input: EmployeeRunTaskInput): EmployeeRunTaskInput {
-  assertExactKeys(input, ['description', 'taskId', 'attemptId', 'requirementVersion', 'sourceRunId'], '$.task')
+  assertExactKeys(input, ['description', 'taskId', 'attemptId', 'requirementVersion', 'sourceRunId', 'methodId', 'methodVersion', 'methodWorkflowId', 'methodWorkflowRevision'], '$.task')
   return {
     ...optionalStringField(input.description, 'description', '$.task.description'),
     ...optionalStringField(input.taskId, 'taskId', '$.task.taskId'),
@@ -706,6 +706,14 @@ function normalizeTask(input: EmployeeRunTaskInput): EmployeeRunTaskInput {
       requirementVersion: positiveInteger(input.requirementVersion, '$.task.requirementVersion'),
     }),
     ...optionalStringField(input.sourceRunId, 'sourceRunId', '$.task.sourceRunId'),
+    ...optionalStringField(input.methodId, 'methodId', '$.task.methodId'),
+    ...(input.methodVersion === undefined ? {} : {
+      methodVersion: positiveInteger(input.methodVersion, '$.task.methodVersion'),
+    }),
+    ...optionalStringField(input.methodWorkflowId, 'methodWorkflowId', '$.task.methodWorkflowId'),
+    ...(input.methodWorkflowRevision === undefined ? {} : {
+      methodWorkflowRevision: positiveInteger(input.methodWorkflowRevision, '$.task.methodWorkflowRevision'),
+    }),
   }
 }
 
@@ -794,6 +802,8 @@ function describeTask(task: EmployeeRunTaskInput, round?: EmployeeRunRoundInput)
     task.attemptId ? `执行轮次：${task.attemptId}` : undefined,
     task.requirementVersion ? `要求版本：${task.requirementVersion}` : undefined,
     task.sourceRunId ? `来源运行：${task.sourceRunId}` : undefined,
+    task.methodId ? `员工方法：${task.methodId} v${task.methodVersion ?? '?'}` : undefined,
+    task.methodWorkflowId ? `方法工作流：${task.methodWorkflowId} v${task.methodWorkflowRevision ?? '?'}` : undefined,
     round?.description,
     round?.roundId ? `轮次引用：${round.roundId}` : undefined,
   ].filter((value): value is string => value !== undefined).join('\n')

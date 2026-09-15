@@ -27,7 +27,8 @@ import { EMPLOYEES_REFRESH_EVENT, EmployeesPage } from '../employees/EmployeesPa
 import { WorkflowPage } from '../workflow/WorkflowPage.js'
 import { DocsPage } from '../docs/DocsPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
-import { WorkItemsPreviewPage } from '../work-items/WorkItemsPreviewPage.js'
+import { WorkItemsPage } from '../work-items/WorkItemsPage.js'
+import type { WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
 import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import { shouldKeepTabMounted } from './page-lifecycle.js'
 import { RecoveryPanel } from '../recovery/RecoveryPanel.js'
@@ -175,6 +176,7 @@ export function App() {
   const [navConfig, setNavConfig] = useState<NavConfig>(() => getDefaultNavConfig())
   const [developerMode, setDeveloperMode] = useState(false)
   const [activeTab, setActiveTab] = useState<string>('harness')
+  const [workItemNavigation, setWorkItemNavigation] = useState<WorkItemNavigationContext>()
   const [employeesRefreshKey, setEmployeesRefreshKey] = useState(0)
   const [workflowWorkspaceMode, setWorkflowWorkspaceMode] = useState(false)
   const [errorKey, setErrorKey] = useState<'runtime-start' | 'runtime-restart' | 'config-read'>()
@@ -230,7 +232,10 @@ export function App() {
       if (snapshot.phase === 'failed' && snapshot.message !== undefined) setRuntimeError(snapshot.message)
     })
     const unsubscribeNavigate = window.EzDSH.ui.onNavigate((tab) => {
-      if (active) setActiveTab(tab)
+      if (active) {
+        setWorkItemNavigation(undefined)
+        setActiveTab(tab)
+      }
     })
     const unsubscribeDeepLink = window.EzDSH.ui.onDeepLinkInstall((target) => {
       if (active) setDeepLinkTarget(target)
@@ -366,6 +371,18 @@ export function App() {
     setDeepLinkSession({ sessionId })
   }, [])
 
+  const openWorkItemNavigation = useCallback((context: WorkItemNavigationContext): void => {
+    setWorkItemNavigation(context)
+    setActiveTab(context.destination === 'employees' ? 'employees' : context.destination === 'workflow' ? 'workflow' : 'work-items')
+  }, [])
+
+  const selectTab = useCallback((tab: NavigationTarget): void => {
+    // A direct tab click starts a fresh surface. Linked task context is only
+    // retained when a page explicitly opens it through openWorkItemNavigation.
+    setWorkItemNavigation(undefined)
+    setActiveTab(tab)
+  }, [])
+
   const enterSafeModeFromFailure = useCallback(async (): Promise<void> => {
     const safeModeRuntime = await window.EzDSH.recovery.enterSafeMode()
     setRuntime(safeModeRuntime)
@@ -448,7 +465,7 @@ export function App() {
     const runtimeUrl = runtime.url
     return (
       <main className={`workspace ${activeTab === 'workflow' && workflowWorkspaceMode ? 'workspace-workflow-focus' : ''}`}>
-        <SystemNavigation copy={copy} locale={locale} isMac={isMac} visibleItems={visibleItems} activeTab={activeTab} languageTagVisible={languageTagVisible} onSelectTab={setActiveTab} onSelectLocale={selectLocale} />
+        <SystemNavigation copy={copy} locale={locale} isMac={isMac} visibleItems={visibleItems} activeTab={activeTab} languageTagVisible={languageTagVisible} onSelectTab={selectTab} onSelectLocale={selectLocale} />
         <div className="workspace-content">
           {visibleItems.map((item) => {
             if (isCustomNavItem(item)) {
@@ -471,7 +488,7 @@ export function App() {
                   : null
               case 'workflow':
                 return shouldKeepTabMounted(item.id) || activeTab === 'workflow'
-                  ? <section key="workflow" className={`workspace-pane ${activeTab === 'workflow' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabWorkflow}><WorkflowPage copy={copy} locale={locale} developerMode={developerMode} active={activeTab === 'workflow'} onWorkspaceModeChange={setWorkflowWorkspaceMode} /></section>
+                  ? <section key="workflow" className={`workspace-pane ${activeTab === 'workflow' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabWorkflow}><WorkflowPage copy={copy} locale={locale} developerMode={developerMode} active={activeTab === 'workflow'} navigation={workItemNavigation} onWorkspaceModeChange={setWorkflowWorkspaceMode} onOpenWorkItem={openWorkItemNavigation} /></section>
                   : null
               case 'presets':
                 return activeTab === 'presets'
@@ -479,11 +496,11 @@ export function App() {
                   : null
               case 'employees':
                 return shouldKeepTabMounted(item.id) || activeTab === 'employees'
-                  ? <section key="employees" className={`workspace-pane ${activeTab === 'employees' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabEmployees}><EmployeesPage key={employeesRefreshKey} copy={copy} /></section>
+                  ? <section key="employees" className={`workspace-pane ${activeTab === 'employees' ? 'workspace-pane-active' : ''} workspace-pane-page`} aria-label={copy.tabEmployees}><EmployeesPage key={employeesRefreshKey} copy={copy} navigation={workItemNavigation} onOpenWorkItem={openWorkItemNavigation} /></section>
                   : null
               case 'work-items':
                 return activeTab === 'work-items'
-                  ? <section key="work-items" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabWorkItems}><WorkItemsPreviewPage copy={copy} /></section>
+                  ? <section key="work-items" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabWorkItems}><WorkItemsPage copy={copy} locale={locale} runtimeAvailable={runtime.phase === 'ready'} navigation={workItemNavigation} onNavigate={openWorkItemNavigation} /></section>
                   : null
               case 'docs':
                 return (

@@ -1,5 +1,7 @@
+import { isWorkflowValue } from './workflow.js'
+
 export type WorkExecutor =
-  | { kind: 'employee'; employeeId: string }
+  | { kind: 'employee'; employeeId: string; methodId?: string; methodVersion?: number }
   | { kind: 'workflow'; workflowId: string; workflowRevision?: number }
 
 export type WorkTaskStatus = 'open' | 'active' | 'review' | 'completed' | 'cancelled'
@@ -110,7 +112,7 @@ export interface WorkTaskExecuteRequest {
   taskId: string
   expectedRevision: number
   executor: WorkExecutor
-  mode: 'initial' | 'continue-attempt' | 'redo'
+  mode: 'initial' | 'continue-attempt' | 'redo' | 'handoff'
   input: unknown
   sourceRunId?: string
 }
@@ -311,10 +313,17 @@ function workExecutor(value: unknown): WorkExecutor {
     throw new WorkItemValidationError('MISSING_FIELD', 'executor.kind', 'executor.kind is required')
   }
   if (executor.kind === 'employee') {
-    exactFields(executor, ['kind', 'employeeId'], 'executor')
+    exactFields(executor, ['kind', 'employeeId', 'methodId', 'methodVersion'], 'executor')
+    if (executor.methodId !== undefined && executor.methodVersion === undefined) {
+      throw new WorkItemValidationError('MISSING_FIELD', 'executor.methodVersion', 'executor.methodVersion is required when methodId is set')
+    }
     return {
       kind: 'employee',
-      employeeId: identifierField(executor, 'employeeId', WORK_ITEM_LIMITS.id, 'executor.employeeId')
+      employeeId: identifierField(executor, 'employeeId', WORK_ITEM_LIMITS.id, 'executor.employeeId'),
+      ...(executor.methodId === undefined ? {} : {
+        methodId: identifierField(executor, 'methodId', WORK_ITEM_LIMITS.id, 'executor.methodId'),
+        ...(executor.methodVersion === undefined ? {} : { methodVersion: positiveSafeInteger(executor.methodVersion, 'executor.methodVersion') }),
+      }),
     }
   }
   if (executor.kind === 'workflow') {
@@ -350,14 +359,18 @@ export function validateWorkTaskExecuteRequest(value: unknown): WorkTaskExecuteR
   if (!('input' in request)) {
     throw new WorkItemValidationError('MISSING_FIELD', 'input', 'input is required')
   }
-  if (!['initial', 'continue-attempt', 'redo'].includes(request.mode as string)) {
+  if (!['initial', 'continue-attempt', 'redo', 'handoff'].includes(request.mode as string)) {
     throw new WorkItemValidationError('INVALID_VALUE', 'mode', 'mode is not supported')
+  }
+  const executor = workExecutor(request.executor)
+  if (executor.kind === 'workflow' && !isWorkflowValue(request.input)) {
+    throw new WorkItemValidationError('INVALID_VALUE', 'input', 'workflow input must be a finite JSON-safe value')
   }
   return {
     requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
     taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
     expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
-    executor: workExecutor(request.executor),
+    executor,
     mode: request.mode as WorkTaskExecuteRequest['mode'],
     input: request.input,
     ...(request.sourceRunId === undefined

@@ -185,6 +185,8 @@
 .workflow-view-switch button { border: 0; padding: 7px 15px; background: transparent; color: var(--ezdsh-text-muted); }
 .workflow-view-switch button.workflow-view-active { background: var(--ezdsh-panel-background); color: var(--ezdsh-text-heading); box-shadow: 0 2px 6px rgba(20, 30, 50, .1); }
 .workflow-workspace-actions { justify-content: flex-end; }
+.workflow-work-item-mode { display: inline-flex; align-items: center; gap: 6px; color: var(--ezdsh-text-faint); font-size: 10px; }
+.workflow-work-item-mode select { max-width: 220px; border: 1px solid var(--ezdsh-panel-border-strong); border-radius: 7px; padding: 6px 8px; background: var(--ezdsh-input-background); color: var(--ezdsh-text-body); font: inherit; font-size: 10px; }
 .workflow-workspace-body { display: flex; flex: 1; min-height: 0; }
 
 .workflow-editor-panel { display: flex; min-width: 0; flex: 1; flex-direction: column; }

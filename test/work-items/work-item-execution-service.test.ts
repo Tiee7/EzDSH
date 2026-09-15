@@ -151,6 +151,40 @@ describe('WorkItemExecutionService', () => {
     }))
   })
 
+  it('resolves the selected employee method and trusted session at the Main boundary', async () => {
+    const f = await fixture()
+    const methods = {
+      snapshot: vi.fn(async (employeeId: string, methodId: string) => ({
+        schemaVersion: 1 as const,
+        id: methodId,
+        employeeId,
+        name: '研究流程',
+        description: '固定研究步骤',
+        workflowId: 'workflow-method',
+        workflowRevision: 7,
+        version: 3,
+        createdAt: '2026-09-15T00:00:00.000Z',
+        updatedAt: '2026-09-15T00:00:00.000Z',
+      })),
+    }
+    const execution = new WorkItemExecutionService({ workItems: f.workItems, employeeRuns: f.employeeRuns, workflowBridge: f.workflowBridge, employeeMethods: methods, defaultCwd: '/trusted/default' })
+
+    const snapshot = await execution.execute({
+      requestId: 'method-run', taskId: f.task.task.id, expectedRevision: 1,
+      executor: { kind: 'employee', employeeId: 'researcher', methodId: 'method-1', methodVersion: 3 }, mode: 'initial',
+      input: { task: '核实变化', projectId: 'project-1', sessionId: 'session-selected', methodId: 'method-1' },
+    })
+
+    expect(methods.snapshot).toHaveBeenCalledWith('researcher', 'method-1')
+    expect(snapshot.attempts[0]?.responsibility).toEqual({ kind: 'employee', employeeId: 'researcher', methodId: 'method-1', methodVersion: 3 })
+    expect(snapshot.runs[0]?.executor).toEqual({ kind: 'employee', employeeId: 'researcher', methodId: 'method-1', methodVersion: 3 })
+    expect(f.employeeRuns.start).not.toHaveBeenCalled()
+    expect(f.workflowBridge.start).toHaveBeenCalledWith(expect.objectContaining({
+      workflowId: 'workflow-method', workflowRevision: 7,
+      input: { task: '核实变化', projectId: 'project-1', sessionId: 'session-selected', methodId: 'method-1' },
+    }))
+  })
+
   it('replays one request without invoking the executor twice and rejects changed content', async () => {
     const f = await fixture()
     const request = { requestId: 'run-1', taskId: f.task.task.id, expectedRevision: 1, executor: { kind: 'employee' as const, employeeId: 'researcher' }, mode: 'initial' as const, input: { query: 'changes' } }

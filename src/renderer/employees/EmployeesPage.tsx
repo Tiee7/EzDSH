@@ -10,14 +10,19 @@ import type {
   EmployeeUpdateInput,
 } from '../../shared/employees.js'
 import { EMPLOYEE_CAPABILITIES, employeeDisplayLabel, employeeDisplayName } from '../../shared/employees.js'
+import type { EmployeeWorkMethod } from '../../shared/employee-methods.js'
 import type { AppCopy } from '../../shared/locale.js'
 import { WandMagicSparklesIcon } from '../icons/WandMagicSparklesIcon.js'
+import { employeeWorkItemEntry } from '../work-items/work-item-entry.js'
+import { createWorkItemNavigation, type WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
 import './employees.css'
 
 export const EMPLOYEES_REFRESH_EVENT = 'ezdsh:refresh-employees'
 
 interface EmployeesPageProps {
   copy: AppCopy
+  navigation?: WorkItemNavigationContext
+  onOpenWorkItem?: (context: WorkItemNavigationContext) => void
 }
 
 type EditingId = 'new' | string
@@ -36,6 +41,20 @@ interface EmployeeDraft {
   capabilities: EmployeeCapability[]
   skillIds: string[]
   enabled: boolean
+}
+
+interface EmployeeMethodDraft {
+  name: string
+  description: string
+  workflowId: string
+  workflowRevision: string
+}
+
+interface EmployeeMethodsPanelProps {
+  employeeId: string
+  developerMode: boolean
+  selectedMethodId?: string
+  onSelectMethod?: (method: EmployeeWorkMethod | undefined) => void
 }
 
 interface EmployeeExecutionTargetProps {
@@ -68,6 +87,35 @@ const EMPTY_DRAFT: EmployeeDraft = {
   capabilities: [],
   skillIds: [],
   enabled: true,
+}
+
+const EMPTY_METHOD_DRAFT: EmployeeMethodDraft = {
+  name: '',
+  description: '',
+  workflowId: '',
+  workflowRevision: '1',
+}
+
+function methodDraftFrom(method: EmployeeWorkMethod): EmployeeMethodDraft {
+  return {
+    name: method.name,
+    description: method.description,
+    workflowId: method.workflowId,
+    workflowRevision: String(method.workflowRevision),
+  }
+}
+
+function methodInput(draft: EmployeeMethodDraft): Pick<EmployeeWorkMethod, 'name' | 'description' | 'workflowId' | 'workflowRevision'> | string {
+  const workflowRevision = Number(draft.workflowRevision)
+  if (draft.name.trim() === '') return '请输入方法名称。'
+  if (draft.workflowId.trim() === '') return '请输入工作流 ID。'
+  if (!Number.isSafeInteger(workflowRevision) || workflowRevision < 1) return '工作流修订版本必须是正整数。'
+  return {
+    name: draft.name.trim(),
+    description: draft.description.trim(),
+    workflowId: draft.workflowId.trim(),
+    workflowRevision,
+  }
 }
 
 function capabilityLabels(copy: AppCopy): Record<EmployeeCapability, string> {
@@ -198,8 +246,160 @@ export function reloadPage(): void {
   window.dispatchEvent(new Event(EMPLOYEES_REFRESH_EVENT))
 }
 
+/** Developer-only editor for an employee's reusable, workflow-pinned methods. */
+export function EmployeeMethodsPanel({ employeeId, developerMode, selectedMethodId, onSelectMethod }: EmployeeMethodsPanelProps): JSX.Element | null {
+  const [methods, setMethods] = useState<EmployeeWorkMethod[]>([])
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [editingId, setEditingId] = useState<'new' | string>()
+  const [draft, setDraft] = useState<EmployeeMethodDraft>(EMPTY_METHOD_DRAFT)
+  const [error, setError] = useState<string>()
+
+  const loadMethods = useCallback(async (): Promise<void> => {
+    if (!developerMode) return
+    setLoading(true)
+    try {
+      setMethods(await window.EzDSH.employees.methods.list(employeeId))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法读取员工方法。')
+    } finally {
+      setLoading(false)
+    }
+  }, [developerMode, employeeId])
+
+  useEffect(() => {
+    setMethods([])
+    setEditingId(undefined)
+    setDraft(EMPTY_METHOD_DRAFT)
+    setError(undefined)
+    if (developerMode) void loadMethods()
+  }, [developerMode, employeeId, loadMethods])
+
+  if (!developerMode) return null
+
+  const beginCreate = (): void => {
+    setEditingId('new')
+    setDraft(EMPTY_METHOD_DRAFT)
+    setError(undefined)
+  }
+
+  const beginEdit = (method: EmployeeWorkMethod): void => {
+    setEditingId(method.id)
+    setDraft(methodDraftFrom(method))
+    setError(undefined)
+  }
+
+  const cancelEdit = (): void => {
+    setEditingId(undefined)
+    setDraft(EMPTY_METHOD_DRAFT)
+    setError(undefined)
+  }
+
+  const save = async (): Promise<void> => {
+    const input = methodInput(draft)
+    if (typeof input === 'string') {
+      setError(input)
+      return
+    }
+    const current = editingId === undefined || editingId === 'new' ? undefined : methods.find((method) => method.id === editingId)
+    if (editingId === undefined || (editingId !== 'new' && current === undefined)) {
+      setError('该方法已被修改或删除，请刷新后重试。')
+      return
+    }
+    setSaving(true)
+    setError(undefined)
+    try {
+      if (editingId === 'new') {
+        await window.EzDSH.employees.methods.create(employeeId, input)
+      } else {
+        await window.EzDSH.employees.methods.update(employeeId, current!.id, { ...input, expectedVersion: current!.version })
+      }
+      await loadMethods()
+      setEditingId(undefined)
+      setDraft(EMPTY_METHOD_DRAFT)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '保存员工方法失败。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const remove = async (method: EmployeeWorkMethod): Promise<void> => {
+    if (!window.confirm(`删除方法“${method.name}”？`)) return
+    setSaving(true)
+    setError(undefined)
+    try {
+      await window.EzDSH.employees.methods.remove(employeeId, method.id, method.version)
+      await loadMethods()
+      if (selectedMethodId === method.id) onSelectMethod?.(undefined)
+      if (editingId === method.id) cancelEdit()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '删除员工方法失败。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="employees-panel employees-profile-sections-panel" aria-label="员工方法">
+      <div className="employees-panel-header employees-panel-header-compact">
+        <div>
+          <h3>员工方法</h3>
+          <p>仅保存方法名称、说明和固定的工作流修订版本；不会复制提示词、会话、连接器或执行输出。</p>
+        </div>
+        <div className="employees-actions">
+          <button type="button" className="employees-button employees-button-quiet" disabled={loading || saving} onClick={() => { void loadMethods() }}>刷新</button>
+          <button type="button" className="employees-button employees-button-primary" disabled={saving} onClick={beginCreate}>新建方法</button>
+        </div>
+      </div>
+      {editingId !== undefined ? (
+        <div className="employees-form-grid">
+          <label>
+            <span>方法名称</span>
+            <input value={draft.name} onChange={(event) => { setDraft((current) => ({ ...current, name: event.target.value })) }} autoFocus />
+          </label>
+          <label>
+            <span>固定工作流 ID</span>
+            <input value={draft.workflowId} onChange={(event) => { setDraft((current) => ({ ...current, workflowId: event.target.value })) }} />
+          </label>
+          <label>
+            <span>固定工作流修订版本</span>
+            <input inputMode="numeric" value={draft.workflowRevision} onChange={(event) => { setDraft((current) => ({ ...current, workflowRevision: event.target.value })) }} />
+          </label>
+          <label className="employees-form-wide">
+            <span>说明</span>
+            <textarea rows={3} value={draft.description} onChange={(event) => { setDraft((current) => ({ ...current, description: event.target.value })) }} />
+          </label>
+          <div className="employees-actions employees-form-wide">
+            <button type="button" className="employees-button employees-button-primary" disabled={saving} onClick={() => { void save() }}>{saving ? '保存中…' : '保存方法'}</button>
+            <button type="button" className="employees-button employees-button-quiet" disabled={saving} onClick={cancelEdit}>取消</button>
+          </div>
+        </div>
+      ) : null}
+      {loading ? <p className="employees-muted employees-panel-content">正在读取员工方法…</p> : methods.length === 0 ? <p className="employees-muted employees-panel-content">还没有保存的员工方法。</p> : (
+        <div className="employees-profile-sections">
+          {methods.map((method) => (
+            <section className={`employees-profile-section ${selectedMethodId === method.id ? 'employees-profile-section-selected' : ''}`} key={method.id}>
+              <h4>{method.name}</h4>
+              <p>{method.description || '—'}</p>
+              <p>所有者：<code>{method.employeeId}</code> · 方法版本 v{method.version}</p>
+              <p>工作流：<code>{method.workflowId}</code> · 固定修订 v{method.workflowRevision}</p>
+              <div className="employees-actions">
+                {onSelectMethod ? <button type="button" className="employees-button employees-button-quiet" disabled={saving} onClick={() => { onSelectMethod(selectedMethodId === method.id ? undefined : method) }}>{selectedMethodId === method.id ? '取消采用' : '采用此方法'}</button> : null}
+                <button type="button" className="employees-button employees-button-quiet" disabled={saving} onClick={() => { beginEdit(method) }}>编辑</button>
+                <button type="button" className="employees-button employees-button-danger" disabled={saving} onClick={() => { void remove(method) }}>删除</button>
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+      {error ? <p className="employees-error" role="alert">{error}</p> : null}
+    </section>
+  )
+}
+
 /** Management surface for reusable professional employee profiles. */
-export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
+export function EmployeesPage({ copy, onOpenWorkItem, navigation }: EmployeesPageProps): JSX.Element {
   const [employees, setEmployees] = useState<EmployeeSnapshot[]>([])
   const [projects, setProjects] = useState<EmployeeProjectSummary[]>([])
   const [sessions, setSessions] = useState<EmployeeSessionSummary[]>([])
@@ -209,6 +409,9 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
   const [selectedId, setSelectedId] = useState<string>()
   const [selectedProjectId, setSelectedProjectId] = useState<string>()
   const [selectedSessionId, setSelectedSessionId] = useState<string>()
+  const [selectedMethodId, setSelectedMethodId] = useState<string>()
+  const [selectedMethodVersion, setSelectedMethodVersion] = useState<number>()
+  const [linkedWorkItem, setLinkedWorkItem] = useState<{ taskId: string; revision: number }>()
   const [editingId, setEditingId] = useState<EditingId>()
   const [draft, setDraft] = useState<EmployeeDraft>(EMPTY_DRAFT)
   const [generationPrompt, setGenerationPrompt] = useState('')
@@ -221,11 +424,38 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
   const [creatingSession, setCreatingSession] = useState(false)
   const [unlockingSessionId, setUnlockingSessionId] = useState<string>()
   const [activeRunCount, setActiveRunCount] = useState(0)
+  const [formalRunCount, setFormalRunCount] = useState(0)
   const [error, setError] = useState<string>()
   const [assignmentOpen, setAssignmentOpen] = useState(false)
+  const [formalWorkItemMode, setFormalWorkItemMode] = useState<'new' | 'existing'>('new')
+  const [developerMode, setDeveloperMode] = useState(false)
+  const formalWorkItemRetryRef = useRef<{ signature: string; entry: ReturnType<typeof employeeWorkItemEntry>; taskId: string; expectedRevision: number; created: boolean }>()
   const contextRequestRef = useRef(0)
   const selectedProjectIdRef = useRef<string>()
   selectedProjectIdRef.current = selectedProjectId
+
+  useEffect(() => {
+    if (navigation?.destination !== 'employees') {
+      setLinkedWorkItem(undefined)
+      setSelectedMethodId(undefined)
+      setSelectedMethodVersion(undefined)
+      setFormalWorkItemMode('new')
+      return
+    }
+    if (navigation.employeeId !== undefined) setSelectedId(navigation.employeeId)
+    setSelectedMethodId(navigation.methodId)
+    setSelectedMethodVersion(navigation.methodVersion)
+    setFormalWorkItemMode(navigation.taskId === undefined ? 'new' : 'existing')
+    if (navigation.taskId === undefined) {
+      setLinkedWorkItem(undefined)
+      return
+    }
+    let active = true
+    void window.EzDSH.workItems.get(navigation.taskId).then((snapshot) => {
+      if (active) setLinkedWorkItem(snapshot === undefined ? undefined : { taskId: snapshot.task.id, revision: snapshot.task.revision })
+    }).catch(() => { if (active) setLinkedWorkItem(undefined) })
+    return () => { active = false }
+  }, [navigation])
 
   const loadEmployees = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -299,6 +529,20 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
 
   useEffect(() => window.EzDSH.employees.onLockChange((locks) => { setSessionLocks(locks) }), [])
 
+  useEffect(() => {
+    let active = true
+    void window.EzDSH.settings.getDeveloperMode()
+      .then((enabled) => { if (active) setDeveloperMode(enabled) })
+      .catch(() => { if (active) setDeveloperMode(false) })
+    const unsubscribe = window.EzDSH.settings.onDeveloperModeChange((enabled) => {
+      if (active) setDeveloperMode(enabled)
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [])
+
   const selectedEmployee = useMemo(
     () => employees.find((employee) => employee.id === selectedId),
     [employees, selectedId],
@@ -341,6 +585,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
 
   const openAssignment = (): void => {
     setAssignmentOpen(true)
+    setFormalWorkItemMode(linkedWorkItem === undefined ? 'new' : 'existing')
     setTask('')
     setRunResult(undefined)
     setError(undefined)
@@ -485,6 +730,49 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
       setError(reason instanceof Error ? reason.message : copy.employeesFailed)
     } finally {
       setActiveRunCount((current) => Math.max(0, current - 1))
+    }
+  }
+
+  const runAsWorkItem = async (): Promise<void> => {
+    if (selectedEmployee === undefined) return
+    const normalizedTask = task.trim()
+    if (normalizedTask === '') {
+      setError(copy.employeesTaskRequired)
+      return
+    }
+    setFormalRunCount((current) => current + 1)
+    setError(undefined)
+    try {
+      const useExistingWorkItem = formalWorkItemMode === 'existing' && linkedWorkItem !== undefined
+      const signature = JSON.stringify({ task: normalizedTask, employeeId: selectedEmployee.id, projectId: selectedProjectId, sessionId: selectedSessionId, methodId: selectedMethodId, methodVersion: selectedMethodVersion, formalWorkItemMode, linkedWorkItem: useExistingWorkItem ? linkedWorkItem : undefined })
+      let prepared = formalWorkItemRetryRef.current?.signature === signature ? formalWorkItemRetryRef.current : undefined
+      if (prepared === undefined) {
+        const entry = employeeWorkItemEntry({
+          task: normalizedTask,
+          employeeId: selectedEmployee.id,
+          projectId: selectedProjectId,
+          sessionId: selectedSessionId,
+          methodId: selectedMethodId,
+          methodVersion: selectedMethodVersion,
+          ...(useExistingWorkItem ? { existingTaskId: linkedWorkItem.taskId, expectedRevision: linkedWorkItem.revision } : {}),
+        })
+        prepared = { signature, entry, taskId: useExistingWorkItem ? linkedWorkItem.taskId : entry.execute.taskId, expectedRevision: useExistingWorkItem ? linkedWorkItem.revision : entry.execute.expectedRevision, created: useExistingWorkItem }
+        formalWorkItemRetryRef.current = prepared
+      }
+      if (!prepared.created) {
+        const created = await window.EzDSH.workItems.create(prepared.entry.create)
+        prepared = { ...prepared, taskId: created.task.id, expectedRevision: created.task.revision, created: true }
+        formalWorkItemRetryRef.current = prepared
+      }
+      const started = await window.EzDSH.workItems.execute({ ...prepared.entry.execute, taskId: prepared.taskId, expectedRevision: prepared.expectedRevision, mode: prepared.entry.execute.mode === 'initial' && useExistingWorkItem ? 'continue-attempt' : prepared.entry.execute.mode })
+      onOpenWorkItem?.({ ...prepared.entry.navigation, taskId: started.task.id })
+      setAssignmentOpen(false)
+      setTask('')
+      formalWorkItemRetryRef.current = undefined
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.employeesFailed)
+    } finally {
+      setFormalRunCount((current) => Math.max(0, current - 1))
     }
   }
 
@@ -673,6 +961,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
               <p className="employees-description">{selectedEmployee.description || selectedEmployee.systemPrompt}</p>
             </div>
             <div className="employees-actions employees-profile-actions">
+              {navigation?.returnTo?.destination === 'work-items' && onOpenWorkItem ? <button type="button" className="employees-button employees-button-quiet" onClick={() => { onOpenWorkItem(createWorkItemNavigation({ destination: 'work-items', source: 'employees', taskId: navigation.returnTo?.selectedTaskId })) }}>返回工作项</button> : null}
               <button type="button" className="employees-button employees-button-primary" disabled={busy} onClick={openAssignment}>{copy.employeesAssignTask}</button>
               <button type="button" className="employees-button employees-button-quiet" disabled={busy} onClick={() => { void setEnabled(selectedEmployee) }}>{selectedEmployee.enabled ? copy.employeesDisable : copy.employeesEnable}</button>
               <button type="button" className="employees-button employees-button-quiet" disabled={busy} onClick={() => { beginEdit(selectedEmployee) }}>{copy.employeesEdit}</button>
@@ -697,6 +986,8 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
             <ProfileSection title={copy.employeesSkillIds} values={selectedEmployee.skillIds} code />
           </div>
         </section>
+
+        <EmployeeMethodsPanel key={selectedEmployee.id} employeeId={selectedEmployee.id} developerMode={developerMode} selectedMethodId={selectedMethodId} onSelectMethod={(method) => { setSelectedMethodId(method?.id); setSelectedMethodVersion(method?.version) }} />
 
       </div>
     )
@@ -736,10 +1027,18 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
               <span>{copy.employeesTask}</span>
               <textarea rows={5} value={task} onChange={(event) => { setTask(event.target.value) }} placeholder={employeeDisplayLabel(selectedEmployee)} disabled={busy || creatingSession || !selectedEmployee.enabled} autoFocus />
             </label>
+            {developerMode && linkedWorkItem !== undefined ? <fieldset className="employees-work-item-mode">
+              <legend>工作项目标</legend>
+              <label><input type="radio" name="employees-work-item-mode" value="existing" checked={formalWorkItemMode === 'existing'} onChange={() => { setFormalWorkItemMode('existing') }} />继续当前工作项（{linkedWorkItem.taskId}）</label>
+              <label><input type="radio" name="employees-work-item-mode" value="new" checked={formalWorkItemMode === 'new'} onChange={() => { setFormalWorkItemMode('new') }} />创建新的工作项</label>
+            </fieldset> : null}
             <div className="employees-run-actions">
-              <button type="button" className="employees-button employees-button-primary" disabled={busy || creatingSession || contextLoading || unlockingSessionId !== undefined || !selectedEmployee.enabled || selectedProjectId === undefined || selectedSessionId === undefined || sessionLocks.some((lock) => lock.sessionId === selectedSessionId)} onClick={() => { void run() }}>
+              <button type="button" className="employees-button employees-button-primary" disabled={busy || creatingSession || contextLoading || unlockingSessionId !== undefined || formalRunCount > 0 || !selectedEmployee.enabled || selectedProjectId === undefined || selectedSessionId === undefined || sessionLocks.some((lock) => lock.sessionId === selectedSessionId)} onClick={() => { void run() }}>
                 {activeRunCount > 0 ? `${copy.employeesRun} · ${activeRunCount}` : copy.employeesRun}
               </button>
+              {developerMode ? <button type="button" className="employees-button employees-button-quiet" disabled={busy || creatingSession || contextLoading || unlockingSessionId !== undefined || activeRunCount > 0 || formalRunCount > 0 || !selectedEmployee.enabled} onClick={() => { void runAsWorkItem() }}>
+                {formalRunCount > 0 ? '处理工作项…' : formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行'}
+              </button> : null}
               <button type="button" className="employees-button employees-button-quiet" disabled={activeRunCount > 0} onClick={closeAssignment}>{copy.employeesCancel}</button>
               {activeRunCount > 0 ? <span className="employees-muted">{copy.employeesRunning}</span> : null}
               {!selectedEmployee.enabled ? <span className="employees-muted">{copy.employeesDisabled}</span> : null}
@@ -777,7 +1076,7 @@ export function EmployeesPage({ copy }: EmployeesPageProps): JSX.Element {
           {loading ? <p className="employees-muted employees-panel-content">{copy.employeesLoading}</p> : employees.length === 0 ? <p className="employees-muted employees-panel-content">{copy.employeesEmpty}</p> : (
             <div className="employees-list">
               {employees.map((employee) => (
-                <button type="button" className={`employees-list-item ${selectedId === employee.id ? 'employees-list-item-active' : ''}`} key={employee.id} onClick={() => { setSelectedId(employee.id); setEditingId(undefined); setError(undefined); setRunResult(undefined) }}>
+                <button type="button" className={`employees-list-item ${selectedId === employee.id ? 'employees-list-item-active' : ''}`} key={employee.id} onClick={() => { setSelectedId(employee.id); setSelectedMethodId(undefined); setSelectedMethodVersion(undefined); setLinkedWorkItem(undefined); setEditingId(undefined); setError(undefined); setRunResult(undefined) }}>
                   <span className="employees-avatar">{initialOf(employeeDisplayName(employee))}</span>
                   <span className="employees-list-copy"><strong>{employeeDisplayLabel(employee)}</strong></span>
                   <span className={`employees-list-dot ${employee.enabled ? 'employees-list-dot-enabled' : ''}`} aria-label={employee.enabled ? copy.employeesEnabled : copy.employeesDisabled} />

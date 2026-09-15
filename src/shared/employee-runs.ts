@@ -25,6 +25,11 @@ export interface EmployeeRunTaskInput {
   attemptId?: string
   requirementVersion?: number
   sourceRunId?: string
+  /** Optional durable employee method reference selected by the caller. */
+  methodId?: string
+  methodVersion?: number
+  methodWorkflowId?: string
+  methodWorkflowRevision?: number
 }
 
 export interface EmployeeRunRoundInput {

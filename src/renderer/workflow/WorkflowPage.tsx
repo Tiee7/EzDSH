@@ -78,6 +78,8 @@ import {
 import { WorkflowGenerationPage } from './WorkflowGenerationPage.js'
 import { WorkflowDeadLetterPanel } from './WorkflowDeadLetterPanel.js'
 import { connectorReasonLabel, connectorStateLabel } from './workflow-evidence-labels.js'
+import { workflowWorkItemEntry } from '../work-items/work-item-entry.js'
+import { createWorkItemNavigation, type WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
 import './workflow.css'
 
 export { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
@@ -89,6 +91,8 @@ interface WorkflowPageProps {
   /** The page remains mounted across navigation, so visibility must come from App. */
   active?: boolean
   onWorkspaceModeChange?: (active: boolean) => void
+  onOpenWorkItem?: (context: WorkItemNavigationContext) => void
+  navigation?: WorkItemNavigationContext
 }
 
 interface WorkflowRunSnapshotRequest {
@@ -2908,7 +2912,7 @@ interface WorkflowMetadataDraft {
   generationPrompt?: string
 }
 
-export function WorkflowPage({ copy, locale, developerMode: _developerMode = false, active = true, onWorkspaceModeChange }: WorkflowPageProps): JSX.Element {
+export function WorkflowPage({ copy, locale, developerMode: _developerMode = false, active = true, onWorkspaceModeChange, onOpenWorkItem, navigation }: WorkflowPageProps): JSX.Element {
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([])
   const [employees, setEmployees] = useState<EmployeeSnapshot[]>([])
   const [workflowCredentials, setWorkflowCredentials] = useState<WorkflowCredentialMetadata[]>([])
@@ -2975,6 +2979,9 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [workflowValidationIssues, setWorkflowValidationIssues] = useState<WorkflowValidationIssue[]>([])
+  const [linkedWorkItem, setLinkedWorkItem] = useState<{ taskId: string; revision: number }>()
+  const [formalWorkItemMode, setFormalWorkItemMode] = useState<'new' | 'existing'>('new')
+  const formalWorkItemRetryRef = useRef<{ signature: string; entry: ReturnType<typeof workflowWorkItemEntry>; taskId: string; expectedRevision: number; created: boolean }>()
 
   selectedWorkflowIdRef.current = selected?.id
 
@@ -3441,6 +3448,31 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       updateRunSummary(workflow.id, knownRuns)
     }
   }
+
+  useEffect(() => {
+    if (navigation?.destination !== 'workflow') {
+      setLinkedWorkItem(undefined)
+      setFormalWorkItemMode('new')
+      return
+    }
+    setFormalWorkItemMode(navigation.taskId === undefined ? 'new' : 'existing')
+    const workflowId = navigation.workflowId
+    const source = workflowId === undefined ? undefined : workflowsRef.current.find((workflow) => workflow.id === workflowId)
+    if (source !== undefined && (selected?.id !== source.id || (navigation.runId !== undefined && currentRunRef.current?.id !== navigation.runId))) {
+      if (navigation.runId !== undefined) {
+        void window.EzDSH.workflows.getRun(navigation.runId).then((run) => { if (run !== undefined) void open(source, false, run) }).catch(() => { void open(source) })
+      } else void open(source)
+    }
+    if (navigation.taskId === undefined) {
+      setLinkedWorkItem(undefined)
+      return
+    }
+    let activeRequest = true
+    void window.EzDSH.workItems.get(navigation.taskId).then((snapshot) => {
+      if (activeRequest) setLinkedWorkItem(snapshot === undefined ? undefined : { taskId: snapshot.task.id, revision: snapshot.task.revision })
+    }).catch(() => { if (activeRequest) setLinkedWorkItem(undefined) })
+    return () => { activeRequest = false }
+  }, [navigation, selected?.id, workflows])
 
   const openReleasedRun = (record: WorkflowRunRecord): void => {
     const knownRuns = recordLiveWorkflowRun(record)
@@ -3986,6 +4018,38 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) } finally { setBusy(false) }
   }
 
+  const createFormalWorkItem = async (): Promise<void> => {
+    if (selected === undefined || !_developerMode) return
+    const task = window.prompt(locale === 'zh' ? '描述这次工作项要完成什么' : 'Describe what this work item should accomplish', '')?.trim()
+    if (task === undefined || task === '') return
+    const saved = await save()
+    if (saved === undefined) return
+    setBusy(true)
+    setError('')
+    try {
+      const useExistingWorkItem = formalWorkItemMode === 'existing' && linkedWorkItem !== undefined
+      const signature = JSON.stringify({ task, workflowId: saved.id, workflowRevision: saved.revision, formalWorkItemMode, linkedWorkItem: useExistingWorkItem ? linkedWorkItem : undefined })
+      let prepared = formalWorkItemRetryRef.current?.signature === signature ? formalWorkItemRetryRef.current : undefined
+      if (prepared === undefined) {
+        const entry = workflowWorkItemEntry({ task, workflowId: saved.id, workflowRevision: saved.revision, ...(useExistingWorkItem ? { existingTaskId: linkedWorkItem.taskId, expectedRevision: linkedWorkItem.revision } : {}) })
+        prepared = { signature, entry, taskId: useExistingWorkItem ? linkedWorkItem.taskId : entry.execute.taskId, expectedRevision: useExistingWorkItem ? linkedWorkItem.revision : entry.execute.expectedRevision, created: useExistingWorkItem }
+        formalWorkItemRetryRef.current = prepared
+      }
+      if (!prepared.created) {
+        const created = await window.EzDSH.workItems.create(prepared.entry.create)
+        prepared = { ...prepared, taskId: created.task.id, expectedRevision: created.task.revision, created: true }
+        formalWorkItemRetryRef.current = prepared
+      }
+      const started = await window.EzDSH.workItems.execute({ ...prepared.entry.execute, taskId: prepared.taskId, expectedRevision: prepared.expectedRevision, mode: prepared.entry.execute.mode === 'initial' && useExistingWorkItem ? 'continue-attempt' : prepared.entry.execute.mode })
+      onOpenWorkItem?.({ ...prepared.entry.navigation, taskId: started.task.id })
+      formalWorkItemRetryRef.current = undefined
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : copy.workflowRunFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const applyRunRecord = (record: WorkflowRunRecord, replaceDetail = true): void => {
     const knownRuns = recordLiveWorkflowRun(record)
     const authoritativeRecord = knownRuns.find((candidate) => candidate.id === record.id)
@@ -4318,13 +4382,17 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             <button type="button" role="tab" aria-selected={workspaceView === 'executions'} className={workspaceView === 'executions' ? 'workflow-view-active' : ''} onClick={openExecutionView}>{copy.workflowExecutions}</button>
           </div>
           <div className="workflow-workspace-actions">
+            {navigation?.returnTo?.destination === 'work-items' && onOpenWorkItem ? <button type="button" className="workflow-button-quiet" onClick={() => { onOpenWorkItem(createWorkItemNavigation({ destination: 'work-items', source: 'workflow', taskId: navigation.returnTo?.selectedTaskId })) }}>返回工作项</button> : null}
             {selected !== undefined && workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)}</button> : null}
+            {_developerMode && linkedWorkItem !== undefined ? <label className="workflow-work-item-mode"><span>工作项目标</span><select aria-label="工作项目标" value={formalWorkItemMode} onChange={(event) => { setFormalWorkItemMode(event.target.value === 'existing' ? 'existing' : 'new') }}><option value="existing">继续当前工作项（{linkedWorkItem.taskId}）</option><option value="new">创建新的工作项</option></select></label> : null}
             {workspaceView === 'editor' && selected !== undefined ? <button type="button" className="workflow-button-quiet workflow-permission-button" onClick={() => setShowPermissionDialog(true)} disabled={busy}>{copy.workflowPermissionPolicy}</button> : null}
             {workspaceView === 'editor' && selected !== undefined ? <button type="button" className="workflow-button-quiet workflow-ai-modify-button" onClick={openModifyDialog} disabled={busy}>
               <WandMagicSparklesIcon className="workflow-ai-icon" />
               <span>{copy.workflowAiModify}</span>
             </button> : null}
-            {workspaceView === 'editor' && selected !== undefined ? <WorkflowEditorActions
+            {workspaceView === 'editor' && selected !== undefined ? <>
+              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={() => void createFormalWorkItem()} disabled={busy}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
+              <WorkflowEditorActions
               copy={copy}
               draft={draft}
               busy={busy}
@@ -4337,8 +4405,12 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               onExportFile={exportWorkflowToFile}
               onExportClipboard={() => void exportWorkflowToClipboard()}
               onRun={() => void openRunSetup()}
-            /> : workspaceView === 'executions' && selected !== undefined ? <>
+              />
+            </> : workspaceView === 'executions' && selected !== undefined ? <>
+              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={() => void createFormalWorkItem()} disabled={busy || currentRun?.status === 'running'}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
               <button type="button" className="workflow-button-primary" onClick={() => void openRunSetup()} disabled={busy || currentRun?.status === 'running'}>{currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}</button>
+            </> : selected !== undefined ? <>
+              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={() => void createFormalWorkItem()} disabled={busy}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
             </> : null}
           </div>
         </header>

@@ -1,3 +1,4 @@
+import type { EmployeeMethodsBridge } from './employee-methods.js'
 import type { DshRuntimeProcess, RuntimeSnapshot } from '../main/runtime/runtime-types.js'
 import type { RuntimeViewBounds } from './runtime-view.js'
 import type { EzDSHError, IpcResult } from './errors.js'
@@ -154,6 +155,7 @@ export interface EzDSHBridge {
   }
   workItems: WorkItemsBridge
   employees: {
+    methods: EmployeeMethodsBridge
     list(): Promise<EmployeeSnapshot[]>
     listProjects(): Promise<EmployeeProjectSummary[]>
     listSessions(projectId?: string): Promise<EmployeeSessionSummary[]>

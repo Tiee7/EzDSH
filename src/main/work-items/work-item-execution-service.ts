@@ -1,6 +1,7 @@
 import type { EmployeeRunRecord, EmployeeRunStartRequest, EmployeeRunStartReceipt } from '../../shared/employee-runs.js'
 import { validateWorkTaskExecuteRequest, type WorkRunStatus, type WorkTaskExecuteRequest, type WorkTaskSnapshot } from '../../shared/work-items.js'
-import type { WorkflowRunRecord, WorkflowValue } from '../../shared/workflow.js'
+import { isWorkflowValue, type WorkflowRunRecord, type WorkflowValue } from '../../shared/workflow.js'
+import type { EmployeeWorkMethod } from '../../shared/employee-methods.js'
 import { WorkItemService } from './work-item-service.js'
 import type { WorkDispatchIntentReceipt } from './work-item-store.js'
 import type { WorkflowTaskBridge, WorkflowTaskStartRequest } from './workflow-task-bridge.js'
@@ -10,11 +11,16 @@ export interface WorkItemEmployeeRunPort {
   list(): Promise<EmployeeRunRecord[]>
 }
 
+export interface WorkItemEmployeeMethodPort {
+  snapshot(employeeId: string, methodId: string): Promise<EmployeeWorkMethod>
+}
+
 export interface WorkItemWorkflowBridgePort extends Pick<WorkflowTaskBridge, 'start' | 'findByCommand'> {}
 
 export interface WorkItemExecutionServiceOptions {
   workItems: WorkItemService
   employeeRuns: WorkItemEmployeeRunPort
+  employeeMethods?: WorkItemEmployeeMethodPort
   workflowBridge: WorkItemWorkflowBridgePort
   defaultCwd: string
 }
@@ -43,9 +49,14 @@ export class WorkItemExecutionService {
     const claimed = await this.options.workItems.claimDispatch(intent.requestId, intent.commandId)
     let execution: EmployeeRunRecord | WorkflowRunRecord
     try {
-      execution = input.executor.kind === 'employee'
-        ? (await this.options.employeeRuns.start(this.employeeRequest(input, claimed.snapshot, claimed.attemptId, claimed.commandId))).run
-        : await this.options.workflowBridge.start(this.workflowRequest(input, claimed.snapshot, claimed.attemptId, claimed.commandId))
+      if (input.executor.kind === 'employee' && input.executor.methodId !== undefined) {
+        const method = await this.resolveMethod(input.executor.employeeId, input.executor.methodId, input.executor.methodVersion)
+        execution = await this.options.workflowBridge.start(this.methodWorkflowRequest(input, method, claimed.snapshot, claimed.attemptId, claimed.commandId))
+      } else if (input.executor.kind === 'employee') {
+        execution = (await this.options.employeeRuns.start(await this.employeeRequest(input, claimed.snapshot, claimed.attemptId, claimed.commandId))).run
+      } else {
+        execution = await this.options.workflowBridge.start(this.workflowRequest(input, claimed.snapshot, claimed.attemptId, claimed.commandId))
+      }
     } catch (error) {
       await this.options.workItems.markDispatchOutcomeUnknown(intent.requestId, intent.commandId, `outcome-unknown:${errorText(error)}`)
       throw error
@@ -56,7 +67,7 @@ export class WorkItemExecutionService {
   private async reconcile(requestId: string, commandId: string, snapshot: WorkTaskSnapshot): Promise<WorkTaskSnapshot> {
     const reference = snapshot.runs.find((run) => run.commandId === commandId)
     if (reference === undefined) throw new Error(`Dispatch ${requestId} has no durable run reference`)
-    const execution = reference.executor.kind === 'employee'
+    const execution = reference.executor.kind === 'employee' && reference.executor.methodId === undefined
       ? (await this.options.employeeRuns.list()).find((run) => run.commandId === commandId)
       : await this.options.workflowBridge.findByCommand(commandId)
     if (execution !== undefined) {
@@ -65,12 +76,17 @@ export class WorkItemExecutionService {
     return (await this.options.workItems.markDispatchOutcomeUnknown(requestId, commandId, 'outcome-unknown:executor-run-not-found')).snapshot
   }
 
-  private employeeRequest(input: WorkTaskExecuteRequest, snapshot: WorkTaskSnapshot, attemptId: string, commandId: string): EmployeeRunStartRequest {
+  private async employeeRequest(input: WorkTaskExecuteRequest, snapshot: WorkTaskSnapshot, attemptId: string, commandId: string): Promise<EmployeeRunStartRequest> {
     const requirement = snapshot.task.requirements.find((candidate) => candidate.version === snapshot.task.currentRequirementVersion)
     if (requirement === undefined) throw new Error(`Task ${snapshot.task.id} has no current requirement`)
+    const launch = employeeLaunchInput(input.input)
+    if (launch.projectId !== undefined && launch.projectId !== snapshot.task.scope.projectId) {
+      throw new Error('Employee execution project does not match the work item scope')
+    }
+    const employeeId = input.executor.kind === 'employee' ? input.executor.employeeId : ''
     return {
       commandId,
-      employeeId: input.executor.kind === 'employee' ? input.executor.employeeId : '',
+      employeeId,
       task: {
         description: describeRequirement(requirement.goal, requirement.acceptance, input.input),
         taskId: snapshot.task.id,
@@ -81,7 +97,30 @@ export class WorkItemExecutionService {
       context: {
         cwd: snapshot.task.scope.cwd ?? this.options.defaultCwd,
         ...(snapshot.task.scope.projectId === undefined ? {} : { projectId: snapshot.task.scope.projectId }),
+        ...(launch.sessionId === undefined ? {} : { sessionId: launch.sessionId, sessionVerification: 'trusted-main' as const }),
       },
+    }
+  }
+
+  private async resolveMethod(employeeId: string, methodId: string, expectedVersion?: number): Promise<EmployeeWorkMethod> {
+    const method = await this.options.employeeMethods?.snapshot(employeeId, methodId)
+    if (method === undefined) throw new Error('Employee method service is not available')
+    // A method-backed run is immutable: the renderer must send the version it selected.
+    if (expectedVersion === undefined || method.version !== expectedVersion) throw new Error(`Employee method ${methodId} version is stale`)
+    return method
+  }
+
+  private methodWorkflowRequest(input: WorkTaskExecuteRequest, method: EmployeeWorkMethod, snapshot: WorkTaskSnapshot, attemptId: string, commandId: string): WorkflowTaskStartRequest {
+    if (!isWorkflowValue(input.input)) throw new Error('Employee method workflow input must be a finite JSON-safe value')
+    return {
+      commandId,
+      taskId: snapshot.task.id,
+      attemptId,
+      requirementVersion: snapshot.task.currentRequirementVersion,
+      ...(input.sourceRunId === undefined ? {} : { sourceRunId: input.sourceRunId }),
+      workflowId: method.workflowId,
+      workflowRevision: method.workflowRevision,
+      input: input.input as WorkflowValue,
     }
   }
 
@@ -135,6 +174,30 @@ function describeRequirement(goal: string, acceptance: string, input: unknown): 
   try { serialized = input === null || input === undefined ? '' : typeof input === 'string' ? input : JSON.stringify(input) }
   catch { serialized = String(input) }
   return [`目标：${goal}`, `验收：${acceptance}`, serialized === '' ? '' : `输入：${serialized}`].filter(Boolean).join('\n')
+}
+
+interface EmployeeLaunchInput {
+  task?: string
+  projectId?: string
+  sessionId?: string
+  methodId?: string
+}
+
+function employeeLaunchInput(value: unknown): EmployeeLaunchInput {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const record = value as Record<string, unknown>
+  const text = (key: string): string | undefined => {
+    const candidate = record[key]
+    if (typeof candidate !== 'string') return undefined
+    const normalized = candidate.trim()
+    return normalized === '' ? undefined : normalized
+  }
+  return {
+    task: text('task'),
+    projectId: text('projectId'),
+    sessionId: text('sessionId'),
+    methodId: text('methodId'),
+  }
 }
 
 function errorText(error: unknown): string {
