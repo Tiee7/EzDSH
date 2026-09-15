@@ -5,21 +5,26 @@ import { types as utilTypes } from 'node:util'
 
 import {
   validateWorkActionAnswerRequest,
+  validateWorkArtifactAcceptRequest,
   validateWorkRunControlRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
+  validateWorkTaskRevisionRequest,
   type WorkAction,
   type WorkActionAnswerRequest,
+  type WorkArtifact,
+  type WorkArtifactAcceptRequest,
   type WorkItemQuery,
   type WorkRunControlRequest,
   type WorkTask,
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
+  type WorkTaskRevisionRequest,
   type WorkTaskSnapshot
 } from '../../shared/work-items.js'
 
 export class WorkItemStoreConflictError extends Error {
-  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT'
+  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT'
 
   constructor(
     code: WorkItemStoreConflictError['code'],
@@ -84,11 +89,54 @@ export interface WorkRunControlReceipt {
   replayed: boolean
 }
 
+export interface WorkTaskRevisionReceipt {
+  requestId: string
+  digest: string
+  taskId: string
+  snapshot: WorkTaskSnapshot
+  replayed: boolean
+}
+
+export interface WorkArtifactAcceptReceipt {
+  requestId: string
+  digest: string
+  taskId: string
+  artifactId: string
+  snapshot: WorkTaskSnapshot
+  replayed: boolean
+}
+
+export interface WorkArtifactWriteIntent {
+  requestId: string
+  artifactId: string
+  taskId: string
+  attemptId: string
+  runId: string
+  requirementVersion: number
+  contentVersion: number
+  contentHash: string
+  kind: WorkArtifact['kind']
+  name: string
+  storedPath: string
+  sourceRef?: string
+}
+
+export interface WorkArtifactWriteReceipt extends WorkArtifactWriteIntent {
+  digest: string
+  stage: 'recorded' | 'linked'
+  artifact?: WorkArtifact
+  snapshot: WorkTaskSnapshot
+  replayed: boolean
+}
+
 type StoredReceipt =
   | { kind: 'create'; digest: string; receipt: WorkItemCreateReceipt }
   | { kind: 'dispatch'; digest: string; receipt: WorkDispatchIntentReceipt }
   | { kind: 'action-answer'; digest: string; receipt: WorkActionAnswerReceipt }
   | { kind: 'run-control'; digest: string; receipt: WorkRunControlReceipt }
+  | { kind: 'revise'; digest: string; receipt: WorkTaskRevisionReceipt }
+  | { kind: 'artifact-accept'; digest: string; receipt: WorkArtifactAcceptReceipt }
+  | { kind: 'artifact-write'; digest: string; receipt: WorkArtifactWriteReceipt }
 
 interface WorkItemState {
   version: 1
@@ -252,10 +300,164 @@ function strongerActionStatus(current: WorkAction['status'], incoming: WorkActio
   return precedence[incoming] > precedence[current] ? incoming : current
 }
 
+function normalizeArtifactWriteIntent(input: WorkArtifactWriteIntent): WorkArtifactWriteIntent {
+  const identifier = (value: string, field: string): string => {
+    if (typeof value !== 'string') throw new WorkItemStoreInputError(field, `${field} must be a string`)
+    const normalized = value.trim()
+    if (normalized.length === 0 || normalized.length > 128 || /[\u0000-\u001f\u007f]/u.test(normalized)) {
+      throw new WorkItemStoreInputError(field, `${field} is invalid`)
+    }
+    return normalized
+  }
+  if (!['text', 'json', 'file'].includes(input.kind)) {
+    throw new WorkItemStoreInputError('kind', 'kind is not supported')
+  }
+  if (
+    typeof input.name !== 'string'
+    || input.name.trim() === ''
+    || input.name.length > 255
+    || /[\u0000-\u001f\u007f]/u.test(input.name)
+  ) {
+    throw new WorkItemStoreInputError('name', 'name is invalid')
+  }
+  if (typeof input.storedPath !== 'string' || input.storedPath.trim() === '' || input.storedPath.length > 4_096) {
+    throw new WorkItemStoreInputError('storedPath', 'storedPath is required')
+  }
+  if (input.sourceRef !== undefined && (typeof input.sourceRef !== 'string' || input.sourceRef.length > 4_096)) {
+    throw new WorkItemStoreInputError('sourceRef', 'sourceRef is invalid')
+  }
+  return {
+    ...copy(input),
+    requestId: identifier(input.requestId, 'requestId'),
+    artifactId: identifier(input.artifactId, 'artifactId'),
+    taskId: identifier(input.taskId, 'taskId'),
+    attemptId: identifier(input.attemptId, 'attemptId'),
+    runId: identifier(input.runId, 'runId'),
+    name: input.name.trim(),
+  }
+}
+
+interface ArtifactReservationEvidence {
+  source: 'receipt' | 'artifact'
+  requestId?: string
+  artifactId: string
+  contentHash: string
+  linked: boolean
+}
+
+function artifactReservationKey(taskId: string, runId: string, contentVersion: number): string {
+  return `${JSON.stringify(taskId)}:${JSON.stringify(runId)}:${contentVersion}`
+}
+
+function assertArtifactReservationIntegrity(state: WorkItemState): void {
+  const reservations = new Map<string, ArtifactReservationEvidence>()
+  const add = (key: string, incoming: ArtifactReservationEvidence): void => {
+    const existing = reservations.get(key)
+    if (existing === undefined) {
+      reservations.set(key, incoming)
+      return
+    }
+    const sameReceipt = existing.source === 'receipt'
+      && incoming.source === 'receipt'
+      && existing.requestId === incoming.requestId
+      && existing.artifactId === incoming.artifactId
+      && existing.contentHash === incoming.contentHash
+    const linkedReceiptArtifactPair = existing.source !== incoming.source
+      && existing.linked
+      && incoming.linked
+      && existing.artifactId === incoming.artifactId
+      && existing.contentHash === incoming.contentHash
+    const sameStandaloneArtifact = existing.source === 'artifact'
+      && incoming.source === 'artifact'
+      && existing.artifactId === incoming.artifactId
+      && existing.contentHash === incoming.contentHash
+    if (!sameReceipt && !linkedReceiptArtifactPair && !sameStandaloneArtifact) {
+      throw new WorkItemStoreConflictError(
+        'ARTIFACT_CONFLICT',
+        `Conflicting artifact reservations exist for ${key}`
+      )
+    }
+  }
+
+  for (const [requestKey, stored] of Object.entries(state.requests)) {
+    if (stored.kind !== 'artifact-write') continue
+    const receipt = stored.receipt
+    if (requestKey !== receipt.requestId) {
+      throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Artifact receipt ${requestKey} has mismatched identity`)
+    }
+    const task = ownValue(state.tasks, receipt.taskId)
+    if (task === undefined) {
+      throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Artifact receipt ${receipt.requestId} has no task`)
+    }
+    if (receipt.stage === 'linked') {
+      const artifact = receipt.artifact
+      const taskArtifact = task.artifacts.find((candidate) => candidate.id === receipt.artifactId)
+      if (
+        artifact === undefined
+        || taskArtifact === undefined
+        || artifact.id !== receipt.artifactId
+        || artifact.taskId !== receipt.taskId
+        || artifact.attemptId !== receipt.attemptId
+        || artifact.runId !== receipt.runId
+        || artifact.requirementVersion !== receipt.requirementVersion
+        || artifact.contentVersion !== receipt.contentVersion
+        || artifact.contentHash !== receipt.contentHash
+        || artifact.kind !== receipt.kind
+        || artifact.name !== receipt.name
+        || artifact.storedPath !== receipt.storedPath
+        || taskArtifact.taskId !== receipt.taskId
+        || taskArtifact.attemptId !== receipt.attemptId
+        || taskArtifact.runId !== receipt.runId
+        || taskArtifact.requirementVersion !== receipt.requirementVersion
+        || taskArtifact.contentVersion !== receipt.contentVersion
+        || taskArtifact.contentHash !== receipt.contentHash
+        || taskArtifact.kind !== receipt.kind
+        || taskArtifact.name !== receipt.name
+        || taskArtifact.storedPath !== receipt.storedPath
+      ) {
+        throw new WorkItemStoreConflictError(
+          'ARTIFACT_CONFLICT',
+          `Linked artifact receipt ${receipt.requestId} does not match task metadata`
+        )
+      }
+    } else if (receipt.artifact !== undefined) {
+      throw new WorkItemStoreConflictError(
+        'ARTIFACT_CONFLICT',
+        `Recorded artifact receipt ${receipt.requestId} cannot contain linked metadata`
+      )
+    }
+    add(artifactReservationKey(receipt.taskId, receipt.runId, receipt.contentVersion), {
+      source: 'receipt',
+      requestId: receipt.requestId,
+      artifactId: receipt.artifactId,
+      contentHash: receipt.contentHash,
+      linked: receipt.stage === 'linked',
+    })
+  }
+
+  for (const [taskId, snapshot] of Object.entries(state.tasks)) {
+    for (const artifact of snapshot.artifacts) {
+      if (artifact.taskId !== taskId) {
+        throw new WorkItemStoreConflictError(
+          'ARTIFACT_CONFLICT',
+          `Artifact ${artifact.id} is stored under the wrong task`
+        )
+      }
+      add(artifactReservationKey(taskId, artifact.runId, artifact.contentVersion), {
+        source: 'artifact',
+        artifactId: artifact.id,
+        contentHash: artifact.contentHash,
+        linked: true,
+      })
+    }
+  }
+}
+
 export class WorkItemStore {
   private readonly filePath: string
   private state: WorkItemState = copy(EMPTY_STATE)
   private initialized = false
+  private integrityError: WorkItemStoreConflictError | undefined
   private mutationTail: Promise<void> = Promise.resolve()
   private readonly listeners = new Set<(snapshot: WorkTaskSnapshot) => void>()
 
@@ -267,6 +469,7 @@ export class WorkItemStore {
   }
 
   async initialize(): Promise<void> {
+    if (this.integrityError !== undefined) throw this.integrityError
     if (this.initialized) return
     await mkdir(this.stateDirectory, { recursive: true })
     try {
@@ -278,6 +481,12 @@ export class WorkItemStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       this.state = copy(EMPTY_STATE)
+    }
+    try {
+      assertArtifactReservationIntegrity(this.state)
+    } catch (error) {
+      if (error instanceof WorkItemStoreConflictError) this.integrityError = error
+      throw error
     }
     this.initialized = true
   }
@@ -309,6 +518,268 @@ export class WorkItemStore {
       const next = copy(this.state)
       setOwnValue(next.tasks, task.id, snapshot)
       setOwnValue(next.requests, request.requestId, { kind: 'create', digest, receipt })
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(receipt)
+    })
+  }
+
+  async revise(input: WorkTaskRevisionRequest): Promise<WorkTaskRevisionReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkTaskRevisionRequest(input)
+      const digest = requestDigest('revise', request)
+      const replay = this.replay<WorkTaskRevisionReceipt>('revise', request.requestId, digest)
+      if (replay) return replay
+
+      const current = ownValue(this.state.tasks, request.taskId)
+      if (current === undefined) {
+        throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      }
+      if (current.task.revision !== request.expectedRevision) {
+        throw new WorkItemStoreConflictError(
+          'REVISION_CONFLICT',
+          `Expected task revision ${request.expectedRevision}, found ${current.task.revision}`
+        )
+      }
+      if (current.task.status === 'cancelled') {
+        throw new WorkItemStoreConflictError('REVISION_CONFLICT', `Cancelled task ${request.taskId} cannot be revised`)
+      }
+
+      const snapshot = copy(current)
+      const now = new Date().toISOString()
+      const requirementVersion = snapshot.task.currentRequirementVersion + 1
+      snapshot.task.requirements.push({
+        version: requirementVersion,
+        goal: request.goal,
+        acceptance: request.acceptance,
+        createdAt: now,
+      })
+      snapshot.task.currentRequirementVersion = requirementVersion
+      snapshot.task.activeAttemptId = undefined
+      snapshot.task.status = 'open'
+      snapshot.task.revision += 1
+      snapshot.task.updatedAt = now
+      const receipt: WorkTaskRevisionReceipt = {
+        requestId: request.requestId,
+        digest,
+        taskId: request.taskId,
+        snapshot,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.tasks, request.taskId, snapshot)
+      setOwnValue(next.requests, request.requestId, { kind: 'revise', digest, receipt })
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(receipt)
+    })
+  }
+
+  async beginArtifactWrite(input: WorkArtifactWriteIntent): Promise<WorkArtifactWriteReceipt> {
+    return this.mutate(async () => {
+      const request = normalizeArtifactWriteIntent(input)
+      const digest = requestDigest('artifact-write', request)
+      assertArtifactReservationIntegrity(this.state)
+      const replay = this.replay<WorkArtifactWriteReceipt>('artifact-write', request.requestId, digest)
+      if (replay) return replay
+      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
+      if (snapshot === undefined) {
+        throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      }
+      const run = snapshot.runs.find((candidate) => candidate.runId === request.runId)
+      if (run === undefined || run.attemptId !== request.attemptId || run.requirementVersion !== request.requirementVersion) {
+        throw new WorkItemStoreConflictError(
+          'ARTIFACT_CONFLICT',
+          `Artifact ${request.artifactId} does not match its source run and attempt`
+        )
+      }
+      if (!snapshot.attempts.some((attempt) =>
+        attempt.id === request.attemptId
+        && attempt.taskId === request.taskId
+        && attempt.requirementVersion === request.requirementVersion
+      )) {
+        throw new WorkItemStoreConflictError('ATTEMPT_NOT_FOUND', `Attempt ${request.attemptId} was not found`)
+      }
+      if (!Number.isSafeInteger(request.requirementVersion) || request.requirementVersion < 1) {
+        throw new WorkItemStoreInputError('requirementVersion', 'requirementVersion must be a positive safe integer')
+      }
+      if (!Number.isSafeInteger(request.contentVersion) || request.contentVersion < 1) {
+        throw new WorkItemStoreInputError('contentVersion', 'contentVersion must be a positive safe integer')
+      }
+      if (typeof request.contentHash !== 'string' || !/^[a-f0-9]{64}$/u.test(request.contentHash)) {
+        throw new WorkItemStoreInputError('contentHash', 'contentHash must be a lowercase SHA-256 digest')
+      }
+      if (snapshot.artifacts.some((artifact) => artifact.id === request.artifactId)) {
+        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Artifact ${request.artifactId} already exists`)
+      }
+      const receipt: WorkArtifactWriteReceipt = {
+        ...copy(request),
+        digest,
+        stage: 'recorded',
+        snapshot,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.requests, request.requestId, { kind: 'artifact-write', digest, receipt })
+      assertArtifactReservationIntegrity(next)
+      await this.commit(next)
+      return copy(receipt)
+    })
+  }
+
+  async completeArtifactWrite(
+    requestId: string,
+    artifactId: string,
+    verify: (artifact: WorkArtifact) => Promise<boolean>,
+  ): Promise<WorkArtifactWriteReceipt> {
+    return this.mutate(async () => {
+      assertArtifactReservationIntegrity(this.state)
+      const stored = ownValue(this.state.requests, requestId)
+      if (stored?.kind !== 'artifact-write' || stored.receipt.artifactId !== artifactId) {
+        throw new WorkItemStoreConflictError(
+          'REQUEST_ID_CONFLICT',
+          `Artifact write ${requestId} does not match artifact ${artifactId}`
+        )
+      }
+      if (stored.receipt.stage === 'linked') return { ...copy(stored.receipt), replayed: true }
+      const snapshot = copy(ownValue(this.state.tasks, stored.receipt.taskId))
+      if (snapshot === undefined) {
+        throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${stored.receipt.taskId} was not found`)
+      }
+      const receipt = stored.receipt
+      const run = snapshot.runs.find((candidate) => candidate.runId === receipt.runId)
+      if (run === undefined || run.attemptId !== receipt.attemptId || run.requirementVersion !== receipt.requirementVersion) {
+        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Artifact ${artifactId} source run changed`)
+      }
+      const artifact: WorkArtifact = {
+        id: receipt.artifactId,
+        taskId: receipt.taskId,
+        attemptId: receipt.attemptId,
+        runId: receipt.runId,
+        requirementVersion: receipt.requirementVersion,
+        contentVersion: receipt.contentVersion,
+        contentHash: receipt.contentHash,
+        kind: receipt.kind,
+        name: receipt.name,
+        storedPath: receipt.storedPath,
+        createdAt: new Date().toISOString(),
+      }
+      if (!await verify(copy(artifact))) {
+        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Artifact ${artifactId} content is missing or invalid`)
+      }
+      const existing = snapshot.artifacts.find((candidate) => candidate.id === artifactId)
+      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(artifact)) {
+        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Artifact ${artifactId} metadata changed`)
+      }
+      if (existing === undefined) snapshot.artifacts.push(artifact)
+      snapshot.task.revision += 1
+      snapshot.task.updatedAt = new Date().toISOString()
+      const completed: WorkArtifactWriteReceipt = {
+        ...copy(receipt),
+        stage: 'linked',
+        artifact,
+        snapshot,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.tasks, receipt.taskId, snapshot)
+      setOwnValue(next.requests, requestId, { kind: 'artifact-write', digest: stored.digest, receipt: completed })
+      assertArtifactReservationIntegrity(next)
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(completed)
+    })
+  }
+
+  async pendingArtifactWrites(): Promise<WorkArtifactWriteReceipt[]> {
+    this.assertInitialized()
+    return Object.values(this.state.requests)
+      .filter((stored): stored is Extract<StoredReceipt, { kind: 'artifact-write' }> =>
+        stored.kind === 'artifact-write' && stored.receipt.stage === 'recorded'
+      )
+      .map((stored) => copy(stored.receipt))
+  }
+
+  async getArtifactWrite(requestId: string): Promise<WorkArtifactWriteReceipt | undefined> {
+    this.assertInitialized()
+    const stored = ownValue(this.state.requests, requestId)
+    return stored?.kind === 'artifact-write' ? copy(stored.receipt) : undefined
+  }
+
+  async acceptArtifact(
+    input: WorkArtifactAcceptRequest,
+    verify: (artifact: WorkArtifact) => Promise<boolean>,
+  ): Promise<WorkArtifactAcceptReceipt> {
+    return this.mutate(async () => {
+      assertArtifactReservationIntegrity(this.state)
+      const request = validateWorkArtifactAcceptRequest(input)
+      const digest = requestDigest('artifact-accept', request)
+      const replay = this.replay<WorkArtifactAcceptReceipt>('artifact-accept', request.requestId, digest)
+      if (replay) return replay
+      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
+      if (snapshot === undefined) {
+        throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      }
+      if (snapshot.task.revision !== request.expectedRevision) {
+        throw new WorkItemStoreConflictError(
+          'REVISION_CONFLICT',
+          `Expected task revision ${request.expectedRevision}, found ${snapshot.task.revision}`
+        )
+      }
+      if (snapshot.task.status === 'cancelled') {
+        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Cancelled task ${request.taskId} cannot accept artifacts`)
+      }
+      if (snapshot.task.currentRequirementVersion !== request.requirementVersion) {
+        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', 'Artifact requirement version is stale')
+      }
+      const artifact = snapshot.artifacts.find((candidate) => candidate.id === request.artifactId)
+      if (artifact === undefined) {
+        throw new WorkItemStoreConflictError('ARTIFACT_NOT_FOUND', `Artifact ${request.artifactId} was not found`)
+      }
+      if (
+        artifact.taskId !== request.taskId
+        || artifact.requirementVersion !== request.requirementVersion
+        || artifact.contentVersion !== request.contentVersion
+      ) {
+        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Artifact ${request.artifactId} version is stale`)
+      }
+      const run = snapshot.runs.find((candidate) => candidate.runId === artifact.runId)
+      if (
+        run === undefined
+        || run.taskId !== request.taskId
+        || run.attemptId !== artifact.attemptId
+        || run.requirementVersion !== artifact.requirementVersion
+      ) {
+        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Artifact ${request.artifactId} source is invalid`)
+      }
+      if (!await verify(copy(artifact))) {
+        throw new WorkItemStoreConflictError(
+          'ARTIFACT_CONFLICT',
+          `Artifact ${request.artifactId} stored content is missing or invalid`
+        )
+      }
+      const changesBusinessState = !snapshot.task.acceptedArtifactIds.includes(artifact.id) || snapshot.task.status !== 'completed'
+      if (!snapshot.task.acceptedArtifactIds.includes(artifact.id)) {
+        snapshot.task.acceptedArtifactIds.push(artifact.id)
+      }
+      // A successful explicit acceptance is the business decision that completes this task.
+      // Executor completion and artifact registration never change the task to completed.
+      snapshot.task.status = 'completed'
+      if (changesBusinessState) {
+        snapshot.task.revision += 1
+        snapshot.task.updatedAt = new Date().toISOString()
+      }
+      const receipt: WorkArtifactAcceptReceipt = {
+        requestId: request.requestId,
+        digest,
+        taskId: request.taskId,
+        artifactId: artifact.id,
+        snapshot,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.tasks, request.taskId, snapshot)
+      setOwnValue(next.requests, request.requestId, { kind: 'artifact-accept', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
       return copy(receipt)
@@ -673,7 +1144,15 @@ export class WorkItemStore {
     })
   }
 
-  private replay<T extends WorkItemCreateReceipt | WorkDispatchIntentReceipt | WorkActionAnswerReceipt | WorkRunControlReceipt>(
+  private replay<T extends
+    | WorkItemCreateReceipt
+    | WorkDispatchIntentReceipt
+    | WorkActionAnswerReceipt
+    | WorkRunControlReceipt
+    | WorkTaskRevisionReceipt
+    | WorkArtifactAcceptReceipt
+    | WorkArtifactWriteReceipt
+  >(
     kind: StoredReceipt['kind'],
     requestId: string,
     digest: string
@@ -697,6 +1176,7 @@ export class WorkItemStore {
   }
 
   private async commit(next: WorkItemState): Promise<void> {
+    assertArtifactReservationIntegrity(next)
     const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`
     try {
       const serialized = `${JSON.stringify(next, null, 2)}\n`
@@ -722,6 +1202,7 @@ export class WorkItemStore {
   }
 
   private assertInitialized(): void {
+    if (this.integrityError !== undefined) throw this.integrityError
     if (!this.initialized) throw new Error('WorkItemStore must be initialized before use')
   }
 }

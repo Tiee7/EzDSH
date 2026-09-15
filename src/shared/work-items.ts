@@ -366,6 +366,33 @@ export function validateWorkTaskExecuteRequest(value: unknown): WorkTaskExecuteR
   }
 }
 
+export function validateWorkTaskRevisionRequest(value: unknown): WorkTaskRevisionRequest {
+  const request = record(value, '$')
+  exactFields(request, ['requestId', 'taskId', 'expectedRevision', 'goal', 'acceptance'])
+  return {
+    requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
+    goal: textField(request, 'goal', WORK_ITEM_LIMITS.requirementText),
+    acceptance: textField(request, 'acceptance', WORK_ITEM_LIMITS.requirementText),
+  }
+}
+
+export function validateWorkArtifactAcceptRequest(value: unknown): WorkArtifactAcceptRequest {
+  const request = record(value, '$')
+  exactFields(request, [
+    'requestId', 'taskId', 'expectedRevision', 'artifactId', 'contentVersion', 'requirementVersion'
+  ])
+  return {
+    requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
+    artifactId: identifierField(request, 'artifactId', WORK_ITEM_LIMITS.id),
+    contentVersion: positiveSafeInteger(request.contentVersion, 'contentVersion'),
+    requirementVersion: positiveSafeInteger(request.requirementVersion, 'requirementVersion'),
+  }
+}
+
 export function validateWorkRunControlRequest(value: unknown): WorkRunControlRequest {
   const request = record(value, '$')
   exactFields(request, ['requestId', 'taskId', 'runId', 'expectedRevision', 'action'])

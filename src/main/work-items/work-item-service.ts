@@ -1,25 +1,34 @@
 import {
   validateWorkActionAnswerRequest,
+  validateWorkArtifactAcceptRequest,
   validateWorkRunControlRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
+  validateWorkTaskRevisionRequest,
   type WorkAction,
   type WorkActionAnswerRequest,
+  type WorkArtifact,
+  type WorkArtifactAcceptRequest,
   type WorkItemQuery,
   type WorkRunControlRequest,
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
+  type WorkTaskRevisionRequest,
   type WorkTaskSnapshot
 } from '../../shared/work-items.js'
 import {
   WorkItemStore,
   type WorkActionAnswerReceipt,
+  type WorkArtifactAcceptReceipt,
   type WorkDispatchIntentReceipt,
   type WorkRunControlReceipt
 } from './work-item-store.js'
 
 export class WorkItemService {
-  constructor(private readonly store: WorkItemStore) {}
+  constructor(
+    private readonly store: WorkItemStore,
+    private readonly artifactVerifier?: (artifact: WorkArtifact) => Promise<boolean>,
+  ) {}
 
   initialize(): Promise<void> {
     return this.store.initialize()
@@ -27,6 +36,22 @@ export class WorkItemService {
 
   async create(input: WorkTaskCreateRequest): Promise<WorkTaskSnapshot> {
     const receipt = await this.store.create(validateWorkTaskCreateRequest(input))
+    return receipt.snapshot
+  }
+
+  async revise(input: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot> {
+    const receipt = await this.store.revise(validateWorkTaskRevisionRequest(input))
+    return receipt.snapshot
+  }
+
+  async acceptArtifact(input: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot> {
+    if (this.artifactVerifier === undefined) {
+      throw new Error('WorkItemService requires a trusted artifact verifier before accepting artifacts')
+    }
+    const receipt: WorkArtifactAcceptReceipt = await this.store.acceptArtifact(
+      validateWorkArtifactAcceptRequest(input),
+      this.artifactVerifier,
+    )
     return receipt.snapshot
   }
 
