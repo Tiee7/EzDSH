@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 
-import type { EmployeeRunRecord, EmployeeRunStartReceipt, EmployeeRunStartRequest } from '../../shared/employee-runs.js'
+import type { EmployeeRunEvent, EmployeeRunRecord, EmployeeRunStartReceipt, EmployeeRunStartRequest } from '../../shared/employee-runs.js'
 import type { UserDataLayout } from '../../shared/state.js'
 import type { WorkTaskSnapshot } from '../../shared/work-items.js'
 import type { WorkflowRunRecord } from '../../shared/workflow.js'
@@ -23,6 +23,7 @@ export interface WorkItemWorkspaceEmployeeRunPort {
   listWorkItemRuns(): Promise<EmployeeRunRecord[]>
   getWorkItemRun(runId: string): Promise<EmployeeRunRecord | undefined>
   cancelWorkItemRun(runId: string): Promise<EmployeeRunRecord>
+  watchWorkItemRuns?(listener: (event: EmployeeRunEvent) => void): () => void
 }
 
 export interface WorkItemWorkspaceEmployeeMethodPort {
@@ -76,6 +77,7 @@ export function initializeWorkItemWorkspaceScope(
           cancel: (runId) => options.employeeRuns.cancelWorkItemRun(runId),
         },
         workflowBridge,
+        artifacts,
       })
       return {
         workItems,
@@ -93,6 +95,26 @@ export function initializeWorkItemWorkspaceScope(
           })
         }),
       ]
+      let employeeObservationTail = Promise.resolve()
+      const projectEmployeeRun = (run: EmployeeRunRecord): void => {
+        employeeObservationTail = employeeObservationTail
+          .then(() => scope.invoke(() => workspaceActionService.observeEmployeeRun(run)).then(() => undefined))
+          .catch((error: unknown) => {
+            if (!(error instanceof WorkItemWorkspaceUnavailableError)) options.onObserverError?.(error)
+          })
+      }
+      // Re-project persisted terminal states on startup; EmployeeRunService only
+      // emits future mutations, while Work Items must survive a process restart.
+      const employeeInitialProjection = options.employeeRuns.listWorkItemRuns().then((runs) => {
+        for (const run of runs) projectEmployeeRun(run)
+      }).catch((error: unknown) => options.onObserverError?.(error))
+      if (options.employeeRuns.watchWorkItemRuns !== undefined) {
+        listeners.push(options.employeeRuns.watchWorkItemRuns((event: EmployeeRunEvent) => {
+          // Wait for the startup inventory before accepting live events, so a
+          // stale inventory result cannot overwrite a newer terminal update.
+          void employeeInitialProjection.then(() => { projectEmployeeRun(event.run) })
+        }))
+      }
       if (options.onChanged !== undefined) listeners.unshift(store.onChanged(options.onChanged))
       return listeners
     },

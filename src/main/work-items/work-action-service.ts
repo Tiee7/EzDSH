@@ -29,6 +29,31 @@ export interface WorkActionServiceOptions {
   workItems: WorkItemService
   employeeRuns: WorkActionEmployeeRunPort
   workflowBridge: WorkActionWorkflowBridgePort
+  artifacts?: WorkActionArtifactPort
+}
+
+/** Main-owned output sink. Completion creates a reviewable draft; it never accepts it. */
+export interface WorkActionArtifactPort {
+  saveText(input: {
+    requestId: string
+    taskId: string
+    attemptId: string
+    runId: string
+    requirementVersion: number
+    contentVersion: number
+    name: string
+    text: string
+  }): Promise<unknown>
+  saveJson(input: {
+    requestId: string
+    taskId: string
+    attemptId: string
+    runId: string
+    requirementVersion: number
+    contentVersion: number
+    name: string
+    value: unknown
+  }): Promise<unknown>
 }
 
 export class WorkActionService {
@@ -73,7 +98,62 @@ export class WorkActionService {
         nodeId: event.nodeId,
       }
     })
-    return this.options.workItems.syncWorkflowActions(record.workTask.taskId, record.id, actions)
+    const projection = await this.options.workItems.syncWorkflowActions(record.workTask.taskId, record.id, actions)
+    if (projection !== undefined && record.status === 'completed' && record.output !== undefined) {
+      await this.saveWorkflowOutput(record, reference, record.output)
+      return (await this.options.workItems.get(record.workTask.taskId)) ?? projection
+    }
+    return projection
+  }
+
+  /** Keep plain Employee backed runs current in the Work Items projection. */
+  async observeEmployeeRun(record: EmployeeRunRecord): Promise<WorkTaskSnapshot | undefined> {
+    if (record.taskId === undefined || record.attemptId === undefined || record.requirementVersion === undefined) return undefined
+    const snapshot = await this.options.workItems.get(record.taskId)
+    if (snapshot === undefined) return undefined
+    const reference = snapshot.runs.find((run) => run.runId === record.runId)
+    if (reference === undefined || reference.executor.kind !== 'employee'
+      || reference.executor.employeeId !== record.employeeId || reference.commandId !== record.commandId
+      || reference.attemptId !== record.attemptId || reference.requirementVersion !== record.requirementVersion) {
+      return undefined
+    }
+    const projection = await this.options.workItems.syncEmployeeRun(record.taskId, record.runId, projectEmployee(record))
+    if (projection !== undefined && record.status === 'completed') {
+      const output = record.output.trim() || record.partialOutput.trim()
+      if (output !== '') {
+        await this.saveEmployeeOutput(record, reference, output)
+        return (await this.options.workItems.get(record.taskId)) ?? projection
+      }
+    }
+    return projection
+  }
+
+  private async saveEmployeeOutput(record: EmployeeRunRecord, reference: WorkTaskSnapshot['runs'][number], output: string): Promise<void> {
+    if (this.options.artifacts === undefined || record.attemptId === undefined || record.requirementVersion === undefined) return
+    await this.options.artifacts.saveText({
+      requestId: `employee-output:${record.runId}:v1`,
+      taskId: record.taskId!,
+      attemptId: reference.attemptId,
+      runId: record.runId,
+      requirementVersion: reference.requirementVersion,
+      contentVersion: 1,
+      name: `employee-output-${record.runId}.md`,
+      text: output,
+    })
+  }
+
+  private async saveWorkflowOutput(record: WorkflowRunRecord, reference: WorkTaskSnapshot['runs'][number], output: unknown): Promise<void> {
+    if (this.options.artifacts === undefined || record.workTask === undefined) return
+    await this.options.artifacts.saveJson({
+      requestId: `workflow-output:${record.id}:v1`,
+      taskId: record.workTask.taskId,
+      attemptId: reference.attemptId,
+      runId: record.id,
+      requirementVersion: reference.requirementVersion,
+      contentVersion: 1,
+      name: `workflow-output-${record.id}.json`,
+      value: output,
+    })
   }
 
   answerAction(input: WorkActionAnswerRequest): Promise<WorkTaskSnapshot> {

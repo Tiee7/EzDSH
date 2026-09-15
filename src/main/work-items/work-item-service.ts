@@ -87,6 +87,10 @@ export class WorkItemService {
     return this.store.syncWorkflowActions(taskId, runId, actions)
   }
 
+  syncEmployeeRun(taskId: string, runId: string, execution: Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'>): Promise<WorkTaskSnapshot | undefined> {
+    return this.store.syncRun(taskId, runId, execution)
+  }
+
   beginActionAnswer(input: WorkActionAnswerRequest): Promise<WorkActionAnswerReceipt> {
     return this.store.beginActionAnswer(validateWorkActionAnswerRequest(input))
   }

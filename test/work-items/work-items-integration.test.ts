@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkArtifactService } from '../../src/main/work-items/work-artifact-service.js'
+import { WorkActionService } from '../../src/main/work-items/work-action-service.js'
 import { WorkItemExecutionService } from '../../src/main/work-items/work-item-execution-service.js'
 import { WorkItemService } from '../../src/main/work-items/work-item-service.js'
 import { WorkItemStore } from '../../src/main/work-items/work-item-store.js'
@@ -92,6 +93,48 @@ async function fixture() {
 }
 
 describe('Work Items end-to-end composition', () => {
+  it('projects later Employee run events into the durable Work Item snapshot', async () => {
+    const f = await fixture()
+    const created = await f.workItems.create({ requestId: 'create-observed', title: 'Observed employee', goal: 'Track the employee', acceptance: 'Current run state is visible', scope: { resourceRefs: [] } })
+    const dispatched = await f.execution.execute({ requestId: 'dispatch-observed', taskId: created.task.id, expectedRevision: created.task.revision, executor: { kind: 'employee', employeeId: 'researcher' }, mode: 'initial', input: null })
+    const reference = dispatched.runs[0]!
+    const initial = f.employeePort.start.mock.results[0]?.value
+    const started = initial === undefined ? undefined : await initial
+    expect(started).toBeDefined()
+    const employeeRuns = {
+      get: vi.fn(async (runId: string) => runId === reference.runId ? started!.run : undefined),
+      cancel: vi.fn(),
+    }
+    const observer = new WorkActionService({ workItems: f.workItems, employeeRuns, workflowBridge: {}, artifacts: f.artifactService })
+    const running = { ...started!.run, status: 'running' as const, dispatchStage: 'prompt-in-flight' as const, updatedAt: new Date(Date.now() + 1).toISOString() }
+
+    const projected = await observer.observeEmployeeRun(running)
+
+    expect(projected?.runs.find((run) => run.runId === reference.runId)).toMatchObject({ status: 'running', rawStatus: 'running', capabilities: { cancel: true } })
+    await expect(f.workItems.get(created.task.id)).resolves.toMatchObject({ runs: [{ runId: reference.runId, status: 'running' }] })
+
+    const completed = { ...running, status: 'completed' as const, dispatchStage: 'completed' as const, completedAt: new Date(Date.now() + 2).toISOString(), output: 'done' }
+    const completedProjection = await observer.observeEmployeeRun(completed)
+    expect(completedProjection?.runs.find((run) => run.runId === reference.runId)).toMatchObject({ status: 'completed', rawStatus: 'completed' })
+    expect(completedProjection?.artifacts).toHaveLength(1)
+    await expect(f.artifactService.read(completedProjection!.artifacts[0]!)).resolves.toEqual(Buffer.from('done'))
+  })
+
+  it('saves a completed Workflow output as a reviewable JSON deliverable', async () => {
+    const f = await fixture()
+    const created = await f.workItems.create({ requestId: 'create-workflow-output', title: 'Workflow output', goal: 'Track output', acceptance: 'Review JSON', scope: { resourceRefs: [] } })
+    const dispatched = await f.execution.execute({ requestId: 'dispatch-workflow-output', taskId: created.task.id, expectedRevision: created.task.revision, executor: { kind: 'workflow', workflowId: 'workflow-1', workflowRevision: 3 }, mode: 'initial', input: { source: 'test' } })
+    const reference = dispatched.runs[0]!
+    const record = workflowRun(reference.commandId, 'workflow-1')
+    record.output = { summary: 'done', count: 3 }
+    record.workTask = { taskId: created.task.id, attemptId: reference.attemptId, requirementVersion: reference.requirementVersion, commandId: reference.commandId }
+
+    const observed = await new WorkActionService({ workItems: f.workItems, employeeRuns: {}, workflowBridge: {}, artifacts: f.artifactService }).observeWorkflowRun(record)
+
+    expect(observed?.artifacts).toHaveLength(1)
+    await expect(f.artifactService.read(observed!.artifacts[0]!)).resolves.toEqual(Buffer.from('{\n  "summary": "done",\n  "count": 3\n}\n'))
+  })
+
   it('creates, dispatches, accepts a deliverable, and reopens the accepted state', async () => {
     const f = await fixture()
     const created = await f.workItems.create({ requestId: 'create', title: 'Release brief', goal: 'Verify release changes', acceptance: 'A cited brief', scope: { projectId: 'project-1', cwd: f.directory, resourceRefs: [] } })

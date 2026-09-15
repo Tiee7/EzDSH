@@ -2631,6 +2631,21 @@ describe('WorkflowPage regressions', () => {
     expect(markup).not.toContain('Agent')
   })
 
+  it('uses an accessible in-app dialog for formal work item creation', () => {
+    const onSubmit = vi.fn()
+    const markup = renderToStaticMarkup(
+      <workflowPage.WorkflowWorkItemDialog locale="zh" value="" busy={false} onChange={vi.fn()} onClose={vi.fn()} onSubmit={onSubmit} />,
+    )
+
+    expect(markup).toContain('role="dialog"')
+    expect(markup).toContain('aria-modal="true"')
+    expect(markup).toContain('aria-labelledby="workflow-work-item-title"')
+    expect(markup).toContain('aria-label="工作项要完成什么"')
+    expect(markup).toContain('创建并运行')
+    expect(markup).toContain('disabled=""')
+    expect(markup).not.toContain('window.prompt')
+  })
+
   it('migrates legacy Agent wording before a workflow enters the editor', () => {
     expect(workflowPage.userFacingWorkflowText('交给 DSH Agent 处理', 'zh')).toContain('智能处理')
     expect(workflowPage.userFacingWorkflowText('交给 DSH Agent 处理', 'zh')).not.toContain('Agent')

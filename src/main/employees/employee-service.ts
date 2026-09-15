@@ -484,6 +484,10 @@ export class EmployeeService {
     return this.runService.list()
   }
 
+  watchWorkItemRuns(listener: (event: import('../../shared/employee-runs.js').EmployeeRunEvent) => void): () => void {
+    return this.runService.watch(listener)
+  }
+
   getWorkItemRun(runId: string): Promise<EmployeeRunRecord | undefined> {
     return this.runService.get(runId)
   }

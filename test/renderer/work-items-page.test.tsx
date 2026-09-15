@@ -31,6 +31,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 async function mountPage(options: {
   list?: () => Promise<WorkTaskSnapshot[]>
   get?: (taskId: string) => Promise<WorkTaskSnapshot | undefined>
+  acceptArtifact?: (request: import('../../src/shared/work-items.js').WorkArtifactAcceptRequest) => Promise<WorkTaskSnapshot>
   runtimeAvailable?: boolean
   onNavigate?: (context: import('../../src/renderer/work-items/work-item-navigation.js').WorkItemNavigationContext) => void
   navigation?: import('../../src/renderer/work-items/work-item-navigation.js').WorkItemNavigationContext
@@ -45,16 +46,20 @@ async function mountPage(options: {
   const bridge = {
     list: vi.fn(options.list ?? (async () => [snapshot()])),
     get: vi.fn(options.get ?? (async () => snapshot())),
+    acceptArtifact: vi.fn(options.acceptArtifact ?? (async () => snapshot())),
     controlRun: vi.fn(),
     onChanged: vi.fn((next: (value: WorkTaskSnapshot) => void) => { listener = next; return () => { listener = undefined } }),
   }
+  const employees = { list: vi.fn(async () => [{ id: 'editor', name: '编辑', role: '编辑', enabled: true }]) }
+  const workflows = { list: vi.fn(async () => [{ id: 'reporting', name: '报告流程', enabled: true, revision: 4 }]) }
   Object.assign(globalThis, {
     window: dom, document: dom.document, HTMLElement: dom.HTMLElement,
     Node: dom.Node, Event: dom.Event, MouseEvent: dom.MouseEvent, IS_REACT_ACT_ENVIRONMENT: true,
   })
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.navigator })
-  Object.assign(dom as unknown as Record<string, unknown>, { EzDSH: { workItems: bridge } })
-  ;(globalThis as { EzDSH?: unknown }).EzDSH = { workItems: bridge }
+  const ezdsh = { workItems: bridge, employees, workflows }
+  Object.assign(dom as unknown as Record<string, unknown>, { EzDSH: ezdsh })
+  ;(globalThis as { EzDSH?: unknown }).EzDSH = ezdsh
   const root = createRoot(dom.document.getElementById('root')!)
   await act(async () => {
     root.render(<WorkItemsPage copy={getAppCopy('zh')} runtimeAvailable={options.runtimeAvailable} navigation={options.navigation} onNavigate={options.onNavigate} />)
@@ -129,6 +134,41 @@ describe('Work Items renderer', () => {
       await page.click('打开执行器')
       expect(navigations).toHaveLength(1)
       expect(navigations[0]).toMatchObject({ destination: 'workflow', workflowId: 'handoff-flow', runId: 'run-workflow', taskId: 'task-1' })
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('sends acceptance through Main and renders the returned accepted snapshot', async () => {
+    const accepted = snapshot({ task: { ...workTaskFixture(), acceptedArtifactIds: ['artifact-1'], revision: 3 } })
+    const page = await mountPage({ acceptArtifact: async (request) => {
+      expect(request).toMatchObject({
+        taskId: 'task-1',
+        expectedRevision: 2,
+        artifactId: 'artifact-1',
+        contentVersion: 1,
+        requirementVersion: 2,
+      })
+      return accepted
+    } })
+    try {
+      await page.click('Prepare release notes')
+      await page.click('接受这一版')
+      expect(page.bridge.acceptArtifact).toHaveBeenCalledOnce()
+      expect(page.dom.document.body.textContent).toContain('已接受')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('loads current enabled employees and workflows before opening handoff', async () => {
+    const page = await mountPage()
+    try {
+      await page.click('Prepare release notes')
+      await page.click('交接')
+      expect(page.dom.document.body.textContent).toContain('交给谁执行')
+      expect(page.dom.document.body.textContent).toContain('编辑')
+      expect(page.dom.document.body.textContent).toContain('报告流程')
     } finally {
       await page.cleanup()
     }

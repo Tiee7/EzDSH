@@ -2706,6 +2706,40 @@ export function WorkflowRunLaunchDialog({
   </div>
 }
 
+interface WorkflowWorkItemDialogProps {
+  locale: AppLocale
+  value: string
+  busy: boolean
+  error?: string
+  onChange: (value: string) => void
+  onClose: () => void
+  onSubmit: () => void
+}
+
+/** In-app work item prompt. Native prompt() is unavailable to keyboard and screen-reader users in Electron. */
+export function WorkflowWorkItemDialog({ locale, value, busy, error = '', onChange, onClose, onSubmit }: WorkflowWorkItemDialogProps): JSX.Element {
+  const english = locale === 'en'
+  const title = english ? 'Run as a work item' : '创建工作项并运行'
+  const hint = english ? 'Describe the outcome this run should deliver. The workflow will be saved before execution.' : '描述这次运行要交付的结果。执行前会先保存工作流。'
+  const label = english ? 'Work item outcome' : '工作项要完成什么'
+  const placeholder = english ? 'For example: produce a three-point brand proposal' : '例如：生成一份三点品牌宣传建议'
+  const cancel = english ? '取消' : '取消'
+  const submit = english ? 'Create and run' : '创建并运行'
+  return <div className="workflow-launch-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
+    <section className="workflow-launch-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-work-item-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="workflow-launch-dialog-header">
+        <div><span className="workflow-kicker">{english ? 'WORK ITEM' : '工作项'}</span><h2 id="workflow-work-item-title">{title}</h2><p>{hint}</p></div>
+        <button type="button" className="workflow-button-quiet" onClick={onClose} disabled={busy}>{cancel}</button>
+      </div>
+      <div className="workflow-launch-fields">
+        <label className="workflow-launch-field"><span>{label} *</span><textarea autoFocus aria-label={label} aria-required="true" value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && value.trim() !== '' && !busy) { event.preventDefault(); onSubmit() } }} /></label>
+        {error !== '' ? <div className="workflow-error" role="alert">{error}</div> : null}
+      </div>
+      <div className="workflow-launch-dialog-actions"><button type="button" className="workflow-button-quiet" onClick={onClose} disabled={busy}>{cancel}</button><button type="button" className="workflow-button-primary" onClick={onSubmit} disabled={busy || value.trim() === ''}>{busy ? (english ? 'Starting…' : '正在启动…') : submit}</button></div>
+    </section>
+  </div>
+}
+
 interface WorkflowExecutionReviewProps {
   copy: AppCopy
   workflow?: WorkflowDefinition
@@ -2981,6 +3015,8 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
   const [workflowValidationIssues, setWorkflowValidationIssues] = useState<WorkflowValidationIssue[]>([])
   const [linkedWorkItem, setLinkedWorkItem] = useState<{ taskId: string; revision: number }>()
   const [formalWorkItemMode, setFormalWorkItemMode] = useState<'new' | 'existing'>('new')
+  const [formalWorkItemDialogOpen, setFormalWorkItemDialogOpen] = useState(false)
+  const [formalWorkItemDraft, setFormalWorkItemDraft] = useState('')
   const formalWorkItemRetryRef = useRef<{ signature: string; entry: ReturnType<typeof workflowWorkItemEntry>; taskId: string; expectedRevision: number; created: boolean }>()
 
   selectedWorkflowIdRef.current = selected?.id
@@ -4018,12 +4054,12 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
     } catch (reason) { setError(reason instanceof Error ? reason.message : copy.workflowRunFailed) } finally { setBusy(false) }
   }
 
-  const createFormalWorkItem = async (): Promise<void> => {
-    if (selected === undefined || !_developerMode) return
-    const task = window.prompt(locale === 'zh' ? '描述这次工作项要完成什么' : 'Describe what this work item should accomplish', '')?.trim()
-    if (task === undefined || task === '') return
+  const submitFormalWorkItem = async (rawTask: string): Promise<boolean> => {
+    if (selected === undefined || !_developerMode) return false
+    const task = rawTask.trim()
+    if (task === '') return false
     const saved = await save()
-    if (saved === undefined) return
+    if (saved === undefined) return false
     setBusy(true)
     setError('')
     try {
@@ -4043,10 +4079,27 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       const started = await window.EzDSH.workItems.execute({ ...prepared.entry.execute, taskId: prepared.taskId, expectedRevision: prepared.expectedRevision, mode: prepared.entry.execute.mode === 'initial' && useExistingWorkItem ? 'continue-attempt' : prepared.entry.execute.mode })
       onOpenWorkItem?.({ ...prepared.entry.navigation, taskId: started.task.id })
       formalWorkItemRetryRef.current = undefined
+      return true
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : copy.workflowRunFailed)
+      return false
     } finally {
       setBusy(false)
+    }
+  }
+
+  const openFormalWorkItemDialog = (): void => {
+    if (selected === undefined || !_developerMode || busy) return
+    setFormalWorkItemDraft('')
+    setError('')
+    setFormalWorkItemDialogOpen(true)
+  }
+
+  const submitFormalWorkItemFromDialog = async (): Promise<void> => {
+    const submitted = await submitFormalWorkItem(formalWorkItemDraft)
+    if (submitted) {
+      setFormalWorkItemDialogOpen(false)
+      setFormalWorkItemDraft('')
     }
   }
 
@@ -4391,7 +4444,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               <span>{copy.workflowAiModify}</span>
             </button> : null}
             {workspaceView === 'editor' && selected !== undefined ? <>
-              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={() => void createFormalWorkItem()} disabled={busy}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
+              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={openFormalWorkItemDialog} disabled={busy}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
               <WorkflowEditorActions
               copy={copy}
               draft={draft}
@@ -4407,10 +4460,10 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
               onRun={() => void openRunSetup()}
               />
             </> : workspaceView === 'executions' && selected !== undefined ? <>
-              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={() => void createFormalWorkItem()} disabled={busy || currentRun?.status === 'running'}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
+              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={openFormalWorkItemDialog} disabled={busy || currentRun?.status === 'running'}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
               <button type="button" className="workflow-button-primary" onClick={() => void openRunSetup()} disabled={busy || currentRun?.status === 'running'}>{currentRun?.status === 'running' ? copy.workflowRunning : copy.workflowRun}</button>
             </> : selected !== undefined ? <>
-              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={() => void createFormalWorkItem()} disabled={busy}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
+              {_developerMode ? <button type="button" className="workflow-button-quiet" onClick={openFormalWorkItemDialog} disabled={busy}>{locale === 'zh' ? (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? '继续当前工作项并运行' : '创建工作项并运行') : (formalWorkItemMode === 'existing' && linkedWorkItem !== undefined ? 'Continue work item' : 'Run as work item')}</button> : null}
             </> : null}
           </div>
         </header>
@@ -4534,6 +4587,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
       {showModifyDialog && selected ? <WorkflowModifyDialog copy={copy} workflow={currentDefinition() ?? selected} onClose={() => setShowModifyDialog(false)} onOpenHistory={() => openModificationHistory()} onApply={(workflow) => { applyDefinition(workflow); setMessage(copy.workflowAiModifyApplied) }} /> : null}
       {showModificationHistory && selected ? <WorkflowModificationHistoryDialog copy={copy} records={modificationHistory} initialRecordId={modificationHistoryFocusId} onClose={() => setShowModificationHistory(false)} onApply={applyModification} /> : null}
       {runSetup ? <WorkflowRunLaunchDialog copy={copy} fields={runSetup.fields} values={runSetup.values} modelOptions={runSetup.modelOptions} modelSelection={runSetup.modelSelection} connectorOptions={runSetup.connectorOptions} connectorGrants={runSetup.connectorGrants} allowShellFile={runSetup.allowShellFile} allowCode={runSetup.allowCode} debug={runSetup.debug} busy={busy} modelLoading={runSetup.modelLoading} error={error} onChangeValue={(key, value) => setRunSetup((current) => current === undefined ? current : { ...current, values: { ...current.values, [key]: value } })} onChangeModel={(modelSelection) => setRunSetup((current) => current === undefined ? current : { ...current, modelSelection })} onChangeConnectorGrants={(connectorGrants) => setRunSetup((current) => current === undefined ? current : { ...current, connectorGrants })} onRefreshModels={() => void refreshRunModels()} onChangeAllowShellFile={(allowShellFile) => setRunSetup((current) => current === undefined ? current : { ...current, allowShellFile })} onChangeAllowCode={(allowCode) => setRunSetup((current) => current === undefined ? current : { ...current, allowCode })} onChangeDebug={(debug) => setRunSetup((current) => current === undefined ? current : { ...current, debug })} onClose={() => setRunSetup(undefined)} onStart={() => void startRun()} /> : null}
+      {formalWorkItemDialogOpen ? <WorkflowWorkItemDialog locale={locale} value={formalWorkItemDraft} busy={busy} error={error} onChange={setFormalWorkItemDraft} onClose={() => { if (!busy) setFormalWorkItemDialogOpen(false) }} onSubmit={() => void submitFormalWorkItemFromDialog()} /> : null}
       {showPermissionDialog && selected ? <WorkflowPermissionPolicyDialog copy={copy} workflow={currentDefinition() ?? selected} connectors={workflowConnectors} onChange={(workflow) => applyDefinition(workflow)} onClose={() => setShowPermissionDialog(false)} /> : null}
       {contextMenu ? <WorkflowContextMenu copy={copy} target={contextMenu.target} x={contextMenu.x} y={contextMenu.y} selectedNodeCount={(contextMenu.target === 'canvas' || contextMenu.target === 'selection' || (contextMenu.nodeId !== undefined && nodes.some((node) => node.id === contextMenu.nodeId && node.selected === true))) ? nodes.filter((node) => node.selected === true).length : 0} canUndo={(history?.past.length ?? 0) > 0} canRedo={(history?.future.length ?? 0) > 0} busy={busy} runDisabled={currentRun?.status === 'running'} cancelLabel={draft ? copy.workflowCancelCreate : copy.workflowCancelEdit} onUndo={() => { dismissContextMenu(); undo(); focusWorkflowCanvas() }} onRedo={() => { dismissContextMenu(); redo(); focusWorkflowCanvas() }} onCopy={() => { copySelectedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} onPaste={() => { pasteCopiedNodes(); dismissContextMenu(); focusWorkflowCanvas() }} canPaste={copiedWorkflowNodesRef.current.length > 0} onDelete={deleteContextMenuSelection} onAlign={alignSelectedNodes} onFitView={fitViewFromContextMenu} onSave={saveFromContextMenu} onRun={runFromContextMenu} onCancel={() => { dismissContextMenu(); exitWorkspace() }} /> : null}
       {message || error ? <div className="workflow-notification-stack">

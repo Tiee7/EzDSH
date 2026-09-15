@@ -974,6 +974,35 @@ export class WorkItemStore {
     })
   }
 
+  /**
+   * Project a newer Employee run state into its durable Work Item reference.
+   * Employee runs are observed outside this store, so this update is deliberately
+   * idempotent and does not bump the task revision for an unchanged projection.
+   */
+  async syncRun(
+    taskId: string,
+    runId: string,
+    execution: Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'>,
+  ): Promise<WorkTaskSnapshot | undefined> {
+    return this.mutate(async () => {
+      const current = ownValue(this.state.tasks, taskId)
+      if (current === undefined) return undefined
+      const snapshot = copy(current)
+      const run = snapshot.runs.find((candidate) => candidate.runId === runId)
+      if (run === undefined) return undefined
+      if (JSON.stringify({ status: run.status, rawStatus: run.rawStatus, capabilities: run.capabilities })
+        === JSON.stringify(execution)) return snapshot
+      Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      snapshot.task.revision += 1
+      snapshot.task.updatedAt = new Date().toISOString()
+      const next = copy(this.state)
+      setOwnValue(next.tasks, taskId, snapshot)
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(snapshot)
+    })
+  }
+
   async beginActionAnswer(input: WorkActionAnswerRequest): Promise<WorkActionAnswerReceipt> {
     return this.mutate(async () => {
       const request = validateWorkActionAnswerRequest(input)
