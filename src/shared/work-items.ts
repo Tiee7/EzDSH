@@ -142,6 +142,7 @@ export interface WorkRunControlRequest {
   requestId: string
   taskId: string
   runId: string
+  expectedRevision: number
   action: 'cancel' | 'resume'
 }
 
@@ -362,6 +363,39 @@ export function validateWorkTaskExecuteRequest(value: unknown): WorkTaskExecuteR
     ...(request.sourceRunId === undefined
       ? {}
       : { sourceRunId: optionalIdentifierField(request, 'sourceRunId', WORK_ITEM_LIMITS.id, 'sourceRunId') })
+  }
+}
+
+export function validateWorkRunControlRequest(value: unknown): WorkRunControlRequest {
+  const request = record(value, '$')
+  exactFields(request, ['requestId', 'taskId', 'runId', 'expectedRevision', 'action'])
+  if (request.action !== 'cancel' && request.action !== 'resume') {
+    throw new WorkItemValidationError('INVALID_VALUE', 'action', 'action is not supported')
+  }
+  return {
+    requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    runId: identifierField(request, 'runId', WORK_ITEM_LIMITS.id),
+    expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
+    action: request.action,
+  }
+}
+
+export function validateWorkActionAnswerRequest(value: unknown): WorkActionAnswerRequest {
+  const request = record(value, '$')
+  exactFields(request, [
+    'requestId', 'taskId', 'actionId', 'expectedSourceEventId', 'expectedRequirementVersion', 'answer'
+  ])
+  if (!('answer' in request)) {
+    throw new WorkItemValidationError('MISSING_FIELD', 'answer', 'answer is required')
+  }
+  return {
+    requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    actionId: identifierField(request, 'actionId', WORK_ITEM_LIMITS.id),
+    expectedSourceEventId: identifierField(request, 'expectedSourceEventId', WORK_ITEM_LIMITS.id),
+    expectedRequirementVersion: positiveSafeInteger(request.expectedRequirementVersion, 'expectedRequirementVersion'),
+    answer: request.answer,
   }
 }
 

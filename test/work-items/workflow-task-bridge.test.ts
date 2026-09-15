@@ -16,7 +16,7 @@ function run(overrides: Partial<WorkflowRunRecord> = {}): WorkflowRunRecord {
 
 describe('WorkflowTaskBridge', () => {
   it('starts a fixed workflow revision with trusted task association and stable command identity', async () => {
-    const workflowRuns = { start: vi.fn().mockResolvedValue(run()), resume: vi.fn(), cancel: vi.fn(), findByIdempotencyKey: vi.fn() }
+    const workflowRuns = { start: vi.fn().mockResolvedValue(run()), resume: vi.fn(), resumeExpected: vi.fn(), cancel: vi.fn(), get: vi.fn(), approveExpected: vi.fn(), findByIdempotencyKey: vi.fn() }
     const bridge = new WorkflowTaskBridge(workflowRuns)
 
     await bridge.start({ commandId: 'command-1', taskId: 'task-1', attemptId: 'attempt-1', requirementVersion: 2, sourceRunId: 'employee-run', workflowId: 'workflow-1', workflowRevision: 7, input: { topic: 'AI' } })
@@ -28,18 +28,20 @@ describe('WorkflowTaskBridge', () => {
 
   it('resumes and cancels the original run and finds linkage by command', async () => {
     const original = run({ idempotencyKey: 'command-1' })
-    const workflowRuns = { start: vi.fn(), resume: vi.fn().mockResolvedValue(original), cancel: vi.fn().mockResolvedValue(original), findByIdempotencyKey: vi.fn().mockReturnValue(original) }
+    const workflowRuns = { start: vi.fn(), resume: vi.fn().mockResolvedValue(original), resumeExpected: vi.fn().mockResolvedValue(original), cancel: vi.fn().mockResolvedValue(original), get: vi.fn().mockReturnValue(original), approveExpected: vi.fn(), findByIdempotencyKey: vi.fn().mockReturnValue(original) }
     const bridge = new WorkflowTaskBridge(workflowRuns)
 
     expect(await bridge.resume(original.id)).toBe(original)
+    expect(await bridge.resumeExpected(original.id, { requestId: 'resume-1', expectedTaskId: 'task-1', expectedRequirementVersion: 2 })).toBe(original)
     expect(await bridge.cancel(original.id)).toBe(original)
     expect(await bridge.findByCommand('command-1')).toBe(original)
     expect(workflowRuns.resume).toHaveBeenCalledWith(original.id)
+    expect(workflowRuns.resumeExpected).toHaveBeenCalledWith(original.id, { requestId: 'resume-1', expectedTaskId: 'task-1', expectedRequirementVersion: 2 })
     expect(workflowRuns.cancel).toHaveBeenCalledWith(original.id)
   })
 
   it('keeps debug starts outside WorkTask association', async () => {
-    const workflowRuns = { start: vi.fn().mockResolvedValue(run({ debug: true })), resume: vi.fn(), cancel: vi.fn(), findByIdempotencyKey: vi.fn() }
+    const workflowRuns = { start: vi.fn().mockResolvedValue(run({ debug: true })), resume: vi.fn(), resumeExpected: vi.fn(), cancel: vi.fn(), get: vi.fn(), approveExpected: vi.fn(), findByIdempotencyKey: vi.fn() }
     const bridge = new WorkflowTaskBridge(workflowRuns)
 
     const debug = await bridge.startDebug('workflow-1', null)

@@ -4,9 +4,14 @@ import { join } from 'node:path'
 import { types as utilTypes } from 'node:util'
 
 import {
+  validateWorkActionAnswerRequest,
+  validateWorkRunControlRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
+  type WorkAction,
+  type WorkActionAnswerRequest,
   type WorkItemQuery,
+  type WorkRunControlRequest,
   type WorkTask,
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
@@ -14,7 +19,7 @@ import {
 } from '../../shared/work-items.js'
 
 export class WorkItemStoreConflictError extends Error {
-  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND'
+  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT'
 
   constructor(
     code: WorkItemStoreConflictError['code'],
@@ -57,9 +62,33 @@ export interface WorkDispatchIntentReceipt {
   replayed: boolean
 }
 
+export interface WorkActionAnswerReceipt {
+  requestId: string
+  digest: string
+  taskId: string
+  actionId: string
+  stage: 'recorded' | 'resolved' | 'rejected'
+  rejectionReason?: string
+  snapshot: WorkTaskSnapshot
+  replayed: boolean
+}
+
+export interface WorkRunControlReceipt {
+  requestId: string
+  digest: string
+  taskId: string
+  runId: string
+  action: WorkRunControlRequest['action']
+  stage: 'recorded' | 'processed'
+  snapshot: WorkTaskSnapshot
+  replayed: boolean
+}
+
 type StoredReceipt =
   | { kind: 'create'; digest: string; receipt: WorkItemCreateReceipt }
   | { kind: 'dispatch'; digest: string; receipt: WorkDispatchIntentReceipt }
+  | { kind: 'action-answer'; digest: string; receipt: WorkActionAnswerReceipt }
+  | { kind: 'run-control'; digest: string; receipt: WorkRunControlReceipt }
 
 interface WorkItemState {
   version: 1
@@ -216,6 +245,11 @@ function requestDigest(kind: StoredReceipt['kind'], request: unknown): string {
 
 function copy<T>(value: T): T {
   return structuredClone(value)
+}
+
+function strongerActionStatus(current: WorkAction['status'], incoming: WorkAction['status']): WorkAction['status'] {
+  const precedence: Record<WorkAction['status'], number> = { open: 0, superseded: 1, resolved: 2 }
+  return precedence[incoming] > precedence[current] ? incoming : current
 }
 
 export class WorkItemStore {
@@ -415,6 +449,194 @@ export class WorkItemStore {
     }).map(copy)
   }
 
+  async syncWorkflowActions(taskId: string, runId: string, actions: WorkAction[]): Promise<WorkTaskSnapshot> {
+    return this.mutate(async () => {
+      const current = ownValue(this.state.tasks, taskId)
+      if (current === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${taskId} was not found`)
+      const snapshot = copy(current)
+      const run = snapshot.runs.find((candidate) => candidate.runId === runId)
+      if (run === undefined || run.executor.kind !== 'workflow') {
+        throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Workflow run ${runId} was not found on task ${taskId}`)
+      }
+      for (const action of actions) {
+        if (action.taskId !== taskId || action.runId !== runId || action.requirementVersion !== run.requirementVersion) {
+          throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${action.id} does not match its WorkTask run`)
+        }
+      }
+      const incomingById = new Map(actions.map((action) => [action.id, action]))
+      const nextActions = snapshot.actions.map((existing) => {
+        if (existing.runId !== runId) return existing
+        const incoming = incomingById.get(existing.id)
+        if (incoming === undefined) return existing
+        incomingById.delete(existing.id)
+        return { ...copy(incoming), status: strongerActionStatus(existing.status, incoming.status) }
+      })
+      for (const action of actions) {
+        const added = incomingById.get(action.id)
+        if (added !== undefined) {
+          nextActions.push(copy(added))
+          incomingById.delete(action.id)
+        }
+      }
+      if (JSON.stringify(nextActions) === JSON.stringify(snapshot.actions)) return snapshot
+      snapshot.actions = nextActions
+      snapshot.task.revision += 1
+      snapshot.task.updatedAt = new Date().toISOString()
+      const next = copy(this.state)
+      setOwnValue(next.tasks, taskId, snapshot)
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(snapshot)
+    })
+  }
+
+  async beginActionAnswer(input: WorkActionAnswerRequest): Promise<WorkActionAnswerReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkActionAnswerRequest(input)
+      const digest = requestDigest('action-answer', request)
+      const replay = this.replay<WorkActionAnswerReceipt>('action-answer', request.requestId, digest)
+      if (replay) return replay
+      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
+      if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      const action = snapshot.actions.find((candidate) => candidate.id === request.actionId)
+      if (action === undefined) throw new WorkItemStoreConflictError('ACTION_NOT_FOUND', `Action ${request.actionId} was not found on task ${request.taskId}`)
+      if (action.status !== 'open') throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${request.actionId} is no longer open`)
+      if (action.sourceEventId !== request.expectedSourceEventId) throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${request.actionId} source event is stale`)
+      if (action.requirementVersion !== request.expectedRequirementVersion) throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${request.actionId} requirement version is stale`)
+      const run = snapshot.runs.find((candidate) => candidate.runId === action.runId)
+      if (run === undefined || run.executor.kind !== 'workflow' || run.requirementVersion !== action.requirementVersion) {
+        throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Workflow run ${action.runId} no longer matches action ${action.id}`)
+      }
+      const activeClaim = Object.values(this.state.requests).find((stored): stored is Extract<StoredReceipt, { kind: 'action-answer' }> =>
+        stored.kind === 'action-answer'
+        && stored.receipt.taskId === request.taskId
+        && stored.receipt.actionId === request.actionId
+        && stored.receipt.stage === 'recorded')
+      if (activeClaim !== undefined) {
+        throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${request.actionId} is claimed by another request`)
+      }
+      const receipt: WorkActionAnswerReceipt = {
+        requestId: request.requestId, digest, taskId: request.taskId, actionId: request.actionId,
+        stage: 'recorded', snapshot, replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.requests, request.requestId, { kind: 'action-answer', digest, receipt })
+      await this.commit(next)
+      return copy(receipt)
+    })
+  }
+
+  async rejectActionAnswer(input: WorkActionAnswerRequest, reason: string): Promise<WorkActionAnswerReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkActionAnswerRequest(input)
+      const digest = requestDigest('action-answer', request)
+      const stored = ownValue(this.state.requests, request.requestId)
+      if (stored?.kind !== 'action-answer' || stored.digest !== digest) {
+        throw new WorkItemStoreConflictError('REQUEST_ID_CONFLICT', `Action answer ${request.requestId} was not recorded with this content`)
+      }
+      if (stored.receipt.stage !== 'recorded') return { ...copy(stored.receipt), replayed: true }
+      const receipt: WorkActionAnswerReceipt = {
+        ...copy(stored.receipt),
+        stage: 'rejected',
+        rejectionReason: reason,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.requests, request.requestId, { kind: 'action-answer', digest, receipt })
+      await this.commit(next)
+      return copy(receipt)
+    })
+  }
+
+  async completeActionAnswer(
+    input: WorkActionAnswerRequest,
+    execution: Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'>,
+  ): Promise<WorkActionAnswerReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkActionAnswerRequest(input)
+      const digest = requestDigest('action-answer', request)
+      const stored = ownValue(this.state.requests, request.requestId)
+      if (stored?.kind !== 'action-answer' || stored.digest !== digest) {
+        throw new WorkItemStoreConflictError('REQUEST_ID_CONFLICT', `Action answer ${request.requestId} was not recorded with this content`)
+      }
+      if (stored.receipt.stage === 'resolved') return { ...copy(stored.receipt), replayed: true }
+      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
+      if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      const action = snapshot.actions.find((candidate) => candidate.id === request.actionId)
+      if (action === undefined) throw new WorkItemStoreConflictError('ACTION_NOT_FOUND', `Action ${request.actionId} was not found on task ${request.taskId}`)
+      if (action.status === 'superseded' || action.sourceEventId !== request.expectedSourceEventId || action.requirementVersion !== request.expectedRequirementVersion) {
+        throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${request.actionId} changed before the answer was saved`)
+      }
+      const run = snapshot.runs.find((candidate) => candidate.runId === action.runId)
+      if (run === undefined) throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Run ${action.runId} was not found on task ${request.taskId}`)
+      action.status = 'resolved'
+      Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      snapshot.task.revision += 1
+      snapshot.task.updatedAt = new Date().toISOString()
+      const receipt: WorkActionAnswerReceipt = { ...copy(stored.receipt), stage: 'resolved', snapshot, replayed: false }
+      const next = copy(this.state)
+      setOwnValue(next.tasks, request.taskId, snapshot)
+      setOwnValue(next.requests, request.requestId, { kind: 'action-answer', digest, receipt })
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(receipt)
+    })
+  }
+
+  async beginRunControl(input: WorkRunControlRequest): Promise<WorkRunControlReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkRunControlRequest(input)
+      const digest = requestDigest('run-control', request)
+      const replay = this.replay<WorkRunControlReceipt>('run-control', request.requestId, digest)
+      if (replay) return replay
+      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
+      if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      if (snapshot.task.revision !== request.expectedRevision) {
+        throw new WorkItemStoreConflictError('REVISION_CONFLICT', `Expected task revision ${request.expectedRevision}, found ${snapshot.task.revision}`)
+      }
+      const run = snapshot.runs.find((candidate) => candidate.runId === request.runId)
+      if (run === undefined) throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Run ${request.runId} was not found on task ${request.taskId}`)
+      if (!run.capabilities[request.action]) throw new WorkItemStoreConflictError('ACTION_CONFLICT', `${run.executor.kind} run ${request.runId} does not support ${request.action}`)
+      const receipt: WorkRunControlReceipt = {
+        requestId: request.requestId, digest, taskId: request.taskId, runId: request.runId,
+        action: request.action, stage: 'recorded', snapshot, replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.requests, request.requestId, { kind: 'run-control', digest, receipt })
+      await this.commit(next)
+      return copy(receipt)
+    })
+  }
+
+  async completeRunControl(
+    input: WorkRunControlRequest,
+    execution: Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'>,
+  ): Promise<WorkRunControlReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkRunControlRequest(input)
+      const digest = requestDigest('run-control', request)
+      const stored = ownValue(this.state.requests, request.requestId)
+      if (stored?.kind !== 'run-control' || stored.digest !== digest) {
+        throw new WorkItemStoreConflictError('REQUEST_ID_CONFLICT', `Run control ${request.requestId} was not recorded with this content`)
+      }
+      if (stored.receipt.stage === 'processed') return { ...copy(stored.receipt), replayed: true }
+      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
+      if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      const run = snapshot.runs.find((candidate) => candidate.runId === request.runId)
+      if (run === undefined) throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Run ${request.runId} was not found on task ${request.taskId}`)
+      Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      snapshot.task.revision += 1
+      snapshot.task.updatedAt = new Date().toISOString()
+      const receipt: WorkRunControlReceipt = { ...copy(stored.receipt), stage: 'processed', snapshot, replayed: false }
+      const next = copy(this.state)
+      setOwnValue(next.tasks, request.taskId, snapshot)
+      setOwnValue(next.requests, request.requestId, { kind: 'run-control', digest, receipt })
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(receipt)
+    })
+  }
+
   onChanged(listener: (snapshot: WorkTaskSnapshot) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
@@ -451,7 +673,7 @@ export class WorkItemStore {
     })
   }
 
-  private replay<T extends WorkItemCreateReceipt | WorkDispatchIntentReceipt>(
+  private replay<T extends WorkItemCreateReceipt | WorkDispatchIntentReceipt | WorkActionAnswerReceipt | WorkRunControlReceipt>(
     kind: StoredReceipt['kind'],
     requestId: string,
     digest: string

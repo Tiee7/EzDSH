@@ -1,14 +1,21 @@
 import {
+  validateWorkActionAnswerRequest,
+  validateWorkRunControlRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
+  type WorkAction,
+  type WorkActionAnswerRequest,
   type WorkItemQuery,
+  type WorkRunControlRequest,
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
   type WorkTaskSnapshot
 } from '../../shared/work-items.js'
 import {
   WorkItemStore,
-  type WorkDispatchIntentReceipt
+  type WorkActionAnswerReceipt,
+  type WorkDispatchIntentReceipt,
+  type WorkRunControlReceipt
 } from './work-item-store.js'
 
 export class WorkItemService {
@@ -49,5 +56,35 @@ export class WorkItemService {
 
   markDispatchOutcomeUnknown(requestId: string, commandId: string, rawStatus: string): Promise<WorkDispatchIntentReceipt> {
     return this.store.markDispatchOutcomeUnknown(requestId, commandId, rawStatus)
+  }
+
+  syncWorkflowActions(taskId: string, runId: string, actions: WorkAction[]): Promise<WorkTaskSnapshot> {
+    return this.store.syncWorkflowActions(taskId, runId, actions)
+  }
+
+  beginActionAnswer(input: WorkActionAnswerRequest): Promise<WorkActionAnswerReceipt> {
+    return this.store.beginActionAnswer(validateWorkActionAnswerRequest(input))
+  }
+
+  completeActionAnswer(
+    input: WorkActionAnswerRequest,
+    execution: Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'>,
+  ): Promise<WorkActionAnswerReceipt> {
+    return this.store.completeActionAnswer(validateWorkActionAnswerRequest(input), execution)
+  }
+
+  rejectActionAnswer(input: WorkActionAnswerRequest, reason: string): Promise<WorkActionAnswerReceipt> {
+    return this.store.rejectActionAnswer(validateWorkActionAnswerRequest(input), reason)
+  }
+
+  beginRunControl(input: WorkRunControlRequest): Promise<WorkRunControlReceipt> {
+    return this.store.beginRunControl(validateWorkRunControlRequest(input))
+  }
+
+  completeRunControl(
+    input: WorkRunControlRequest,
+    execution: Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'>,
+  ): Promise<WorkRunControlReceipt> {
+    return this.store.completeRunControl(validateWorkRunControlRequest(input), execution)
   }
 }

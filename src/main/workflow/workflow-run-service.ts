@@ -37,6 +37,8 @@ import type {
   WorkflowCompensationEntry,
   WorkflowEffectReconciliationTarget,
   WorkflowRunTaskAssociation,
+  WorkflowApprovalDecisionRequest,
+  WorkflowResumeRequest,
 } from '../../shared/workflow.js'
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
@@ -566,6 +568,15 @@ export class WorkflowRunService {
   }
 
   async resume(runId: string): Promise<WorkflowRunRecord> {
+    return this.resumeRun(runId)
+  }
+
+  async resumeExpected(runId: string, input: WorkflowResumeRequest): Promise<WorkflowRunRecord> {
+    const request = normalizeWorkflowResumeRequest(input)
+    return this.resumeRun(runId, request)
+  }
+
+  private async resumeRun(runId: string, expected?: WorkflowResumeRequest): Promise<WorkflowRunRecord> {
     await this.initialize()
     this.assertAccepting()
     this.assertRunMutationAvailable(runId)
@@ -575,10 +586,31 @@ export class WorkflowRunService {
     try {
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      if (expected !== undefined) {
+        const existing = record.workTaskControlReceipts?.find((receipt) => receipt.requestId === expected.requestId)
+        if (existing !== undefined) {
+          if (!sameWorkflowResumeRequest(existing, expected)) {
+            throw new Error(`Workflow resume request id ${expected.requestId} was already used with different content`)
+          }
+          return record
+        }
+        if (record.origin?.kind !== 'top-level'
+          || record.workTask?.taskId !== expected.expectedTaskId
+          || record.workTask?.requirementVersion !== expected.expectedRequirementVersion) {
+          throw new Error('Workflow resume target does not match its WorkTask run')
+        }
+        if ((record.workTaskControlReceipts?.length ?? 0) >= 200) throw new Error('Workflow resume receipt capacity reached')
+      }
       const evaluation = await this.evaluateRecovery(record)
       if (evaluation.reason !== 'safe-to-resume') throw new Error(workflowRecoveryReasonText[evaluation.reason])
       if (evaluation.expectedStateToken !== this.recoveryStateToken(this.options.runStore.get(runId) ?? record)) throw new Error(workflowRecoveryReasonText['state-changed'])
       this.assertAccepting()
+      if (expected !== undefined) {
+        evaluation.record.workTaskControlReceipts = [
+          ...(record.workTaskControlReceipts ?? []),
+          { ...expected, action: 'resume', acceptedStateToken: evaluation.expectedStateToken, acceptedAt: new Date().toISOString() },
+        ]
+      }
       return await this.queueRecoveredRecord(evaluation.record)
     } finally {
       this.administrativeActive.delete(runId)
@@ -903,6 +935,19 @@ export class WorkflowRunService {
   }
 
   async approve(runId: string, approved: boolean): Promise<WorkflowRunRecord> {
+    return this.decideApproval(runId, approved)
+  }
+
+  async approveExpected(runId: string, input: WorkflowApprovalDecisionRequest): Promise<WorkflowRunRecord> {
+    const request = normalizeApprovalDecisionRequest(input)
+    return this.decideApproval(runId, request.approved, request)
+  }
+
+  private async decideApproval(
+    runId: string,
+    approved: boolean,
+    expected?: WorkflowApprovalDecisionRequest,
+  ): Promise<WorkflowRunRecord> {
     await this.initialize()
     this.assertAccepting()
     const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
@@ -910,6 +955,24 @@ export class WorkflowRunService {
       this.assertAccepting()
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      if (expected !== undefined) {
+        const existing = record.approvalDecisionReceipts?.find((receipt) => receipt.requestId === expected.requestId)
+        if (existing !== undefined) {
+          if (!sameApprovalDecision(existing, expected)) {
+            throw new Error(`Approval request id ${expected.requestId} was already used with different content`)
+          }
+          return record
+        }
+        const currentEvent = [...record.events].reverse().find((event) => event.type === 'approval-requested')
+        if (record.origin?.kind !== 'top-level'
+          || record.workTask?.taskId !== expected.expectedTaskId
+          || record.workTask?.requirementVersion !== expected.expectedRequirementVersion
+          || record.waitingApprovalNodeId !== expected.expectedNodeId
+          || currentEvent?.id !== expected.expectedApprovalEventId
+          || currentEvent.nodeId !== expected.expectedNodeId) {
+          throw new Error('Workflow approval target is stale')
+        }
+      }
       if (record.status !== 'waiting-approval' || record.waitingApprovalNodeId === undefined) throw new Error('当前运行没有等待中的审批')
       const workflow = this.requireWorkflowForRecord(record)
       const node = workflow.nodes.find((candidate) => candidate.id === record.waitingApprovalNodeId)
@@ -923,6 +986,7 @@ export class WorkflowRunService {
         record.error = '审批被拒绝'
         record.completedAt = new Date().toISOString()
         record.waitingApprovalNodeId = undefined
+        if (expected !== undefined) appendApprovalDecisionReceipt(record, expected)
         await this.saveFailure(record, 'approval-rejected', '审批被拒绝', node.id)
         return this.options.runStore.get(runId) ?? record
       }
@@ -940,6 +1004,7 @@ export class WorkflowRunService {
       record.error = undefined
       record.waitingApprovalNodeId = undefined
       this.prepareQueuedRecord(record)
+      if (expected !== undefined) appendApprovalDecisionReceipt(record, expected)
       await this.save(record, 'approval-approved', '审批通过，继续运行', node.id)
       this.worker.wake()
       return this.options.runStore.get(runId) ?? record
@@ -2787,6 +2852,71 @@ function appendEffectReconciliation(state: WorkflowNodeRunState, decision: Workf
   const history = state.effectReconciliationHistory ?? (state.effectReconciliationHistory = state.effectReconciliation === undefined ? [] : [cloneWorkflow(state.effectReconciliation)])
   history.push(cloneWorkflow(decision))
   state.effectReconciliation = cloneWorkflow(decision)
+}
+
+function normalizeApprovalDecisionRequest(input: WorkflowApprovalDecisionRequest): WorkflowApprovalDecisionRequest {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new Error('Approval decision request is required')
+  const allowed = new Set(['requestId', 'approved', 'expectedApprovalEventId', 'expectedNodeId', 'expectedTaskId', 'expectedRequirementVersion'])
+  const unknown = Object.keys(input).find((key) => !allowed.has(key))
+  if (unknown !== undefined) throw new Error(`Approval decision field ${unknown} is not supported`)
+  const requiredText = (value: unknown, field: string): string => {
+    if (typeof value !== 'string' || value.trim() === '') throw new Error(`Approval decision ${field} is required`)
+    return value.trim()
+  }
+  if (typeof input.approved !== 'boolean') throw new Error('Approval decision approved must be boolean')
+  if (!Number.isSafeInteger(input.expectedRequirementVersion) || input.expectedRequirementVersion < 1) {
+    throw new Error('Approval decision expectedRequirementVersion must be a positive integer')
+  }
+  return {
+    requestId: requiredText(input.requestId, 'requestId'),
+    approved: input.approved,
+    expectedApprovalEventId: requiredText(input.expectedApprovalEventId, 'expectedApprovalEventId'),
+    expectedNodeId: requiredText(input.expectedNodeId, 'expectedNodeId'),
+    expectedTaskId: requiredText(input.expectedTaskId, 'expectedTaskId'),
+    expectedRequirementVersion: input.expectedRequirementVersion,
+  }
+}
+
+function normalizeWorkflowResumeRequest(input: WorkflowResumeRequest): WorkflowResumeRequest {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new Error('Workflow resume request is required')
+  const allowed = new Set(['requestId', 'expectedTaskId', 'expectedRequirementVersion'])
+  const unknown = Object.keys(input).find((key) => !allowed.has(key))
+  if (unknown !== undefined) throw new Error(`Workflow resume field ${unknown} is not supported`)
+  const requiredText = (value: unknown, field: string): string => {
+    if (typeof value !== 'string' || value.trim() === '') throw new Error(`Workflow resume ${field} is required`)
+    return value.trim()
+  }
+  if (!Number.isSafeInteger(input.expectedRequirementVersion) || input.expectedRequirementVersion < 1) {
+    throw new Error('Workflow resume expectedRequirementVersion must be a positive integer')
+  }
+  return {
+    requestId: requiredText(input.requestId, 'requestId'),
+    expectedTaskId: requiredText(input.expectedTaskId, 'expectedTaskId'),
+    expectedRequirementVersion: input.expectedRequirementVersion,
+  }
+}
+
+function sameWorkflowResumeRequest(existing: WorkflowResumeRequest, expected: WorkflowResumeRequest): boolean {
+  return existing.requestId === expected.requestId
+    && existing.expectedTaskId === expected.expectedTaskId
+    && existing.expectedRequirementVersion === expected.expectedRequirementVersion
+}
+
+function sameApprovalDecision(
+  existing: WorkflowApprovalDecisionRequest,
+  expected: WorkflowApprovalDecisionRequest,
+): boolean {
+  return existing.requestId === expected.requestId
+    && existing.approved === expected.approved
+    && existing.expectedApprovalEventId === expected.expectedApprovalEventId
+    && existing.expectedNodeId === expected.expectedNodeId
+    && existing.expectedTaskId === expected.expectedTaskId
+    && existing.expectedRequirementVersion === expected.expectedRequirementVersion
+}
+
+function appendApprovalDecisionReceipt(record: WorkflowRunRecord, request: WorkflowApprovalDecisionRequest): void {
+  const receipts = record.approvalDecisionReceipts ?? (record.approvalDecisionReceipts = [])
+  receipts.push({ ...request, decidedAt: new Date().toISOString() })
 }
 
 function appendCompensationEffectReconciliation(entry: WorkflowCompensationEntry, decision: WorkflowCompensationEffectReconciliation): void {

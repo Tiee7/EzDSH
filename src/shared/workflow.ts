@@ -623,6 +623,33 @@ export interface WorkflowRunEvent {
   message?: string
 }
 
+/** Main-only exact target for a durable WorkTask approval decision. */
+export interface WorkflowApprovalDecisionRequest {
+  requestId: string
+  approved: boolean
+  expectedApprovalEventId: string
+  expectedNodeId: string
+  expectedTaskId: string
+  expectedRequirementVersion: number
+}
+
+export interface WorkflowApprovalDecisionReceipt extends WorkflowApprovalDecisionRequest {
+  decidedAt: string
+}
+
+/** Main-only exact target for resuming one durable WorkTask Workflow run. */
+export interface WorkflowResumeRequest {
+  requestId: string
+  expectedTaskId: string
+  expectedRequirementVersion: number
+}
+
+export interface WorkflowWorkTaskControlReceipt extends WorkflowResumeRequest {
+  action: 'resume'
+  acceptedStateToken: string
+  acceptedAt: string
+}
+
 /** Main-process business identity attached only by the WorkTask execution bridge. */
 export interface WorkflowRunTaskAssociation {
   taskId: string
@@ -675,6 +702,10 @@ export interface WorkflowRunRecord {
   output?: WorkflowValue
   nodeStates: WorkflowNodeRunState[]
   events: WorkflowRunEvent[]
+  /** Durable de-duplication for exact WorkTask approval occurrences. Legacy runs omit it. */
+  approvalDecisionReceipts?: WorkflowApprovalDecisionReceipt[]
+  /** Accepted targeted WorkTask controls, written with their run transition. Legacy runs omit it. */
+  workTaskControlReceipts?: WorkflowWorkTaskControlReceipt[]
   compensationStack?: WorkflowCompensationEntry[]
   /** Accepted recovery requests, journaled atomically with the same run's queue transition. */
   recoveryReceipts?: Array<{ requestId: string; acceptedStateToken: string; acceptedAt: string }>

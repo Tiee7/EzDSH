@@ -1,4 +1,4 @@
-import type { WorkflowRunRecord, WorkflowRunTaskAssociation, WorkflowValue } from '../../shared/workflow.js'
+import type { WorkflowApprovalDecisionRequest, WorkflowResumeRequest, WorkflowRunRecord, WorkflowRunTaskAssociation, WorkflowValue } from '../../shared/workflow.js'
 
 export interface WorkflowTaskStartRequest extends WorkflowRunTaskAssociation {
   workflowId: string
@@ -14,7 +14,10 @@ export interface WorkflowTaskRunPort {
     association?: WorkflowRunTaskAssociation
   ): Promise<WorkflowRunRecord>
   resume(runId: string): Promise<WorkflowRunRecord>
+  resumeExpected(runId: string, request: WorkflowResumeRequest): Promise<WorkflowRunRecord>
   cancel(runId: string): Promise<WorkflowRunRecord>
+  get(runId: string): WorkflowRunRecord | undefined
+  approveExpected(runId: string, request: WorkflowApprovalDecisionRequest): Promise<WorkflowRunRecord>
   findByIdempotencyKey(idempotencyKey: string): Promise<WorkflowRunRecord | undefined> | WorkflowRunRecord | undefined
 }
 
@@ -46,8 +49,20 @@ export class WorkflowTaskBridge {
     return this.workflowRuns.resume(runId)
   }
 
+  resumeExpected(runId: string, request: WorkflowResumeRequest): Promise<WorkflowRunRecord> {
+    return this.workflowRuns.resumeExpected(runId, request)
+  }
+
   cancel(runId: string): Promise<WorkflowRunRecord> {
     return this.workflowRuns.cancel(runId)
+  }
+
+  get(runId: string): WorkflowRunRecord | undefined {
+    return this.workflowRuns.get(runId)
+  }
+
+  approveExpected(runId: string, request: WorkflowApprovalDecisionRequest): Promise<WorkflowRunRecord> {
+    return this.workflowRuns.approveExpected(runId, request)
   }
 
   startDebug(workflowId: string, input: WorkflowValue): Promise<WorkflowRunRecord> {

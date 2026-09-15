@@ -2942,6 +2942,69 @@ describe('workflow run service', () => {
     } finally { allowFirst(); await first.catch(() => undefined) }
   })
 
+  it('validates the exact approval event inside the run mutation boundary and replays one decision receipt', async () => {
+    const { workflow, runStore, service } = await stoppedApprovalFixture('targeted-approval-mutation')
+    const runId = 'targeted-approval-run'
+    await runStore.save({
+      id: runId, workflowId: workflow.id, workflowRevision: workflow.revision, origin: { kind: 'top-level' },
+      workTask: { taskId: 'task-1', attemptId: 'attempt-1', requirementVersion: 3, commandId: 'command-1' },
+      status: 'waiting-approval', waitingApprovalNodeId: 'approval', input: 'hello', allowShellFile: false,
+      nodeStates: [{ nodeId: 'input', status: 'completed', output: 'hello' }, { nodeId: 'approval', status: 'pending' }, { nodeId: 'output', status: 'pending' }],
+      events: [
+        { id: 'old-event', time: '2026-09-15T09:00:00.000Z', type: 'approval-requested', nodeId: 'approval' },
+        { id: 'old-decision', time: '2026-09-15T09:01:00.000Z', type: 'approval-approved', nodeId: 'approval' },
+        { id: 'current-event', time: '2026-09-15T09:02:00.000Z', type: 'approval-requested', nodeId: 'approval' },
+      ],
+    })
+
+    await expect(service.approveExpected(runId, {
+      requestId: 'stale-card', approved: false, expectedApprovalEventId: 'old-event', expectedNodeId: 'approval',
+      expectedTaskId: 'task-1', expectedRequirementVersion: 3,
+    })).rejects.toThrow(/stale/u)
+    expect(service.get(runId)).toMatchObject({ status: 'waiting-approval', waitingApprovalNodeId: 'approval' })
+    expect(service.get(runId)?.events.at(-1)?.id).toBe('current-event')
+
+    const request = {
+      requestId: 'current-card', approved: true, expectedApprovalEventId: 'current-event', expectedNodeId: 'approval',
+      expectedTaskId: 'task-1', expectedRequirementVersion: 3,
+    }
+    const first = await service.approveExpected(runId, request)
+    const replay = await service.approveExpected(runId, request)
+
+    expect(replay).toEqual(first)
+    expect(service.get(runId)?.events.filter((event) => event.type === 'approval-approved')).toHaveLength(2)
+    await expect(service.approveExpected(runId, { ...request, approved: false })).rejects.toThrow(/request id/iu)
+  })
+
+  it('persists targeted resume acceptance with the queue transition and does not requeue after a later failure', async () => {
+    const { workflow, runStore, service } = await stoppedApprovalFixture('targeted-resume-mutation')
+    const runId = 'targeted-resume-run'
+    await runStore.save({
+      id: runId, workflowId: workflow.id, workflowRevision: workflow.revision, origin: { kind: 'top-level' },
+      workTask: { taskId: 'task-1', attemptId: 'attempt-1', requirementVersion: 3, commandId: 'command-1' },
+      status: 'failed', input: 'hello', error: 'first failure', allowShellFile: false,
+      nodeStates: [{ nodeId: 'input', status: 'completed', output: 'hello' }, { nodeId: 'approval', status: 'failed', error: 'first failure' }, { nodeId: 'output', status: 'pending' }],
+      events: [{ id: 'failure-1', time: '2026-09-15T09:00:00.000Z', type: 'run-failed' }],
+    })
+    const request = { requestId: 'resume-request', expectedTaskId: 'task-1', expectedRequirementVersion: 3 }
+
+    const accepted = await service.resumeExpected(runId, request)
+    expect(accepted).toMatchObject({ id: runId, status: 'queued', workTaskControlReceipts: [{ requestId: request.requestId, action: 'resume' }] })
+    const failedAgain = structuredClone(accepted)
+    failedAgain.status = 'failed'
+    failedAgain.error = 'second failure'
+    failedAgain.events.push({ id: 'failure-2', time: '2026-09-15T09:01:00.000Z', type: 'run-failed' })
+    await runStore.save(failedAgain)
+    const beforeReplayEvents = service.get(runId)!.events
+
+    const replay = await service.resumeExpected(runId, request)
+
+    expect(replay).toMatchObject({ id: runId, status: 'failed', error: 'second failure' })
+    expect(replay.events).toEqual(beforeReplayEvents)
+    expect(replay.events.filter((event) => event.type === 'run-created')).toHaveLength(1)
+    await expect(service.resumeExpected(runId, { ...request, expectedRequirementVersion: 4 })).rejects.toThrow(/request id/iu)
+  })
+
   it('runs explicit compensation actions in reverse order', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-compensation-'))
     const workflowStore = new WorkflowStore(dir)
