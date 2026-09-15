@@ -10,7 +10,6 @@ import type {
   EmployeeProjectSummary,
   EmployeeRunRequest,
   EmployeeRunResult,
-  EmployeeRunStepResult,
   EmployeeSessionLock,
   EmployeeSessionSummary,
   EmployeeSnapshot,
@@ -20,6 +19,8 @@ import type {
 import { EMPLOYEE_CAPABILITIES, EMPLOYEE_SCHEMA_VERSION, employeeDisplayName } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
 import { extractJsonDocument } from '../workflow/dsh-workflow-adapter.js'
+import { EmployeeRunStore } from './employee-run-store.js'
+import { EmployeeRunService } from './employee-run-service.js'
 
 export interface EmployeeRunClient {
   createSession(params: { cwd: string; workspaceId?: string }): Promise<{ sessionId: string }>
@@ -49,8 +50,6 @@ export interface EmployeeGenerationClient {
 
 type EmployeeListener = (employees: EmployeeSnapshot[]) => void
 type EmployeeSessionLockListener = (locks: EmployeeSessionLock[]) => void
-
-type EmployeeSessionLockState = EmployeeSessionLock
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u
 const STEP_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u
@@ -213,12 +212,21 @@ export const DEFAULT_EMPLOYEES: readonly EmployeeDefinition[] = [
 export class EmployeeService {
   private readonly employees = new Map<string, EmployeeDefinition>()
   private readonly listeners = new Set<EmployeeListener>()
-  private readonly sessionLocks = new Map<string, EmployeeSessionLockState>()
-  private readonly cancelledRunIds = new Set<string>()
-  private readonly sessionLockListeners = new Set<EmployeeSessionLockListener>()
+  private readonly runService: EmployeeRunService
   private initialized = false
 
-  constructor(private readonly options: EmployeeServiceOptions) {}
+  constructor(private readonly options: EmployeeServiceOptions) {
+    this.runService = new EmployeeRunService({
+      store: new EmployeeRunStore(dirname(options.configPath)),
+      cwd: options.cwd,
+      createClient: options.createClient,
+      resolveEmployee: (id) => {
+        const employee = this.employees.get(id)
+        return employee === undefined ? undefined : cloneEmployee(employee)
+      },
+      buildPrompt: buildEmployeePrompt,
+    })
+  }
 
   async initialize(): Promise<void> {
     if (this.initialized) return
@@ -244,6 +252,7 @@ export class EmployeeService {
       }
     }
 
+    await this.runService.initialize()
     this.initialized = true
     let defaultsAdded = false
     if (defaultsVersion < DEFAULTS_VERSION) {
@@ -435,92 +444,41 @@ export class EmployeeService {
   }
 
   listSessionLocks(): EmployeeSessionLock[] {
-    return [...this.sessionLocks.values()].map(cloneSessionLock)
+    return this.runService.listSessionLocks()
   }
 
   watchSessionLocks(listener: EmployeeSessionLockListener): () => void {
-    this.sessionLockListeners.add(listener)
-    return () => this.sessionLockListeners.delete(listener)
+    return this.runService.watchSessionLocks(listener)
   }
 
   async forceUnlockSession(sessionId: string): Promise<void> {
     await this.initialize()
     const normalizedSessionId = sessionId.trim()
     if (normalizedSessionId === '') throw new Error('Employee session is required')
-    const lock = this.sessionLocks.get(normalizedSessionId)
-    if (lock === undefined) return
-
-    this.cancelledRunIds.add(lock.runId)
-    this.sessionLocks.delete(normalizedSessionId)
-    this.emitSessionLocks()
-
-    const client = this.options.createClient()
-    if (client.cancelSession !== undefined) {
-      await client.cancelSession(normalizedSessionId).catch(() => undefined)
-    }
+    await this.runService.forceUnlockSession(normalizedSessionId)
   }
 
   async run(id: string, request: EmployeeRunRequest): Promise<EmployeeRunResult> {
     await this.initialize()
-    const employee = this.require(id)
-    if (!employee.enabled) throw new Error(`Employee "${id}" is disabled`)
     const task = request.task.trim()
     if (task === '') throw new Error('Employee task is required')
-
-    const startedAt = new Date().toISOString()
-    const runId = randomUUID()
-    const client = this.options.createClient()
     const projectId = request.projectId?.trim() || undefined
     const selectedSessionId = request.sessionId?.trim() || undefined
     if (projectId === undefined && selectedSessionId !== undefined) throw new Error('Employee project is required')
-    const session = selectedSessionId === undefined
-      ? await client.createSession({ cwd: this.options.cwd, ...(projectId === undefined ? {} : { workspaceId: projectId }) })
-      : { sessionId: selectedSessionId }
-    this.lockSession(session.sessionId, id, runId, startedAt)
-    try {
-      if (this.cancelledRunIds.has(runId)) {
-        return failedRun(runId, id, startedAt, '', [], 'Employee run was force-unlocked')
-      }
-      try {
-        const response = await client.sendPrompt(session.sessionId, buildEmployeePrompt(employee, task, projectId, session.sessionId))
-        if (this.cancelledRunIds.has(runId)) {
-          return failedRun(runId, id, startedAt, '', [], 'Employee run was force-unlocked')
-        }
-        const output = response.text.trim()
-        return {
-          runId,
-          employeeId: id,
-          status: 'completed',
-          output,
-          steps: [{ stepId: 'execute-task', name: '执行专业任务', status: 'completed', output }],
-          startedAt,
-          completedAt: new Date().toISOString(),
-        }
-      } catch (error) {
-        const message = this.cancelledRunIds.has(runId) ? 'Employee run was force-unlocked' : messageOf(error)
-        const steps: EmployeeRunStepResult[] = [{ stepId: 'execute-task', name: '执行专业任务', status: 'failed', output: '', error: message }]
-        return failedRun(runId, id, startedAt, '', steps, message)
-      }
-    } finally {
-      this.releaseSessionLock(session.sessionId, runId)
-      this.cancelledRunIds.delete(runId)
-    }
-  }
-
-  private lockSession(sessionId: string, employeeId: string, runId: string, startedAt: string): void {
-    const existing = this.sessionLocks.get(sessionId)
-    if (existing !== undefined) {
-      throw new Error(`Employee session "${sessionId}" is locked by run "${existing.runId}"`)
-    }
-    this.sessionLocks.set(sessionId, { sessionId, employeeId, runId, startedAt })
-    this.emitSessionLocks()
-  }
-
-  private releaseSessionLock(sessionId: string, runId: string): void {
-    const current = this.sessionLocks.get(sessionId)
-    if (current?.runId !== runId) return
-    this.sessionLocks.delete(sessionId)
-    this.emitSessionLocks()
+    const started = await this.runService.start({
+      commandId: randomUUID(),
+      employeeId: id,
+      task: { description: task },
+      context: {
+        cwd: this.options.cwd,
+        ...(projectId === undefined ? {} : { projectId }),
+        ...(selectedSessionId === undefined ? {} : {
+          sessionId: selectedSessionId,
+          sessionVerification: 'trusted-main' as const,
+        }),
+      },
+    })
+    return this.runService.toLegacyResult(await this.runService.waitForTerminal(started.run.runId))
   }
 
   private require(id: string): EmployeeDefinition {
@@ -543,12 +501,6 @@ export class EmployeeService {
     }
   }
 
-  private emitSessionLocks(): void {
-    const snapshot = this.listSessionLocks()
-    for (const listener of this.sessionLockListeners) {
-      try { listener(snapshot) } catch { /* A renderer listener must not affect execution. */ }
-    }
-  }
 }
 
 async function readDefaultsVersion(path: string): Promise<number> {
@@ -662,35 +614,6 @@ function buildEmployeePrompt(
 
 function cloneSession(session: EmployeeSessionSummary): EmployeeSessionSummary {
   return { ...session }
-}
-
-function cloneSessionLock(lock: EmployeeSessionLockState): EmployeeSessionLock {
-  return {
-    sessionId: lock.sessionId,
-    employeeId: lock.employeeId,
-    runId: lock.runId,
-    startedAt: lock.startedAt,
-  }
-}
-
-function failedRun(
-  runId: string,
-  employeeId: string,
-  startedAt: string,
-  output: string,
-  steps: EmployeeRunStepResult[],
-  error: string,
-): EmployeeRunResult {
-  return {
-    runId,
-    employeeId,
-    status: 'failed',
-    output,
-    steps,
-    startedAt,
-    completedAt: new Date().toISOString(),
-    error,
-  }
 }
 
 function cloneEmployee(employee: EmployeeDefinition): EmployeeSnapshot {
