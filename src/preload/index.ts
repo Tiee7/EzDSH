@@ -140,6 +140,21 @@ const bridge: EzDSHBridge = {
       return () => ipcRenderer.removeListener('store:state-change', handler)
     }
   },
+  workItems: {
+    list: (query) => invoke('work-items:list', query),
+    get: (taskId) => invoke('work-items:get', taskId),
+    create: (request) => invoke('work-items:create', request),
+    execute: (request) => invoke('work-items:execute', request),
+    revise: (request) => invoke('work-items:revise', request),
+    acceptArtifact: (request) => invoke('work-items:accept-artifact', request),
+    controlRun: (request) => invoke('work-items:control-run', request),
+    answerAction: (request) => invoke('work-items:answer-action', request),
+    onChanged: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]) => listener(snapshot)
+      ipcRenderer.on('work-items:changed', handler)
+      return () => ipcRenderer.removeListener('work-items:changed', handler)
+    },
+  },
   employees: {
     list: () => invoke<EmployeeSnapshot[]>('employees:list'),
     listProjects: () => invoke<EmployeeProjectSummary[]>('employees:list-projects'),

@@ -117,7 +117,13 @@ import { registerWorkflowOperationalHealthIpc } from './workflow/workflow-operat
 import { WorkflowConnectorHealthService } from './workflow/workflow-connector-health-service.js'
 import { registerWorkflowConnectorHealthIpc } from './workflow/workflow-connector-health-ipc.js'
 import { workflowFromEmployee } from './workflow/employee-workflow.js'
+import {
+  registerWorkItemIpc,
+  type WorkItemIpcWorkspaceScope,
+} from './work-items/work-item-ipc.js'
+import { initializeWorkItemWorkspaceScope } from './work-items/work-item-workspace.js'
 import type { WorkflowCreateInput, WorkflowGenerateRequest, WorkflowModifyRequest, WorkflowRunOptions, WorkflowUpdateInput, WorkflowValue, WorkflowCredentialUpsertInput, WorkflowHttpConnector } from '../shared/workflow.js'
+import type { WorkTaskSnapshot } from '../shared/work-items.js'
 import { validateWorkflowCompensationEffectReconcileRequest, validateWorkflowEffectReconcileRequest } from '../shared/workflow.js'
 import { workflowReleaseSummary, type WorkflowCustomerEnvironment, type WorkflowReleasePublishInput } from '../shared/workflow-operations.js'
 import { bindWindowClosedCleanup } from './window-lifecycle.js'
@@ -141,7 +147,10 @@ import {
   type RecoveryState,
 } from './recovery/recovery-manager.js'
 import { PluginRecoveryCoordinator } from './recovery/plugin-recovery-coordinator.js'
-import { RecoveryRestoreCoordinator } from './recovery/recovery-restore-coordinator.js'
+import {
+  RecoveryRestoreCoordinator,
+  type RecoveryStopProgressReporter,
+} from './recovery/recovery-restore-coordinator.js'
 import { ProxyService } from './proxy/proxy-service.js'
 import type { ProxyProfileInput, ProxySettingsSnapshot } from '../shared/proxy.js'
 import type { ProxyTestResult } from '../shared/proxy.js'
@@ -194,6 +203,7 @@ let workflowOperationalHealthService: WorkflowOperationalHealthService | undefin
 let workflowConnectorHealthService: WorkflowConnectorHealthService | undefined
 let workflowGenerationService: WorkflowGenerationService | undefined
 let workflowModificationService: WorkflowModificationService | undefined
+let workItemIpcScope: WorkItemIpcWorkspaceScope | undefined
 let isQuitting = false
 let updateDialogOpen = false
 let workspaceOperationActive = false
@@ -643,6 +653,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
       if (mode === 'safe') await workspaceSafeModeProfile.enable()
       if (mode === 'isolation') await workspaceIsolationMode.enable('manual')
     },
+    resumeComponents: reopenWorkItemWorkspaceScope,
   })
   pluginRecoveryCoordinator = new PluginRecoveryCoordinator({
     runtime: runtimeManager,
@@ -781,6 +792,16 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   await workflowRunService.initialize().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error('[workflows] failed to initialize:', message)
+  })
+  const workspaceWorkflowRunService = workflowRunService
+  const workspaceEmployeeService = employeeService
+  workItemIpcScope = await initializeWorkItemWorkspaceScope({
+    layout,
+    workflowRuns: workspaceWorkflowRunService,
+    employeeRuns: workspaceEmployeeService,
+    assertExecutionAvailable: assertWorkItemExecutionAvailable,
+    onChanged: emitWorkItemState,
+    onObserverError: logWorkItemObserverError,
   })
   await workflowRunService.cleanupExpiredInternalArtifacts(async (sessionId) => {
     const deleted = await deleteArchivedSessionFromStore(layout.harness, sessionId)
@@ -1143,7 +1164,37 @@ function failure<T>(error: unknown): IpcResult<T> {
   return { ok: false, error: toEzDSHError(error, randomUUID()) }
 }
 
-async function stopApplicationComponents(): Promise<void> {
+async function reopenWorkItemWorkspaceScope(): Promise<void> {
+  const layout = userDataLayout
+  const workspaceWorkflowRunService = workflowRunService
+  const workspaceEmployeeService = employeeService
+  if (layout === undefined || workspaceWorkflowRunService === undefined || workspaceEmployeeService === undefined) {
+    throw new Error('Work item workspace dependencies are not ready')
+  }
+
+  const previous = workItemIpcScope
+  workItemIpcScope = undefined
+  await previous?.dispose()
+  const reopened = await initializeWorkItemWorkspaceScope({
+    layout,
+    workflowRuns: workspaceWorkflowRunService,
+    employeeRuns: workspaceEmployeeService,
+    assertExecutionAvailable: assertWorkItemExecutionAvailable,
+    onChanged: emitWorkItemState,
+    onObserverError: logWorkItemObserverError,
+  })
+  if (userDataLayout !== layout || workflowRunService !== workspaceWorkflowRunService || employeeService !== workspaceEmployeeService) {
+    await reopened.dispose()
+    throw new Error('Work item workspace changed while reopening restored state')
+  }
+  workItemIpcScope = reopened
+}
+
+async function stopApplicationComponents(reportProgress?: RecoveryStopProgressReporter): Promise<void> {
+  const workspaceScope = workItemIpcScope
+  workItemIpcScope = undefined
+  await workspaceScope?.dispose()
+  reportProgress?.({ workItemScopeClosed: true })
   runtimeViewController?.hide()
   notificationRuntimeUrl = undefined
   runtimeNotificationService?.stop()
@@ -1186,6 +1237,17 @@ function emitWorkflowState(record: Awaited<ReturnType<WorkflowRunService['get']>
   }
 }
 
+function emitWorkItemState(snapshot: WorkTaskSnapshot): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('work-items:changed', snapshot)
+  }
+}
+
+function logWorkItemObserverError(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error('[work-items] failed to observe Workflow run:', message)
+}
+
 function emitWorkflowGenerationState(record: Awaited<ReturnType<WorkflowGenerationService['get']>>): void {
   if (record === undefined) return
   for (const window of BrowserWindow.getAllWindows()) {
@@ -1220,7 +1282,24 @@ function requireDeveloperModeFeature(): void {
   if (!developerMode) throw new Error('Employee features are available only in developer mode')
 }
 
+function assertWorkItemExecutionAvailable(): void {
+  if (!developerMode) {
+    throw Object.assign(new Error('Work item execution is available only in developer mode'), {
+      code: 'FEATURE_UNAVAILABLE',
+    })
+  }
+  if (runtimeManager?.snapshot().url === undefined) {
+    throw Object.assign(new Error('DSH Runtime 尚未启动'), { code: 'RUNTIME_OFFLINE' })
+  }
+  if (workflowRunService?.operationsSnapshot().lifecycle !== 'accepting') {
+    throw Object.assign(new Error('Work item execution requires application components to be restarted'), {
+      code: 'WORK_ITEM_EXECUTION_UNAVAILABLE',
+    })
+  }
+}
+
 function registerIpcHandlers(): void {
+  registerWorkItemIpc(ipcMain, () => workItemIpcScope)
   registerWorkflowRunDefinitionIpc(ipcMain, () => workflowRunService)
   registerWorkflowDeadLetterIpc(ipcMain, () => workflowRunService)
   registerWorkflowOperationalHealthIpc(ipcMain, () => workflowOperationalHealthService)

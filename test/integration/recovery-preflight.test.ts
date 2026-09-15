@@ -6,6 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RecoveryManager } from '../../src/main/recovery/recovery-manager'
 import { RecoveryRestoreCoordinator } from '../../src/main/recovery/recovery-restore-coordinator'
 import { ensureUserDataLayout, getUserDataLayout } from '../../src/main/state/user-data'
+import { registerWorkItemIpc, type WorkItemIpcWorkspaceScope } from '../../src/main/work-items/work-item-ipc'
+import {
+  initializeWorkItemWorkspaceScope,
+  type WorkItemWorkspaceEmployeeRunPort,
+  type WorkItemWorkspaceWorkflowRunPort,
+} from '../../src/main/work-items/work-item-workspace'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -114,5 +120,208 @@ describe('recovery preflight with real backup files', () => {
     expect(setup.options.restore).toHaveBeenCalledWith(setup.snapshot.archiveName)
     expect(setup.options.prepareMode).not.toHaveBeenCalled()
     await expect(readFile(setup.settingsPath, 'utf8')).resolves.toBe('selected: current-model\n')
+  })
+})
+
+async function workItemRecoveryFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'ezdsh-work-item-recovery-'))
+  roots.push(root)
+  const layout = getUserDataLayout(root)
+  await ensureUserDataLayout(layout)
+  let timestamp = Date.parse('2026-09-15T08:00:00.000Z')
+  const recovery = new RecoveryManager({
+    layout,
+    appVersion: 'test',
+    dshRuntimeVersion: 'test',
+    dataSchemaVersion: 1,
+    now: () => new Date(timestamp += 1000),
+  })
+  await recovery.initialize()
+  const employeeRuns = {
+    startWorkItemRun: vi.fn(),
+    listWorkItemRuns: vi.fn(async () => []),
+    getWorkItemRun: vi.fn(async () => undefined),
+    cancelWorkItemRun: vi.fn(),
+  } as WorkItemWorkspaceEmployeeRunPort
+  const workflowRuns = {
+    watch: vi.fn(() => vi.fn()),
+  } as unknown as WorkItemWorkspaceWorkflowRunPort
+  const options = {
+    layout,
+    employeeRuns,
+    workflowRuns,
+    assertExecutionAvailable: vi.fn(),
+    onChanged: vi.fn(),
+    onObserverError: vi.fn(),
+  }
+  let scope: WorkItemIpcWorkspaceScope | undefined
+  const reopen = vi.fn(async () => {
+    scope = await initializeWorkItemWorkspaceScope(options)
+  })
+  const stop = vi.fn(async () => {
+    const previous = scope
+    scope = undefined
+    await previous?.dispose()
+  })
+  await reopen()
+  reopen.mockClear()
+  const handlers = new Map<string, (event: unknown, request?: unknown) => Promise<any>>()
+  registerWorkItemIpc({ handle: (channel, listener) => { handlers.set(channel, listener) } }, () => scope)
+  const invoke = (channel: string, request?: unknown) => handlers.get(channel)!({}, request)
+
+  await invoke('work-items:create', {
+    requestId: 'create-before', title: 'Before snapshot', goal: 'Restore me', acceptance: 'Visible',
+    scope: { cwd: '.', resourceRefs: [] },
+  })
+  const snapshot = await recovery.createSnapshot({ kind: 'manual', reason: 'WorkItem recovery boundary' })
+  const after = await invoke('work-items:create', {
+    requestId: 'create-after', title: 'After snapshot', goal: 'Remove me', acceptance: 'Absent',
+    scope: { cwd: '.', resourceRefs: [] },
+  })
+  return {
+    layout, recovery, snapshot, options, reopen, stop, invoke,
+    afterTaskId: after.data.task.id as string,
+    currentScope: () => scope,
+  }
+}
+
+describe('WorkItem workspace recovery composition', () => {
+  it('publishes a fresh production scope whose IPC list reads real non-dry restored state', async () => {
+    const setup = await workItemRecoveryFixture()
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: (selector) => setup.recovery.restore(selector, true),
+      getMode: () => 'normal',
+      stopComponents: setup.stop,
+      restore: (selector) => setup.recovery.restore(selector, false),
+      prepareMode: async () => undefined,
+      resumeComponents: setup.reopen,
+    })
+
+    await expect(coordinator.restore(setup.snapshot.archiveName)).resolves.toMatchObject({ dryRun: false })
+
+    expect(setup.stop).toHaveBeenCalledOnce()
+    expect(setup.reopen).toHaveBeenCalledOnce()
+    await expect(setup.invoke('work-items:list')).resolves.toMatchObject({
+      ok: true,
+      data: [expect.objectContaining({ task: expect.objectContaining({ title: 'Before snapshot' }) })],
+    })
+    await expect(setup.invoke('work-items:get', setup.afterTaskId)).resolves.toEqual({ ok: true, data: undefined })
+  })
+
+  it('reopens list/get admission after a real post-stop restore verification failure', async () => {
+    const setup = await workItemRecoveryFixture()
+    let primary: unknown
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: (selector) => setup.recovery.restore(selector, true),
+      getMode: () => 'normal',
+      stopComponents: async () => {
+        await setup.stop()
+        await writeFile(setup.snapshot.archivePath, 'changed after preflight')
+      },
+      restore: async (selector) => {
+        try {
+          return await setup.recovery.restore(selector, false)
+        } catch (error) {
+          primary = error
+          throw error
+        }
+      },
+      prepareMode: async () => undefined,
+      resumeComponents: setup.reopen,
+    })
+
+    const rejected = await coordinator.restore(setup.snapshot.archiveName).catch((error: unknown) => error)
+    expect(rejected).toBe(primary)
+    expect(rejected).toBeInstanceOf(Error)
+    expect((rejected as Error).message).toMatch(/checksum/i)
+
+    expect(setup.reopen).toHaveBeenCalledOnce()
+    await expect(setup.invoke('work-items:list')).resolves.toMatchObject({
+      ok: true,
+      data: [
+        expect.objectContaining({ task: expect.objectContaining({ title: 'Before snapshot' }) }),
+        expect.objectContaining({ task: expect.objectContaining({ title: 'After snapshot' }) }),
+      ],
+    })
+    await expect(setup.invoke('work-items:get', setup.afterTaskId)).resolves.toMatchObject({
+      ok: true,
+      data: { task: { id: setup.afterTaskId } },
+    })
+  })
+
+  it('preserves prepareMode failure and publishes restored list/get state', async () => {
+    const setup = await workItemRecoveryFixture()
+    const primary = new Error('prepare mode failed')
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: (selector) => setup.recovery.restore(selector, true),
+      getMode: () => 'safe',
+      stopComponents: setup.stop,
+      restore: (selector) => setup.recovery.restore(selector, false),
+      prepareMode: async () => { throw primary },
+      resumeComponents: setup.reopen,
+    })
+
+    await expect(coordinator.restore(setup.snapshot.archiveName)).rejects.toBe(primary)
+
+    expect(setup.reopen).toHaveBeenCalledOnce()
+    await expect(setup.invoke('work-items:list')).resolves.toMatchObject({
+      ok: true,
+      data: [expect.objectContaining({ task: expect.objectContaining({ title: 'Before snapshot' }) })],
+    })
+    await expect(setup.invoke('work-items:get', setup.afterTaskId)).resolves.toEqual({ ok: true, data: undefined })
+  })
+
+  it('does not reopen or replace the admitted scope when stop fails', async () => {
+    const setup = await workItemRecoveryFixture()
+    const admitted = setup.currentScope()
+    const primary = new Error('stop failed')
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: (selector) => setup.recovery.restore(selector, true),
+      getMode: () => 'normal',
+      stopComponents: async () => { throw primary },
+      restore: (selector) => setup.recovery.restore(selector, false),
+      prepareMode: async () => undefined,
+      resumeComponents: setup.reopen,
+    })
+
+    await expect(coordinator.restore(setup.snapshot.archiveName)).rejects.toBe(primary)
+
+    expect(setup.reopen).not.toHaveBeenCalled()
+    expect(setup.currentScope()).toBe(admitted)
+    await expect(setup.invoke('work-items:get', setup.afterTaskId)).resolves.toMatchObject({ ok: true })
+  })
+
+  it('reopens IPC admission when stop closes the old scope before a later component fails', async () => {
+    const setup = await workItemRecoveryFixture()
+    const primary = new Error('workflow stop failed after WorkItem shutdown')
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: (selector) => setup.recovery.restore(selector, true),
+      getMode: () => 'normal',
+      stopComponents: async (reportProgress) => {
+        await setup.stop()
+        reportProgress?.({ workItemScopeClosed: true })
+        throw primary
+      },
+      restore: (selector) => setup.recovery.restore(selector, false),
+      prepareMode: async () => undefined,
+      resumeComponents: setup.reopen,
+    })
+
+    await expect(coordinator.restore(setup.snapshot.archiveName)).rejects.toBe(primary)
+
+    expect(setup.stop).toHaveBeenCalledOnce()
+    expect(setup.reopen).toHaveBeenCalledOnce()
+    expect(setup.currentScope()).toBeDefined()
+    await expect(setup.invoke('work-items:list')).resolves.toMatchObject({
+      ok: true,
+      data: [
+        expect.objectContaining({ task: expect.objectContaining({ title: 'Before snapshot' }) }),
+        expect.objectContaining({ task: expect.objectContaining({ title: 'After snapshot' }) }),
+      ],
+    })
+    await expect(setup.invoke('work-items:get', setup.afterTaskId)).resolves.toMatchObject({
+      ok: true,
+      data: { task: { id: setup.afterTaskId } },
+    })
   })
 })

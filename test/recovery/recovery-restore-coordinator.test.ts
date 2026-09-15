@@ -238,4 +238,99 @@ describe('RecoveryRestoreCoordinator', () => {
     expect(options.getMode).not.toHaveBeenCalled()
     expect(options.stopComponents).not.toHaveBeenCalled()
   })
+
+  it('reopens workspace components after a successful restore before releasing the readiness gate', async () => {
+    const calls: string[] = []
+    const reopened = deferred<void>()
+    const start = vi.fn(() => { calls.push('start') })
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: async (selector) => { calls.push('preflight'); return { snapshotName: selector } },
+      getMode: () => 'normal',
+      stopComponents: async () => { calls.push('stop') },
+      restore: async () => { calls.push('restore'); return result },
+      prepareMode: async () => { calls.push('prepare') },
+      resumeComponents: () => { calls.push('resume'); return reopened.promise },
+    })
+
+    const restoring = coordinator.restore('selected.tar.gz')
+    const startup = coordinator.waitUntilReady().then(start)
+    await vi.waitFor(() => expect(calls).toEqual(['preflight', 'stop', 'restore', 'prepare', 'resume']))
+    expect(start).not.toHaveBeenCalled()
+
+    reopened.resolve(undefined)
+    await expect(restoring).resolves.toBe(result)
+    await startup
+    expect(calls).toEqual(['preflight', 'stop', 'restore', 'prepare', 'resume', 'start'])
+  })
+
+  it('reopens workspace components from disk after a post-stop restore failure and permits retry', async () => {
+    const failure = new Error('restore failed after shutdown')
+    let fail = true
+    let generation = 0
+    const resumeComponents = vi.fn(async () => { generation += 1 })
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: async (selector) => ({ snapshotName: selector }),
+      getMode: () => 'normal',
+      stopComponents: async () => undefined,
+      restore: async () => {
+        if (fail) throw failure
+        return result
+      },
+      prepareMode: async () => undefined,
+      resumeComponents,
+    })
+
+    await expect(coordinator.restore('selected.tar.gz')).rejects.toBe(failure)
+    expect(resumeComponents).toHaveBeenCalledOnce()
+    expect(generation).toBe(1)
+
+    fail = false
+    await expect(coordinator.restore('selected.tar.gz')).resolves.toBe(result)
+    expect(resumeComponents).toHaveBeenCalledTimes(2)
+    expect(generation).toBe(2)
+  })
+
+  it('does not reopen components when shutdown itself fails, and preserves a post-stop primary failure', async () => {
+    const stopFailure = new Error('shutdown failed')
+    const restoreFailure = new Error('restore failed')
+    const resumeFailure = new Error('reopen failed')
+    const resumeComponents = vi.fn(async () => { throw resumeFailure })
+    const stopComponents = vi.fn()
+      .mockRejectedValueOnce(stopFailure)
+      .mockResolvedValue(undefined)
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: async (selector) => ({ snapshotName: selector }),
+      getMode: () => 'normal',
+      stopComponents,
+      restore: async () => { throw restoreFailure },
+      prepareMode: async () => undefined,
+      resumeComponents,
+    })
+
+    await expect(coordinator.restore('selected.tar.gz')).rejects.toBe(stopFailure)
+    expect(resumeComponents).not.toHaveBeenCalled()
+
+    await expect(coordinator.restore('selected.tar.gz')).rejects.toBe(restoreFailure)
+    expect(resumeComponents).toHaveBeenCalledOnce()
+    expect((restoreFailure as Error & { resumeError?: unknown }).resumeError).toBe(resumeFailure)
+  })
+
+  it('reopens components when shutdown reports the WorkItem scope closed before a later stop failure', async () => {
+    const primary = new Error('workflow stop failed after WorkItem shutdown')
+    const resumeComponents = vi.fn(async () => undefined)
+    const coordinator = new RecoveryRestoreCoordinator({
+      preflight: async (selector) => ({ snapshotName: selector }),
+      getMode: () => 'normal',
+      stopComponents: async (reportProgress) => {
+        reportProgress?.({ workItemScopeClosed: true })
+        throw primary
+      },
+      restore: async () => result,
+      prepareMode: async () => undefined,
+      resumeComponents,
+    })
+
+    await expect(coordinator.restore('selected.tar.gz')).rejects.toBe(primary)
+    expect(resumeComponents).toHaveBeenCalledOnce()
+  })
 })

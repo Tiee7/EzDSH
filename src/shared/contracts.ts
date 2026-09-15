@@ -89,6 +89,7 @@ import type {
   WorkflowReleasePublishInput,
   WorkflowReleaseSummary,
 } from './workflow-operations.js'
+import type { WorkItemsBridge } from './work-items.js'
 
 /** Payload sent from main to renderer when a deep-link install should begin. */
 export interface DeepLinkInstallTarget {
@@ -151,6 +152,7 @@ export interface EzDSHBridge {
     refresh(kind: StoreKind): Promise<StoreRefreshResult>
     onStateChange(listener: (state: InstallState) => void): () => void
   }
+  workItems: WorkItemsBridge
   employees: {
     list(): Promise<EmployeeSnapshot[]>
     listProjects(): Promise<EmployeeProjectSummary[]>

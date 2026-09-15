@@ -16,7 +16,13 @@ import type {
   EmployeeUpdateInput,
   EmployeeWorkflowStep,
 } from '../../shared/employees.js'
-import type { EmployeeRunObservationEvent, EmployeeRunObservationResult } from '../../shared/employee-runs.js'
+import type {
+  EmployeeRunObservationEvent,
+  EmployeeRunObservationResult,
+  EmployeeRunRecord,
+  EmployeeRunStartReceipt,
+  EmployeeRunStartRequest,
+} from '../../shared/employee-runs.js'
 import { EMPLOYEE_CAPABILITIES, EMPLOYEE_SCHEMA_VERSION, employeeDisplayName } from '../../shared/employees.js'
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/locale.js'
 import { extractJsonDocument } from '../workflow/dsh-workflow-adapter.js'
@@ -459,6 +465,23 @@ export class EmployeeService {
 
   watchSessionLocks(listener: EmployeeSessionLockListener): () => void {
     return this.runService.watchSessionLocks(listener)
+  }
+
+  /** Main-only port used by durable WorkItem dispatch; it preserves command and task associations. */
+  startWorkItemRun(request: EmployeeRunStartRequest): Promise<EmployeeRunStartReceipt> {
+    return this.runService.start(request)
+  }
+
+  listWorkItemRuns(): Promise<EmployeeRunRecord[]> {
+    return this.runService.list()
+  }
+
+  getWorkItemRun(runId: string): Promise<EmployeeRunRecord | undefined> {
+    return this.runService.get(runId)
+  }
+
+  cancelWorkItemRun(runId: string): Promise<EmployeeRunRecord> {
+    return this.runService.cancel(runId)
   }
 
   async forceUnlockSession(sessionId: string): Promise<void> {

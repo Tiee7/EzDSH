@@ -1,12 +1,19 @@
 import type { RuntimeMode } from '../runtime/runtime-types.js'
 import type { RecoveryDryRun, RecoveryRestoreResult } from './recovery-manager.js'
 
+export interface RecoveryStopProgress {
+  workItemScopeClosed: true
+}
+
+export type RecoveryStopProgressReporter = (progress: RecoveryStopProgress) => void
+
 export interface RecoveryRestoreCoordinatorOptions {
   preflight(selector: string): Promise<Pick<RecoveryDryRun, 'snapshotName'>>
   getMode(): RuntimeMode
-  stopComponents(): Promise<void>
+  stopComponents(reportProgress?: RecoveryStopProgressReporter): Promise<void>
   restore(selector: string): Promise<RecoveryRestoreResult>
   prepareMode(mode: RuntimeMode): Promise<void>
+  resumeComponents?(): Promise<void>
 }
 
 export class RecoveryRestoreCoordinator {
@@ -40,9 +47,31 @@ export class RecoveryRestoreCoordinator {
   private async restoreInternal(selector: string): Promise<RecoveryRestoreResult> {
     const preflight = await this.options.preflight(selector)
     const mode = this.options.getMode()
-    await this.options.stopComponents()
-    const result = await this.options.restore(preflight.snapshotName)
-    await this.options.prepareMode(mode)
+    let result: RecoveryRestoreResult
+    let stopped = false
+    let workItemScopeClosed = false
+    try {
+      await this.options.stopComponents((progress) => {
+        if (progress.workItemScopeClosed) workItemScopeClosed = true
+      })
+      stopped = true
+      result = await this.options.restore(preflight.snapshotName)
+      await this.options.prepareMode(mode)
+    } catch (error) {
+      if (stopped || workItemScopeClosed) await this.resumeAfterFailure(error)
+      throw error
+    }
+    await this.options.resumeComponents?.()
     return result
+  }
+
+  private async resumeAfterFailure(primaryError: unknown): Promise<void> {
+    try {
+      await this.options.resumeComponents?.()
+    } catch (resumeError) {
+      if ((typeof primaryError === 'object' && primaryError !== null) || typeof primaryError === 'function') {
+        try { Object.assign(primaryError, { resumeError }) } catch { /* Preserve the primary restore failure. */ }
+      }
+    }
   }
 }
