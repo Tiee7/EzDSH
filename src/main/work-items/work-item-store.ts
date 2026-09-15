@@ -25,6 +25,15 @@ export class WorkItemStoreConflictError extends Error {
   }
 }
 
+export class WorkItemStoreInputError extends Error {
+  readonly code = 'UNSUPPORTED_INPUT' as const
+
+  constructor(readonly path: string, message: string) {
+    super(message)
+    this.name = 'WorkItemStoreInputError'
+  }
+}
+
 export interface WorkItemCreateReceipt {
   requestId: string
   digest: string
@@ -64,20 +73,95 @@ interface WorkItemStoreOptions {
 
 const EMPTY_STATE: WorkItemState = { version: 1, tasks: {}, requests: {} }
 
-function canonicalize(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    const encoded = JSON.stringify(value)
-    if (encoded === undefined) return '"__undefined__"'
-    return encoded
+class CanonicalEncoder {
+  private readonly references = new Map<object, number>()
+
+  encode(value: unknown, path = '$'): string {
+    if (value === undefined) return 'u'
+    if (value === null) return 'l'
+    if (typeof value === 'string') return `s:${JSON.stringify(value)}`
+    if (typeof value === 'boolean') return value ? 'b:1' : 'b:0'
+    if (typeof value === 'bigint') return `i:${value.toString()}`
+    if (typeof value === 'number') {
+      if (Number.isNaN(value)) return 'n:nan'
+      if (value === Number.POSITIVE_INFINITY) return 'n:+inf'
+      if (value === Number.NEGATIVE_INFINITY) return 'n:-inf'
+      if (Object.is(value, -0)) return 'n:-0'
+      return `n:${value.toString()}`
+    }
+    if (typeof value === 'function' || typeof value === 'symbol') {
+      throw new WorkItemStoreInputError(path, `${path} cannot be encoded for idempotency`)
+    }
+
+    const previousReference = this.references.get(value)
+    if (previousReference !== undefined) return `r:${previousReference}`
+    const reference = this.references.size
+    this.references.set(value, reference)
+
+    if (Array.isArray(value)) {
+      this.assertNoSymbols(value, path)
+      const items = Array.from({ length: value.length }, (_, index) =>
+        Object.prototype.hasOwnProperty.call(value, index)
+          ? `v:${this.encode(value[index], `${path}[${index}]`)}`
+          : 'h'
+      )
+      const indexKeys = new Set(Array.from({ length: value.length }, (_, index) => String(index)))
+      const extras = Object.keys(value).filter((key) => !indexKeys.has(key)).sort()
+        .map((key) => this.property(value, key, `${path}.${key}`))
+      return `a:${reference}:[${items.join(',')}]:{${extras.join(',')}}`
+    }
+    if (value instanceof Date) return `d:${reference}:${value.getTime().toString()}`
+    if (value instanceof RegExp) {
+      return `x:${reference}:${JSON.stringify(value.source)}:${JSON.stringify(value.flags)}:${value.lastIndex}`
+    }
+    if (value instanceof Map) {
+      const entries = Array.from(value.entries(), ([key, item], index) =>
+        `${this.encode(key, `${path}.<key:${index}>`)}=>${this.encode(item, `${path}.<value:${index}>`)}`
+      )
+      return `m:${reference}:[${entries.join(',')}]`
+    }
+    if (value instanceof Set) {
+      return `t:${reference}:[${Array.from(value.values(), (item, index) =>
+        this.encode(item, `${path}.<value:${index}>`)
+      ).join(',')}]`
+    }
+    if (value instanceof ArrayBuffer) {
+      return `q:${reference}:${Buffer.from(value).toString('base64')}`
+    }
+    if (ArrayBuffer.isView(value)) {
+      const bytes = Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64')
+      return `v:${reference}:${value.constructor.name}:${bytes}`
+    }
+    if (value instanceof Error) {
+      return `e:${reference}:${JSON.stringify(value.name)}:${JSON.stringify(value.message)}:${this.encode(value.cause, `${path}.cause`)}`
+    }
+
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new WorkItemStoreInputError(path, `${path} has an unsupported structured-clone type`)
+    }
+    this.assertNoSymbols(value, path)
+    const properties = Object.keys(value).sort().map((key) => this.property(value, key, `${path}.${key}`))
+    return `o:${reference}:${prototype === null ? 'null' : 'object'}:{${properties.join(',')}}`
   }
-  if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`
-  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalize((value as Record<string, unknown>)[key])}`
-  ).join(',')}}`
+
+  private property(value: object, key: string, path: string): string {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (!descriptor || !('value' in descriptor)) {
+      throw new WorkItemStoreInputError(path, `${path} cannot use an accessor in idempotency input`)
+    }
+    return `${JSON.stringify(key)}:${this.encode(descriptor.value, path)}`
+  }
+
+  private assertNoSymbols(value: object, path: string): void {
+    if (Object.getOwnPropertySymbols(value).length > 0) {
+      throw new WorkItemStoreInputError(path, `${path} cannot contain symbol properties`)
+    }
+  }
 }
 
 function requestDigest(kind: StoredReceipt['kind'], request: unknown): string {
-  return createHash('sha256').update(`${kind}:${canonicalize(request)}`).digest('hex')
+  return createHash('sha256').update(`${kind}:${new CanonicalEncoder().encode(request)}`).digest('hex')
 }
 
 function copy<T>(value: T): T {
@@ -287,7 +371,13 @@ export class WorkItemStore {
   }
 
   private emit(snapshot: WorkTaskSnapshot): void {
-    for (const listener of this.listeners) listener(copy(snapshot))
+    for (const listener of this.listeners) {
+      try {
+        listener(copy(snapshot))
+      } catch {
+        // Persistence has committed; one observer must not alter the mutation result or starve other observers.
+      }
+    }
   }
 
   private assertInitialized(): void {

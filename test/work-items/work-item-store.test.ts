@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { WorkItemStore, WorkItemStoreConflictError } from '../../src/main/work-items/work-item-store'
+import {
+  WorkItemStore,
+  WorkItemStoreConflictError,
+  WorkItemStoreInputError
+} from '../../src/main/work-items/work-item-store'
 
 const directories: string[] = []
 
@@ -136,5 +140,66 @@ describe('WorkItemStore', () => {
     expect((await reopened.get(created.task.id))?.runs).toEqual([])
     const persisted = JSON.parse(await readFile(join(directory, 'work-items.json'), 'utf8'))
     expect(persisted.requests['dispatch-fails']).toBeUndefined()
+  })
+
+  it('distinguishes opaque structured-clone input without interpreting its fields', async () => {
+    const store = new WorkItemStore(await temporaryStateDirectory())
+    await store.initialize()
+    const created = await store.create(request)
+    const dispatch = (requestId: string, input: unknown, expectedRevision = 1) =>
+      store.recordDispatchIntent({
+        requestId,
+        taskId: created.task.id,
+        expectedRevision,
+        executor: { kind: 'employee', employeeId: 'researcher' },
+        mode: 'initial',
+        input
+      })
+
+    await expect(dispatch('undefined-or-string', undefined)).resolves.toMatchObject({ replayed: false })
+    await expect(dispatch('undefined-or-string', '__undefined__')).rejects.toBeInstanceOf(
+      WorkItemStoreConflictError
+    )
+    await expect(dispatch('number-or-null', Number.NaN, 2)).resolves.toMatchObject({ replayed: false })
+    await expect(dispatch('number-or-null', null, 2)).rejects.toBeInstanceOf(WorkItemStoreConflictError)
+    await expect(dispatch('negative-zero', -0, 3)).resolves.toMatchObject({ replayed: false })
+    await expect(dispatch('negative-zero', 0, 3)).rejects.toBeInstanceOf(WorkItemStoreConflictError)
+    const sparse: unknown[] = []
+    sparse.length = 1
+    await expect(dispatch('sparse', sparse, 4)).resolves.toMatchObject({ replayed: false })
+    await expect(dispatch('sparse', [undefined], 4)).rejects.toBeInstanceOf(WorkItemStoreConflictError)
+    await expect(dispatch('map-or-set', new Map([['role', 'admin']]), 5)).resolves.toMatchObject({
+      replayed: false
+    })
+    await expect(dispatch('map-or-set', new Set([['role', 'admin']]), 5)).rejects.toBeInstanceOf(
+      WorkItemStoreConflictError
+    )
+    await expect(dispatch('unsupported', () => undefined, 6)).rejects.toMatchObject({
+      name: 'WorkItemStoreInputError', code: 'UNSUPPORTED_INPUT', path: '$.input'
+    })
+    await expect(dispatch('unsupported', { permission: 'opaque-data' }, 6)).resolves.toMatchObject({
+      replayed: false
+    })
+    expect((await store.get(created.task.id))?.runs).toHaveLength(6)
+  })
+
+  it('isolates listener exceptions after a durable commit', async () => {
+    const directory = await temporaryStateDirectory()
+    const store = new WorkItemStore(directory)
+    await store.initialize()
+    const calls: string[] = []
+    store.onChanged(() => {
+      calls.push('throws')
+      throw new Error('broken listener')
+    })
+    store.onChanged(() => calls.push('continues'))
+
+    const receipt = await store.create(request)
+
+    expect(receipt.task.id).toBeTruthy()
+    expect(calls).toEqual(['throws', 'continues'])
+    const reopened = new WorkItemStore(directory)
+    await reopened.initialize()
+    expect((await reopened.get(receipt.task.id))?.task.id).toBe(receipt.task.id)
   })
 })
