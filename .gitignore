@@ -42,3 +42,6 @@ superpowers/
 # Local store server reference material (API docs and sample payloads)
 /store/
 .worktrees/
+
+# Local product research and planning notes
+/docs/product-planning/
