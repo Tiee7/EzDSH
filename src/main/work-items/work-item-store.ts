@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { types as utilTypes } from 'node:util'
 
 import {
   validateWorkTaskCreateRequest,
@@ -78,6 +79,19 @@ const setValues = Set.prototype.values
 const regexpSource = Object.getOwnPropertyDescriptor(RegExp.prototype, 'source')?.get
 const regexpFlags = Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags')?.get
 
+function ownValue<T>(dictionary: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(dictionary, key) ? dictionary[key] : undefined
+}
+
+function setOwnValue<T>(dictionary: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(dictionary, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true
+  })
+}
+
 function assertExactBuiltin(value: object, prototype: object, allowedOwnKeys: string[], path: string): void {
   if (Object.getPrototypeOf(value) !== prototype) {
     throw new WorkItemStoreInputError(path, `${path} must use the exact built-in prototype`)
@@ -106,6 +120,9 @@ class CanonicalEncoder {
     }
     if (typeof value === 'function' || typeof value === 'symbol') {
       throw new WorkItemStoreInputError(path, `${path} cannot be encoded for idempotency`)
+    }
+    if (utilTypes.isProxy(value)) {
+      throw new WorkItemStoreInputError(path, `${path} cannot be a Proxy`)
     }
 
     const previousReference = this.references.get(value)
@@ -245,8 +262,8 @@ export class WorkItemStore {
         requestId: request.requestId, digest, task, snapshot, replayed: false
       }
       const next = copy(this.state)
-      next.tasks[task.id] = snapshot
-      next.requests[request.requestId] = { kind: 'create', digest, receipt }
+      setOwnValue(next.tasks, task.id, snapshot)
+      setOwnValue(next.requests, request.requestId, { kind: 'create', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
       return copy(receipt)
@@ -260,7 +277,7 @@ export class WorkItemStore {
       const replay = this.replay<WorkDispatchIntentReceipt>('dispatch', request.requestId, digest)
       if (replay) return replay
 
-      const current = this.state.tasks[request.taskId]
+      const current = ownValue(this.state.tasks, request.taskId)
       if (!current) {
         throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
       }
@@ -321,8 +338,8 @@ export class WorkItemStore {
         replayed: false
       }
       const next = copy(this.state)
-      next.tasks[request.taskId] = snapshot
-      next.requests[request.requestId] = { kind: 'dispatch', digest, receipt }
+      setOwnValue(next.tasks, request.taskId, snapshot)
+      setOwnValue(next.requests, request.requestId, { kind: 'dispatch', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
       return copy(receipt)
@@ -331,7 +348,7 @@ export class WorkItemStore {
 
   async get(taskId: string): Promise<WorkTaskSnapshot | undefined> {
     this.assertInitialized()
-    const snapshot = this.state.tasks[taskId]
+    const snapshot = ownValue(this.state.tasks, taskId)
     return snapshot ? copy(snapshot) : undefined
   }
 
@@ -359,7 +376,7 @@ export class WorkItemStore {
     requestId: string,
     digest: string
   ): T | undefined {
-    const stored = this.state.requests[requestId]
+    const stored = ownValue(this.state.requests, requestId)
     if (!stored) return undefined
     if (stored.kind !== kind || stored.digest !== digest) {
       throw new WorkItemStoreConflictError(

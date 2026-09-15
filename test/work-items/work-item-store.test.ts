@@ -245,4 +245,78 @@ describe('WorkItemStore', () => {
     await reopened.initialize()
     expect((await reopened.get(receipt.task.id))?.task.id).toBe(receipt.task.id)
   })
+
+  it('rejects a Proxy before invoking any of its traps and does not consume the request id', async () => {
+    const store = new WorkItemStore(await temporaryStateDirectory())
+    await store.initialize()
+    const created = await store.create(request)
+    const traps = { get: 0, ownKeys: 0, descriptor: 0 }
+    const proxy = new Proxy(['value'], {
+      get(target, property, receiver) {
+        traps.get += 1
+        return Reflect.get(target, property, receiver)
+      },
+      ownKeys(target) {
+        traps.ownKeys += 1
+        return Reflect.ownKeys(target)
+      },
+      getOwnPropertyDescriptor(target, property) {
+        traps.descriptor += 1
+        return Reflect.getOwnPropertyDescriptor(target, property)
+      }
+    })
+    const dispatch = (input: unknown) => store.recordDispatchIntent({
+      requestId: 'proxy-request',
+      taskId: created.task.id,
+      expectedRevision: 1,
+      executor: { kind: 'employee', employeeId: 'researcher' },
+      mode: 'initial',
+      input
+    })
+
+    await expect(dispatch(proxy)).rejects.toMatchObject({
+      name: 'WorkItemStoreInputError', code: 'UNSUPPORTED_INPUT', path: '$.input'
+    })
+    expect(traps).toEqual({ get: 0, ownKeys: 0, descriptor: 0 })
+    await expect(dispatch(['value'])).resolves.toMatchObject({ replayed: false })
+  })
+
+  it('treats prototype-named request ids as own durable receipt keys', async () => {
+    const directory = await temporaryStateDirectory()
+    const store = new WorkItemStore(directory)
+    await store.initialize()
+    const createRequest = { ...request, requestId: 'toString' }
+
+    const created = await store.create(createRequest)
+    await expect(store.create(createRequest)).resolves.toMatchObject({
+      task: { id: created.task.id }, replayed: true
+    })
+    await expect(store.create({ ...createRequest, goal: 'different' })).rejects.toBeInstanceOf(
+      WorkItemStoreConflictError
+    )
+
+    const dispatchRequest = {
+      requestId: '__proto__',
+      taskId: created.task.id,
+      expectedRevision: 1,
+      executor: { kind: 'workflow' as const, workflowId: 'wf-1' },
+      mode: 'initial' as const,
+      input: { topic: 'opaque' }
+    }
+    const dispatched = await store.recordDispatchIntent(dispatchRequest)
+    await expect(store.recordDispatchIntent(dispatchRequest)).resolves.toMatchObject({
+      commandId: dispatched.commandId, replayed: true
+    })
+    await expect(store.recordDispatchIntent({ ...dispatchRequest, input: { topic: 'different' } }))
+      .rejects.toBeInstanceOf(WorkItemStoreConflictError)
+
+    const reopened = new WorkItemStore(directory)
+    await reopened.initialize()
+    await expect(reopened.create(createRequest)).resolves.toMatchObject({
+      task: { id: created.task.id }, replayed: true
+    })
+    await expect(reopened.recordDispatchIntent(dispatchRequest)).resolves.toMatchObject({
+      commandId: dispatched.commandId, replayed: true
+    })
+  })
 })
