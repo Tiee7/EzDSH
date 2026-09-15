@@ -131,14 +131,19 @@ class CanonicalEncoder {
     this.references.set(value, reference)
 
     if (Array.isArray(value)) {
-      this.assertNoSymbols(value, path)
-      const items = Array.from({ length: value.length }, (_, index) =>
-        Object.prototype.hasOwnProperty.call(value, index)
+      const keys = this.ownStringKeys(value, path)
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length')
+      if (!lengthDescriptor || !('value' in lengthDescriptor) || typeof lengthDescriptor.value !== 'number') {
+        throw new WorkItemStoreInputError(path, `${path} has an unsupported array length`)
+      }
+      const ownKeys = new Set(keys)
+      const items = Array.from({ length: lengthDescriptor.value }, (_, index) =>
+        ownKeys.has(String(index))
           ? `v:${this.propertyValue(value, String(index), `${path}[${index}]`)}`
           : 'h'
       )
-      const indexKeys = new Set(Array.from({ length: value.length }, (_, index) => String(index)))
-      const extras = Object.keys(value).filter((key) => !indexKeys.has(key)).sort()
+      const indexKeys = new Set(Array.from({ length: lengthDescriptor.value }, (_, index) => String(index)))
+      const extras = keys.filter((key) => key !== 'length' && !indexKeys.has(key)).sort()
         .map((key) => this.property(value, key, `${path}.${key}`))
       return `a:${reference}:[${items.join(',')}]:{${extras.join(',')}}`
     }
@@ -175,8 +180,8 @@ class CanonicalEncoder {
     if (prototype !== Object.prototype && prototype !== null) {
       throw new WorkItemStoreInputError(path, `${path} has an unsupported structured-clone type`)
     }
-    this.assertNoSymbols(value, path)
-    const properties = Object.keys(value).sort().map((key) => this.property(value, key, `${path}.${key}`))
+    const properties = this.ownStringKeys(value, path).sort()
+      .map((key) => this.property(value, key, `${path}.${key}`))
     return `o:${reference}:${prototype === null ? 'null' : 'object'}:{${properties.join(',')}}`
   }
 
@@ -193,9 +198,15 @@ class CanonicalEncoder {
   }
 
   private assertNoSymbols(value: object, path: string): void {
-    if (Object.getOwnPropertySymbols(value).length > 0) {
+    this.ownStringKeys(value, path)
+  }
+
+  private ownStringKeys(value: object, path: string): string[] {
+    const keys = Reflect.ownKeys(value)
+    if (keys.some((key) => typeof key === 'symbol')) {
       throw new WorkItemStoreInputError(path, `${path} cannot contain symbol properties`)
     }
+    return keys as string[]
   }
 }
 

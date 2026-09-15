@@ -348,4 +348,87 @@ describe('WorkItemStore', () => {
     expect(prototypeTrapCalls).toBe(0)
     await expect(dispatch({ value: 'opaque' })).resolves.toMatchObject({ replayed: false })
   })
+
+  it('includes non-enumerable object and array data properties in request identity', async () => {
+    const directory = await temporaryStateDirectory()
+    const store = new WorkItemStore(directory)
+    await store.initialize()
+    const created = await store.create(request)
+    const dispatch = (requestId: string, input: unknown, expectedRevision: number) =>
+      store.recordDispatchIntent({
+        requestId,
+        taskId: created.task.id,
+        expectedRevision,
+        executor: { kind: 'employee', employeeId: 'researcher' },
+        mode: 'initial',
+        input
+      })
+    const hiddenObject = (value: number) => {
+      const input = { visible: true }
+      Object.defineProperty(input, 'hidden', { value, enumerable: false })
+      return input
+    }
+    const extendedArray = (value: number) => {
+      const input: unknown[] = ['visible']
+      Object.defineProperty(input, 'hidden', { value, enumerable: false })
+      return input
+    }
+
+    await expect(dispatch('hidden-object', hiddenObject(1), 1)).resolves.toMatchObject({ replayed: false })
+    await expect(dispatch('hidden-object', hiddenObject(2), 1)).rejects.toBeInstanceOf(
+      WorkItemStoreConflictError
+    )
+    await expect(dispatch('hidden-array', extendedArray(1), 2)).resolves.toMatchObject({ replayed: false })
+    await expect(dispatch('hidden-array', extendedArray(2), 2)).rejects.toBeInstanceOf(
+      WorkItemStoreConflictError
+    )
+
+    const reopened = new WorkItemStore(directory)
+    await reopened.initialize()
+    await expect(reopened.recordDispatchIntent({
+      requestId: 'hidden-object',
+      taskId: created.task.id,
+      expectedRevision: 1,
+      executor: { kind: 'employee', employeeId: 'researcher' },
+      mode: 'initial',
+      input: hiddenObject(1)
+    })).resolves.toMatchObject({ replayed: true })
+    await expect(reopened.recordDispatchIntent({
+      requestId: 'hidden-array',
+      taskId: created.task.id,
+      expectedRevision: 2,
+      executor: { kind: 'employee', employeeId: 'researcher' },
+      mode: 'initial',
+      input: extendedArray(2)
+    })).rejects.toBeInstanceOf(WorkItemStoreConflictError)
+  })
+
+  it('rejects a non-enumerable accessor without calling it or consuming its request id', async () => {
+    const store = new WorkItemStore(await temporaryStateDirectory())
+    await store.initialize()
+    const created = await store.create(request)
+    let getterCalls = 0
+    const accessorInput = { visible: true }
+    Object.defineProperty(accessorInput, 'hidden', {
+      enumerable: false,
+      get: () => {
+        getterCalls += 1
+        return 'secret'
+      }
+    })
+    const dispatch = (input: unknown) => store.recordDispatchIntent({
+      requestId: 'hidden-accessor',
+      taskId: created.task.id,
+      expectedRevision: 1,
+      executor: { kind: 'employee', employeeId: 'researcher' },
+      mode: 'initial',
+      input
+    })
+
+    await expect(dispatch(accessorInput)).rejects.toMatchObject({
+      name: 'WorkItemStoreInputError', code: 'UNSUPPORTED_INPUT', path: '$.input.hidden'
+    })
+    expect(getterCalls).toBe(0)
+    await expect(dispatch({ visible: true, hidden: 'secret' })).resolves.toMatchObject({ replayed: false })
+  })
 })
