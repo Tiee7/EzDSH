@@ -72,6 +72,21 @@ interface WorkItemStoreOptions {
 }
 
 const EMPTY_STATE: WorkItemState = { version: 1, tasks: {}, requests: {} }
+const dateGetTime = Date.prototype.getTime
+const mapEntries = Map.prototype.entries
+const setValues = Set.prototype.values
+const regexpSource = Object.getOwnPropertyDescriptor(RegExp.prototype, 'source')?.get
+const regexpFlags = Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags')?.get
+
+function assertExactBuiltin(value: object, prototype: object, allowedOwnKeys: string[], path: string): void {
+  if (Object.getPrototypeOf(value) !== prototype) {
+    throw new WorkItemStoreInputError(path, `${path} must use the exact built-in prototype`)
+  }
+  const allowed = new Set<PropertyKey>(allowedOwnKeys)
+  if (Reflect.ownKeys(value).some((key) => !allowed.has(key))) {
+    throw new WorkItemStoreInputError(path, `${path} cannot override built-in behavior or add properties`)
+  }
+}
 
 class CanonicalEncoder {
   private readonly references = new Map<object, number>()
@@ -102,7 +117,7 @@ class CanonicalEncoder {
       this.assertNoSymbols(value, path)
       const items = Array.from({ length: value.length }, (_, index) =>
         Object.prototype.hasOwnProperty.call(value, index)
-          ? `v:${this.encode(value[index], `${path}[${index}]`)}`
+          ? `v:${this.propertyValue(value, String(index), `${path}[${index}]`)}`
           : 'h'
       )
       const indexKeys = new Set(Array.from({ length: value.length }, (_, index) => String(index)))
@@ -110,30 +125,33 @@ class CanonicalEncoder {
         .map((key) => this.property(value, key, `${path}.${key}`))
       return `a:${reference}:[${items.join(',')}]:{${extras.join(',')}}`
     }
-    if (value instanceof Date) return `d:${reference}:${value.getTime().toString()}`
+    if (value instanceof Date) {
+      assertExactBuiltin(value, Date.prototype, [], path)
+      return `d:${reference}:${dateGetTime.call(value).toString()}`
+    }
     if (value instanceof RegExp) {
-      return `x:${reference}:${JSON.stringify(value.source)}:${JSON.stringify(value.flags)}:${value.lastIndex}`
+      assertExactBuiltin(value, RegExp.prototype, ['lastIndex'], path)
+      const lastIndex = Object.getOwnPropertyDescriptor(value, 'lastIndex')
+      if (!lastIndex || !('value' in lastIndex) || !regexpSource || !regexpFlags) {
+        throw new WorkItemStoreInputError(path, `${path} has an unsupported RegExp representation`)
+      }
+      return `x:${reference}:${JSON.stringify(regexpSource.call(value))}:${JSON.stringify(regexpFlags.call(value))}:${this.encode(lastIndex.value, `${path}.lastIndex`)}`
     }
     if (value instanceof Map) {
-      const entries = Array.from(value.entries(), ([key, item], index) =>
+      assertExactBuiltin(value, Map.prototype, [], path)
+      const entries = Array.from(mapEntries.call(value), ([key, item], index) =>
         `${this.encode(key, `${path}.<key:${index}>`)}=>${this.encode(item, `${path}.<value:${index}>`)}`
       )
       return `m:${reference}:[${entries.join(',')}]`
     }
     if (value instanceof Set) {
-      return `t:${reference}:[${Array.from(value.values(), (item, index) =>
+      assertExactBuiltin(value, Set.prototype, [], path)
+      return `t:${reference}:[${Array.from(setValues.call(value), (item, index) =>
         this.encode(item, `${path}.<value:${index}>`)
       ).join(',')}]`
     }
-    if (value instanceof ArrayBuffer) {
-      return `q:${reference}:${Buffer.from(value).toString('base64')}`
-    }
-    if (ArrayBuffer.isView(value)) {
-      const bytes = Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64')
-      return `v:${reference}:${value.constructor.name}:${bytes}`
-    }
-    if (value instanceof Error) {
-      return `e:${reference}:${JSON.stringify(value.name)}:${JSON.stringify(value.message)}:${this.encode(value.cause, `${path}.cause`)}`
+    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Error) {
+      throw new WorkItemStoreInputError(path, `${path} has a structured-clone type without safe canonical support`)
     }
 
     const prototype = Object.getPrototypeOf(value)
@@ -146,11 +164,15 @@ class CanonicalEncoder {
   }
 
   private property(value: object, key: string, path: string): string {
+    return `${JSON.stringify(key)}:${this.propertyValue(value, key, path)}`
+  }
+
+  private propertyValue(value: object, key: string, path: string): string {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
     if (!descriptor || !('value' in descriptor)) {
       throw new WorkItemStoreInputError(path, `${path} cannot use an accessor in idempotency input`)
     }
-    return `${JSON.stringify(key)}:${this.encode(descriptor.value, path)}`
+    return this.encode(descriptor.value, path)
   }
 
   private assertNoSymbols(value: object, path: string): void {

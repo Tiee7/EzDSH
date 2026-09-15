@@ -180,7 +180,50 @@ describe('WorkItemStore', () => {
     await expect(dispatch('unsupported', { permission: 'opaque-data' }, 6)).resolves.toMatchObject({
       replayed: false
     })
-    expect((await store.get(created.task.id))?.runs).toHaveLength(6)
+
+    let dateMethodCalls = 0
+    const unsafeDate = new Date(0) as Date & { getTime: () => number }
+    unsafeDate.getTime = () => {
+      dateMethodCalls += 1
+      return 0
+    }
+    await expect(dispatch('safe-date', unsafeDate, 7)).rejects.toBeInstanceOf(WorkItemStoreInputError)
+    expect(dateMethodCalls).toBe(0)
+    await expect(dispatch('safe-date', new Date(0), 7)).resolves.toMatchObject({ replayed: false })
+
+    let mapMethodCalls = 0
+    const unsafeMap = new Map([['role', 'admin']]) as Map<string, string> & { entries: Map<string, string>['entries'] }
+    unsafeMap.entries = () => {
+      mapMethodCalls += 1
+      return new Map<string, string>().entries()
+    }
+    await expect(dispatch('safe-map', unsafeMap, 8)).rejects.toBeInstanceOf(WorkItemStoreInputError)
+    expect(mapMethodCalls).toBe(0)
+    await expect(dispatch('safe-map', new Map([['role', 'admin']]), 8)).resolves.toMatchObject({
+      replayed: false
+    })
+
+    const numericLastIndex = /role/g
+    numericLastIndex.lastIndex = 0
+    const stringLastIndex = /role/g
+    ;(stringLastIndex as unknown as { lastIndex: string }).lastIndex = '0'
+    await expect(dispatch('regexp-last-index', numericLastIndex, 9)).resolves.toMatchObject({ replayed: false })
+    await expect(dispatch('regexp-last-index', stringLastIndex, 9)).rejects.toBeInstanceOf(
+      WorkItemStoreConflictError
+    )
+    let arrayGetterCalls = 0
+    const accessorArray: unknown[] = []
+    Object.defineProperty(accessorArray, 0, {
+      enumerable: true,
+      get: () => {
+        arrayGetterCalls += 1
+        return 'value'
+      }
+    })
+    await expect(dispatch('safe-array', accessorArray, 10)).rejects.toBeInstanceOf(WorkItemStoreInputError)
+    expect(arrayGetterCalls).toBe(0)
+    await expect(dispatch('safe-array', ['value'], 10)).resolves.toMatchObject({ replayed: false })
+    expect((await store.get(created.task.id))?.runs).toHaveLength(10)
   })
 
   it('isolates listener exceptions after a durable commit', async () => {
