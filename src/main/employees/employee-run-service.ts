@@ -39,7 +39,6 @@ const FORCE_UNLOCK_REASON = 'Employee run was force-unlocked'
 export class EmployeeRunService {
   private readonly sessionLocks = new Map<string, EmployeeSessionLock>()
   private readonly sessionLockListeners = new Set<(locks: EmployeeSessionLock[]) => void>()
-  private readonly forceUnlockedRunIds = new Set<string>()
   private initialized = false
   private startTail: Promise<void> = Promise.resolve()
 
@@ -124,34 +123,29 @@ export class EmployeeRunService {
     if (normalizedSessionId === '') throw new Error('Employee session is required')
     const lock = this.sessionLocks.get(normalizedSessionId)
     if (lock === undefined) return
-    this.forceUnlockedRunIds.add(lock.runId)
-    try {
-      const run = await this.requireRun(lock.runId)
-      if (TERMINAL_STATUSES.has(run.status)) {
-        this.forceUnlockedRunIds.delete(lock.runId)
-        this.releaseSessionLock(normalizedSessionId, lock.runId)
-        return
-      }
-      const now = new Date().toISOString()
-      const transition = await this.options.store.transition(run.runId, (current) => {
-        if (TERMINAL_STATUSES.has(current.status)) return undefined
+    const now = new Date().toISOString()
+    const transition = await this.options.store.transition(lock.runId, (current) => {
+      if (TERMINAL_STATUSES.has(current.status)) return undefined
+      if (current.status === 'queued' && current.dispatchStage === 'recorded') {
         return {
-          status: 'cancelling',
-          dispatchStage: 'cancel-requested',
+          status: 'cancelled',
+          dispatchStage: 'cancelled-before-dispatch',
           cancelReason: FORCE_UNLOCK_REASON,
           cancelRequestedAt: now,
+          completedAt: now,
           updatedAt: now,
         }
-      })
-      if (!transition.updated) {
-        this.forceUnlockedRunIds.delete(lock.runId)
-        this.releaseSessionLock(normalizedSessionId, lock.runId)
-        return
       }
-    } catch (error) {
-      this.forceUnlockedRunIds.delete(lock.runId)
-      throw error
-    }
+      if (current.status === 'cancelling' && current.cancelReason === FORCE_UNLOCK_REASON) return undefined
+      return {
+        status: 'cancelling',
+        dispatchStage: 'cancel-requested',
+        cancelReason: FORCE_UNLOCK_REASON,
+        cancelRequestedAt: now,
+        updatedAt: now,
+      }
+    })
+    if (!transition.updated) return
     this.releaseSessionLock(normalizedSessionId, lock.runId)
     const client = this.options.createClient()
     if (client.cancelSession !== undefined) {
@@ -307,11 +301,7 @@ export class EmployeeRunService {
       const now = new Date().toISOString()
       await this.options.store.transition(initial.runId, (current) => {
         if (TERMINAL_STATUSES.has(current.status)) return undefined
-        if (
-          this.forceUnlockedRunIds.has(initial.runId)
-          && current.status === 'cancelling'
-          && current.cancelReason === FORCE_UNLOCK_REASON
-        ) {
+        if (current.status === 'cancelling' && current.cancelReason === FORCE_UNLOCK_REASON) {
           return {
             status: 'failed',
             dispatchStage: 'failed',
@@ -329,27 +319,26 @@ export class EmployeeRunService {
         }
       })
     } catch (error) {
-      const message = this.forceUnlockedRunIds.has(initial.runId)
-        ? FORCE_UNLOCK_REASON
-        : messageOf(error)
-      await this.recordDispatchFailure(initial.runId, new Error(message))
+      await this.recordDispatchFailure(initial.runId, error)
     } finally {
       this.releaseSessionLock(initial.sessionId, initial.runId)
-      this.forceUnlockedRunIds.delete(initial.runId)
     }
   }
 
   private async recordDispatchFailure(runId: string, error: unknown): Promise<void> {
     const now = new Date().toISOString()
-    await this.options.store.transition(runId, (current) => TERMINAL_STATUSES.has(current.status)
-      ? undefined
-      : {
+    await this.options.store.transition(runId, (current) => {
+      if (TERMINAL_STATUSES.has(current.status)) return undefined
+      return {
           status: 'failed',
           dispatchStage: 'failed',
-          error: messageOf(error),
+          error: current.status === 'cancelling' && current.cancelReason === FORCE_UNLOCK_REASON
+            ? FORCE_UNLOCK_REASON
+            : messageOf(error),
           updatedAt: now,
           completedAt: now,
-        }).catch(() => undefined)
+        }
+    }).catch(() => undefined)
   }
 
   private async resolveSession(client: EmployeeRunClient, context: EmployeeRunContext): Promise<{

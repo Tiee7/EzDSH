@@ -297,6 +297,88 @@ describe('EmployeeRunService', () => {
     await vi.waitFor(() => expect(service.listSessionLocks()).toEqual([]))
   })
 
+  it('makes queued force-unlock terminal before dispatch and unblocks legacy waiting', async () => {
+    const client: EmployeeRunClient = {
+      createSession: vi.fn().mockResolvedValue({ sessionId: 'session-1' }),
+      sendPrompt: vi.fn().mockResolvedValue({ text: '不应执行' }),
+      cancelSession: vi.fn().mockResolvedValue(undefined),
+    }
+    const { service, store } = await createRunService({ client })
+    const dispatchRead = deferred<void>()
+    const resumeDispatch = deferred<void>()
+    const realGet = store.get.bind(store)
+    vi.spyOn(store, 'get').mockImplementationOnce(async (runId) => {
+      const snapshot = await realGet(runId)
+      dispatchRead.resolve()
+      await resumeDispatch.promise
+      return snapshot
+    })
+    const started = await service.start(request())
+    await dispatchRead.promise
+
+    await service.forceUnlockSession('session-1')
+    resumeDispatch.resolve()
+    const terminal = await Promise.race([
+      service.waitForTerminal(started.run.runId),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('queued force-unlock did not terminate')), 100)),
+    ])
+
+    expect(terminal).toMatchObject({
+      status: 'cancelled',
+      dispatchStage: 'cancelled-before-dispatch',
+      cancelReason: 'Employee run was force-unlocked',
+      completedAt: expect.any(String),
+    })
+    expect(service.toLegacyResult(terminal)).toMatchObject({
+      status: 'failed',
+      error: 'Employee run was force-unlocked',
+    })
+    expect(client.sendPrompt).not.toHaveBeenCalled()
+    expect(client.cancelSession).toHaveBeenCalledTimes(1)
+    expect(service.listSessionLocks()).toEqual([])
+  })
+
+  it('uses the durable force-unlock transition when one concurrent request fails', async () => {
+    const directory = await temporaryDirectory()
+    const response = deferred<{ text: string }>()
+    let replacements = 0
+    const store = new EmployeeRunStore(directory, {
+      rename: async (from, to) => {
+        replacements += 1
+        if (replacements === 3) throw new Error('one concurrent force-unlock failed')
+        await rename(from, to)
+      },
+    })
+    const client: EmployeeRunClient = {
+      createSession: vi.fn().mockResolvedValue({ sessionId: 'session-1' }),
+      sendPrompt: vi.fn(() => response.promise),
+      cancelSession: vi.fn().mockResolvedValue(undefined),
+    }
+    const { service } = await createRunService({ directory, client, store })
+    const started = await service.start(request())
+    await vi.waitFor(async () => expect(await service.get(started.run.runId)).toMatchObject({ status: 'running' }))
+
+    const results = await Promise.allSettled([
+      service.forceUnlockSession('session-1'),
+      service.forceUnlockSession('session-1'),
+    ])
+
+    expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected'])
+    expect(await service.get(started.run.runId)).toMatchObject({
+      status: 'cancelling',
+      cancelReason: 'Employee run was force-unlocked',
+    })
+    expect(client.cancelSession).toHaveBeenCalledTimes(1)
+    response.resolve({ text: '迟到输出' })
+    const terminal = await service.waitForTerminal(started.run.runId)
+    expect(terminal).toMatchObject({
+      status: 'failed',
+      error: 'Employee run was force-unlocked',
+      output: '',
+    })
+    await vi.waitFor(() => expect(service.listSessionLocks()).toEqual([]))
+  })
+
   it('never submits a prompt after queued cancellation wins the dispatch claim race', async () => {
     const client: EmployeeRunClient = {
       createSession: vi.fn().mockResolvedValue({ sessionId: 'session-1' }),
