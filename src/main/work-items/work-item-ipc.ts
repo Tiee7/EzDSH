@@ -13,6 +13,7 @@ import {
   validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskDeletePreviewRequest,
+  validateWorkTaskDeletionPurgeRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRunDetailRequest,
   validateWorkTaskRevisionRequest,
@@ -44,6 +45,7 @@ export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:cancel-task',
   'work-items:archive',
   'work-items:preview-delete',
+  'work-items:purge-delete',
   'work-items:accept-artifact',
   'work-items:open-artifact',
   'work-items:control-run',
@@ -52,7 +54,7 @@ export const WORK_ITEM_IPC_CHANNELS = [
 
 export const WORK_ITEM_CHANGED_CHANNEL = 'work-items:changed'
 
-type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'previewDelete' | 'acceptArtifact' | 'openArtifact'> & {
+type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'previewDelete' | 'purgeDelete' | 'acceptArtifact' | 'openArtifact'> & {
   /** Main-only durable lookup; omitted from the renderer bridge. */
   getDispatchIntent?: (requestId: string) => Promise<WorkDispatchIntentReceipt | undefined>
 }
@@ -347,6 +349,11 @@ export function registerWorkItemIpc(
     if (!isDeveloperMode()) throw new Error('Work item deletion preview is available only in developer mode')
     if (services.workItems.previewDelete === undefined) throw new Error('Work item deletion preview is unavailable')
     return services.workItems.previewDelete(validateWorkTaskDeletePreviewRequest(input))
+  })
+  register('work-items:purge-delete', (services, input) => {
+    if (!isDeveloperMode()) throw new Error('Work item permanent deletion is available only in developer mode')
+    if (services.workItems.purgeDelete === undefined) throw new Error('Work item permanent deletion is unavailable')
+    return services.workItems.purgeDelete(validateWorkTaskDeletionPurgeRequest(input))
   })
   register('work-items:accept-artifact', (services, input) => services.workItems.acceptArtifact(validateWorkArtifactAcceptRequest(input)))
   register('work-items:open-artifact', (services, input) => {

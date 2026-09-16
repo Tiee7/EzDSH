@@ -78,6 +78,7 @@ export function initializeWorkItemWorkspaceScope(
           const error = await options.openArtifact!(artifact.storedPath)
           if (typeof error === 'string' && error !== '') throw new Error(error)
         },
+        (snapshot) => artifacts.purgeTaskArtifacts(snapshot),
       )
       const workflowBridge = new WorkflowTaskBridge(options.workflowRuns)
       const runDetails = new WorkItemRunDetailsService(

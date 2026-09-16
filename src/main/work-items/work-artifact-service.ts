@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 
-import type { WorkArtifact } from '../../shared/work-items.js'
+import type { WorkArtifact, WorkTaskSnapshot } from '../../shared/work-items.js'
 import {
   WorkItemStore,
   WorkItemStoreConflictError,
@@ -184,6 +184,90 @@ export class WorkArtifactService {
   async verifyStoredArtifact(artifact: WorkArtifact): Promise<boolean> {
     this.assertInitialized()
     return (await this.readVerifiedArtifact(artifact)) !== undefined
+  }
+
+  /**
+   * Remove only verified files owned by one Work Item. Every path is checked
+   * before any removal; a missing file is treated as an idempotent prior
+   * cleanup, while a malformed, shared, symlinked, or tampered path aborts the
+   * whole operation and leaves the durable task tombstone available for retry.
+   */
+  async purgeTaskArtifacts(snapshot: WorkTaskSnapshot): Promise<void> {
+    this.assertInitialized()
+    const expected = snapshot.artifacts.map((artifact) => ({
+      artifact,
+      path: this.destinationPath(artifact.taskId, artifact.id, artifact.name),
+    }))
+    const paths = new Set<string>()
+    for (const entry of expected) {
+      if (
+        entry.artifact.taskId !== snapshot.task.id
+        || resolve(entry.artifact.storedPath) !== entry.path
+        || !isWithin(this.artifactRootRealPath, entry.path)
+        || paths.has(entry.path)
+      ) {
+        throw new WorkItemStoreConflictError(
+          'ARTIFACT_CONFLICT',
+          `Artifact ${entry.artifact.id} is not an exclusive task-owned file`,
+        )
+      }
+      paths.add(entry.path)
+    }
+
+    for (const other of await this.store.list({ includeArchived: true })) {
+      if (other.task.id === snapshot.task.id) continue
+      if (other.artifacts.some((artifact) => paths.has(resolve(artifact.storedPath)))) {
+        throw new WorkItemStoreConflictError(
+          'ARTIFACT_CONFLICT',
+          `A task other than ${snapshot.task.id} references an artifact scheduled for cleanup`,
+        )
+      }
+    }
+    const pending = await this.store.pendingArtifactWrites()
+    if (pending.some((receipt) => receipt.taskId === snapshot.task.id && paths.has(resolve(receipt.storedPath)))) {
+      throw new WorkItemStoreConflictError(
+        'ARTIFACT_CONFLICT',
+        `Task ${snapshot.task.id} still has a pending artifact write`,
+      )
+    }
+
+    const directories = new Set<string>()
+    for (const entry of expected) {
+      const directory = dirname(entry.path)
+      directories.add(directory)
+      let fileStat
+      try {
+        fileStat = await lstat(entry.path)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
+        throw new WorkItemStoreInputError('storedPath', `Artifact ${entry.artifact.id} is not a regular task-owned file`)
+      }
+      if (await realpath(directory) !== directory || await realpath(entry.path) !== entry.path) {
+        throw new WorkItemStoreInputError('storedPath', `Artifact ${entry.artifact.id} path contains a symbolic link`)
+      }
+      if (!await this.verifyStoredArtifact(entry.artifact)) {
+        throw new WorkItemStoreConflictError(
+          'ARTIFACT_CONFLICT',
+          `Artifact ${entry.artifact.id} failed integrity verification before cleanup`,
+        )
+      }
+    }
+
+    for (const entry of expected) await rm(entry.path, { force: true })
+    for (const directory of directories) {
+      try {
+        if ((await lstat(directory)).isSymbolicLink() || await realpath(directory) !== directory) {
+          throw new WorkItemStoreInputError('storedPath', 'Artifact directory contains a symbolic link')
+        }
+        await rm(directory, { recursive: false, force: true })
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'ENOENT' && code !== 'ENOTEMPTY' && code !== 'EEXIST') throw error
+      }
+    }
   }
 
   private async save(

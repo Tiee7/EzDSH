@@ -11,6 +11,7 @@ import {
   validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskDeletePreviewRequest,
+  validateWorkTaskDeletionPurgeRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
   type WorkAction,
@@ -27,8 +28,10 @@ import {
   type WorkTaskCancelRequest,
   type WorkTaskCreateRequest,
   type WorkTaskDeletePreviewRequest,
+  type WorkTaskDeletionPurgeRequest,
   type WorkTaskDeletionBlocker,
   type WorkTaskDeletionInventory,
+  type WorkTaskDeletionPurgeReceipt,
   type WorkTaskDeletionPreview,
   type WorkTaskTombstonePreview,
   type WorkTaskExecuteRequest,
@@ -39,7 +42,7 @@ import {
 } from '../../shared/work-items.js'
 
 export class WorkItemStoreConflictError extends Error {
-  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'ARCHIVE_CONFLICT' | 'TASK_CANCELLATION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT' | 'MATERIAL_CONFLICT'
+  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'ARCHIVE_CONFLICT' | 'TASK_CANCELLATION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT' | 'MATERIAL_CONFLICT' | 'DELETION_CONFLICT'
 
   constructor(
     code: WorkItemStoreConflictError['code'],
@@ -189,6 +192,7 @@ type StoredReceipt =
   | { kind: 'revise'; digest: string; receipt: WorkTaskRevisionReceipt }
   | { kind: 'archive'; digest: string; receipt: WorkTaskArchiveReceipt }
   | { kind: 'delete-preview'; digest: string; receipt: WorkTaskDeletionPreviewReceipt }
+  | { kind: 'delete-purge'; digest: string; receipt: WorkTaskDeletionPurgeReceipt }
   | { kind: 'task-cancellation'; digest: string; receipt: WorkTaskCancellationReceipt }
   | { kind: 'artifact-accept'; digest: string; receipt: WorkArtifactAcceptReceipt }
   | { kind: 'artifact-write'; digest: string; receipt: WorkArtifactWriteReceipt }
@@ -422,13 +426,7 @@ function deletionPreview(
   generatedAt: string,
 ): WorkTaskDeletionPreview {
   const inventory = deletionInventory(snapshot)
-  const blockers: WorkTaskDeletionBlocker[] = [
-    {
-      code: 'PERMANENT_DELETE_DISABLED',
-      message: '当前版本仅支持删除预览；永久删除必须在明确确认、可恢复证据和行为验证完成后开放。',
-      referenceIds: [],
-    },
-  ]
+  const blockers: WorkTaskDeletionBlocker[] = []
   if (snapshot.task.archivedAt === undefined) {
     blockers.push({
       code: 'TASK_NOT_ARCHIVED',
@@ -484,12 +482,19 @@ function deletionPreview(
     expectedRevision: request.expectedRevision,
     observedRevision: snapshot.task.revision,
     generatedAt,
-    canDelete: false,
+    canDelete: blockers.length === 0,
     blockers,
     inventory,
     tombstone,
-    message: '删除预览已生成。当前版本不会删除工作项、运行、成果、回执或成果目录。',
+    message: blockers.length === 0
+      ? '删除预览已通过。永久删除仍需使用同一预览回执并明确确认。'
+      : '删除预览已生成；处理全部阻断项后，才能提交永久删除。',
   }
+}
+
+function storedReceiptTaskId(stored: StoredReceipt): string | undefined {
+  if (stored.kind === 'create') return stored.receipt.task.id
+  return stored.receipt.taskId
 }
 
 function assertTaskAcceptsBusinessMutation(snapshot: WorkTaskSnapshot): void {
@@ -1050,6 +1055,128 @@ export class WorkItemStore {
       setOwnValue(next.requests, request.requestId, { kind: 'delete-preview', digest, receipt })
       await this.commit(next)
       return copy(receipt)
+    })
+  }
+
+  /**
+   * Permanently remove a task after consuming a matching durable preview.
+   * The cleaner runs only after a prepared receipt is committed. If it fails,
+   * the task and the failed receipt remain so the exact request can be retried.
+   */
+  async purgeDelete(
+    input: WorkTaskDeletionPurgeRequest,
+    cleanArtifacts: (snapshot: WorkTaskSnapshot) => Promise<void>,
+  ): Promise<WorkTaskDeletionPurgeReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkTaskDeletionPurgeRequest(input)
+      const digest = requestDigest('delete-purge', request)
+      const existing = ownValue(this.state.requests, request.requestId)
+      if (existing !== undefined) {
+        if (existing.kind !== 'delete-purge' || existing.digest !== digest) {
+          throw new WorkItemStoreConflictError(
+            'REQUEST_ID_CONFLICT',
+            `Request id ${request.requestId} was already used with different content`,
+          )
+        }
+        if (existing.receipt.stage === 'purged') return { ...copy(existing.receipt), replayed: true }
+      }
+
+      const current = ownValue(this.state.tasks, request.taskId)
+      if (current === undefined) {
+        throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      }
+      if (current.task.revision !== request.expectedRevision) {
+        throw new WorkItemStoreConflictError(
+          'REVISION_CONFLICT',
+          `Expected task revision ${request.expectedRevision}, found ${current.task.revision}`,
+        )
+      }
+
+      const previewStored = ownValue(this.state.requests, request.previewRequestId)
+      if (previewStored?.kind !== 'delete-preview') {
+        throw new WorkItemStoreConflictError(
+          'DELETION_CONFLICT',
+          `Deletion preview ${request.previewRequestId} was not found`,
+        )
+      }
+      const preview = previewStored.receipt.preview
+      const currentHash = snapshotHash(current)
+      if (
+        preview.taskId !== request.taskId
+        || preview.expectedRevision !== request.expectedRevision
+        || preview.tombstone.snapshotHash !== request.expectedSnapshotHash
+        || preview.tombstone.snapshotHash !== currentHash
+        || !preview.canDelete
+        || preview.blockers.length > 0
+      ) {
+        throw new WorkItemStoreConflictError(
+          'DELETION_CONFLICT',
+          'Deletion preview is stale, blocked, or does not match the current task snapshot',
+        )
+      }
+
+      const now = new Date().toISOString()
+      const prepared: WorkTaskDeletionPurgeReceipt = {
+        requestId: request.requestId,
+        taskId: request.taskId,
+        previewRequestId: request.previewRequestId,
+        expectedRevision: request.expectedRevision,
+        stage: 'prepared',
+        tombstone: {
+          ...copy(preview.tombstone),
+          artifactCleanup: { ...preview.tombstone.artifactCleanup, status: 'pending' },
+        },
+        createdAt: existing?.kind === 'delete-purge' ? existing.receipt.createdAt : now,
+        updatedAt: now,
+        replayed: false,
+      }
+      const preparedState = copy(this.state)
+      setOwnValue(preparedState.requests, request.requestId, {
+        kind: 'delete-purge',
+        digest,
+        receipt: prepared,
+      })
+      await this.commit(preparedState)
+
+      try {
+        await cleanArtifacts(copy(current))
+      } catch (error) {
+        const failed: WorkTaskDeletionPurgeReceipt = {
+          ...prepared,
+          stage: 'failed',
+          updatedAt: new Date().toISOString(),
+          tombstone: {
+            ...prepared.tombstone,
+            artifactCleanup: { ...prepared.tombstone.artifactCleanup, status: 'failed' },
+          },
+          error: error instanceof Error && error.message.trim() !== '' ? error.message.slice(0, 10_000) : String(error).slice(0, 10_000),
+          replayed: false,
+        }
+        const failedState = copy(this.state)
+        setOwnValue(failedState.requests, request.requestId, { kind: 'delete-purge', digest, receipt: failed })
+        await this.commit(failedState)
+        return copy(failed)
+      }
+
+      const purged: WorkTaskDeletionPurgeReceipt = {
+        ...prepared,
+        stage: 'purged',
+        updatedAt: new Date().toISOString(),
+        tombstone: {
+          ...prepared.tombstone,
+          artifactCleanup: { ...prepared.tombstone.artifactCleanup, status: 'removed' },
+        },
+        replayed: false,
+      }
+      const purgedState = copy(this.state)
+      for (const [requestId, stored] of Object.entries(purgedState.requests)) {
+        if (requestId === request.requestId || stored.kind === 'delete-preview') continue
+        if (storedReceiptTaskId(stored) === request.taskId) delete purgedState.requests[requestId]
+      }
+      setOwnValue(purgedState.requests, request.requestId, { kind: 'delete-purge', digest, receipt: purged })
+      delete purgedState.tasks[request.taskId]
+      await this.commit(purgedState)
+      return copy(purged)
     })
   }
 
@@ -1991,6 +2118,7 @@ export class WorkItemStore {
     | WorkTaskRevisionReceipt
     | WorkTaskArchiveReceipt
     | WorkTaskDeletionPreviewReceipt
+    | WorkTaskDeletionPurgeReceipt
     | WorkArtifactAcceptReceipt
     | WorkArtifactWriteReceipt
   >(

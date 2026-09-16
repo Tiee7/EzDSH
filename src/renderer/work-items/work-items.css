@@ -9,6 +9,7 @@
 .work-items-button:disabled { cursor: wait; opacity: .65; }
 .work-items-button-quiet { border-color: var(--ezdsh-button-border); background: var(--ezdsh-panel-background); color: var(--ezdsh-button-text); }
 .work-items-button-cancel { border-color: color-mix(in srgb, var(--ezdsh-accent-red) 55%, var(--ezdsh-button-border)); background: var(--ezdsh-panel-background); color: var(--ezdsh-accent-red); }
+.work-items-button-danger { border-color: var(--ezdsh-accent-red); background: var(--ezdsh-accent-red); color: #fff; }
 .work-items-error { margin: 0 0 14px; border: 1px solid color-mix(in srgb, var(--ezdsh-accent-red) 45%, var(--ezdsh-panel-border)); border-radius: 10px; padding: 10px 12px; color: var(--ezdsh-accent-red); font-size: 12px; }
 .work-items-attention-summary { display: grid; gap: 12px; margin: 0 0 16px; border: 1px solid color-mix(in srgb, var(--ezdsh-brand) 28%, var(--ezdsh-panel-border)); border-radius: 12px; padding: 13px 14px; background: color-mix(in srgb, var(--ezdsh-brand) 4%, var(--ezdsh-panel-background)); }
 .work-items-attention-summary-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }

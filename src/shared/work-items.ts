@@ -341,12 +341,11 @@ export interface WorkTaskArchiveRequest {
 }
 
 /**
- * Permanent deletion is deliberately a preview-only capability in 1.8.
+ * Permanent deletion is a developer-only, explicitly confirmed capability.
  * The preview is durable and carries enough identity to make a later purge
- * explicit, reviewable, and recoverable before any bytes are removed.
+ * reviewable and recoverable before any bytes are removed.
  */
 export type WorkTaskDeletionBlockerCode =
-  | 'PERMANENT_DELETE_DISABLED'
   | 'TASK_NOT_ARCHIVED'
   | 'ACTIVE_RUN'
   | 'OPEN_ACTION'
@@ -384,7 +383,7 @@ export interface WorkTaskTombstonePreview {
   retention: 'indefinite-until-explicit-purge'
   artifactCleanup: {
     strategy: 'task-owned-artifact-directory'
-    status: 'not-executed'
+    status: 'not-executed' | 'pending' | 'removed' | 'failed'
     paths: string[]
   }
   recovery: {
@@ -399,7 +398,7 @@ export interface WorkTaskDeletionPreview {
   expectedRevision: number
   observedRevision: number
   generatedAt: string
-  canDelete: false
+  canDelete: boolean
   blockers: WorkTaskDeletionBlocker[]
   inventory: WorkTaskDeletionInventory
   tombstone: WorkTaskTombstonePreview
@@ -410,6 +409,32 @@ export interface WorkTaskDeletePreviewRequest {
   requestId: string
   taskId: string
   expectedRevision: number
+}
+
+export const WORK_ITEM_PURGE_CONFIRMATION = 'DELETE_WORK_ITEM'
+
+export interface WorkTaskDeletionPurgeRequest {
+  requestId: string
+  taskId: string
+  expectedRevision: number
+  previewRequestId: string
+  expectedSnapshotHash: string
+  confirmation: typeof WORK_ITEM_PURGE_CONFIRMATION
+}
+
+export type WorkTaskDeletionPurgeStage = 'prepared' | 'purged' | 'failed'
+
+export interface WorkTaskDeletionPurgeReceipt {
+  requestId: string
+  taskId: string
+  previewRequestId: string
+  expectedRevision: number
+  stage: WorkTaskDeletionPurgeStage
+  tombstone: WorkTaskTombstonePreview
+  createdAt: string
+  updatedAt: string
+  error?: string
+  replayed: boolean
 }
 
 export interface WorkTaskCancelRequest {
@@ -457,8 +482,10 @@ export interface WorkItemsBridge {
   revise(request: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot>
   cancelTask(request: WorkTaskCancelRequest): Promise<WorkTaskSnapshot>
   archive(request: WorkTaskArchiveRequest): Promise<WorkTaskSnapshot>
-  /** Developer-only, durable read-only preview; it never deletes a task or artifact. */
+  /** Developer-only, durable preview for an explicitly confirmed purge. */
   previewDelete?(request: WorkTaskDeletePreviewRequest): Promise<WorkTaskDeletionPreview>
+  /** Developer-only, explicitly confirmed permanent deletion. */
+  purgeDelete?(request: WorkTaskDeletionPurgeRequest): Promise<WorkTaskDeletionPurgeReceipt>
   acceptArtifact(request: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot>
   openArtifact(taskId: string, artifactId: string): Promise<void>
   controlRun(request: WorkRunControlRequest): Promise<WorkTaskSnapshot>
@@ -872,6 +899,24 @@ export function validateWorkTaskDeletePreviewRequest(value: unknown): WorkTaskDe
     requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
     taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
     expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
+  }
+}
+
+export function validateWorkTaskDeletionPurgeRequest(value: unknown): WorkTaskDeletionPurgeRequest {
+  const request = record(value, '$')
+  exactFields(request, [
+    'requestId', 'taskId', 'expectedRevision', 'previewRequestId', 'expectedSnapshotHash', 'confirmation'
+  ])
+  if (request.confirmation !== WORK_ITEM_PURGE_CONFIRMATION) {
+    throw new WorkItemValidationError('INVALID_VALUE', 'confirmation', 'confirmation does not match the permanent deletion command')
+  }
+  return {
+    requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
+    previewRequestId: identifierField(request, 'previewRequestId', WORK_ITEM_LIMITS.id),
+    expectedSnapshotHash: identifierField(request, 'expectedSnapshotHash', 128),
+    confirmation: WORK_ITEM_PURGE_CONFIRMATION,
   }
 }
 

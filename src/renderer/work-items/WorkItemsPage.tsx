@@ -10,6 +10,8 @@ import type {
   WorkTaskCreateRequest,
   WorkTaskDeletePreviewRequest,
   WorkTaskDeletionPreview,
+  WorkTaskDeletionPurgeReceipt,
+  WorkTaskDeletionPurgeRequest,
   WorkTaskExecuteRequest,
   WorkTaskRevisionRequest,
   WorkTaskSnapshot,
@@ -855,6 +857,22 @@ export function WorkItemsPage({ copy, locale = 'zh', developerMode = false, runt
     return window.EzDSH.workItems.previewDelete(request)
   }, [developerMode, locale])
 
+  const purgeDelete = useCallback(async (request: WorkTaskDeletionPurgeRequest): Promise<WorkTaskDeletionPurgeReceipt> => {
+    if (!developerMode || window.EzDSH.workItems.purgeDelete === undefined) {
+      throw new Error(locale === 'en' ? 'Work item permanent deletion is unavailable.' : '工作项永久删除当前不可用。')
+    }
+    return window.EzDSH.workItems.purgeDelete(request)
+  }, [developerMode, locale])
+
+  const onPurgeDeleted = useCallback((taskId: string): void => {
+    setSnapshots((current) => {
+      const next = new Map(current)
+      next.delete(taskId)
+      return next
+    })
+    setSelectedTaskId(undefined)
+  }, [])
+
   const archiveTask = useCallback(async (archived: boolean): Promise<void> => {
     if (selectedTaskId === undefined) return
     const current = snapshots.get(selectedTaskId)
@@ -1083,6 +1101,8 @@ export function WorkItemsPage({ copy, locale = 'zh', developerMode = false, runt
                 onArchive={archiveTask}
                 onCancelTask={cancelTask}
                 onPreviewDelete={developerMode ? previewDelete : undefined}
+                onPurgeDelete={developerMode ? purgeDelete : undefined}
+                onPurgeDeleted={onPurgeDeleted}
                 employeeDirectory={employeeDirectory}
                 project={selectedProject}
               />

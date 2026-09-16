@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
 import type { EmployeeSnapshot } from '../../shared/employees.js'
+import { WORK_ITEM_PURGE_CONFIRMATION } from '../../shared/work-items.js'
 import type {
   WorkActionAnswerRequest,
   WorkRunControlRequest,
   WorkTaskDeletePreviewRequest,
   WorkTaskDeletionPreview,
+  WorkTaskDeletionPurgeReceipt,
+  WorkTaskDeletionPurgeRequest,
   WorkTaskRunDetail,
   WorkTaskSnapshot,
 } from '../../shared/work-items.js'
@@ -38,8 +41,10 @@ interface WorkItemDetailProps {
   onChanged?: (snapshot: WorkTaskSnapshot) => void
   onArchive?: (archived: boolean) => Promise<void>
   onCancelTask?: () => Promise<WorkTaskSnapshot>
-  /** Developer-only read-only deletion assessment; never removes a task. */
+  /** Developer-only deletion assessment and explicit purge operation. */
   onPreviewDelete?: (request: WorkTaskDeletePreviewRequest) => Promise<WorkTaskDeletionPreview>
+  onPurgeDelete?: (request: WorkTaskDeletionPurgeRequest) => Promise<WorkTaskDeletionPurgeReceipt>
+  onPurgeDeleted?: (taskId: string) => void
   developerMode?: boolean
   employeeDirectory?: ReadonlyMap<string, Pick<EmployeeSnapshot, 'name' | 'displayName' | 'role'>>
   project?: { projectId: string; title: string; path?: string }
@@ -140,7 +145,7 @@ function DeletionPreviewPanel({
   return <section className="work-item-detail-section work-item-delete-preview" aria-label={locale === 'en' ? 'Deletion preview' : '删除预览'}>
     <div className="work-item-detail-section-heading">
       <h3>{locale === 'en' ? 'Deletion preview' : '删除预览'}</h3>
-      <span>{locale === 'en' ? 'Read-only · no deletion' : '只读 · 不会删除'}</span>
+      <span>{locale === 'en' ? 'Preview · does not delete by itself' : '预览 · 本身不会删除'}</span>
     </div>
     {busy ? <p className="work-item-delete-preview-status" role="status">{locale === 'en' ? 'Building a durable deletion preview…' : '正在生成持久化删除预览…'}</p> : null}
     {error ? <p className="work-item-delete-preview-error" role="alert">{error}</p> : null}
@@ -290,6 +295,8 @@ export function WorkItemDetail({
   onArchive,
   onCancelTask,
   onPreviewDelete,
+  onPurgeDelete,
+  onPurgeDeleted,
   developerMode = false,
   employeeDirectory,
   project,
@@ -303,10 +310,13 @@ export function WorkItemDetail({
   const [deletePreview, setDeletePreview] = useState<WorkTaskDeletionPreview>()
   const [deletePreviewBusy, setDeletePreviewBusy] = useState(false)
   const [deletePreviewError, setDeletePreviewError] = useState('')
+  const [confirmPurgeDelete, setConfirmPurgeDelete] = useState(false)
+  const [purgeDeleteBusy, setPurgeDeleteBusy] = useState(false)
   const [runDetailStates, setRunDetailStates] = useState<Map<string, RunDetailState>>(() => new Map())
   const cancelInFlight = useRef(false)
   const deletePreviewInFlight = useRef(false)
   const deletePreviewRequest = useRef<WorkTaskDeletePreviewRequest>()
+  const purgeDeleteRequest = useRef<WorkTaskDeletionPurgeRequest>()
   const confirmationRevision = useRef<number>()
   const runDetailRequestSequence = useRef(new Map<string, number>())
   const requirement = currentRequirement(snapshot)
@@ -326,11 +336,14 @@ export function WorkItemDetail({
     && snapshot.task.status !== 'cancelled'
     && snapshot.task.archivedAt === undefined
   const canPreviewDelete = developerMode && onPreviewDelete !== undefined
+  const canPurgeDelete = canPreviewDelete && onPurgeDelete !== undefined && deletePreview?.canDelete === true
 
   useEffect(() => {
     setDeletePreview(undefined)
     setDeletePreviewError('')
     deletePreviewRequest.current = undefined
+    purgeDeleteRequest.current = undefined
+    setConfirmPurgeDelete(false)
   }, [snapshot.task.id, snapshot.task.revision])
 
   function runDetailKey(runId: string): string {
@@ -449,6 +462,47 @@ export function WorkItemDetail({
     }
   }
 
+  async function requestPurgeDelete(): Promise<void> {
+    if (!canPurgeDelete || onPurgeDelete === undefined || deletePreview === undefined || purgeDeleteBusy) return
+    if (!confirmPurgeDelete) {
+      setConfirmPurgeDelete(true)
+      return
+    }
+    const previewRequest = deletePreviewRequest.current
+    if (previewRequest === undefined || previewRequest.taskId !== snapshot.task.id || previewRequest.expectedRevision !== snapshot.task.revision) {
+      setDeletePreviewError(locale === 'en' ? 'The deletion preview is stale. Generate it again.' : '删除预览已经过期，请重新生成。')
+      setConfirmPurgeDelete(false)
+      return
+    }
+    const request: WorkTaskDeletionPurgeRequest = purgeDeleteRequest.current?.taskId === snapshot.task.id
+      && purgeDeleteRequest.current.expectedRevision === snapshot.task.revision
+      && purgeDeleteRequest.current.expectedSnapshotHash === deletePreview.tombstone.snapshotHash
+      ? purgeDeleteRequest.current
+      : {
+          requestId: deletionPreviewRequestId().replace('work-item-delete-preview-', 'work-item-delete-'),
+          taskId: snapshot.task.id,
+          expectedRevision: snapshot.task.revision,
+          previewRequestId: previewRequest.requestId,
+          expectedSnapshotHash: deletePreview.tombstone.snapshotHash,
+          confirmation: WORK_ITEM_PURGE_CONFIRMATION,
+        }
+    purgeDeleteRequest.current = request
+    setPurgeDeleteBusy(true)
+    setDeletePreviewError('')
+    try {
+      const receipt = await onPurgeDelete(request)
+      if (receipt.stage !== 'purged') {
+        throw new Error(receipt.error ?? (locale === 'en' ? 'Permanent deletion did not complete.' : '永久删除尚未完成。'))
+      }
+      onPurgeDeleted?.(snapshot.task.id)
+    } catch (cause) {
+      setDeletePreviewError(cause instanceof Error ? cause.message : String(cause))
+      setConfirmPurgeDelete(false)
+    } finally {
+      setPurgeDeleteBusy(false)
+    }
+  }
+
   return (
     <section className="work-item-detail" aria-label={copy.workItemsDetails} data-work-item-detail={snapshot.task.id}>
       <header className="work-item-detail-header">
@@ -496,7 +550,17 @@ export function WorkItemDetail({
             onClick={() => { void requestDeletePreview() }}
           >{deletePreviewBusy
             ? (locale === 'en' ? 'Preparing…' : '正在准备…')
-            : (locale === 'en' ? 'Preview deletion' : '预览删除')}</button> : null}
+              : (locale === 'en' ? 'Preview deletion' : '预览删除')}</button> : null}
+          {canPurgeDelete ? <button
+            type="button"
+            className="work-items-button work-items-button-danger"
+            disabled={purgeDeleteBusy}
+            onClick={() => { void requestPurgeDelete() }}
+          >{purgeDeleteBusy
+            ? (locale === 'en' ? 'Deleting…' : '正在删除…')
+            : confirmPurgeDelete
+              ? (locale === 'en' ? 'Confirm permanent deletion' : '确认永久删除')
+              : (locale === 'en' ? 'Permanently delete' : '永久删除')}</button> : null}
           <button type="button" className="work-items-button work-items-button-quiet" onClick={onClose}>
             {copy.workItemsCloseDetails}
           </button>

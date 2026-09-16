@@ -19,6 +19,8 @@ import {
   type WorkTaskCreateRequest,
   type WorkTaskDeletePreviewRequest,
   type WorkTaskDeletionPreview,
+  type WorkTaskDeletionPurgeRequest,
+  type WorkTaskDeletionPurgeReceipt,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
   type WorkTaskSnapshot,
@@ -40,6 +42,7 @@ export class WorkItemService {
     private readonly store: WorkItemStore,
     private readonly artifactVerifier?: (artifact: WorkArtifact) => Promise<boolean>,
     private readonly artifactOpener?: (artifact: WorkArtifact) => Promise<void>,
+    private readonly artifactCleaner?: (snapshot: WorkTaskSnapshot) => Promise<void>,
   ) {}
 
   initialize(): Promise<void> {
@@ -63,6 +66,11 @@ export class WorkItemService {
 
   previewDelete(input: WorkTaskDeletePreviewRequest): Promise<WorkTaskDeletionPreview> {
     return this.store.previewDelete(validateWorkTaskDeletePreviewRequest(input)).then((receipt: WorkTaskDeletionPreviewReceipt) => receipt.preview)
+  }
+
+  purgeDelete(input: WorkTaskDeletionPurgeRequest): Promise<WorkTaskDeletionPurgeReceipt> {
+    if (this.artifactCleaner === undefined) throw new Error('Work item permanent deletion is unavailable')
+    return this.store.purgeDelete(input, this.artifactCleaner)
   }
 
   beginTaskCancellation(input: WorkTaskCancelRequest): Promise<WorkTaskCancellationReceipt> {
