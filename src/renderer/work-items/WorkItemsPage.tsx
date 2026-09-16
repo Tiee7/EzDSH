@@ -871,7 +871,9 @@ export function WorkItemsPage({ copy, locale = 'zh', developerMode = false, runt
       return next
     })
     setSelectedTaskId(undefined)
-  }, [])
+    void refreshAttention()
+    void refreshNotificationInbox()
+  }, [refreshAttention, refreshNotificationInbox])
 
   const archiveTask = useCallback(async (archived: boolean): Promise<void> => {
     if (selectedTaskId === undefined) return
