@@ -16,6 +16,7 @@ export interface WorkflowTaskRunPort {
   resume(runId: string): Promise<WorkflowRunRecord>
   resumeExpected(runId: string, request: WorkflowResumeRequest): Promise<WorkflowRunRecord>
   cancel(runId: string): Promise<WorkflowRunRecord>
+  cancelForWorkTask(runId: string): Promise<WorkflowRunRecord>
   get(runId: string): WorkflowRunRecord | undefined
   approveExpected(runId: string, request: WorkflowApprovalDecisionRequest): Promise<WorkflowRunRecord>
   answerExpected(runId: string, request: WorkflowQuestionAnswerRequest): Promise<WorkflowRunRecord>
@@ -56,6 +57,10 @@ export class WorkflowTaskBridge {
 
   cancel(runId: string): Promise<WorkflowRunRecord> {
     return this.workflowRuns.cancel(runId)
+  }
+
+  cancelTask(runId: string): Promise<WorkflowRunRecord> {
+    return this.workflowRuns.cancelForWorkTask(runId)
   }
 
   get(runId: string): WorkflowRunRecord | undefined {

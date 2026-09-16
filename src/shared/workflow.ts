@@ -694,6 +694,27 @@ export interface WorkflowRunTaskAssociation {
   sourceRunId?: string
 }
 
+export type WorkflowWorkTaskCancellationState = 'cancelling' | 'outcome-unknown' | 'cancelled'
+export type WorkflowWorkTaskCancellationTargetState = 'pending' | 'cancelling' | 'cancelled' | 'settled' | 'outcome-unknown'
+
+/** Durable cancellation of one top-level WorkTask Workflow and its complete child lineage. */
+export interface WorkflowWorkTaskCancellationTarget {
+  runId: string
+  parentRunId?: string
+  state: WorkflowWorkTaskCancellationTargetState
+  finalRunStatus?: 'completed' | 'failed' | 'cancelled'
+  error?: string
+  observedAt: string
+}
+
+export interface WorkflowWorkTaskCancellation {
+  requestId: string
+  requestedAt: string
+  updatedAt: string
+  state: WorkflowWorkTaskCancellationState
+  targets: WorkflowWorkTaskCancellationTarget[]
+}
+
 /** Immutable employee profile used by one direct employee node in this run. */
 export interface WorkflowEmployeeNodeSnapshot {
   nodeId: string
@@ -721,6 +742,8 @@ export interface WorkflowRunRecord {
   idempotencyKey?: string
   /** Trusted Main-only WorkTask association. Legacy and ad-hoc runs omit it. */
   workTask?: WorkflowRunTaskAssociation
+  /** Root-owned cancellation fence and aggregate for this WorkTask execution tree. */
+  workTaskCancellation?: WorkflowWorkTaskCancellation
   /** Fixed profiles for direct employee nodes. Legacy runs may omit this evidence. */
   employeeNodeSnapshots?: WorkflowEmployeeNodeSnapshot[]
   /** Stable remote-effect identity, independent from the local run attempt identity. */

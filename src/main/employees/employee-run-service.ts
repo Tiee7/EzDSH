@@ -71,6 +71,11 @@ export class EmployeeRunService {
     return this.options.store.get(runId)
   }
 
+  async findByCommand(commandId: string): Promise<EmployeeRunRecord | undefined> {
+    this.assertInitialized()
+    return (await this.options.store.findByCommand(commandId))?.run
+  }
+
   async list(): Promise<EmployeeRunRecord[]> {
     this.assertInitialized()
     return this.options.store.list()

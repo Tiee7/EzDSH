@@ -3,6 +3,7 @@ import {
   validateWorkArtifactAcceptRequest,
   validateWorkRunControlRequest,
   validateWorkTaskArchiveRequest,
+  validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
@@ -13,6 +14,7 @@ import {
   type WorkItemQuery,
   type WorkRunControlRequest,
   type WorkTaskArchiveRequest,
+  type WorkTaskCancelRequest,
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
@@ -23,7 +25,9 @@ import {
   type WorkActionAnswerReceipt,
   type WorkArtifactAcceptReceipt,
   type WorkDispatchIntentReceipt,
-  type WorkRunControlReceipt
+  type WorkRunControlReceipt,
+  type WorkTaskCancellationReceipt,
+  type WorkTaskCancellationTargetUpdate,
 } from './work-item-store.js'
 
 export class WorkItemService {
@@ -50,6 +54,22 @@ export class WorkItemService {
   async archive(input: WorkTaskArchiveRequest): Promise<WorkTaskSnapshot> {
     const receipt = await this.store.archive(validateWorkTaskArchiveRequest(input))
     return receipt.snapshot
+  }
+
+  beginTaskCancellation(input: WorkTaskCancelRequest): Promise<WorkTaskCancellationReceipt> {
+    return this.store.beginTaskCancellation(validateWorkTaskCancelRequest(input))
+  }
+
+  updateTaskCancellationTarget(
+    requestId: string,
+    commandId: string,
+    update: WorkTaskCancellationTargetUpdate,
+  ): Promise<WorkTaskCancellationReceipt> {
+    return this.store.updateTaskCancellationTarget(requestId, commandId, update)
+  }
+
+  getTaskCancellation(requestId: string): Promise<WorkTaskCancellationReceipt | undefined> {
+    return this.store.getTaskCancellation(requestId)
   }
 
   async acceptArtifact(input: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot> {

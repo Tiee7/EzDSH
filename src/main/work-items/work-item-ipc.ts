@@ -9,6 +9,7 @@ import {
   validateWorkActionAnswerRequest,
   validateWorkArtifactAcceptRequest,
   validateWorkTaskArchiveRequest,
+  validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
@@ -24,6 +25,7 @@ export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:create',
   'work-items:execute',
   'work-items:revise',
+  'work-items:cancel-task',
   'work-items:archive',
   'work-items:accept-artifact',
   'work-items:open-artifact',
@@ -35,12 +37,14 @@ export const WORK_ITEM_CHANGED_CHANNEL = 'work-items:changed'
 
 type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'acceptArtifact' | 'openArtifact'>
 type WorkItemExecutionService = Pick<WorkItemsBridge, 'execute'>
+type WorkItemCancellationService = Pick<WorkItemsBridge, 'cancelTask'>
 type WorkItemActionService = Pick<WorkItemsBridge, 'controlRun' | 'answerAction'>
 export type WorkItemExecutionOperation = 'execute' | 'control-run' | 'answer-action'
 
 export interface WorkItemIpcServices {
   workItems: WorkItemReadService
   execution: WorkItemExecutionService
+  cancellation: WorkItemCancellationService
   actions: WorkItemActionService
   assertExecutionAvailable?: (operation: WorkItemExecutionOperation, request: unknown) => void
   authorizeScope?: (scope: WorkScope) => Promise<WorkScope>
@@ -199,6 +203,7 @@ export function registerWorkItemIpc(
     return services.execution.execute(request)
   })
   register('work-items:revise', (services, input) => services.workItems.revise(validateWorkTaskRevisionRequest(input)))
+  register('work-items:cancel-task', (services, input) => services.cancellation.cancelTask(validateWorkTaskCancelRequest(input)))
   register('work-items:archive', (services, input) => services.workItems.archive(validateWorkTaskArchiveRequest(input)))
   register('work-items:accept-artifact', (services, input) => services.workItems.acceptArtifact(validateWorkArtifactAcceptRequest(input)))
   register('work-items:open-artifact', (services, input) => {

@@ -59,6 +59,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
         get: vi.fn(), create: vi.fn(), revise: vi.fn(), acceptArtifact: vi.fn(),
       },
       execution: { execute: vi.fn() },
+      cancellation: { cancelTask: vi.fn() },
       actions: { controlRun: vi.fn(), answerAction: vi.fn() },
     }
     const initializing = initializeWorkItemIpcWorkspace({
@@ -116,9 +117,11 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     const { service, task } = await realWorkItems()
     const handlers = new Map<string, (event: unknown, request?: unknown) => Promise<unknown>>()
     const assertExecutionAvailable = vi.fn(() => { throw Object.assign(new Error('DSH Runtime 尚未启动'), { code: 'RUNTIME_OFFLINE' }) })
+    const cancelTask = vi.fn(async () => task)
     const scope = createWorkItemIpcWorkspaceScope({
       workItems: service,
       execution: { execute: vi.fn() },
+      cancellation: { cancelTask },
       actions: { controlRun: vi.fn(), answerAction: vi.fn() },
       assertExecutionAvailable,
     })
@@ -130,6 +133,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       'work-items:create',
       'work-items:execute',
       'work-items:revise',
+      'work-items:cancel-task',
       'work-items:archive',
       'work-items:accept-artifact',
       'work-items:open-artifact',
@@ -142,6 +146,12 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       .resolves.toEqual({ ok: true, data: [task] })
     await expect(handlers.get('work-items:get')!({}, task.task.id))
       .resolves.toEqual({ ok: true, data: task })
+    await expect(handlers.get('work-items:cancel-task')!({}, {
+      requestId: 'cancel-offline', taskId: task.task.id, expectedRevision: task.task.revision,
+    })).resolves.toEqual({ ok: true, data: task })
+    expect(cancelTask).toHaveBeenCalledWith({
+      requestId: 'cancel-offline', taskId: task.task.id, expectedRevision: task.task.revision,
+    })
     expect(assertExecutionAvailable).not.toHaveBeenCalled()
 
     const execute = await handlers.get('work-items:execute')!({}, {
@@ -160,10 +170,11 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       revise: vi.fn(), archive: vi.fn(), acceptArtifact: vi.fn(), openArtifact: vi.fn(),
     }
     const execution = { execute: vi.fn() }
+    const cancellation = { cancelTask: vi.fn() }
     const actions = { controlRun: vi.fn(), answerAction: vi.fn() }
     registerWorkItemIpc(
       { handle: (channel, listener) => { handlers.set(channel, listener) } },
-      () => createWorkItemIpcWorkspaceScope({ workItems, execution, actions }),
+      () => createWorkItemIpcWorkspaceScope({ workItems, execution, cancellation, actions }),
     )
 
     const unknownQuery = await handlers.get('work-items:list')!({}, { projectId: 'project', permissions: ['all'] })
@@ -191,6 +202,12 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     expect(invalidArchive).toMatchObject({ ok: false, error: { code: 'INVALID_TYPE' } })
     expect(workItems.archive).not.toHaveBeenCalled()
 
+    const unknownCancel = await handlers.get('work-items:cancel-task')!({}, {
+      requestId: 'cancel', taskId: 'task-1', expectedRevision: 1, force: true,
+    })
+    expect(unknownCancel).toMatchObject({ ok: false, error: { code: 'UNKNOWN_FIELD' } })
+    expect(cancellation.cancelTask).not.toHaveBeenCalled()
+
     const invalidOpen = await handlers.get('work-items:open-artifact')!({}, { taskId: 'task-1', artifactId: 'artifact-1', storedPath: '/tmp/private' })
     expect(invalidOpen).toMatchObject({ ok: false, error: { code: 'UNKNOWN_FIELD' } })
     expect(workItems.openArtifact).not.toHaveBeenCalled()
@@ -214,16 +231,18 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       archive: vi.fn(async () => snapshot), acceptArtifact: vi.fn(async () => snapshot), openArtifact: vi.fn(async () => undefined),
     }
     const execution = { execute: vi.fn(async () => snapshot) }
+    const cancellation = { cancelTask: vi.fn(async () => snapshot) }
     const actions = { controlRun: vi.fn(async () => snapshot), answerAction: vi.fn(async () => snapshot) }
     const assertExecutionAvailable = vi.fn()
     registerWorkItemIpc(
       { handle: (channel, listener) => { handlers.set(channel, listener) } },
-      () => createWorkItemIpcWorkspaceScope({ workItems, execution, actions, assertExecutionAvailable }),
+      () => createWorkItemIpcWorkspaceScope({ workItems, execution, cancellation, actions, assertExecutionAvailable }),
     )
     const requests = {
       create: { requestId: 'create', title: ' Task ', goal: ' Goal ', acceptance: ' Done ', scope: { resourceRefs: [] } },
       execute: { requestId: 'execute', taskId: 'task-1', expectedRevision: 1, executor: { kind: 'workflow' as const, workflowId: 'workflow-1' }, mode: 'initial' as const, input: null },
       revise: { requestId: 'revise', taskId: 'task-1', expectedRevision: 1, goal: ' New ', acceptance: ' Check ' },
+      cancel: { requestId: 'cancel', taskId: 'task-1', expectedRevision: 1 },
       archive: { requestId: 'archive', taskId: 'task-1', expectedRevision: 1, archived: true },
       accept: { requestId: 'accept', taskId: 'task-1', expectedRevision: 1, artifactId: 'artifact-1', contentVersion: 1, requirementVersion: 1 },
       open: { taskId: 'task-1', artifactId: 'artifact-1' },
@@ -234,6 +253,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     await handlers.get('work-items:create')!({}, requests.create)
     await handlers.get('work-items:execute')!({}, requests.execute)
     await handlers.get('work-items:revise')!({}, requests.revise)
+    await handlers.get('work-items:cancel-task')!({}, requests.cancel)
     await handlers.get('work-items:archive')!({}, requests.archive)
     await handlers.get('work-items:accept-artifact')!({}, requests.accept)
     await handlers.get('work-items:open-artifact')!({}, requests.open)
@@ -243,6 +263,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     expect(workItems.create).toHaveBeenCalledWith({ ...requests.create, title: 'Task', goal: 'Goal', acceptance: 'Done' })
     expect(execution.execute).toHaveBeenCalledWith(requests.execute)
     expect(workItems.revise).toHaveBeenCalledWith({ ...requests.revise, goal: 'New', acceptance: 'Check' })
+    expect(cancellation.cancelTask).toHaveBeenCalledWith(requests.cancel)
     expect(workItems.archive).toHaveBeenCalledWith(requests.archive)
     expect(workItems.acceptArtifact).toHaveBeenCalledWith(requests.accept)
     expect(workItems.openArtifact).toHaveBeenCalledWith('task-1', 'artifact-1')
@@ -284,6 +305,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       () => createWorkItemIpcWorkspaceScope({
         workItems,
         execution,
+        cancellation: { cancelTask: vi.fn() },
         actions: { controlRun: vi.fn(), answerAction: vi.fn() },
         authorizeScope,
       }),
@@ -341,6 +363,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       () => createWorkItemIpcWorkspaceScope({
         workItems,
         execution,
+        cancellation: { cancelTask: vi.fn() },
         actions: { controlRun: vi.fn(), answerAction: vi.fn() },
         authorizeScope,
       }),
@@ -376,6 +399,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     const old = createWorkItemIpcWorkspaceScope({
       workItems: { list: vi.fn(), get: vi.fn(), create: vi.fn(() => pending.promise), revise: vi.fn(), acceptArtifact: vi.fn() },
       execution: { execute: vi.fn() },
+      cancellation: { cancelTask: vi.fn() },
       actions: { controlRun: vi.fn(), answerAction: vi.fn() },
     }, [removeChanged, removeWorkflow])
     const running = old.invoke((services) => services.workItems.create({} as never))
@@ -404,6 +428,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     const next = createWorkItemIpcWorkspaceScope({
       workItems: { list: nextList, get: vi.fn(), create: vi.fn(), revise: vi.fn(), acceptArtifact: vi.fn() },
       execution: { execute: vi.fn() },
+      cancellation: { cancelTask: vi.fn() },
       actions: { controlRun: vi.fn(), answerAction: vi.fn() },
     })
     await expect(next.invoke((services) => services.workItems.list())).resolves.toEqual([])
@@ -421,6 +446,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     const scope = createWorkItemIpcWorkspaceScope({
       workItems: service,
       execution: { execute: vi.fn() },
+      cancellation: { cancelTask: vi.fn() },
       actions: { controlRun: vi.fn(), answerAction: vi.fn() },
     }, [store.onChanged(changed)])
 
@@ -453,6 +479,8 @@ describe('WorkItem preload bridge', () => {
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:execute', request)
     await bridge.workItems.revise(request)
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:revise', request)
+    await bridge.workItems.cancelTask(request)
+    expect(electron.invoke).toHaveBeenLastCalledWith('work-items:cancel-task', request)
     await bridge.workItems.archive(request)
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:archive', request)
     await bridge.workItems.acceptArtifact(request)

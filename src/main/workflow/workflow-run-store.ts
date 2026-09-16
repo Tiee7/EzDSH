@@ -1,7 +1,16 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { cloneWorkflow, isWorkflowValue, workflowAllNodeRunStates, type WorkflowRunLease, type WorkflowRunQueueState, type WorkflowRunRecord } from '../../shared/workflow.js'
+import {
+  cloneWorkflow,
+  isWorkflowValue,
+  workflowAllNodeRunStates,
+  type WorkflowRunLease,
+  type WorkflowRunQueueState,
+  type WorkflowRunRecord,
+  type WorkflowWorkTaskCancellation,
+  type WorkflowWorkTaskCancellationTarget,
+} from '../../shared/workflow.js'
 import type { WorkflowQueueCapacityMetrics, WorkflowRunQueueSnapshot } from '../../shared/workflow-operations.js'
 import { workflowRunHasUnresolvedAudit } from '../../shared/workflow-dead-letter.js'
 import { WorkflowMutationCoordinator, workflowMutationCoordinator } from './workflow-mutation-coordinator.js'
@@ -61,6 +70,48 @@ function compareQueuedRuns(left: WorkflowRunRecord, right: WorkflowRunRecord): n
     || compareText(left.id, right.id)
 }
 
+function taskCancellationTarget(record: WorkflowRunRecord, observedAt: string): WorkflowWorkTaskCancellationTarget {
+  if (record.status === 'completed') return { runId: record.id, ...(record.parentRunId === undefined ? {} : { parentRunId: record.parentRunId }), state: 'settled', finalRunStatus: 'completed', observedAt }
+  if (record.status === 'cancelled') return { runId: record.id, ...(record.parentRunId === undefined ? {} : { parentRunId: record.parentRunId }), state: 'cancelled', finalRunStatus: 'cancelled', observedAt }
+  return {
+    runId: record.id,
+    ...(record.parentRunId === undefined ? {} : { parentRunId: record.parentRunId }),
+    state: record.status === 'running' && record.queue?.cancellationRequestedAt !== undefined ? 'cancelling' : 'pending',
+    observedAt,
+  }
+}
+
+function taskCancellationState(targets: WorkflowWorkTaskCancellationTarget[]): WorkflowWorkTaskCancellation['state'] {
+  if (targets.some((target) => target.state === 'outcome-unknown')) return 'outcome-unknown'
+  if (targets.some((target) => target.state === 'pending' || target.state === 'cancelling')) return 'cancelling'
+  return 'cancelled'
+}
+
+function isPersistedWorkTaskCancellation(value: unknown, rootId: string): value is WorkflowWorkTaskCancellation {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const cancellation = value as Record<string, unknown>
+  if (!isNonEmptyString(cancellation.requestId) || !isNonEmptyString(cancellation.requestedAt) || Number.isNaN(Date.parse(cancellation.requestedAt))
+    || !isNonEmptyString(cancellation.updatedAt) || Number.isNaN(Date.parse(cancellation.updatedAt))
+    || !['cancelling', 'outcome-unknown', 'cancelled'].includes(String(cancellation.state)) || !Array.isArray(cancellation.targets)) return false
+  const ids = new Set<string>()
+  for (const value of cancellation.targets) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+    const target = value as Record<string, unknown>
+    if (!isNonEmptyString(target.runId) || ids.has(target.runId)
+      || target.parentRunId !== undefined && !isNonEmptyString(target.parentRunId)
+      || !['pending', 'cancelling', 'cancelled', 'settled', 'outcome-unknown'].includes(String(target.state))
+      || !isNonEmptyString(target.observedAt) || Number.isNaN(Date.parse(target.observedAt))
+      || target.error !== undefined && typeof target.error !== 'string') return false
+    if (target.state === 'cancelled' && target.finalRunStatus !== 'cancelled') return false
+    if (target.state === 'settled' && target.finalRunStatus !== 'completed' && target.finalRunStatus !== 'failed') return false
+    if (target.state !== 'cancelled' && target.state !== 'settled' && target.finalRunStatus !== undefined) return false
+    if ((target.state === 'outcome-unknown') !== isNonEmptyString(target.error)) return false
+    ids.add(target.runId)
+  }
+  if (!ids.has(rootId)) return false
+  return taskCancellationState(cancellation.targets as WorkflowWorkTaskCancellationTarget[]) === cancellation.state
+}
+
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
   const tempPath = `${filePath}.${randomUUID()}.tmp`
@@ -93,6 +144,11 @@ export function isPersistedRunRecord(value: unknown): value is WorkflowRunRecord
     if (record.origin === null || typeof record.origin !== 'object') return false
     const origin = record.origin as Record<string, unknown>
     if (origin.kind !== 'top-level' && (origin.kind !== 'child' || typeof origin.parentRunId !== 'string' || origin.parentRunId.trim() === '')) return false
+  }
+  if (record.workTaskCancellation !== undefined) {
+    if ((record.origin as { kind?: unknown } | undefined)?.kind !== 'top-level'
+      || record.workTask === undefined
+      || !isPersistedWorkTaskCancellation(record.workTaskCancellation, record.id as string)) return false
   }
   const queue = record.queue
   if (queue !== undefined && !isValidQueueState(queue)) return false
@@ -320,6 +376,105 @@ export class WorkflowRunStore {
     return record === undefined ? undefined : cloneWorkflow(record)
   }
 
+  listPendingWorkTaskCancellations(): WorkflowRunRecord[] {
+    return this.list().filter((record) => record.workTaskCancellation !== undefined && record.workTaskCancellation.state !== 'cancelled')
+  }
+
+  /** Atomically fence a top-level WorkTask run and freeze every child already admitted below it. */
+  async beginWorkTaskCancellation(rootRunId: string, requestId: string, now = new Date()): Promise<WorkflowRunRecord> {
+    await this.initialize()
+    const observedAt = now.toISOString()
+    return this.mutate(async () => {
+      const root = this.runs.get(rootRunId)
+      if (root === undefined) throw new Error(`Workflow run not found: ${rootRunId}`)
+      if (root.origin?.kind !== 'top-level' || root.workTask === undefined) throw new Error('WORKFLOW_TASK_CANCELLATION_ROOT_REQUIRED')
+      const existing = root.workTaskCancellation
+      if (existing !== undefined) {
+        if (existing.requestId !== requestId) throw new Error('WORKFLOW_TASK_CANCELLATION_REQUEST_CONFLICT')
+        return cloneWorkflow(root)
+      }
+      const descendants = this.descendantsOf(rootRunId)
+      const targets = [root, ...descendants].map((record) => taskCancellationTarget(record, observedAt))
+      root.workTaskCancellation = {
+        requestId,
+        requestedAt: observedAt,
+        updatedAt: observedAt,
+        state: taskCancellationState(targets),
+        targets,
+      }
+      await this.persist()
+      return cloneWorkflow(root)
+    })
+  }
+
+  /** Re-read authoritative run states without retrying an unknown cancellation side effect. */
+  async refreshWorkTaskCancellation(rootRunId: string, now = new Date()): Promise<WorkflowRunRecord> {
+    await this.initialize()
+    const observedAt = now.toISOString()
+    return this.mutate(async () => {
+      const root = this.runs.get(rootRunId)
+      if (root?.workTaskCancellation === undefined) throw new Error(`Workflow task cancellation not found: ${rootRunId}`)
+      let changed = false
+      for (const target of root.workTaskCancellation.targets) {
+        const record = this.runs.get(target.runId)
+        let next: WorkflowWorkTaskCancellationTarget
+        if (record === undefined) {
+          next = { ...target, state: 'outcome-unknown', error: 'Workflow cancellation target is missing', observedAt }
+          delete next.finalRunStatus
+        } else if (record.status === 'completed') {
+          next = { ...target, state: 'settled', finalRunStatus: 'completed', observedAt }
+          delete next.error
+        } else if (record.status === 'cancelled') {
+          next = { ...target, state: 'cancelled', finalRunStatus: 'cancelled', observedAt }
+          delete next.error
+        } else if (target.state === 'outcome-unknown') {
+          next = target
+        } else if (record.status === 'running' && record.queue?.cancellationRequestedAt !== undefined) {
+          next = { ...target, state: 'cancelling', observedAt }
+          delete next.finalRunStatus
+          delete next.error
+        } else {
+          next = { ...target, state: 'pending', observedAt }
+          delete next.finalRunStatus
+          delete next.error
+        }
+        if (JSON.stringify({ ...target, observedAt: undefined }) !== JSON.stringify({ ...next, observedAt: undefined })) {
+          Object.assign(target, next)
+          changed = true
+        }
+      }
+      const state = taskCancellationState(root.workTaskCancellation.targets)
+      if (root.workTaskCancellation.state !== state) {
+        root.workTaskCancellation.state = state
+        changed = true
+      }
+      if (changed) {
+        root.workTaskCancellation.updatedAt = observedAt
+        await this.persist()
+      }
+      return cloneWorkflow(root)
+    })
+  }
+
+  async markWorkTaskCancellationTargetUnknown(rootRunId: string, targetRunId: string, error: unknown, now = new Date()): Promise<WorkflowRunRecord> {
+    await this.initialize()
+    const observedAt = now.toISOString()
+    return this.mutate(async () => {
+      const root = this.runs.get(rootRunId)
+      const cancellation = root?.workTaskCancellation
+      const target = cancellation?.targets.find((candidate) => candidate.runId === targetRunId)
+      if (root === undefined || cancellation === undefined || target === undefined) throw new Error(`Workflow task cancellation target not found: ${targetRunId}`)
+      target.state = 'outcome-unknown'
+      target.error = (error instanceof Error ? error.message : String(error)).slice(0, 1_000) || 'Workflow cancellation outcome is unknown'
+      target.observedAt = observedAt
+      delete target.finalRunStatus
+      cancellation.state = taskCancellationState(cancellation.targets)
+      cancellation.updatedAt = observedAt
+      await this.persist()
+      return cloneWorkflow(root)
+    })
+  }
+
   /** Retention protection includes durable tombstones and live reference chains. */
   isRunProtected(id: string): boolean {
     return this.mutations.isRunProtected(id) || this.referenceProtectedIds().has(id)
@@ -359,6 +514,9 @@ export class WorkflowRunStore {
     const snapshot = cloneWorkflow(record)
     return this.mutate(async () => {
       const current = this.runs.get(snapshot.id)
+      if (current === undefined && snapshot.parentRunId !== undefined && this.hasWorkTaskCancellationFence(snapshot.parentRunId)) {
+        throw new Error('WORKFLOW_TASK_CANCELLATION_FENCED')
+      }
       if (retainedAudit) {
         this.mutations.assertAvailable()
         if (current === undefined || !this.mutations.isWorkflowDeleted(snapshot.workflowId) || !this.mutations.isRunProtected(snapshot.id)
@@ -377,6 +535,9 @@ export class WorkflowRunStore {
         for (const receipt of snapshot.recoveryReceipts ?? []) if (!accepted.has(receipt.requestId)) accepted.set(receipt.requestId, receipt)
         snapshot.recoveryReceipts = [...accepted.values()].map((receipt) => ({ ...receipt }))
       }
+      // Only the tree-cancellation coordinator mutates this root-owned fence.
+      // A stale Worker snapshot must never erase or roll it back.
+      if (current?.workTaskCancellation !== undefined) snapshot.workTaskCancellation = cloneWorkflow(current.workTaskCancellation)
       const incomingLease = snapshot.queue?.lease
       const currentLease = current?.queue?.lease
       // A worker may renew its lease while the service is still holding an
@@ -428,6 +589,9 @@ export class WorkflowRunStore {
         ))
         if (existing !== undefined) return cloneWorkflow(existing)
       }
+      if (snapshot.parentRunId !== undefined && this.hasWorkTaskCancellationFence(snapshot.parentRunId)) {
+        throw new Error('WORKFLOW_TASK_CANCELLATION_FENCED')
+      }
       this.runs.set(snapshot.id, snapshot)
       await this.persist()
       return cloneWorkflow(snapshot)
@@ -444,6 +608,7 @@ export class WorkflowRunStore {
       const due = Array.from(this.runs.values())
         .filter((record) => {
           if (record.status !== 'queued') return false
+          if (this.hasWorkTaskCancellationFence(record.id)) return false
           if (record.queue !== undefined && !isValidQueueState(record.queue)) return false
           const availableAt = record.queue?.availableAt
           return record.queue === undefined || (availableAt !== undefined && Date.parse(availableAt) <= nowMs)
@@ -610,13 +775,14 @@ export class WorkflowRunStore {
   }
 
   /** Persist a cancellation request before an active Worker is asked to abort. */
-  async requestCancellation(runId: string, now = new Date()): Promise<WorkflowRunRecord | undefined> {
+  async requestCancellation(runId: string, now = new Date(), terminalizeRecoverable = false): Promise<WorkflowRunRecord | undefined> {
     await this.initialize()
     const requestedAt = now.toISOString()
     return this.mutate(async () => {
       const record = this.runs.get(runId)
       if (record === undefined) return undefined
-      if (record.status === 'queued' || record.status === 'waiting-approval' || record.status === 'waiting-question') {
+      if (record.status === 'queued' || record.status === 'waiting-approval' || record.status === 'waiting-question'
+        || terminalizeRecoverable && (record.status === 'failed' || record.status === 'paused')) {
         record.status = 'cancelled'
         record.error = '用户取消了运行'
         record.completedAt = requestedAt
@@ -701,6 +867,36 @@ export class WorkflowRunStore {
     await atomicWriteJson(this.filePath, { schemaVersion: 1, lastClaimedBucket: this.lastClaimedBucket, runs: Array.from(this.runs.values()) })
   }
 
+  private descendantsOf(rootRunId: string): WorkflowRunRecord[] {
+    const descendants: WorkflowRunRecord[] = []
+    const queue = [rootRunId]
+    const seen = new Set(queue)
+    while (queue.length > 0) {
+      const parentRunId = queue.shift()!
+      const children = [...this.runs.values()]
+        .filter((record) => record.parentRunId === parentRunId)
+        .sort((left, right) => compareText(left.id, right.id))
+      for (const child of children) {
+        if (seen.has(child.id)) continue
+        seen.add(child.id)
+        descendants.push(child)
+        queue.push(child.id)
+      }
+    }
+    return descendants
+  }
+
+  private hasWorkTaskCancellationFence(runId: string): boolean {
+    const seen = new Set<string>()
+    let current = this.runs.get(runId)
+    while (current !== undefined && !seen.has(current.id)) {
+      seen.add(current.id)
+      if (current.workTaskCancellation !== undefined) return true
+      current = current.parentRunId === undefined ? undefined : this.runs.get(current.parentRunId)
+    }
+    return false
+  }
+
   private cloneRuns(): Map<string, WorkflowRunRecord> {
     return new Map(Array.from(this.runs, ([id, record]) => [id, cloneWorkflow(record)]))
   }
@@ -763,6 +959,20 @@ export class WorkflowRunStore {
    * An unresolvable reference blocks destructive cleanup rather than guessing. */
   private referenceProtectedIds(): Set<string> {
     const protectedIds = new Set<string>()
+    for (const root of this.runs.values()) {
+      const cancellation = root.workTaskCancellation
+      if (cancellation === undefined || cancellation.state === 'cancelled') continue
+      protectedIds.add(root.id)
+      for (const target of cancellation.targets) {
+        if (!this.runs.has(target.runId)) {
+          // An incomplete tree with a missing frozen target is an audit gap;
+          // preserve all history until reconciliation resolves it.
+          for (const id of this.runs.keys()) protectedIds.add(id)
+          break
+        }
+        protectedIds.add(target.runId)
+      }
+    }
     const walk = (value: unknown, source: string): void => {
       if (Array.isArray(value)) { for (const item of value) walk(item, source); return }
       if (value === null || typeof value !== 'object') return

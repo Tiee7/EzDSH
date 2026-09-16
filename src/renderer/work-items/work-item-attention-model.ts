@@ -1,6 +1,6 @@
 import type { WorkRunRef, WorkTaskSnapshot } from '../../shared/work-items.js'
 
-export type WorkItemAttentionGroup = 'needs-action' | 'in-progress' | 'review' | 'failed' | 'completed'
+export type WorkItemAttentionGroup = 'needs-action' | 'in-progress' | 'review' | 'failed' | 'completed' | 'cancelled'
 
 const ACTIVE_RUN_STATUSES = new Set<WorkRunRef['status']>([
   'queued',
@@ -24,6 +24,9 @@ function latestFailure(snapshot: WorkTaskSnapshot): WorkRunRef | undefined {
  * precedence so a stale/coarse status cannot hide work that still needs review.
  */
 export function attentionGroup(snapshot: WorkTaskSnapshot): WorkItemAttentionGroup {
+  if (snapshot.task.status === 'cancelled' || snapshot.task.cancellation?.state === 'cancelled') return 'cancelled'
+  if (snapshot.task.cancellation?.state === 'requested' || snapshot.task.cancellation?.state === 'cancelling') return 'in-progress'
+  if (snapshot.task.cancellation?.state === 'outcome-unknown') return 'needs-action'
   if (snapshot.actions.some((action) => action.status === 'open')) return 'needs-action'
 
   const currentArtifacts = snapshot.artifacts.filter(

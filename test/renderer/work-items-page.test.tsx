@@ -14,11 +14,20 @@ import type {
   WorkItemQuery,
   WorkRunControlRequest,
   WorkTaskArchiveRequest,
+  WorkTaskCancelRequest,
+  WorkTaskCancellation,
   WorkTaskCreateRequest,
   WorkTaskExecuteRequest,
   WorkTaskRevisionRequest,
   WorkTaskSnapshot,
 } from '../../src/shared/work-items.js'
+
+function withCancellation(snapshotValue: WorkTaskSnapshot, cancellation: WorkTaskCancellation): WorkTaskSnapshot {
+  return {
+    ...snapshotValue,
+    task: { ...snapshotValue.task, cancellation },
+  }
+}
 import { workArtifactFixture, workTaskFixture } from '../work-items/fixtures.js'
 
 function snapshot(overrides: Partial<WorkTaskSnapshot> = {}): WorkTaskSnapshot {
@@ -61,6 +70,7 @@ async function mountPage(options: {
   execute?: (request: WorkTaskExecuteRequest) => Promise<WorkTaskSnapshot>
   revise?: (request: WorkTaskRevisionRequest) => Promise<WorkTaskSnapshot>
   archive?: (request: WorkTaskArchiveRequest) => Promise<WorkTaskSnapshot>
+  cancelTask?: (request: WorkTaskCancelRequest) => Promise<WorkTaskSnapshot>
   answerAction?: (request: WorkActionAnswerRequest) => Promise<WorkTaskSnapshot>
   controlRun?: (request: WorkRunControlRequest) => Promise<WorkTaskSnapshot>
   acceptArtifact?: (request: import('../../src/shared/work-items.js').WorkArtifactAcceptRequest) => Promise<WorkTaskSnapshot>
@@ -86,6 +96,7 @@ async function mountPage(options: {
     execute: vi.fn(options.execute ?? (async () => snapshot())),
     revise: vi.fn(options.revise ?? (async () => snapshot())),
     archive: vi.fn(options.archive ?? (async (request: WorkTaskArchiveRequest) => snapshot({ task: { ...workTaskFixture(), revision: 3, ...(request.archived ? { archivedAt: '2026-09-16T08:00:00.000Z' } : {}) } }))),
+    cancelTask: vi.fn(options.cancelTask ?? (async () => snapshot())),
     answerAction: vi.fn(options.answerAction ?? (async () => snapshot())),
     acceptArtifact: vi.fn(options.acceptArtifact ?? (async () => snapshot())),
     openArtifact: vi.fn(options.openArtifact ?? (async () => undefined)),
@@ -191,6 +202,163 @@ describe('Work Items renderer', () => {
     } finally {
       await page.cleanup()
     }
+  })
+
+  it('requires confirmation once, sends one task cancellation, and renders its persisted pending state', async () => {
+    const current = snapshot()
+    const cancelling = withCancellation(snapshot({ task: { ...current.task, revision: 3 } }), {
+      requestId: 'cancel-task-1', expectedRevision: 2,
+      requestedAt: '2026-09-16T09:00:00.000Z', updatedAt: '2026-09-16T09:00:00.000Z',
+      state: 'cancelling', targets: [{
+        commandId: 'command-1', runId: 'run-1', attemptId: 'attempt-1', requirementVersion: 2,
+        executor: { kind: 'employee', employeeId: 'researcher' },
+        state: 'cancelling', observedAt: '2026-09-16T09:00:00.000Z',
+      }],
+    })
+    const cancelTask = vi.fn(async () => cancelling)
+    const page = await mountPage({ list: async () => [current], get: async () => current, cancelTask })
+    try {
+      await page.click('Prepare release notes')
+      await page.click('取消工作项')
+      expect(cancelTask).not.toHaveBeenCalled()
+      expect(page.dom.document.body.textContent).toContain('已有历史和成果会保留')
+      expect(page.dom.document.body.textContent).toContain('全部相关执行都进入可核实的最终状态后')
+
+      await page.click('确认取消工作项')
+      expect(cancelTask).toHaveBeenCalledOnce()
+      expect(cancelTask).toHaveBeenCalledWith(expect.objectContaining({
+        requestId: expect.stringMatching(/^work-item-cancel-/), taskId: 'task-1', expectedRevision: 2,
+      }))
+      const detail = page.dom.document.querySelector('[data-work-item-detail="task-1"]')?.textContent ?? ''
+      expect(detail).toContain('正在取消工作项')
+      expect(detail).toContain('正在等待执行器确认停止')
+      expect(detail).not.toContain('修改要求')
+      expect(detail).not.toContain('交接')
+      expect(detail).not.toContain('再做一版')
+      expect(detail).not.toContain('归档')
+      expect(detail).not.toContain('接受这一版')
+      expect(detail).toContain('打开执行器')
+      expect(detail).toContain('查看这一版')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('reuses the same cancellation request id after a transport failure at the same revision', async () => {
+    const current = snapshot()
+    const cancelling = withCancellation(snapshot({ task: { ...current.task, revision: 3 } }), {
+      requestId: 'persisted-request', expectedRevision: 2,
+      requestedAt: '2026-09-16T09:00:00.000Z', updatedAt: '2026-09-16T09:00:00.000Z',
+      state: 'cancelling', targets: [],
+    })
+    const cancelTask = vi.fn<(_: WorkTaskCancelRequest) => Promise<WorkTaskSnapshot>>()
+      .mockRejectedValueOnce(new Error('Network unavailable'))
+      .mockResolvedValueOnce(cancelling)
+    const page = await mountPage({ list: async () => [current], get: async () => current, cancelTask })
+    try {
+      await page.click('Prepare release notes')
+      await page.click('取消工作项')
+      await page.click('确认取消工作项')
+      expect(page.dom.document.querySelector('[role="alert"]')?.textContent).toContain('Network unavailable')
+      await page.click('确认取消工作项')
+      expect(cancelTask).toHaveBeenCalledTimes(2)
+      expect(cancelTask.mock.calls[1]?.[0].requestId).toBe(cancelTask.mock.calls[0]?.[0].requestId)
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('refreshes a revision conflict and requires a fresh confirmation before retrying', async () => {
+    const current = snapshot()
+    const refreshed = snapshot({ task: { ...current.task, revision: 3, updatedAt: '2026-09-16T09:01:00.000Z' } })
+    const cancelling = withCancellation(snapshot({ task: { ...refreshed.task, revision: 4 } }), {
+      requestId: 'cancel-after-refresh', expectedRevision: 3,
+      requestedAt: '2026-09-16T09:02:00.000Z', updatedAt: '2026-09-16T09:02:00.000Z',
+      state: 'cancelling', targets: [],
+    })
+    const conflict = Object.assign(new Error('Revision conflict'), { code: 'REVISION_CONFLICT' })
+    const cancelTask = vi.fn<(_: WorkTaskCancelRequest) => Promise<WorkTaskSnapshot>>()
+      .mockRejectedValueOnce(conflict)
+      .mockResolvedValueOnce(cancelling)
+    const get = vi.fn(async () => refreshed)
+    const page = await mountPage({ list: async () => [current], get, cancelTask })
+    try {
+      await page.click('Prepare release notes')
+      await page.click('取消工作项')
+      await page.click('确认取消工作项')
+      expect(get).toHaveBeenCalledTimes(2)
+      expect(page.dom.document.body.textContent).toContain('工作项已更新，请重新确认取消')
+      expect(page.dom.document.body.textContent).not.toContain('确认取消工作项')
+
+      await page.click('取消工作项')
+      await page.click('确认取消工作项')
+      expect(cancelTask.mock.calls[1]?.[0]).toMatchObject({ taskId: 'task-1', expectedRevision: 3 })
+      expect(cancelTask.mock.calls[1]?.[0].requestId).not.toBe(cancelTask.mock.calls[0]?.[0].requestId)
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('restores an unknown cancellation, identifies the executor error, and rechecks with the original request', async () => {
+    const unknown = withCancellation(snapshot(), {
+      requestId: 'cancel-outcome-unknown', expectedRevision: 2,
+      requestedAt: '2026-09-16T09:00:00.000Z', updatedAt: '2026-09-16T09:01:00.000Z',
+      state: 'outcome-unknown', targets: [{
+        commandId: 'command-1', runId: 'run-1', attemptId: 'attempt-1', requirementVersion: 2,
+        executor: { kind: 'employee', employeeId: 'researcher' },
+        state: 'outcome-unknown', error: 'Runtime connection lost', observedAt: '2026-09-16T09:01:00.000Z',
+      }],
+    })
+    const cancelling = withCancellation(snapshot({ task: { ...unknown.task, revision: 3 } }), {
+      requestId: 'cancel-outcome-unknown', expectedRevision: 2,
+      requestedAt: '2026-09-16T09:00:00.000Z', updatedAt: '2026-09-16T09:02:00.000Z',
+      state: 'cancelling', targets: [],
+    })
+    const cancelTask = vi.fn(async () => cancelling)
+    const page = await mountPage({ list: async () => [unknown], get: async () => unknown, cancelTask })
+    try {
+      await page.click('Prepare release notes')
+      expect(page.dom.document.body.textContent).toContain('取消结果尚未确认')
+      expect(page.dom.document.body.textContent).toContain('员工 · researcher')
+      expect(page.dom.document.body.textContent).toContain('Runtime connection lost')
+      await page.click('重新核对取消状态')
+      expect(cancelTask).toHaveBeenCalledWith({
+        requestId: 'cancel-outcome-unknown', taskId: 'task-1', expectedRevision: 2,
+      })
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('describes a cancelled aggregate as verified final states rather than claiming every executor stopped', () => {
+    const current = withCancellation(snapshot({ task: { ...workTaskFixture(), status: 'cancelled' } }), {
+      requestId: 'cancel-with-completed-run', expectedRevision: 2,
+      requestedAt: '2026-09-16T09:00:00.000Z', updatedAt: '2026-09-16T09:01:00.000Z',
+      state: 'cancelled', targets: [{
+        commandId: 'command-1', runId: 'run-1', attemptId: 'attempt-1', requirementVersion: 2,
+        executor: { kind: 'employee', employeeId: 'researcher' },
+        state: 'settled', finalRunStatus: 'completed', observedAt: '2026-09-16T09:01:00.000Z',
+      }],
+    })
+
+    const markup = renderToStaticMarkup(<WorkItemDetail copy={getAppCopy('zh')} snapshot={current} onClose={() => {}} />)
+    expect(markup).toContain('所有执行都已进入可核实的最终状态')
+    expect(markup).toContain('部分执行可能在取消前已经完成或失败')
+    expect(markup).not.toContain('执行器已确认停止')
+  })
+
+  it.each([
+    ['completed', snapshot({ task: { ...workTaskFixture(), status: 'completed' } })],
+    ['cancelled', snapshot({ task: { ...workTaskFixture(), status: 'cancelled' } })],
+    ['archived', snapshot({ task: { ...workTaskFixture(), archivedAt: '2026-09-16T08:00:00.000Z' } })],
+  ])('does not offer task cancellation for a %s task', (_label, current) => {
+    const markup = renderToStaticMarkup(<WorkItemDetail
+      copy={getAppCopy('zh')}
+      snapshot={current}
+      onClose={() => {}}
+      onCancelTask={async () => current}
+    />)
+    expect(markup).not.toContain('取消工作项')
   })
 
   it('revises the current requirement in place and keeps the prior requirement in history', async () => {

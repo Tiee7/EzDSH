@@ -210,6 +210,28 @@ describe('WorkItemExecutionService', () => {
     expect(f.employeeRuns.start).toHaveBeenCalledTimes(1)
   })
 
+  it('does not start an executor when task cancellation wins before dispatch claim', async () => {
+    const f = await fixture()
+    const request = { requestId: 'run-cancel-race', taskId: f.task.task.id, expectedRevision: 1, executor: { kind: 'employee' as const, employeeId: 'researcher' }, mode: 'initial' as const, input: null }
+    const claimDispatch = f.workItems.claimDispatch.bind(f.workItems)
+    vi.spyOn(f.workItems, 'claimDispatch').mockImplementationOnce(async (input, commandId) => {
+      await f.store.beginTaskCancellation({ requestId: 'cancel-race', taskId: f.task.task.id, expectedRevision: 2 })
+      return claimDispatch(input, commandId)
+    })
+
+    const snapshot = await f.execution.execute(request)
+
+    expect(f.employeeRuns.start).not.toHaveBeenCalled()
+    expect(snapshot.task).toMatchObject({ status: 'cancelled' })
+    expect(snapshot.task.activeAttemptId).toBeUndefined()
+    expect(snapshot.attempts).toHaveLength(1)
+    expect(snapshot.runs[0]).toMatchObject({
+      commandId: expect.any(String),
+      status: 'cancelled',
+      rawStatus: 'cancelled-before-dispatch',
+    })
+  })
+
   it('passes normalized workflow and source run ids through the executor bridge and durable link', async () => {
     const f = await fixture()
 

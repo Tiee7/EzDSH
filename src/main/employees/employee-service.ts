@@ -492,6 +492,10 @@ export class EmployeeService {
     return this.runService.get(runId)
   }
 
+  findWorkItemRunByCommand(commandId: string): Promise<EmployeeRunRecord | undefined> {
+    return this.runService.findByCommand(commandId)
+  }
+
   cancelWorkItemRun(runId: string): Promise<EmployeeRunRecord> {
     return this.runService.cancel(runId)
   }

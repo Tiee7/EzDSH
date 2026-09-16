@@ -6,6 +6,7 @@ import type {
   WorkArtifactAcceptRequest,
   WorkRunControlRequest,
   WorkTaskArchiveRequest,
+  WorkTaskCancelRequest,
   WorkTaskCreateRequest,
   WorkTaskExecuteRequest,
   WorkTaskRevisionRequest,
@@ -96,6 +97,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
   const appliedProjectDirectorySequence = useRef(0)
   const taskButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const archiveRetries = useRef(new Map<string, WorkTaskArchiveRequest>())
+  const cancellationRetries = useRef(new Map<string, WorkTaskCancelRequest>())
   const mounted = useRef(true)
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -332,6 +334,47 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     }
   }, [selectedTaskId, snapshots])
 
+  const cancelTask = useCallback(async (): Promise<WorkTaskSnapshot> => {
+    if (selectedTaskId === undefined) throw new Error(locale === 'en' ? 'No work item is selected.' : '尚未选择工作项。')
+    const current = snapshots.get(selectedTaskId)
+    if (current === undefined) throw new Error(locale === 'en' ? 'The work item is unavailable.' : '工作项当前不可用。')
+    const persisted = current.task.cancellation
+    const signature = `${current.task.id}:${current.task.revision}`
+    const request = persisted?.state === 'outcome-unknown'
+      ? {
+          requestId: persisted.requestId,
+          taskId: current.task.id,
+          expectedRevision: persisted.expectedRevision,
+        }
+      : cancellationRetries.current.get(signature) ?? {
+          requestId: mutationRequestId('work-item-cancel'),
+          taskId: current.task.id,
+          expectedRevision: current.task.revision,
+        }
+    if (persisted?.state !== 'outcome-unknown') cancellationRetries.current.set(signature, request)
+    try {
+      const next = await window.EzDSH.workItems.cancelTask(request)
+      cancellationRetries.current.delete(signature)
+      if (mounted.current) setSnapshots((stored) => mergeSnapshot(stored, next))
+      return next
+    } catch (reason) {
+      const code = typeof reason === 'object' && reason !== null && 'code' in reason && typeof reason.code === 'string'
+        ? reason.code
+        : undefined
+      if (code === 'REVISION_CONFLICT') {
+        cancellationRetries.current.delete(signature)
+        try {
+          const latest = await window.EzDSH.workItems.get(current.task.id)
+          if (mounted.current && latest !== undefined) setSnapshots((stored) => mergeSnapshot(stored, latest))
+        } catch {
+          // Preserve the revision-conflict signal so the detail always drops
+          // its stale confirmation, even when the follow-up read also fails.
+        }
+      }
+      throw reason
+    }
+  }, [locale, selectedTaskId, snapshots])
+
   useEffect(() => {
     mounted.current = true
     const unsubscribe = window.EzDSH.workItems.onChanged((snapshot) => {
@@ -480,6 +523,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
                 onControlRun={controlRun}
                 onChanged={(next) => { setSnapshots((current) => mergeSnapshot(current, next)) }}
                 onArchive={archiveTask}
+                onCancelTask={cancelTask}
                 employeeDirectory={employeeDirectory}
                 project={selectedProject}
               />

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkItemAttentionView } from '../../src/renderer/work-items/WorkItemAttentionView.js'
 import type { WorkTaskSnapshot } from '../../src/shared/work-items.js'
 
-function snapshot(id: string, title: string, group: 'needs-action' | 'in-progress' | 'review' | 'failed' | 'completed'): WorkTaskSnapshot {
+function snapshot(id: string, title: string, group: 'needs-action' | 'in-progress' | 'review' | 'failed' | 'completed' | 'cancelled'): WorkTaskSnapshot {
   const base: WorkTaskSnapshot = {
     task: {
       id,
@@ -15,7 +15,7 @@ function snapshot(id: string, title: string, group: 'needs-action' | 'in-progres
       scope: { resourceRefs: [] },
       requirements: [{ version: 1, goal: title, acceptance: 'Done', createdAt: '2026-09-15T09:00:00.000Z' }],
       currentRequirementVersion: 1,
-      status: group === 'completed' ? 'completed' : 'active',
+      status: group === 'completed' ? 'completed' : group === 'cancelled' ? 'cancelled' : 'active',
       acceptedArtifactIds: [],
       createdAt: '2026-09-15T09:00:00.000Z',
       updatedAt: '2026-09-15T10:00:00.000Z',
@@ -60,6 +60,7 @@ describe('WorkItemAttentionView', () => {
         snapshot('task-running', 'Generate report', 'in-progress'),
         snapshot('task-failed', 'Retry research', 'failed'),
         snapshot('task-done', 'Published release', 'completed'),
+        snapshot('task-cancelled', 'Stopped release', 'cancelled'),
       ]}
       onSelect={() => {}}
     />)
@@ -69,8 +70,9 @@ describe('WorkItemAttentionView', () => {
     expect(markup).toContain('Review')
     expect(markup).toContain('Failed')
     expect(markup).toContain('Completed')
-    expect(markup.match(/data-attention-count="1"/gu)).toHaveLength(5)
-    for (const id of ['task-action', 'task-running', 'task-review', 'task-failed', 'task-done']) {
+    expect(markup).toContain('Cancelled')
+    expect(markup.match(/data-attention-count="1"/gu)).toHaveLength(6)
+    for (const id of ['task-action', 'task-running', 'task-review', 'task-failed', 'task-done', 'task-cancelled']) {
       expect(markup).toContain(`data-task-id="${id}"`)
       expect(markup).toContain(id)
     }
@@ -80,7 +82,7 @@ describe('WorkItemAttentionView', () => {
     const selected = vi.fn()
     const dom = await mount(<WorkItemAttentionView snapshots={[snapshot('task-action', 'Answer editor', 'needs-action')]} onSelect={selected} />)
 
-    expect(dom.document.querySelectorAll('[data-attention-empty="true"]')).toHaveLength(4)
+    expect(dom.document.querySelectorAll('[data-attention-empty="true"]')).toHaveLength(5)
     const task = dom.document.querySelector('[data-task-id="task-action"]') as HTMLButtonElement
     await act(async () => task.click())
     expect(selected).toHaveBeenCalledWith('task-action')

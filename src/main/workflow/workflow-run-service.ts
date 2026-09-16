@@ -41,6 +41,7 @@ import type {
   WorkflowQuestionAnswerRequest,
   WorkflowQuestionProtocol,
   WorkflowResumeRequest,
+  WorkflowWorkTaskCancellation,
 } from '../../shared/workflow.js'
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
 import type { EmployeeCapability, EmployeeCreateInput, EmployeeSnapshot } from '../../shared/employees.js'
@@ -153,6 +154,7 @@ export class WorkflowRunService {
   private readonly reconciliationActive = new Set<string>()
   private readonly administrativeActive = new Set<string>()
   private readonly runMutationTails = new Map<string, Promise<void>>()
+  private readonly workTaskCancellationTails = new Map<string, Promise<void>>()
   private readonly workflowMutationTails = new Map<string, Promise<void>>()
   private readonly workflowAdministrativeActive = new Set<string>()
   private lifecycleState: WorkflowRunServiceLifecycleState = 'new'
@@ -192,6 +194,7 @@ export class WorkflowRunService {
         // retain the previous startup-pause behaviour.
         await this.options.runStore.pauseActiveRuns()
         await this.backfillLegacyEffectReconciliationTargets()
+        await this.recoverWorkTaskCancellations()
         await this.options.runStore.pruneExpired()
         this.storesReady = true
       }
@@ -222,6 +225,12 @@ export class WorkflowRunService {
 
   get(runId: string): WorkflowRunRecord | undefined {
     return this.options.runStore.get(runId)
+  }
+
+  /** Main-only aggregate for one top-level WorkTask execution tree. */
+  getWorkTaskCancellation(runId: string): WorkflowWorkTaskCancellation | undefined {
+    const cancellation = this.options.runStore.get(runId)?.workTaskCancellation
+    return cancellation === undefined ? undefined : cloneWorkflow(cancellation)
   }
 
   operationsSnapshot(environmentId?: string): WorkflowRunServiceOperationsSnapshot {
@@ -718,6 +727,7 @@ export class WorkflowRunService {
     const expectedStateToken = this.recoveryStateToken(source)
     const decision = (reason: WorkflowRecoveryReason) => ({ record, expectedStateToken, reason })
     if (record.status !== 'paused' && record.status !== 'failed') return decision('not-resumable')
+    if (record.queue?.cancellationRequestedAt !== undefined) return decision('not-resumable')
     const workflow = this.workflowForRecord(record)
     if (workflow === undefined || !validateWorkflow(workflow).valid) return decision('definition-unavailable')
     if (record.releaseId !== undefined && this.options.resolveWorkflowEnvironment !== undefined) {
@@ -808,7 +818,8 @@ export class WorkflowRunService {
     try {
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-      if (record.status !== 'paused' && record.status !== 'failed') throw new Error('只有暂停或失败的运行可以人工核对副作用')
+      const cancellationFenced = record.status === 'cancelled' && record.queue?.cancellationRequestedAt !== undefined
+      if (record.status !== 'paused' && record.status !== 'failed' && !cancellationFenced) throw new Error('只有暂停、失败或已取消且待核对的运行可以人工核对副作用')
       if (record.effectReconciliationTargets === undefined) this.syncEffectReconciliationTargets(record)
       let scope: WorkflowExecutionScope | undefined
       let state: WorkflowNodeRunState | undefined
@@ -829,7 +840,7 @@ export class WorkflowRunService {
       }
       if (state === undefined || state.effectState !== 'unknown') throw new Error('指定节点或循环迭代不存在未知副作用')
       const unsafe = (candidate: WorkflowNodeRunState): boolean => candidate.effectState === 'prepared' || candidate.effectState === 'dispatched' || candidate.effectState === 'unknown' || candidate.effectState === 'confirmed' && candidate.status !== 'completed'
-      const canRequeue = request.outcome === 'not-dispatched' && !this.hasUncheckpointedLoopEffects(record)
+      const canRequeue = !cancellationFenced && request.outcome === 'not-dispatched' && !this.hasUncheckpointedLoopEffects(record)
         && !workflowAllNodeRunStates(record.nodeStates).some((candidate) => candidate !== state && unsafe(candidate))
       if (canRequeue && this.options.runStore.mutations.isWorkflowDeleted(record.workflowId)) throw new Error('WORKFLOW_TOMBSTONED: audit would requeue deleted workflow')
       if (canRequeue) this.revalidateReleasedAccess(record)
@@ -841,8 +852,8 @@ export class WorkflowRunService {
         state.status = 'failed'
         state.completedAt = resolvedAt
         state.error = '人工确认副作用已派发；缺少执行结果，运行保持终止。'
-        record.status = 'failed'
-        record.error = state.error
+        record.status = cancellationFenced ? 'cancelled' : 'failed'
+        record.error = cancellationFenced ? '工作项已取消；人工副作用核对已记录。' : state.error
         record.completedAt = resolvedAt
       } else {
         state.effectState = 'none'
@@ -861,14 +872,14 @@ export class WorkflowRunService {
           record.retentionExpiresAt = undefined
           this.prepareQueuedRecord(record)
         } else {
-          record.status = 'paused'
-          record.error = '仍有其他副作用需要人工核对，运行保持暂停。'
+          record.status = cancellationFenced ? 'cancelled' : 'paused'
+          record.error = cancellationFenced ? '工作项已取消；仍有其他副作用需要人工核对。' : '仍有其他副作用需要人工核对，运行保持暂停。'
         }
       }
       // Audit, precise reset and queue transition share one durable snapshot.
       const reconcileType: WorkflowRunEvent['type'] = `node-effect-reconciled-${request.outcome}`
       const reconcileMessage = request.outcome === 'dispatched' ? '人工确认副作用已派发，运行终止。' : '人工确认副作用未派发。'
-      if (request.outcome === 'dispatched') await this.saveFailure(record, reconcileType, reconcileMessage, request.nodeId, scope, true)
+      if (request.outcome === 'dispatched' && !cancellationFenced) await this.saveFailure(record, reconcileType, reconcileMessage, request.nodeId, scope, true)
       else await this.save(record, reconcileType, reconcileMessage, request.nodeId, scope, true)
       if (canRequeue) this.worker.wake()
       return this.options.runStore.get(runId) ?? cloneWorkflow(record)
@@ -1068,23 +1079,98 @@ export class WorkflowRunService {
   }
 
   async cancel(runId: string): Promise<WorkflowRunRecord> {
+    return this.cancelRun(runId, false)
+  }
+
+  /** Persist a terminal fence for a WorkTask-wide cancellation, including recoverable paused/failed runs. */
+  async cancelForWorkTask(runId: string): Promise<WorkflowRunRecord> {
     await this.initialize()
-    const active = this.active.get(runId)
-    let cancellingSessions: Promise<void> | undefined
-    if (active !== undefined) {
-      active.cancelled = true
-      active.abortController.abort()
-      cancellingSessions = this.cancelInternalSessions(active)
+    const releaseTree = await this.acquireKeyedMutex(this.workTaskCancellationTails, runId)
+    try {
+      const source = this.options.runStore.get(runId)
+      if (source === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      // Legacy and ad-hoc callers used this entrypoint before WorkTask lineage
+      // existed. Preserve its terminal cancellation semantics for those runs;
+      // only associated top-level runs participate in the durable tree fence.
+      if (source.origin?.kind !== 'top-level' || source.workTask === undefined) return this.cancelRun(runId, true)
+      const requestId = `work-task:${source.workTask.taskId}:${source.workTask.commandId}`
+      let root = await this.options.runStore.beginWorkTaskCancellation(runId, requestId)
+      root = await this.options.runStore.refreshWorkTaskCancellation(runId)
+      const targets = this.workTaskCancellationTargetsLeafFirst(root)
+      for (const frozen of targets) {
+        root = this.options.runStore.get(runId) ?? root
+        const target = root.workTaskCancellation?.targets.find((candidate) => candidate.runId === frozen.runId)
+        if (target === undefined || target.state === 'cancelled' || target.state === 'settled') continue
+        const record = this.options.runStore.get(target.runId)
+        if (record === undefined) {
+          root = await this.options.runStore.markWorkTaskCancellationTargetUnknown(runId, target.runId, 'Workflow cancellation target is missing')
+          continue
+        }
+        if (target.state === 'outcome-unknown') {
+          root = await this.options.runStore.refreshWorkTaskCancellation(runId)
+          continue
+        }
+        if (record.status === 'running' && record.queue?.cancellationRequestedAt !== undefined) {
+          root = await this.options.runStore.refreshWorkTaskCancellation(runId)
+          continue
+        }
+        try {
+          await this.cancelRun(target.runId, true)
+          root = await this.options.runStore.refreshWorkTaskCancellation(runId)
+        } catch (error) {
+          const observed = this.options.runStore.get(target.runId)
+          if (observed?.status === 'cancelled' || observed?.status === 'completed' || observed?.queue?.cancellationRequestedAt !== undefined) {
+            root = await this.options.runStore.refreshWorkTaskCancellation(runId)
+          } else {
+            root = await this.options.runStore.markWorkTaskCancellationTargetUnknown(runId, target.runId, error)
+          }
+        }
+      }
+      root = await this.options.runStore.refreshWorkTaskCancellation(runId)
+      this.emitRun(root)
+      return root
+    } finally {
+      releaseTree()
     }
+  }
+
+  private workTaskCancellationTargetsLeafFirst(root: WorkflowRunRecord): NonNullable<WorkflowRunRecord['workTaskCancellation']>['targets'] {
+    const targets = root.workTaskCancellation?.targets ?? []
+    const byId = new Map(targets.map((target) => [target.runId, target]))
+    const depth = (target: (typeof targets)[number]): number => {
+      let value = 0
+      let parentRunId = target.parentRunId
+      const seen = new Set<string>()
+      while (parentRunId !== undefined && !seen.has(parentRunId)) {
+        seen.add(parentRunId)
+        value += 1
+        parentRunId = byId.get(parentRunId)?.parentRunId
+      }
+      return value
+    }
+    return [...targets].sort((left, right) => depth(right) - depth(left) || left.runId.localeCompare(right.runId))
+  }
+
+  private async cancelRun(runId: string, terminalizeRecoverable: boolean): Promise<WorkflowRunRecord> {
+    await this.initialize()
     const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
     try {
-      await cancellingSessions
+      const abortActive = async (active: ActiveRun | undefined): Promise<void> => {
+        if (active === undefined) return
+        active.cancelled = true
+        active.abortController.abort()
+        await this.cancelInternalSessions(active)
+      }
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-      await this.options.runStore.requestCancellation(runId)
+      const activeBeforePersistence = this.active.get(runId)
+      await this.options.runStore.requestCancellation(runId, new Date(), terminalizeRecoverable)
+      const activeAfterPersistence = this.active.get(runId)
+      await abortActive(activeBeforePersistence)
+      if (activeAfterPersistence !== activeBeforePersistence) await abortActive(activeAfterPersistence)
       const cancelled = this.options.runStore.get(runId) ?? record
       if (cancelled.status === 'cancelled') this.liveLineages.delete(runId)
-      for (const listener of this.listeners) listener(cloneWorkflow(cancelled))
+      this.emitRun(cancelled)
       return cancelled
     } finally {
       releaseMutation()
@@ -1530,6 +1616,44 @@ export class WorkflowRunService {
       if (!workflowAllNodeRunStates(record.nodeStates).some((state) => state.effectState === 'unknown')) continue
       this.syncEffectReconciliationTargets(record)
       await this.saveRecoveredMetadata(record)
+    }
+  }
+
+  /** Re-establish every durable tree fence before the fresh Worker can claim queued descendants. */
+  private async recoverWorkTaskCancellations(): Promise<void> {
+    for (const pending of this.options.runStore.listPendingWorkTaskCancellations()) {
+      let root = await this.options.runStore.refreshWorkTaskCancellation(pending.id)
+      for (const frozen of this.workTaskCancellationTargetsLeafFirst(root)) {
+        root = this.options.runStore.get(pending.id) ?? root
+        const target = root.workTaskCancellation?.targets.find((candidate) => candidate.runId === frozen.runId)
+        if (target?.state !== 'pending') continue
+        const record = this.options.runStore.get(target.runId)
+        if (record === undefined) {
+          await this.options.runStore.markWorkTaskCancellationTargetUnknown(pending.id, target.runId, 'Workflow cancellation target is missing')
+          continue
+        }
+        try {
+          await this.options.runStore.requestCancellation(target.runId, new Date(), true)
+          root = await this.options.runStore.refreshWorkTaskCancellation(pending.id)
+        } catch (error) {
+          await this.options.runStore.markWorkTaskCancellationTargetUnknown(pending.id, target.runId, error)
+        }
+      }
+      await this.options.runStore.refreshWorkTaskCancellation(pending.id)
+    }
+  }
+
+  private async refreshWorkTaskCancellationRootsForRun(runId: string): Promise<WorkflowRunRecord[]> {
+    const roots = this.options.runStore.listPendingWorkTaskCancellations()
+      .filter((record) => record.workTaskCancellation?.targets.some((target) => target.runId === runId) === true)
+    const refreshed: WorkflowRunRecord[] = []
+    for (const root of roots) refreshed.push(await this.options.runStore.refreshWorkTaskCancellation(root.id))
+    return refreshed
+  }
+
+  private emitRun(record: WorkflowRunRecord): void {
+    for (const listener of this.listeners) {
+      try { listener(cloneWorkflow(record)) } catch { /* Persistence and cancellation fences are already durable. */ }
     }
   }
 
@@ -2413,6 +2537,7 @@ export class WorkflowRunService {
         const sessionId = await this.getInternalSession(record, active, 'employee', node.id, node.config.employeeId)
         await this.markEffect(record, state, node, 'prepared')
         await this.markEffect(record, state, node, 'dispatched')
+        throwIfAborted(active.abortController.signal)
         const employeeOutput = await this.adapter.executeEmployeeInSession(sessionId, node, employee, input, previous)
         await this.markEffect(record, state, node, 'confirmed')
         return employeeOutput
@@ -2421,6 +2546,7 @@ export class WorkflowRunService {
         const sessionId = await this.getInternalSession(record, active, 'skill', node.id)
         await this.markEffect(record, state, node, 'prepared')
         await this.markEffect(record, state, node, 'dispatched')
+        throwIfAborted(active.abortController.signal)
         const skillOutput = await this.adapter.executeSkillInSession(sessionId, node, input, previous)
         await this.markEffect(record, state, node, 'confirmed')
         return skillOutput
@@ -2716,6 +2842,8 @@ export class WorkflowRunService {
     const sessionId = await this.adapter.createInternalSession(record.model)
     active.sessionKeys.set(reuseKey, sessionId)
     active.sessionIds.add(sessionId)
+    // Register the session with the active run before the next await. A task
+    // cancellation that raced session creation can now see and cancel it.
     await this.internalSessionStore.register({
       sessionId,
       runId: record.id,
@@ -2725,6 +2853,9 @@ export class WorkflowRunService {
       ...(employeeId === undefined ? {} : { employeeId }),
       createdAt: new Date().toISOString(),
     })
+    if (active.cancelled || active.abortController.signal.aborted) {
+      await this.adapter.cancelSession(sessionId).catch(() => undefined)
+    }
     // Archiving affects only workspace visibility, not execution. Doing it at
     // creation keeps workflow-internal sessions out of ordinary chat lists
     // even while a long-running employee task is still active.
@@ -2732,6 +2863,7 @@ export class WorkflowRunService {
     await this.adapter.archiveSession(sessionId)
     active.archivedSessionIds.add(sessionId)
     await this.internalSessionStore.markArchived(sessionId, archivedAt, retentionExpiry(record))
+    throwIfAborted(active.abortController.signal)
     return sessionId
   }
 
@@ -2911,7 +3043,9 @@ export class WorkflowRunService {
     const saved = auditOnly && this.options.runStore.mutations.isWorkflowDeleted(record.workflowId)
       ? await this.options.runStore.saveRetainedAudit(record)
       : await this.options.runStore.save(record)
-    for (const listener of this.listeners) { try { listener(cloneWorkflow(saved)) } catch { /* The transition is already durable. */ } }
+    const cancellationRoots = await this.refreshWorkTaskCancellationRootsForRun(saved.id)
+    this.emitRun(saved)
+    for (const root of cancellationRoots) if (root.id !== saved.id || JSON.stringify(root.workTaskCancellation) !== JSON.stringify(saved.workTaskCancellation)) this.emitRun(root)
   }
 }
 

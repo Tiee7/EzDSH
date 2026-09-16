@@ -70,6 +70,29 @@ function action(overrides: Partial<WorkAction> = {}): WorkAction {
 }
 
 describe('attentionGroup', () => {
+  it('keeps a cancelled task out of actionable, review, and failure groups', () => {
+    expect(attentionGroup(snapshot({
+      task: { ...snapshot().task, status: 'cancelled' },
+      actions: [action()],
+      artifacts: [artifact('draft')],
+      runs: [run('failed', '2026-09-15T13:00:00.000Z')],
+    }))).toBe('cancelled')
+  })
+
+  it('surfaces an unknown task cancellation as work that needs attention', () => {
+    const current = snapshot()
+    expect(attentionGroup(snapshot({
+      task: {
+        ...current.task,
+        cancellation: {
+          requestId: 'cancel-1', expectedRevision: 1,
+          requestedAt: '2026-09-16T10:00:00.000Z', updatedAt: '2026-09-16T10:01:00.000Z',
+          state: 'outcome-unknown', targets: [],
+        },
+      },
+    }))).toBe('needs-action')
+  })
+
   it('gives an open action priority over review, running, failure, and completion evidence', () => {
     const currentArtifact = artifact('draft')
     const value = snapshot({

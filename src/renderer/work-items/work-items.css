@@ -8,6 +8,7 @@
 .work-items-button { flex: none; border: 1px solid var(--ezdsh-brand); border-radius: 8px; padding: 8px 12px; background: var(--ezdsh-brand); color: #fff; cursor: pointer; font-size: 12px; font-weight: 700; }
 .work-items-button:disabled { cursor: wait; opacity: .65; }
 .work-items-button-quiet { border-color: var(--ezdsh-button-border); background: var(--ezdsh-panel-background); color: var(--ezdsh-button-text); }
+.work-items-button-cancel { border-color: color-mix(in srgb, var(--ezdsh-accent-red) 55%, var(--ezdsh-button-border)); background: var(--ezdsh-panel-background); color: var(--ezdsh-accent-red); }
 .work-items-error { margin: 0 0 14px; border: 1px solid color-mix(in srgb, var(--ezdsh-accent-red) 45%, var(--ezdsh-panel-border)); border-radius: 10px; padding: 10px 12px; color: var(--ezdsh-accent-red); font-size: 12px; }
 .work-items-layout { display: grid; grid-template-columns: minmax(230px, .7fr) minmax(0, 1.6fr); align-items: start; gap: 16px; }
 .work-items-list, .work-items-detail, .work-items-empty { border: 1px solid var(--ezdsh-panel-border); border-radius: 14px; background: var(--ezdsh-panel-background); box-shadow: 0 12px 30px rgba(20, 30, 50, .04); }
@@ -32,6 +33,15 @@
 .work-item-detail-header h2 { margin: 7px 0 5px; color: var(--ezdsh-text-heading); font-size: 20px; letter-spacing: -.025em; }
 .work-item-detail-header p:last-child { margin: 0; color: var(--ezdsh-text-faint); font-size: 11px; }
 .work-item-detail-content { display: grid; gap: 0; }
+.work-item-cancellation-panel { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 16px 20px 0; border: 1px solid color-mix(in srgb, var(--ezdsh-accent-orange) 38%, var(--ezdsh-panel-border)); border-radius: 10px; padding: 13px 14px; background: color-mix(in srgb, var(--ezdsh-accent-orange) 7%, var(--ezdsh-panel-background)); }
+.work-item-cancellation-panel h3 { margin: 0; color: var(--ezdsh-text-heading); font-size: 13px; }
+.work-item-cancellation-panel p { margin: 5px 0 0; color: var(--ezdsh-text-muted); font-size: 11px; line-height: 1.55; }
+.work-item-cancellation-targets { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+.work-item-cancellation-targets li { display: grid; gap: 2px; color: var(--ezdsh-text-muted); font-size: 11px; line-height: 1.45; }
+.work-item-cancellation-targets strong { color: var(--ezdsh-text-heading); font-weight: 600; }
+.work-item-cancellation-cancelled { border-color: var(--ezdsh-panel-border); background: var(--ezdsh-code-background); }
+.work-item-cancellation-outcome-unknown { border-color: color-mix(in srgb, var(--ezdsh-accent-red) 38%, var(--ezdsh-panel-border)); }
+.work-item-cancellation-error { margin: 10px 20px 0; color: var(--ezdsh-accent-red); font-size: 11px; line-height: 1.5; }
 .work-item-detail-section { padding: 16px 20px; border-top: 1px solid var(--ezdsh-hairline); }
 .work-item-detail-section:first-child { border-top: 0; }
 .work-item-detail-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -86,4 +96,4 @@
 .work-item-create-catalog-notice { border: 1px solid color-mix(in srgb, var(--ezdsh-accent-orange) 42%, var(--ezdsh-panel-border)); border-radius: 9px; padding: 9px 11px; background: color-mix(in srgb, var(--ezdsh-accent-orange) 8%, var(--ezdsh-panel-background)); }
 .work-item-create-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 22px 18px; border-top: 1px solid var(--ezdsh-hairline); }
 @media (prefers-reduced-transparency: reduce) { .work-item-handoff-backdrop, .work-item-create-backdrop { backdrop-filter: none; } }
-@media (max-width: 760px) { .work-items-header { align-items: flex-start; flex-direction: column; } .work-items-header-actions { justify-content: flex-start; } .work-items-layout { grid-template-columns: 1fr; } .work-item-history-list li, .work-item-scope-list > div { grid-template-columns: 1fr; gap: 3px; } .work-item-handoff-backdrop, .work-item-create-backdrop { padding: 12px; } .work-item-handoff-dialog, .work-item-create-dialog { max-height: calc(100dvh - 24px); } .work-item-handoff-header { padding: 18px 18px 14px; } .work-item-handoff-body { padding: 18px; } .work-item-handoff-fields { grid-template-columns: 1fr; } .work-item-handoff-field-wide { grid-column: auto; } .work-item-handoff-actions, .work-item-create-actions { padding: 12px 18px 16px; } }
+@media (max-width: 760px) { .work-items-header { align-items: flex-start; flex-direction: column; } .work-items-header-actions { justify-content: flex-start; } .work-items-layout { grid-template-columns: 1fr; } .work-item-history-list li, .work-item-scope-list > div { grid-template-columns: 1fr; gap: 3px; } .work-item-cancellation-panel { align-items: flex-start; flex-direction: column; } .work-item-handoff-backdrop, .work-item-create-backdrop { padding: 12px; } .work-item-handoff-dialog, .work-item-create-dialog { max-height: calc(100dvh - 24px); } .work-item-handoff-header { padding: 18px 18px 14px; } .work-item-handoff-body { padding: 18px; } .work-item-handoff-fields { grid-template-columns: 1fr; } .work-item-handoff-field-wide { grid-column: auto; } .work-item-handoff-actions, .work-item-create-actions { padding: 12px 18px 16px; } }

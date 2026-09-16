@@ -6,6 +6,7 @@ import type { WorkTaskSnapshot } from '../../shared/work-items.js'
 import type { WorkflowRunRecord } from '../../shared/workflow.js'
 import { WorkActionService } from './work-action-service.js'
 import { WorkArtifactService } from './work-artifact-service.js'
+import { WorkItemCancellationService } from './work-item-cancellation-service.js'
 import { WorkItemExecutionService } from './work-item-execution-service.js'
 import {
   createWorkItemScopeAuthorizer,
@@ -22,6 +23,7 @@ export interface WorkItemWorkspaceEmployeeRunPort {
   startWorkItemRun(request: EmployeeRunStartRequest): Promise<EmployeeRunStartReceipt>
   listWorkItemRuns(): Promise<EmployeeRunRecord[]>
   getWorkItemRun(runId: string): Promise<EmployeeRunRecord | undefined>
+  findWorkItemRunByCommand(commandId: string): Promise<EmployeeRunRecord | undefined>
   cancelWorkItemRun(runId: string): Promise<EmployeeRunRecord>
   watchWorkItemRuns?(listener: (event: EmployeeRunEvent) => void): () => void
 }
@@ -51,6 +53,7 @@ export function initializeWorkItemWorkspaceScope(
   options: WorkItemWorkspaceOptions,
 ): Promise<WorkItemIpcWorkspaceScope> {
   let workspaceActionService: WorkActionService
+  let workspaceCancellationService: WorkItemCancellationService
   return initializeWorkItemIpcWorkspace({
     restore: async () => {
       const store = new WorkItemStore(options.layout.state)
@@ -88,10 +91,24 @@ export function initializeWorkItemWorkspaceScope(
         workflowBridge,
         artifacts,
       })
+      workspaceCancellationService = new WorkItemCancellationService({
+        workItems: store,
+        employeeRuns: {
+          get: (runId) => options.employeeRuns.getWorkItemRun(runId),
+          findByCommand: (commandId) => options.employeeRuns.findWorkItemRunByCommand(commandId),
+          cancel: (runId) => options.employeeRuns.cancelWorkItemRun(runId),
+        },
+        workflowRuns: {
+          get: (runId) => workflowBridge.get(runId),
+          findByCommand: (commandId) => workflowBridge.findByCommand(commandId),
+          cancel: (runId) => workflowBridge.cancelTask(runId),
+        },
+      })
       return {
         workItems,
         execution,
         actions: workspaceActionService,
+        cancellation: workspaceCancellationService,
         assertExecutionAvailable: options.assertExecutionAvailable,
         authorizeScope,
       }
@@ -101,9 +118,10 @@ export function initializeWorkItemWorkspaceScope(
       let workflowObservationTail = Promise.resolve()
       const projectWorkflowRun = (run: WorkflowRunRecord): void => {
         workflowObservationTail = workflowObservationTail
-          .then(() => {
+          .then(async () => {
             const current = options.workflowRuns.get(run.id) ?? run
-            return scope.invoke(() => workspaceActionService.observeWorkflowRun(current)).then(() => undefined)
+            await scope.invoke(() => workspaceActionService.observeWorkflowRun(current))
+            if (current.workTask !== undefined) await scope.invoke(() => workspaceCancellationService.reconcileTask(current.workTask!.taskId))
           })
           .catch((error: unknown) => {
             if (!(error instanceof WorkItemWorkspaceUnavailableError)) options.onObserverError?.(error)
@@ -120,7 +138,8 @@ export function initializeWorkItemWorkspaceScope(
         employeeObservationTail = employeeObservationTail
           .then(async () => {
             const current = await options.employeeRuns.getWorkItemRun(run.runId) ?? run
-            return scope.invoke(() => workspaceActionService.observeEmployeeRun(current)).then(() => undefined)
+            await scope.invoke(() => workspaceActionService.observeEmployeeRun(current))
+            if (current.taskId !== undefined) await scope.invoke(() => workspaceCancellationService.reconcileTask(current.taskId!))
           })
           .catch((error: unknown) => {
             if (!(error instanceof WorkItemWorkspaceUnavailableError)) options.onObserverError?.(error)
@@ -138,8 +157,19 @@ export function initializeWorkItemWorkspaceScope(
           void employeeInitialProjection.then(() => { projectEmployeeRun(event.run) })
         }))
       }
-      const reconcileLinkedRuns = (snapshot: WorkTaskSnapshot): void => {
+      void Promise.all([workflowInitialProjection, employeeInitialProjection])
+        .then(() => scope.invoke(() => workspaceCancellationService.reconcilePending()))
+        .catch((error: unknown) => {
+          if (!(error instanceof WorkItemWorkspaceUnavailableError)) options.onObserverError?.(error)
+        })
+      const projectNewlyLinkedRuns = (snapshot: WorkTaskSnapshot): void => {
+        // Executor events may arrive just before dispatch linkage. Re-project
+        // ordinary tasks after the link becomes durable so terminal artifacts
+        // and questions are not lost. Cancellation owns its own projection and
+        // must never feed Store changes back into executor reconciliation.
+        if (snapshot.task.cancellation !== undefined) return
         for (const run of snapshot.runs) {
+          if (run.runId === '') continue
           if (run.executor.kind === 'workflow' || run.executor.methodId !== undefined) {
             const current = options.workflowRuns.get(run.runId)
             if (current !== undefined) void workflowInitialProjection.then(() => { projectWorkflowRun(current) })
@@ -153,7 +183,7 @@ export function initializeWorkItemWorkspaceScope(
       }
       listeners.unshift(store.onChanged((snapshot) => {
         options.onChanged?.(snapshot)
-        reconcileLinkedRuns(snapshot)
+        projectNewlyLinkedRuns(snapshot)
       }))
       return listeners
     },

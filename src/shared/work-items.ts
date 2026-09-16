@@ -29,6 +29,30 @@ export interface WorkRequirement {
   createdAt: string
 }
 
+export type WorkTaskCancellationState = 'requested' | 'cancelling' | 'outcome-unknown' | 'cancelled'
+export type WorkTaskCancellationTargetState = 'pending' | 'cancelling' | 'cancelled' | 'settled' | 'outcome-unknown'
+
+export interface WorkTaskCancellationTarget {
+  commandId: string
+  runId: string
+  attemptId: string
+  requirementVersion: number
+  executor: WorkExecutor
+  state: WorkTaskCancellationTargetState
+  finalRunStatus?: WorkRunStatus
+  error?: string
+  observedAt: string
+}
+
+export interface WorkTaskCancellation {
+  requestId: string
+  expectedRevision: number
+  requestedAt: string
+  updatedAt: string
+  state: WorkTaskCancellationState
+  targets: WorkTaskCancellationTarget[]
+}
+
 export interface WorkTask {
   id: string
   revision: number
@@ -39,6 +63,7 @@ export interface WorkTask {
   status: WorkTaskStatus
   activeAttemptId?: string
   acceptedArtifactIds: string[]
+  cancellation?: WorkTaskCancellation
   archivedAt?: string
   createdAt: string
   updatedAt: string
@@ -150,6 +175,12 @@ export interface WorkTaskArchiveRequest {
   archived: boolean
 }
 
+export interface WorkTaskCancelRequest {
+  requestId: string
+  taskId: string
+  expectedRevision: number
+}
+
 export interface WorkArtifactAcceptRequest {
   requestId: string
   taskId: string
@@ -184,6 +215,7 @@ export interface WorkItemsBridge {
   create(request: WorkTaskCreateRequest): Promise<WorkTaskSnapshot>
   execute(request: WorkTaskExecuteRequest): Promise<WorkTaskSnapshot>
   revise(request: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot>
+  cancelTask(request: WorkTaskCancelRequest): Promise<WorkTaskSnapshot>
   archive(request: WorkTaskArchiveRequest): Promise<WorkTaskSnapshot>
   acceptArtifact(request: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot>
   openArtifact(taskId: string, artifactId: string): Promise<void>
@@ -431,6 +463,16 @@ export function validateWorkTaskArchiveRequest(value: unknown): WorkTaskArchiveR
   }
 }
 
+export function validateWorkTaskCancelRequest(value: unknown): WorkTaskCancelRequest {
+  const request = record(value, '$')
+  exactFields(request, ['requestId', 'taskId', 'expectedRevision'])
+  return {
+    requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
+  }
+}
+
 export function validateWorkArtifactAcceptRequest(value: unknown): WorkArtifactAcceptRequest {
   const request = record(value, '$')
   exactFields(request, [
@@ -486,5 +528,6 @@ export function validateWorkActionAnswerRequest(value: unknown): WorkActionAnswe
 export function canAcceptWorkArtifact(task: WorkTask, artifact: WorkArtifact): boolean {
   return artifact.taskId === task.id
     && artifact.requirementVersion === task.currentRequirementVersion
+    && task.cancellation === undefined
     && task.status !== 'cancelled'
 }

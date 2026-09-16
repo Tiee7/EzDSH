@@ -17,6 +17,7 @@ const GROUPS: readonly { id: WorkItemAttentionGroup; en: string; zh: string }[] 
   { id: 'review', en: 'Review', zh: '等待验收' },
   { id: 'failed', en: 'Failed', zh: '执行失败' },
   { id: 'completed', en: 'Completed', zh: '已完成' },
+  { id: 'cancelled', en: 'Cancelled', zh: '已取消' },
 ]
 
 /** A bridge-free projection: selecting a stable task id is its only effect. */

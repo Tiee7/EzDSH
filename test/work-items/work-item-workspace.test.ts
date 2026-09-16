@@ -60,13 +60,33 @@ async function workspaceFixture(startStatus: WorkflowRunRecord['status']) {
     findByIdempotencyKey: vi.fn((commandId: string) => structuredClone(records.find((record) => record.idempotencyKey === commandId))),
     resume: vi.fn(),
     resumeExpected: vi.fn(),
-    cancel: vi.fn(),
+    cancel: vi.fn(async (runId: string) => {
+      const current = records.find((record) => record.id === runId)
+      if (current === undefined) throw new Error('workflow run missing')
+      const requestedAt = '2026-09-16T10:00:00.000Z'
+      const next: WorkflowRunRecord = current.status === 'running'
+        ? { ...current, queue: { enqueuedAt: requestedAt, availableAt: requestedAt, cancellationRequestedAt: requestedAt } }
+        : { ...current, status: 'cancelled', completedAt: requestedAt }
+      records = records.map((record) => record.id === runId ? next : record)
+      return structuredClone(next)
+    }),
+    cancelForWorkTask: vi.fn(async (runId: string) => {
+      const current = records.find((record) => record.id === runId)
+      if (current === undefined) throw new Error('workflow run missing')
+      const requestedAt = '2026-09-16T10:00:00.000Z'
+      const next: WorkflowRunRecord = current.status === 'running'
+        ? { ...current, queue: { enqueuedAt: requestedAt, availableAt: requestedAt, cancellationRequestedAt: requestedAt } }
+        : { ...current, status: 'cancelled', completedAt: requestedAt }
+      records = records.map((record) => record.id === runId ? next : record)
+      return structuredClone(next)
+    }),
     approveExpected: vi.fn(),
   } as unknown as WorkItemWorkspaceWorkflowRunPort
   const employeeRuns = {
     startWorkItemRun: vi.fn(),
     listWorkItemRuns: vi.fn(async () => []),
     getWorkItemRun: vi.fn(async () => undefined),
+    findWorkItemRunByCommand: vi.fn(async () => undefined),
     cancelWorkItemRun: vi.fn(),
   }
   const open = () => initializeWorkItemWorkspaceScope({ layout, workflowRuns, employeeRuns })
@@ -124,5 +144,75 @@ describe('Work Item workspace Workflow reconciliation', () => {
       })
     })
     await reopened.dispose()
+  })
+
+  it('reconciles a persisted task cancellation after restart without losing run history', async () => {
+    const fixture = await workspaceFixture('running')
+    const first = await fixture.open()
+    const dispatched = await createAndRun(first)
+    const cancelling = await first.services.cancellation.cancelTask({
+      requestId: 'cancel-workflow-task',
+      taskId: dispatched.task.id,
+      expectedRevision: dispatched.task.revision,
+    })
+    expect(cancelling.task.cancellation?.state).toBe('cancelling')
+    await first.dispose()
+
+    const run = fixture.workflowRuns.get(dispatched.runs[0]!.runId)!
+    fixture.setRecords([{ ...run, status: 'cancelled', completedAt: '2026-09-16T10:01:00.000Z' }])
+    const reopened = await fixture.open()
+
+    await vi.waitFor(async () => {
+      await expect(reopened.services.workItems.get(dispatched.task.id)).resolves.toMatchObject({
+        task: { status: 'cancelled', cancellation: { state: 'cancelled' } },
+        runs: [expect.objectContaining({ runId: run.id })],
+      })
+    })
+    await reopened.dispose()
+  })
+
+  it('keeps a permanently cancelling executor stable without repeated writes or cancel calls', async () => {
+    const fixture = await workspaceFixture('running')
+    const scope = await fixture.open()
+    const dispatched = await createAndRun(scope)
+    const cancelling = await scope.services.cancellation.cancelTask({
+      requestId: 'cancel-workflow-stable',
+      taskId: dispatched.task.id,
+      expectedRevision: dispatched.task.revision,
+    })
+    expect(cancelling.task.cancellation?.state).toBe('cancelling')
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const first = await scope.services.workItems.get(dispatched.task.id)
+    const firstCancelCalls = fixture.workflowRuns.cancelForWorkTask.mock.calls.length
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const second = await scope.services.workItems.get(dispatched.task.id)
+
+    expect(second?.task.revision).toBe(first?.task.revision)
+    expect(fixture.workflowRuns.cancelForWorkTask).toHaveBeenCalledTimes(firstCancelCalls)
+    await scope.dispose()
+  })
+
+  it('keeps an unknown cancellation result stable without blindly retrying the executor', async () => {
+    const fixture = await workspaceFixture('running')
+    fixture.workflowRuns.cancelForWorkTask.mockRejectedValue(new Error('executor unavailable'))
+    const scope = await fixture.open()
+    const dispatched = await createAndRun(scope)
+    const unknown = await scope.services.cancellation.cancelTask({
+      requestId: 'cancel-workflow-unknown',
+      taskId: dispatched.task.id,
+      expectedRevision: dispatched.task.revision,
+    })
+    expect(unknown.task.cancellation?.state).toBe('outcome-unknown')
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const first = await scope.services.workItems.get(dispatched.task.id)
+    const firstCancelCalls = fixture.workflowRuns.cancelForWorkTask.mock.calls.length
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const second = await scope.services.workItems.get(dispatched.task.id)
+
+    expect(second?.task.revision).toBe(first?.task.revision)
+    expect(fixture.workflowRuns.cancelForWorkTask).toHaveBeenCalledTimes(firstCancelCalls)
+    await scope.dispose()
   })
 })

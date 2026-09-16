@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   WorkItemValidationError,
   canAcceptWorkArtifact,
+  validateWorkTaskCancelRequest,
   validateWorkTaskArchiveRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest
@@ -154,6 +155,35 @@ describe('validateWorkTaskArchiveRequest', () => {
     )
     expectInvalid(
       () => validateWorkTaskArchiveRequest({ ...validRequest(), force: true }),
+      'UNKNOWN_FIELD',
+      'force'
+    )
+  })
+})
+
+describe('validateWorkTaskCancelRequest', () => {
+  const validRequest = () => ({
+    requestId: 'cancel-task-1',
+    taskId: 'task-1',
+    expectedRevision: 3,
+  })
+
+  it('normalizes the durable request identity and revision', () => {
+    expect(validateWorkTaskCancelRequest({
+      ...validRequest(),
+      requestId: ' cancel-task-1 ',
+      taskId: ' task-1 ',
+    })).toEqual(validRequest())
+  })
+
+  it('rejects an invalid revision and unknown fields', () => {
+    expectInvalid(
+      () => validateWorkTaskCancelRequest({ ...validRequest(), expectedRevision: 0 }),
+      'INVALID_INTEGER',
+      'expectedRevision'
+    )
+    expectInvalid(
+      () => validateWorkTaskCancelRequest({ ...validRequest(), force: true }),
       'UNKNOWN_FIELD',
       'force'
     )

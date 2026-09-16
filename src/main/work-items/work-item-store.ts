@@ -8,6 +8,7 @@ import {
   validateWorkArtifactAcceptRequest,
   validateWorkRunControlRequest,
   validateWorkTaskArchiveRequest,
+  validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
@@ -19,6 +20,10 @@ import {
   type WorkRunControlRequest,
   type WorkTask,
   type WorkTaskArchiveRequest,
+  type WorkTaskCancellation,
+  type WorkTaskCancellationTarget,
+  type WorkTaskCancellationTargetState,
+  type WorkTaskCancelRequest,
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
@@ -27,7 +32,7 @@ import {
 } from '../../shared/work-items.js'
 
 export class WorkItemStoreConflictError extends Error {
-  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'ARCHIVE_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT'
+  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'ARCHIVE_CONFLICT' | 'TASK_CANCELLATION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT'
 
   constructor(
     code: WorkItemStoreConflictError['code'],
@@ -60,7 +65,7 @@ export interface WorkItemCreateReceipt {
   replayed: boolean
 }
 
-export type WorkDispatchStage = 'recorded' | 'dispatching' | 'linked' | 'outcome-unknown'
+export type WorkDispatchStage = 'recorded' | 'dispatching' | 'linked' | 'outcome-unknown' | 'cancelled'
 
 export interface WorkDispatchIntentReceipt {
   requestId: string
@@ -112,6 +117,23 @@ export interface WorkTaskArchiveReceipt {
   replayed: boolean
 }
 
+export interface WorkTaskCancellationReceipt {
+  requestId: string
+  digest: string
+  taskId: string
+  stage: WorkTaskCancellation['state']
+  snapshot: WorkTaskSnapshot
+  replayed: boolean
+}
+
+export interface WorkTaskCancellationTargetUpdate {
+  state: WorkTaskCancellationTargetState
+  finalRunStatus?: WorkTaskCancellationTarget['finalRunStatus']
+  error?: string
+  observedAt: string
+  runId?: string
+}
+
 export interface WorkArtifactAcceptReceipt {
   requestId: string
   digest: string
@@ -151,6 +173,7 @@ type StoredReceipt =
   | { kind: 'run-control'; digest: string; receipt: WorkRunControlReceipt }
   | { kind: 'revise'; digest: string; receipt: WorkTaskRevisionReceipt }
   | { kind: 'archive'; digest: string; receipt: WorkTaskArchiveReceipt }
+  | { kind: 'task-cancellation'; digest: string; receipt: WorkTaskCancellationReceipt }
   | { kind: 'artifact-accept'; digest: string; receipt: WorkArtifactAcceptReceipt }
   | { kind: 'artifact-write'; digest: string; receipt: WorkArtifactWriteReceipt }
 
@@ -158,6 +181,28 @@ interface WorkItemState {
   version: 1
   tasks: Record<string, WorkTaskSnapshot>
   requests: Record<string, StoredReceipt>
+}
+
+function setTaskSnapshot(state: WorkItemState, taskId: string, snapshot: WorkTaskSnapshot): void {
+  setOwnValue(state.tasks, taskId, snapshot)
+  const requestId = snapshot.task.cancellation?.requestId
+  if (requestId === undefined) return
+  for (const [storedRequestId, stored] of Object.entries(state.requests)) {
+    if (stored.kind !== 'dispatch' || stored.receipt.taskId !== taskId) continue
+    setOwnValue(state.requests, storedRequestId, {
+      kind: 'dispatch',
+      digest: stored.digest,
+      receipt: { ...stored.receipt, snapshot: copy(snapshot) },
+    })
+  }
+  const stored = ownValue(state.requests, requestId)
+  if (stored?.kind !== 'task-cancellation') return
+  const receipt: WorkTaskCancellationReceipt = {
+    ...stored.receipt,
+    stage: snapshot.task.cancellation!.state,
+    snapshot: copy(snapshot),
+  }
+  setOwnValue(state.requests, requestId, { kind: 'task-cancellation', digest: stored.digest, receipt })
 }
 
 interface WorkItemStoreOptions {
@@ -316,6 +361,73 @@ function strongerActionStatus(current: WorkAction['status'], incoming: WorkActio
   return precedence[incoming] > precedence[current] ? incoming : current
 }
 
+const ACTIVE_CANCELLATION_RUN_STATUSES = new Set<WorkTaskSnapshot['runs'][number]['status']>([
+  'queued', 'running', 'waiting', 'paused', 'cancelling', 'interrupted',
+])
+
+function cancellationStage(targets: WorkTaskCancellationTarget[]): WorkTaskCancellation['state'] {
+  if (targets.some((target) => target.state === 'outcome-unknown')) return 'outcome-unknown'
+  if (targets.some((target) => target.state === 'pending' || target.state === 'cancelling')) return 'cancelling'
+  return 'cancelled'
+}
+
+function cancellationFinalStatus(snapshot: WorkTaskSnapshot, commandId: string): WorkTaskCancellationTarget['finalRunStatus'] {
+  const target = snapshot.task.cancellation?.targets.find((candidate) => candidate.commandId === commandId)
+  return target?.state === 'cancelled' || target?.state === 'settled' ? target.finalRunStatus : undefined
+}
+
+function assertTaskAcceptsBusinessMutation(snapshot: WorkTaskSnapshot): void {
+  if (snapshot.task.cancellation !== undefined || snapshot.task.status === 'cancelled') {
+    throw new WorkItemStoreConflictError(
+      'TASK_CANCELLATION_CONFLICT',
+      `Task ${snapshot.task.id} is being cancelled or is already cancelled`,
+    )
+  }
+}
+
+function normalizeCancellationTargetUpdate(update: WorkTaskCancellationTargetUpdate): WorkTaskCancellationTargetUpdate {
+  if (!['pending', 'cancelling', 'cancelled', 'settled', 'outcome-unknown'].includes(update.state)) {
+    throw new WorkItemStoreInputError('state', 'Cancellation target state is not supported')
+  }
+  if (typeof update.observedAt !== 'string' || update.observedAt.trim() === '' || Number.isNaN(Date.parse(update.observedAt))) {
+    throw new WorkItemStoreInputError('observedAt', 'Cancellation target observedAt is invalid')
+  }
+  if (update.runId !== undefined && (typeof update.runId !== 'string' || update.runId.length > 128 || /[\u0000-\u001f\u007f]/u.test(update.runId))) {
+    throw new WorkItemStoreInputError('runId', 'Cancellation target runId is invalid')
+  }
+  if (update.finalRunStatus !== undefined && ![
+    'queued', 'running', 'waiting', 'paused', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted',
+  ].includes(update.finalRunStatus)) {
+    throw new WorkItemStoreInputError('finalRunStatus', 'Cancellation target finalRunStatus is invalid')
+  }
+  if (update.error !== undefined && (typeof update.error !== 'string' || update.error.length > 10_000)) {
+    throw new WorkItemStoreInputError('error', 'Cancellation target error is invalid')
+  }
+  assertCancellationTargetOutcome(update, (field, message) => new WorkItemStoreInputError(field, message))
+  return copy(update)
+}
+
+function assertCancellationTargetOutcome(
+  target: Pick<WorkTaskCancellationTarget, 'state' | 'finalRunStatus' | 'error'>,
+  error: (field: string, message: string) => Error,
+): void {
+  if (target.state === 'cancelled' && target.finalRunStatus !== 'cancelled') {
+    throw error('finalRunStatus', 'Cancelled target requires a cancelled final run status')
+  }
+  if (target.state === 'settled' && target.finalRunStatus !== 'completed' && target.finalRunStatus !== 'failed') {
+    throw error('finalRunStatus', 'Settled target requires a completed or failed final run status')
+  }
+  if (target.state !== 'cancelled' && target.state !== 'settled' && target.finalRunStatus !== undefined) {
+    throw error('finalRunStatus', 'Non-final target cannot carry a final run status')
+  }
+  if (target.state === 'outcome-unknown' && (target.error === undefined || target.error.trim() === '')) {
+    throw error('error', 'Unknown cancellation target requires an error')
+  }
+  if (target.state !== 'outcome-unknown' && target.error !== undefined) {
+    throw error('error', 'Only an unknown cancellation target can carry an error')
+  }
+}
+
 function normalizeArtifactWriteIntent(input: WorkArtifactWriteIntent): WorkArtifactWriteIntent {
   const identifier = (value: string, field: string): string => {
     if (typeof value !== 'string') throw new WorkItemStoreInputError(field, `${field} must be a string`)
@@ -469,6 +581,88 @@ function assertArtifactReservationIntegrity(state: WorkItemState): void {
   }
 }
 
+function assertTaskCancellationIntegrity(state: WorkItemState): void {
+  for (const [taskId, snapshot] of Object.entries(state.tasks)) {
+    const cancellation = snapshot.task.cancellation
+    if (cancellation === undefined) continue
+    if (cancellation === null || typeof cancellation !== 'object' || Array.isArray(cancellation)) {
+      throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} has invalid cancellation metadata`)
+    }
+    if (
+      typeof cancellation.requestId !== 'string'
+      || cancellation.requestId.trim() === ''
+      || !Number.isSafeInteger(cancellation.expectedRevision)
+      || cancellation.expectedRevision < 1
+      || !['requested', 'cancelling', 'outcome-unknown', 'cancelled'].includes(cancellation.state)
+      || !Array.isArray(cancellation.targets)
+      || typeof cancellation.requestedAt !== 'string'
+      || Number.isNaN(Date.parse(cancellation.requestedAt))
+      || typeof cancellation.updatedAt !== 'string'
+      || Number.isNaN(Date.parse(cancellation.updatedAt))
+    ) {
+      throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} has invalid cancellation metadata`)
+    }
+    const commandIds = new Set<string>()
+    for (const target of cancellation.targets) {
+      if (target === null || typeof target !== 'object' || Array.isArray(target)) {
+        throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} has an invalid cancellation target`)
+      }
+      const run = snapshot.runs.find((candidate) => candidate.commandId === target.commandId)
+      if (
+        run === undefined
+        || typeof target.commandId !== 'string'
+        || commandIds.has(target.commandId)
+        || typeof target.runId !== 'string'
+        || target.runId !== run.runId
+        || target.attemptId !== run.attemptId
+        || target.requirementVersion !== run.requirementVersion
+        || JSON.stringify(target.executor) !== JSON.stringify(run.executor)
+        || !['pending', 'cancelling', 'cancelled', 'settled', 'outcome-unknown'].includes(target.state)
+        || target.finalRunStatus !== undefined && ![
+          'queued', 'running', 'waiting', 'paused', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted',
+        ].includes(target.finalRunStatus)
+        || target.error !== undefined && (typeof target.error !== 'string' || target.error.length > 10_000)
+        || typeof target.observedAt !== 'string'
+        || Number.isNaN(Date.parse(target.observedAt))
+        || target.finalRunStatus !== undefined && run.status !== target.finalRunStatus
+      ) {
+        throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} has an invalid cancellation target`)
+      }
+      assertCancellationTargetOutcome(target, (_field, message) => new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId}: ${message}`))
+      commandIds.add(target.commandId)
+    }
+    const derived = cancellationStage(cancellation.targets)
+    if (cancellation.state !== 'requested' && cancellation.state !== derived) {
+      throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} cancellation state does not match its targets`)
+    }
+    if (cancellation.state === 'requested' && cancellation.targets.some((target) => target.state !== 'pending')) {
+      throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} requested cancellation has processed targets`)
+    }
+    if ((cancellation.state === 'cancelled') !== (snapshot.task.status === 'cancelled')) {
+      throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} cancellation does not match task status`)
+    }
+    if (snapshot.actions.some((action) => action.status === 'open')) {
+      throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} cancellation retained an open action`)
+    }
+    const stored = ownValue(state.requests, cancellation.requestId)
+    if (
+      stored?.kind !== 'task-cancellation'
+      || stored.receipt.taskId !== taskId
+      || stored.receipt.stage !== cancellation.state
+      || JSON.stringify(stored.receipt.snapshot) !== JSON.stringify(snapshot)
+    ) {
+      throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Task ${taskId} cancellation receipt is inconsistent`)
+    }
+  }
+  for (const [requestId, stored] of Object.entries(state.requests)) {
+    if (stored.kind !== 'task-cancellation') continue
+    const snapshot = ownValue(state.tasks, stored.receipt.taskId)
+    if (requestId !== stored.receipt.requestId || snapshot?.task.cancellation?.requestId !== requestId) {
+      throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Cancellation receipt ${requestId} has no matching task`)
+    }
+  }
+}
+
 export class WorkItemStore {
   private readonly filePath: string
   private state: WorkItemState = copy(EMPTY_STATE)
@@ -500,6 +694,7 @@ export class WorkItemStore {
     }
     try {
       assertArtifactReservationIntegrity(this.state)
+      assertTaskCancellationIntegrity(this.state)
     } catch (error) {
       if (error instanceof WorkItemStoreConflictError) this.integrityError = error
       throw error
@@ -532,7 +727,7 @@ export class WorkItemStore {
         requestId: request.requestId, digest, task, snapshot, replayed: false
       }
       const next = copy(this.state)
-      setOwnValue(next.tasks, task.id, snapshot)
+      setTaskSnapshot(next, task.id, snapshot)
       setOwnValue(next.requests, request.requestId, { kind: 'create', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
@@ -544,21 +739,18 @@ export class WorkItemStore {
     return this.mutate(async () => {
       const request = validateWorkTaskRevisionRequest(input)
       const digest = requestDigest('revise', request)
-      const replay = this.replay<WorkTaskRevisionReceipt>('revise', request.requestId, digest)
-      if (replay) return replay
-
       const current = ownValue(this.state.tasks, request.taskId)
       if (current === undefined) {
         throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
       }
+      assertTaskAcceptsBusinessMutation(current)
+      const replay = this.replay<WorkTaskRevisionReceipt>('revise', request.requestId, digest)
+      if (replay) return replay
       if (current.task.revision !== request.expectedRevision) {
         throw new WorkItemStoreConflictError(
           'REVISION_CONFLICT',
           `Expected task revision ${request.expectedRevision}, found ${current.task.revision}`
         )
-      }
-      if (current.task.status === 'cancelled') {
-        throw new WorkItemStoreConflictError('REVISION_CONFLICT', `Cancelled task ${request.taskId} cannot be revised`)
       }
 
       const snapshot = copy(current)
@@ -583,7 +775,7 @@ export class WorkItemStore {
         replayed: false,
       }
       const next = copy(this.state)
-      setOwnValue(next.tasks, request.taskId, snapshot)
+      setTaskSnapshot(next, request.taskId, snapshot)
       setOwnValue(next.requests, request.requestId, { kind: 'revise', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
@@ -595,13 +787,13 @@ export class WorkItemStore {
     return this.mutate(async () => {
       const request = validateWorkTaskArchiveRequest(input)
       const digest = requestDigest('archive', request)
-      const replay = this.replay<WorkTaskArchiveReceipt>('archive', request.requestId, digest)
-      if (replay) return replay
-
       const current = ownValue(this.state.tasks, request.taskId)
       if (current === undefined) {
         throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
       }
+      assertTaskAcceptsBusinessMutation(current)
+      const replay = this.replay<WorkTaskArchiveReceipt>('archive', request.requestId, digest)
+      if (replay) return replay
       if (current.task.revision !== request.expectedRevision) {
         throw new WorkItemStoreConflictError(
           'REVISION_CONFLICT',
@@ -645,12 +837,256 @@ export class WorkItemStore {
         replayed: false,
       }
       const next = copy(this.state)
-      setOwnValue(next.tasks, request.taskId, snapshot)
+      setTaskSnapshot(next, request.taskId, snapshot)
       setOwnValue(next.requests, request.requestId, { kind: 'archive', digest, receipt })
       await this.commit(next)
       if (isArchived !== request.archived) this.emit(snapshot)
       return copy(receipt)
     })
+  }
+
+  async beginTaskCancellation(input: WorkTaskCancelRequest): Promise<WorkTaskCancellationReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkTaskCancelRequest(input)
+      const digest = requestDigest('task-cancellation', request)
+      const existingRequest = ownValue(this.state.requests, request.requestId)
+      if (existingRequest !== undefined) {
+        if (existingRequest.kind !== 'task-cancellation' || existingRequest.digest !== digest) {
+          throw new WorkItemStoreConflictError('REQUEST_ID_CONFLICT', `Request id ${request.requestId} was already used with different content`)
+        }
+        const current = ownValue(this.state.tasks, existingRequest.receipt.taskId)
+        if (current === undefined || current.task.cancellation?.requestId !== request.requestId) {
+          throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Cancellation ${request.requestId} has no matching task`)
+        }
+        return {
+          ...copy(existingRequest.receipt),
+          stage: current.task.cancellation.state,
+          snapshot: copy(current),
+          replayed: true,
+        }
+      }
+
+      const current = ownValue(this.state.tasks, request.taskId)
+      if (current === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      if (current.task.revision !== request.expectedRevision) {
+        throw new WorkItemStoreConflictError('REVISION_CONFLICT', `Expected task revision ${request.expectedRevision}, found ${current.task.revision}`)
+      }
+      if (current.task.archivedAt !== undefined) {
+        throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Archived task ${request.taskId} cannot be cancelled`)
+      }
+      if (current.task.status === 'completed') {
+        throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Completed task ${request.taskId} cannot be cancelled`)
+      }
+      assertTaskAcceptsBusinessMutation(current)
+
+      const now = new Date().toISOString()
+      const snapshot = copy(current)
+      const cancelledDispatchRequestIds: string[] = []
+      const targets: WorkTaskCancellationTarget[] = []
+      for (const run of snapshot.runs) {
+        const workflowBacked = isWorkflowBackedExecutor(run.executor)
+        // A completed top-level Workflow can still own an asynchronous child.
+        // Freeze every linked Workflow root so the Workflow service can audit
+        // its whole durable execution tree before the WorkTask becomes final.
+        if (!ACTIVE_CANCELLATION_RUN_STATUSES.has(run.status) && !workflowBacked) continue
+        const dispatchEntry = Object.entries(this.state.requests).find(([, stored]) =>
+          stored.kind === 'dispatch' && stored.receipt.commandId === run.commandId)
+        const dispatchStored = dispatchEntry?.[1]
+        const canCancelBeforeDispatch = run.runId === ''
+          && dispatchStored?.kind === 'dispatch'
+          && dispatchStored.receipt.stage === 'recorded'
+        // A Work Item projection marked interrupted is not proof that the
+        // executor stopped. Freeze it as pending so the coordinator first
+        // checks the authoritative command record and cancels it when active.
+        let state: WorkTaskCancellationTargetState = 'pending'
+        let finalRunStatus: WorkTaskCancellationTarget['finalRunStatus']
+        if (canCancelBeforeDispatch) {
+          run.status = 'cancelled'
+          run.rawStatus = 'cancelled-before-dispatch'
+          run.capabilities = { cancel: false, resume: false, append: false }
+          run.observedAt = now
+          state = 'cancelled'
+          finalRunStatus = 'cancelled'
+          cancelledDispatchRequestIds.push(dispatchEntry![0])
+        }
+        targets.push({
+          commandId: run.commandId,
+          runId: run.runId,
+          attemptId: run.attemptId,
+          requirementVersion: run.requirementVersion,
+          executor: copy(run.executor),
+          state,
+          ...(finalRunStatus === undefined ? {} : { finalRunStatus }),
+          observedAt: now,
+        })
+      }
+      const aggregate = targets.length === 0 || targets.every((target) => target.state === 'cancelled' || target.state === 'settled')
+        ? 'cancelled'
+        : targets.some((target) => target.state === 'outcome-unknown')
+          ? 'outcome-unknown'
+          : targets.every((target) => target.state === 'pending')
+            ? 'requested'
+            : cancellationStage(targets)
+      snapshot.task.cancellation = {
+        requestId: request.requestId,
+        expectedRevision: request.expectedRevision,
+        requestedAt: now,
+        updatedAt: now,
+        state: aggregate,
+        targets,
+      }
+      if (aggregate === 'cancelled') {
+        snapshot.task.status = 'cancelled'
+        snapshot.task.activeAttemptId = undefined
+      }
+      snapshot.actions = snapshot.actions.map((action) => action.status === 'open' ? { ...action, status: 'superseded' } : action)
+      snapshot.task.revision += 1
+      snapshot.task.updatedAt = now
+
+      const receipt: WorkTaskCancellationReceipt = {
+        requestId: request.requestId,
+        digest,
+        taskId: request.taskId,
+        stage: aggregate,
+        snapshot,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setTaskSnapshot(next, request.taskId, snapshot)
+      for (const requestId of cancelledDispatchRequestIds) {
+        const stored = ownValue(next.requests, requestId)
+        if (stored?.kind !== 'dispatch') continue
+        const cancelled = { ...stored.receipt, stage: 'cancelled' as const, snapshot: copy(snapshot) }
+        setOwnValue(next.requests, requestId, { kind: 'dispatch', digest: stored.digest, receipt: cancelled })
+      }
+      setOwnValue(next.requests, request.requestId, { kind: 'task-cancellation', digest, receipt })
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(receipt)
+    })
+  }
+
+  async updateTaskCancellationTarget(
+    requestId: string,
+    commandId: string,
+    input: WorkTaskCancellationTargetUpdate,
+  ): Promise<WorkTaskCancellationReceipt> {
+    return this.mutate(async () => {
+      const update = normalizeCancellationTargetUpdate(input)
+      const stored = ownValue(this.state.requests, requestId)
+      if (stored?.kind !== 'task-cancellation') {
+        throw new WorkItemStoreConflictError('REQUEST_ID_CONFLICT', `Task cancellation ${requestId} was not recorded`)
+      }
+      const snapshot = copy(ownValue(this.state.tasks, stored.receipt.taskId))
+      if (snapshot === undefined || snapshot.task.cancellation?.requestId !== requestId) {
+        throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Cancellation ${requestId} has no matching task`)
+      }
+      const target = snapshot.task.cancellation.targets.find((candidate) => candidate.commandId === commandId)
+      if (target === undefined) {
+        throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Cancellation target ${commandId} was not found on task ${snapshot.task.id}`)
+      }
+      const run = snapshot.runs.find((candidate) => candidate.commandId === commandId)
+      if (run === undefined) throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Run command ${commandId} was not found on task ${snapshot.task.id}`)
+      if (update.runId !== undefined && run.runId !== '' && update.runId !== run.runId) {
+        throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Cancellation target ${commandId} run id is stale`)
+      }
+      let recoveredDispatchRequestId: string | undefined
+      if (update.runId !== undefined && run.runId === '') {
+        const dispatchEntry = Object.entries(this.state.requests).find(([, candidate]) =>
+          candidate.kind === 'dispatch' && candidate.receipt.commandId === commandId)
+        if (dispatchEntry === undefined || dispatchEntry[1].kind !== 'dispatch'
+          || !['dispatching', 'outcome-unknown'].includes(dispatchEntry[1].receipt.stage)) {
+          throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Cancellation target ${commandId} cannot recover its dispatch link`)
+        }
+        run.runId = update.runId
+        recoveredDispatchRequestId = dispatchEntry[0]
+      }
+      const desiredError = update.state === 'outcome-unknown' ? update.error : undefined
+      const targetAlreadyMatches = recoveredDispatchRequestId === undefined
+        && target.runId === run.runId
+        && target.state === update.state
+        && target.finalRunStatus === update.finalRunStatus
+        && target.error === desiredError
+      const runAlreadyMatches = update.finalRunStatus !== undefined
+        ? run.status === update.finalRunStatus
+          && run.rawStatus === `task-cancellation:${update.finalRunStatus}`
+          && run.capabilities.cancel === false
+          && run.capabilities.resume === false
+          && run.capabilities.append === false
+        : update.state === 'cancelling'
+          ? run.status === 'cancelling'
+            && run.rawStatus === 'task-cancellation:cancelling'
+            && run.capabilities.cancel === false
+            && run.capabilities.resume === false
+            && run.capabilities.append === false
+          : true
+      // Executor observers can report the same durable state more than once.
+      // Ignore observedAt-only changes so reconciliation cannot create a
+      // self-sustaining write/emit loop or consume task revisions forever.
+      if (targetAlreadyMatches && runAlreadyMatches) {
+        return { ...copy(stored.receipt), replayed: true }
+      }
+      target.runId = run.runId
+      target.state = update.state
+      target.observedAt = update.observedAt
+      if (update.finalRunStatus === undefined) delete target.finalRunStatus
+      else target.finalRunStatus = update.finalRunStatus
+      if (update.error === undefined || update.state !== 'outcome-unknown') delete target.error
+      else target.error = update.error
+      if (update.finalRunStatus !== undefined) {
+        run.status = update.finalRunStatus
+        run.rawStatus = `task-cancellation:${update.finalRunStatus}`
+        run.capabilities = { cancel: false, resume: false, append: false }
+        run.observedAt = update.observedAt
+      } else if (update.state === 'cancelling') {
+        run.status = 'cancelling'
+        run.rawStatus = 'task-cancellation:cancelling'
+        run.capabilities = { cancel: false, resume: false, append: false }
+        run.observedAt = update.observedAt
+      }
+
+      const stage = cancellationStage(snapshot.task.cancellation.targets)
+      snapshot.task.cancellation.state = stage
+      snapshot.task.cancellation.updatedAt = new Date().toISOString()
+      if (stage === 'cancelled') {
+        snapshot.task.status = 'cancelled'
+        snapshot.task.activeAttemptId = undefined
+      }
+      snapshot.task.revision += 1
+      snapshot.task.updatedAt = snapshot.task.cancellation.updatedAt
+      const receipt: WorkTaskCancellationReceipt = {
+        ...copy(stored.receipt),
+        stage,
+        snapshot,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setTaskSnapshot(next, stored.receipt.taskId, snapshot)
+      if (recoveredDispatchRequestId !== undefined) {
+        const dispatch = ownValue(next.requests, recoveredDispatchRequestId)
+        if (dispatch?.kind !== 'dispatch') {
+          throw new WorkItemStoreConflictError('TASK_CANCELLATION_CONFLICT', `Cancellation target ${commandId} lost its dispatch receipt`)
+        }
+        setOwnValue(next.requests, recoveredDispatchRequestId, {
+          kind: 'dispatch',
+          digest: dispatch.digest,
+          receipt: { ...dispatch.receipt, runId: run.runId, stage: 'linked', snapshot: copy(snapshot) },
+        })
+      }
+      setOwnValue(next.requests, requestId, { kind: 'task-cancellation', digest: stored.digest, receipt })
+      await this.commit(next)
+      this.emit(snapshot)
+      return copy(receipt)
+    })
+  }
+
+  async getTaskCancellation(requestId: string): Promise<WorkTaskCancellationReceipt | undefined> {
+    this.assertInitialized()
+    const stored = ownValue(this.state.requests, requestId)
+    if (stored?.kind !== 'task-cancellation') return undefined
+    const snapshot = ownValue(this.state.tasks, stored.receipt.taskId)
+    if (snapshot === undefined || snapshot.task.cancellation?.requestId !== requestId) return undefined
+    return { ...copy(stored.receipt), stage: snapshot.task.cancellation.state, snapshot: copy(snapshot) }
   }
 
   async beginArtifactWrite(input: WorkArtifactWriteIntent): Promise<WorkArtifactWriteReceipt> {
@@ -760,7 +1196,7 @@ export class WorkItemStore {
         replayed: false,
       }
       const next = copy(this.state)
-      setOwnValue(next.tasks, receipt.taskId, snapshot)
+      setTaskSnapshot(next, receipt.taskId, snapshot)
       setOwnValue(next.requests, requestId, { kind: 'artifact-write', digest: stored.digest, receipt: completed })
       assertArtifactReservationIntegrity(next)
       await this.commit(next)
@@ -792,20 +1228,19 @@ export class WorkItemStore {
       assertArtifactReservationIntegrity(this.state)
       const request = validateWorkArtifactAcceptRequest(input)
       const digest = requestDigest('artifact-accept', request)
-      const replay = this.replay<WorkArtifactAcceptReceipt>('artifact-accept', request.requestId, digest)
-      if (replay) return replay
-      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
-      if (snapshot === undefined) {
+      const current = ownValue(this.state.tasks, request.taskId)
+      if (current === undefined) {
         throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
       }
+      assertTaskAcceptsBusinessMutation(current)
+      const replay = this.replay<WorkArtifactAcceptReceipt>('artifact-accept', request.requestId, digest)
+      if (replay) return replay
+      const snapshot = copy(current)
       if (snapshot.task.revision !== request.expectedRevision) {
         throw new WorkItemStoreConflictError(
           'REVISION_CONFLICT',
           `Expected task revision ${request.expectedRevision}, found ${snapshot.task.revision}`
         )
-      }
-      if (snapshot.task.status === 'cancelled') {
-        throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', `Cancelled task ${request.taskId} cannot accept artifacts`)
       }
       if (snapshot.task.currentRequirementVersion !== request.requirementVersion) {
         throw new WorkItemStoreConflictError('ARTIFACT_CONFLICT', 'Artifact requirement version is stale')
@@ -856,7 +1291,7 @@ export class WorkItemStore {
         replayed: false,
       }
       const next = copy(this.state)
-      setOwnValue(next.tasks, request.taskId, snapshot)
+      setTaskSnapshot(next, request.taskId, snapshot)
       setOwnValue(next.requests, request.requestId, { kind: 'artifact-accept', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
@@ -881,6 +1316,7 @@ export class WorkItemStore {
           `Expected task revision ${request.expectedRevision}, found ${current.task.revision}`
         )
       }
+      assertTaskAcceptsBusinessMutation(current)
 
       const snapshot = copy(current)
       const now = new Date().toISOString()
@@ -940,7 +1376,7 @@ export class WorkItemStore {
         replayed: false
       }
       const next = copy(this.state)
-      setOwnValue(next.tasks, request.taskId, snapshot)
+      setTaskSnapshot(next, request.taskId, snapshot)
       setOwnValue(next.requests, request.requestId, { kind: 'dispatch', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
@@ -970,20 +1406,30 @@ export class WorkItemStore {
   ): Promise<WorkDispatchIntentReceipt> {
     if (execution.runId.trim() === '') throw new Error('Executor run id is required for dispatch linkage')
     return this.updateDispatch(requestId, commandId, (receipt, snapshot, run) => {
+      if (receipt.stage === 'cancelled') return undefined
       if (receipt.stage === 'linked') {
         if (receipt.runId !== execution.runId) {
           throw new WorkItemStoreConflictError('REQUEST_ID_CONFLICT', `Dispatch ${requestId} is already linked to another run`)
         }
         return undefined
       }
-      Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      const observedAt = new Date().toISOString()
+      Object.assign(run, copy(execution), { observedAt })
+      const cancellationTarget = snapshot.task.cancellation?.targets.find((target) => target.commandId === commandId)
+      if (cancellationTarget !== undefined) {
+        cancellationTarget.runId = execution.runId
+        cancellationTarget.observedAt = observedAt
+        snapshot.task.cancellation!.updatedAt = observedAt
+        snapshot.task.revision += 1
+        snapshot.task.updatedAt = observedAt
+      }
       return { ...receipt, runId: execution.runId, stage: 'linked', snapshot }
     })
   }
 
   async markDispatchOutcomeUnknown(requestId: string, commandId: string, rawStatus: string): Promise<WorkDispatchIntentReceipt> {
     return this.updateDispatch(requestId, commandId, (receipt, snapshot, run) => {
-      if (receipt.stage === 'linked') return undefined
+      if (receipt.stage === 'linked' || receipt.stage === 'cancelled') return undefined
       run.status = 'interrupted'
       run.rawStatus = rawStatus
       run.observedAt = new Date().toISOString()
@@ -1036,12 +1482,15 @@ export class WorkItemStore {
           incomingById.delete(action.id)
         }
       }
-      if (JSON.stringify(nextActions) === JSON.stringify(snapshot.actions)) return snapshot
-      snapshot.actions = nextActions
+      const cancellationSafeActions = snapshot.task.cancellation === undefined
+        ? nextActions
+        : nextActions.map((action) => action.status === 'open' ? { ...action, status: 'superseded' as const } : action)
+      if (JSON.stringify(cancellationSafeActions) === JSON.stringify(snapshot.actions)) return snapshot
+      snapshot.actions = cancellationSafeActions
       snapshot.task.revision += 1
       snapshot.task.updatedAt = new Date().toISOString()
       const next = copy(this.state)
-      setOwnValue(next.tasks, taskId, snapshot)
+      setTaskSnapshot(next, taskId, snapshot)
       await this.commit(next)
       this.emit(snapshot)
       return copy(snapshot)
@@ -1064,13 +1513,18 @@ export class WorkItemStore {
       const snapshot = copy(current)
       const run = snapshot.runs.find((candidate) => candidate.runId === runId)
       if (run === undefined) return undefined
+      const cancellationTarget = snapshot.task.cancellation?.targets.find((target) => target.commandId === run.commandId)
+      if (cancellationTarget !== undefined && cancellationTarget.state !== 'cancelled' && cancellationTarget.state !== 'settled') {
+        return snapshot
+      }
+      if (cancellationFinalStatus(snapshot, run.commandId) !== undefined) return snapshot
       if (JSON.stringify({ status: run.status, rawStatus: run.rawStatus, capabilities: run.capabilities })
         === JSON.stringify(execution)) return snapshot
       Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
       snapshot.task.revision += 1
       snapshot.task.updatedAt = new Date().toISOString()
       const next = copy(this.state)
-      setOwnValue(next.tasks, taskId, snapshot)
+      setTaskSnapshot(next, taskId, snapshot)
       await this.commit(next)
       this.emit(snapshot)
       return copy(snapshot)
@@ -1081,10 +1535,12 @@ export class WorkItemStore {
     return this.mutate(async () => {
       const request = validateWorkActionAnswerRequest(input)
       const digest = requestDigest('action-answer', request)
+      const currentTask = ownValue(this.state.tasks, request.taskId)
+      if (currentTask === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      assertTaskAcceptsBusinessMutation(currentTask)
       const replay = this.replay<WorkActionAnswerReceipt>('action-answer', request.requestId, digest)
       if (replay) return replay
-      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
-      if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      const snapshot = copy(currentTask)
       const action = snapshot.actions.find((candidate) => candidate.id === request.actionId)
       if (action === undefined) throw new WorkItemStoreConflictError('ACTION_NOT_FOUND', `Action ${request.actionId} was not found on task ${request.taskId}`)
       if (action.status !== 'open') throw new WorkItemStoreConflictError('ACTION_CONFLICT', `Action ${request.actionId} is no longer open`)
@@ -1149,6 +1605,7 @@ export class WorkItemStore {
       if (stored.receipt.stage === 'resolved') return { ...copy(stored.receipt), replayed: true }
       const snapshot = copy(ownValue(this.state.tasks, request.taskId))
       if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      assertTaskAcceptsBusinessMutation(snapshot)
       const action = snapshot.actions.find((candidate) => candidate.id === request.actionId)
       if (action === undefined) throw new WorkItemStoreConflictError('ACTION_NOT_FOUND', `Action ${request.actionId} was not found on task ${request.taskId}`)
       if (action.status === 'superseded' || action.sourceEventId !== request.expectedSourceEventId || action.requirementVersion !== request.expectedRequirementVersion) {
@@ -1157,12 +1614,14 @@ export class WorkItemStore {
       const run = snapshot.runs.find((candidate) => candidate.runId === action.runId)
       if (run === undefined) throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Run ${action.runId} was not found on task ${request.taskId}`)
       action.status = 'resolved'
-      Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      if (cancellationFinalStatus(snapshot, run.commandId) === undefined) {
+        Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      }
       snapshot.task.revision += 1
       snapshot.task.updatedAt = new Date().toISOString()
       const receipt: WorkActionAnswerReceipt = { ...copy(stored.receipt), stage: 'resolved', snapshot, replayed: false }
       const next = copy(this.state)
-      setOwnValue(next.tasks, request.taskId, snapshot)
+      setTaskSnapshot(next, request.taskId, snapshot)
       setOwnValue(next.requests, request.requestId, { kind: 'action-answer', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
@@ -1174,10 +1633,12 @@ export class WorkItemStore {
     return this.mutate(async () => {
       const request = validateWorkRunControlRequest(input)
       const digest = requestDigest('run-control', request)
+      const currentTask = ownValue(this.state.tasks, request.taskId)
+      if (currentTask === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      assertTaskAcceptsBusinessMutation(currentTask)
       const replay = this.replay<WorkRunControlReceipt>('run-control', request.requestId, digest)
       if (replay) return replay
-      const snapshot = copy(ownValue(this.state.tasks, request.taskId))
-      if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      const snapshot = copy(currentTask)
       if (snapshot.task.revision !== request.expectedRevision) {
         throw new WorkItemStoreConflictError('REVISION_CONFLICT', `Expected task revision ${request.expectedRevision}, found ${snapshot.task.revision}`)
       }
@@ -1211,12 +1672,14 @@ export class WorkItemStore {
       if (snapshot === undefined) throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
       const run = snapshot.runs.find((candidate) => candidate.runId === request.runId)
       if (run === undefined) throw new WorkItemStoreConflictError('RUN_NOT_FOUND', `Run ${request.runId} was not found on task ${request.taskId}`)
-      Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      if (cancellationFinalStatus(snapshot, run.commandId) === undefined) {
+        Object.assign(run, copy(execution), { observedAt: new Date().toISOString() })
+      }
       snapshot.task.revision += 1
       snapshot.task.updatedAt = new Date().toISOString()
       const receipt: WorkRunControlReceipt = { ...copy(stored.receipt), stage: 'processed', snapshot, replayed: false }
       const next = copy(this.state)
-      setOwnValue(next.tasks, request.taskId, snapshot)
+      setTaskSnapshot(next, request.taskId, snapshot)
       setOwnValue(next.requests, request.requestId, { kind: 'run-control', digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
@@ -1252,7 +1715,7 @@ export class WorkItemStore {
       if (decided === undefined) return copy(current)
       const receipt = { ...decided, snapshot }
       const next = copy(this.state)
-      setOwnValue(next.tasks, receipt.taskId, snapshot)
+      setTaskSnapshot(next, receipt.taskId, snapshot)
       setOwnValue(next.requests, requestId, { kind: 'dispatch', digest: stored.digest, receipt })
       await this.commit(next)
       this.emit(snapshot)
@@ -1294,6 +1757,7 @@ export class WorkItemStore {
 
   private async commit(next: WorkItemState): Promise<void> {
     assertArtifactReservationIntegrity(next)
+    assertTaskCancellationIntegrity(next)
     const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`
     try {
       const serialized = `${JSON.stringify(next, null, 2)}\n`

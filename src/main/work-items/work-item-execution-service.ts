@@ -47,6 +47,11 @@ export class WorkItemExecutionService {
 
   private async dispatch(input: WorkTaskExecuteRequest, intent: WorkDispatchIntentReceipt): Promise<WorkTaskSnapshot> {
     const claimed = await this.options.workItems.claimDispatch(intent.requestId, intent.commandId)
+    // A task cancellation can win after the dispatch intent is recorded but
+    // before this request claims it. In that case Main has durably cancelled
+    // the unstarted command and no executor call is allowed.
+    if (claimed.stage === 'cancelled') return claimed.snapshot
+    if (claimed.stage !== 'dispatching') return this.reconcile(claimed.requestId, claimed.commandId, claimed.snapshot)
     let execution: EmployeeRunRecord | WorkflowRunRecord
     try {
       if (input.executor.kind === 'employee' && input.executor.methodId !== undefined) {

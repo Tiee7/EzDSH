@@ -167,6 +167,24 @@ describe('effect reconciliation', () => {
     expect(fixture.service.get(fixture.run.id)).toEqual(before)
   })
 
+  it('allows a task-cancelled run to resolve unknown effect audit without ever requeueing it', async () => {
+    const fixture = await ordinary()
+    const cancelled = await fixture.service.cancelForWorkTask(fixture.run.id)
+    expect(cancelled).toMatchObject({ status: 'cancelled', queue: { cancellationRequestedAt: expect.any(String) } })
+    await expect(fixture.service.resume(cancelled.id)).rejects.toThrow()
+
+    const reconciled = await fixture.service.reconcileEffect(cancelled.id, {
+      nodeId: 'body', outcome: 'not-dispatched', note: 'verified after task cancellation',
+    })
+
+    expect(reconciled.status).toBe('cancelled')
+    expect(reconciled.nodeStates.find((state) => state.nodeId === 'body')).toMatchObject({
+      status: 'pending', effectState: 'none', effectReconciliation: { outcome: 'not-dispatched' },
+    })
+    expect(reconciled.queue?.cancellationRequestedAt).toEqual(cancelled.queue?.cancellationRequestedAt)
+    await expect(fixture.service.resume(cancelled.id)).rejects.toThrow()
+  })
+
   it('rejects missing, wrong-iteration and non-unknown targets without mutation', async () => {
     const fixture = await ordinary()
     const before = fixture.service.get(fixture.run.id)
@@ -1768,6 +1786,44 @@ describe('workflow run service', () => {
     await vi.waitFor(() => expect(archiveSession).toHaveBeenCalledTimes(1))
   })
 
+  it('cancels an internal Session that finishes creating after task cancellation', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-session-create-cancel-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      id: 'workflow-session-create-cancel', name: 'Late employee session', description: '',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'employee', type: 'employee', label: '审核', config: { employeeId: 'content-reviewer', instruction: '审核', outputMode: 'text' }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'employee' }, { id: 'b', source: 'employee', target: 'output' }],
+    })
+    let resolveSession!: (value: { sessionId: string }) => void
+    const createSession = vi.fn(() => new Promise<{ sessionId: string }>((resolve) => { resolveSession = resolve }))
+    const sendPrompt = vi.fn(async () => ({ text: '不应执行' }))
+    const cancelSession = vi.fn(async () => undefined)
+    const archiveSession = vi.fn(async () => undefined)
+    const service = new WorkflowRunService({
+      workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession, sendPrompt, cancelSession, archiveSession }),
+      resolveEmployee: () => reviewer(),
+    })
+    try {
+      const started = await service.start(workflow.id, '脚本')
+      await vi.waitFor(() => expect(createSession).toHaveBeenCalledOnce())
+      const cancelling = await service.cancelForWorkTask(started.id)
+      expect(cancelling.queue?.cancellationRequestedAt).toEqual(expect.any(String))
+
+      resolveSession({ sessionId: 'late-session' })
+      const settled = await eventually(service, started.id)
+
+      expect(settled.status).toBe('cancelled')
+      await vi.waitFor(() => expect(cancelSession).toHaveBeenCalledWith('late-session'))
+      expect(archiveSession).toHaveBeenCalledWith('late-session')
+      expect(sendPrompt).not.toHaveBeenCalled()
+    } finally { await service.stop() }
+  })
+
   it('repairs invalid JSON output with the lightweight path and creates no DSH Session', async () => {
     const outputMode: WorkflowOutputMode = 'json'
     const { service, workflowId, sendPrompt, createSession, complete } = await createNodeService({
@@ -2933,6 +2989,28 @@ describe('workflow run service', () => {
       expect((await cancelling).status).toBe('cancelled')
       expect(service.get(runId)?.status).toBe('cancelled')
     } finally { allowResume(); await resuming.catch(() => undefined) }
+  })
+
+  it.each(['paused', 'failed'] as const)('cancels a %s run durably so it cannot be resumed later', async (status) => {
+    const { workflow, runStore, service } = await stoppedApprovalFixture(`cancel-${status}-run`)
+    const runId = `cancel-${status}-run-id`
+    await runStore.save({
+      id: runId,
+      workflowId: workflow.id,
+      workflowRevision: workflow.revision,
+      status,
+      input: 'hello',
+      allowShellFile: false,
+      nodeStates: workflow.nodes.map((node) => ({ nodeId: node.id, status: 'pending' as const })),
+      events: [],
+    })
+
+    const cancelled = await service.cancelForWorkTask(runId)
+
+    expect(cancelled.status).toBe('cancelled')
+    expect(cancelled.queue?.cancellationRequestedAt).toEqual(expect.any(String))
+    await expect(service.resume(runId)).rejects.toThrow()
+    expect(service.get(runId)?.status).toBe('cancelled')
   })
 
   it('serializes approval with cancellation and applies cancellation to the newly queued state', async () => {
