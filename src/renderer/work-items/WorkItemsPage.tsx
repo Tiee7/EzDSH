@@ -80,6 +80,13 @@ function mutationRequestId(prefix: string): string {
   return `${prefix}-${token}`
 }
 
+function workbenchCandidateConflict(preview: WorkbenchImportPreview, candidate: WorkbenchImportPreview['candidates'][number]): boolean {
+  return preview.conflicts.some((conflict) => conflict.sourceKey === candidate.sourceKey
+    || conflict.sourceKey.startsWith(`${candidate.sourceKey}:`)
+    || conflict.detail.includes(candidate.sourceKey)
+    || candidate.fileReferences.some((reference) => conflict.detail.includes(reference)))
+}
+
 const ATTENTION_GROUPS: readonly { id: WorkbenchAttentionGroup; zh: string; en: string }[] = [
   { id: 'needs-action', zh: '需要处理', en: 'Needs action' },
   { id: 'in-progress', zh: '进行中', en: 'In progress' },
@@ -336,7 +343,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       const next = await window.EzDSH.workbench.migration.preview(sourceDirectory.trim())
       setPreview(next)
       setPreparation(undefined)
-      setSelected(new Set(next.candidates.filter((candidate) => !next.conflicts.some((conflict) => conflict.sourceKey === candidate.sourceKey)).map((candidate) => candidate.sourceKey)))
+      setSelected(new Set(next.candidates.filter((candidate) => !workbenchCandidateConflict(next, candidate)).map((candidate) => candidate.sourceKey)))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -436,7 +443,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       </div>
       <ul className="work-items-migration-list">
         {preview.candidates.map((candidate) => {
-          const conflict = preview.conflicts.some((item) => item.sourceKey === candidate.sourceKey || item.sourceKey.startsWith(`${candidate.sourceKey}:`))
+          const conflict = workbenchCandidateConflict(preview, candidate)
           return <li key={candidate.sourceKey} className={conflict ? 'work-items-migration-conflict' : undefined}>
             <label>
               <input type="checkbox" checked={selected.has(candidate.sourceKey)} disabled={conflict || busy !== undefined} onChange={() => toggle(candidate.sourceKey)} />
