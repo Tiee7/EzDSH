@@ -140,6 +140,7 @@ import {
 import { readNotificationSettings, writeNotificationSettings } from './notifications/notification-settings.js'
 import { RuntimeNotificationService } from './notifications/runtime-notification-service.js'
 import { NativeNotificationService, type NativeNotificationLike } from './notifications/native-notification-service.js'
+import { NotificationInboxStore } from './notifications/notification-inbox-store.js'
 import {
   CURRENT_DATA_SCHEMA_VERSION,
   RecoveryManager,
@@ -182,6 +183,8 @@ let notificationSettings: NotificationSettings = { ...DEFAULT_NOTIFICATION_SETTI
 let notificationSettingsWriteChain: Promise<void> = Promise.resolve()
 let runtimeNotificationService: RuntimeNotificationService | undefined
 let nativeNotificationService: NativeNotificationService | undefined
+let notificationInboxStore: NotificationInboxStore | undefined
+let stopNotificationInboxListener: (() => void) | undefined
 let notificationRuntimeUrl: string | undefined
 let storeService: StoreService | undefined
 let dshPluginCommandRunner: PluginCommandRunner | undefined
@@ -303,11 +306,34 @@ function emitNotificationSettings(): void {
   }
 }
 
-function handleNotificationSignal(notification: NotificationSignal): void {
-  nativeNotificationService?.notify(notification)
+function emitNotificationInbox(snapshot: Awaited<ReturnType<NotificationInboxStore['snapshot']>>): void {
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('notifications:event', notification)
+    if (!window.isDestroyed()) window.webContents.send('notifications:inbox-change', snapshot)
   }
+}
+
+function handleNotificationSignal(notification: NotificationSignal): void {
+  const deliver = (): void => {
+    nativeNotificationService?.notify(notification)
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('notifications:event', notification)
+    }
+  }
+  const inbox = notificationInboxStore
+  if (inbox === undefined) {
+    deliver()
+    return
+  }
+  void inbox.append(notification)
+    .then(({ appended }) => {
+      if (!appended) return
+      deliver()
+    })
+    .catch((error: unknown) => {
+      console.warn('[notifications] unable to persist inbox item:', error instanceof Error ? error.message : String(error))
+      // A broken inbox must not suppress the existing transient notification.
+      deliver()
+    })
 }
 
 const CLI_PROFILE_NAME = /^[a-z][a-z0-9-]*$/
@@ -483,6 +509,10 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   languageTagVisible = await readLanguageTagVisible(languageTagPath)
   notificationSettingsPath = join(layout.state, 'notifications.json')
   notificationSettings = await readNotificationSettings(notificationSettingsPath)
+  stopNotificationInboxListener?.()
+  notificationInboxStore = new NotificationInboxStore(layout.state)
+  await notificationInboxStore.initialize()
+  stopNotificationInboxListener = notificationInboxStore.onChanged(emitNotificationInbox)
 
   if (await repairInstalledDshPlugin(layout.harness, 'web', 'dsh-codex')) {
     console.warn('[dsh-plugin] repaired dsh-codex account status compatibility')
@@ -1512,6 +1542,35 @@ function registerIpcHandlers(): void {
       notificationSettings = next
       emitNotificationSettings()
       return success(notificationSettings)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('notifications:get-inbox', async (): Promise<IpcResult<Awaited<ReturnType<NotificationInboxStore['snapshot']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (notificationInboxStore === undefined) throw new Error('Notification inbox is not ready')
+      return success(await notificationInboxStore.snapshot())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('notifications:mark-read', async (_event, id: unknown): Promise<IpcResult<Awaited<ReturnType<NotificationInboxStore['markRead']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (typeof id !== 'string' || id.trim() === '') throw new Error('Notification inbox item id is invalid')
+      if (notificationInboxStore === undefined) throw new Error('Notification inbox is not ready')
+      return success(await notificationInboxStore.markRead(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('notifications:dismiss', async (_event, id: unknown): Promise<IpcResult<Awaited<ReturnType<NotificationInboxStore['dismiss']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (typeof id !== 'string' || id.trim() === '') throw new Error('Notification inbox item id is invalid')
+      if (notificationInboxStore === undefined) throw new Error('Notification inbox is not ready')
+      return success(await notificationInboxStore.dismiss(id))
     } catch (error) {
       return failure(error)
     }

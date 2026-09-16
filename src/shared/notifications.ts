@@ -78,6 +78,108 @@ export interface NotificationSignal {
   dedupeKey: string
 }
 
+/**
+ * Limits for the durable inbox. Notification details originate in a Runtime
+ * event stream, so they must remain bounded before they cross the persistence
+ * boundary. The inbox is intentionally small and is an attention surface,
+ * rather than an event log.
+ */
+export const NOTIFICATION_INBOX_MAX_ITEMS = 200 as const
+export const NOTIFICATION_SESSION_ID_MAX_LENGTH = 512 as const
+export const NOTIFICATION_DEDUPE_KEY_MAX_LENGTH = 512 as const
+export const NOTIFICATION_DETAIL_MAX_LENGTH = 4_000 as const
+export const NOTIFICATION_INBOX_ITEM_ID_MAX_LENGTH = 128 as const
+
+/** A notification retained in the Main-owned durable attention inbox. */
+export interface NotificationInboxItem {
+  id: string
+  signal: NotificationSignal
+  createdAt: string
+  readAt?: string
+  dismissedAt?: string
+}
+
+/** Durable inbox state exposed to the Renderer and change listeners. */
+export interface NotificationInboxSnapshot {
+  version: 1
+  items: NotificationInboxItem[]
+  unreadCount: number
+}
+
+function boundedText(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (trimmed === '') return undefined
+  return trimmed.length > maximum ? trimmed.slice(0, maximum) : trimmed
+}
+
+function timestampValue(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 64 || Number.isNaN(Date.parse(value))) return undefined
+  return value
+}
+
+function notificationEventValue(value: unknown): NotificationEventId | undefined {
+  return typeof value === 'string' && (NOTIFICATION_EVENT_IDS as readonly string[]).includes(value)
+    ? value as NotificationEventId
+    : undefined
+}
+
+/** Normalize a Runtime signal before it is persisted or sent across IPC. */
+export function normalizeNotificationSignal(value: unknown): NotificationSignal | undefined {
+  if (!isRecord(value)) return undefined
+  const event = notificationEventValue(value.event)
+  const sessionId = boundedText(value.sessionId, NOTIFICATION_SESSION_ID_MAX_LENGTH)
+  const dedupeKey = boundedText(value.dedupeKey, NOTIFICATION_DEDUPE_KEY_MAX_LENGTH)
+  if (event === undefined || sessionId === undefined || dedupeKey === undefined) return undefined
+  const detail = value.detail === undefined ? undefined : boundedText(value.detail, NOTIFICATION_DETAIL_MAX_LENGTH)
+  return {
+    event,
+    sessionId,
+    ...(detail === undefined ? {} : { detail }),
+    dedupeKey,
+  }
+}
+
+/** Normalize one persisted inbox item; malformed entries are rejected. */
+export function normalizeNotificationInboxItem(value: unknown): NotificationInboxItem | undefined {
+  if (!isRecord(value)) return undefined
+  const id = boundedText(value.id, NOTIFICATION_INBOX_ITEM_ID_MAX_LENGTH)
+  const signal = normalizeNotificationSignal(value.signal)
+  const createdAt = timestampValue(value.createdAt)
+  if (id === undefined || signal === undefined || createdAt === undefined) return undefined
+  const readAt = value.readAt === undefined ? undefined : timestampValue(value.readAt)
+  const dismissedAt = value.dismissedAt === undefined ? undefined : timestampValue(value.dismissedAt)
+  if ((value.readAt !== undefined && readAt === undefined) || (value.dismissedAt !== undefined && dismissedAt === undefined)) return undefined
+  return {
+    id,
+    signal,
+    createdAt,
+    ...(readAt === undefined ? {} : { readAt }),
+    ...(dismissedAt === undefined ? {} : { dismissedAt }),
+  }
+}
+
+/** Normalize durable inbox JSON and enforce retention and dedupe invariants. */
+export function normalizeNotificationInboxSnapshot(value: unknown): NotificationInboxSnapshot | undefined {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.items)) return undefined
+  const items: NotificationInboxItem[] = []
+  const ids = new Set<string>()
+  const dedupeKeys = new Set<string>()
+  for (const candidate of value.items) {
+    const item = normalizeNotificationInboxItem(candidate)
+    if (item === undefined || ids.has(item.id) || dedupeKeys.has(item.signal.dedupeKey)) continue
+    ids.add(item.id)
+    dedupeKeys.add(item.signal.dedupeKey)
+    items.push(item)
+  }
+  const retained = items.slice(-NOTIFICATION_INBOX_MAX_ITEMS)
+  return {
+    version: 1,
+    items: retained,
+    unreadCount: retained.reduce((count, item) => count + (item.readAt === undefined && item.dismissedAt === undefined ? 1 : 0), 0),
+  }
+}
+
 export interface NotificationText {
   title: string
   body: string

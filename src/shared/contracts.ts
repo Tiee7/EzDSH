@@ -33,7 +33,7 @@ import type {
 } from './providers.js'
 import type { ChannelBridgeConfig, DshSessionSummary, PairingState } from './channel-bridge.js'
 import type { MobileRemoteSnapshot } from './mobile-remote.js'
-import type { NotificationSettings, NotificationSignal } from './notifications.js'
+import type { NotificationInboxItem, NotificationInboxSnapshot, NotificationSettings, NotificationSignal } from './notifications.js'
 import type {
   RecoveryDryRun,
   RecoveryDoctorResult,
@@ -291,6 +291,11 @@ export interface EzDSHBridge {
     setSettings(settings: NotificationSettings): Promise<NotificationSettings>
     onSettingsChange(listener: (settings: NotificationSettings) => void): () => void
     onEvent(listener: (notification: NotificationSignal) => void): () => void
+    /** Developer-only durable attention inbox. */
+    getInbox(): Promise<NotificationInboxSnapshot>
+    markInboxRead(id: string): Promise<NotificationInboxItem | undefined>
+    dismissInbox(id: string): Promise<NotificationInboxItem | undefined>
+    onInboxChange(listener: (snapshot: NotificationInboxSnapshot) => void): () => void
   }
   updates: {
     getStatus(): Promise<UpdateState>

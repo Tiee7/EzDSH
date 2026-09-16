@@ -13,6 +13,7 @@ import type {
   WorkTaskSnapshot,
 } from '../../shared/work-items.js'
 import type { WorkbenchAttentionGroup, WorkbenchAttentionItem, WorkbenchAttentionSnapshot } from '../../shared/workbench-attention.js'
+import { getNotificationText, type NotificationInboxItem, type NotificationInboxSnapshot } from '../../shared/notifications.js'
 import { employeeDisplayLabel, type EmployeeSnapshot } from '../../shared/employees.js'
 import { WorkItemAttentionView } from './WorkItemAttentionView.js'
 import {
@@ -111,6 +112,43 @@ function AttentionSummary({ snapshot, locale, onSelect }: { snapshot?: Workbench
   </section>
 }
 
+function NotificationInbox({ snapshot, locale, onMarkRead, onDismiss }: {
+  snapshot?: NotificationInboxSnapshot
+  locale: 'zh' | 'en'
+  onMarkRead: (id: string) => void
+  onDismiss: (id: string) => void
+}): JSX.Element | null {
+  if (snapshot === undefined) return null
+  const items = snapshot.items.filter((item) => item.dismissedAt === undefined).slice(-8).reverse()
+  return <section className="work-items-notification-inbox" aria-label={locale === 'en' ? 'Notification inbox' : '通知收件箱'}>
+    <div className="work-items-notification-heading">
+      <div>
+        <strong>{locale === 'en' ? 'Notification inbox' : '通知收件箱'}</strong>
+        <span>{locale === 'en' ? `${snapshot.unreadCount} unread` : `${snapshot.unreadCount} 条未读`}</span>
+      </div>
+      <small>{locale === 'en' ? 'Durable Main records' : 'Main 持久记录'}</small>
+    </div>
+    {items.length === 0
+      ? <p className="work-items-notification-empty">{locale === 'en' ? 'No retained notifications.' : '暂无保留的通知。'}</p>
+      : <ul className="work-items-notification-list">
+        {items.map((item: NotificationInboxItem) => {
+          const text = getNotificationText(locale, item.signal)
+          return <li key={item.id} className={item.readAt === undefined ? 'work-items-notification-unread' : undefined}>
+            <div className="work-items-notification-copy">
+              <strong>{text.title}</strong>
+              <span>{item.signal.detail ?? text.body}</span>
+              <small>{new Date(item.createdAt).toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN')}</small>
+            </div>
+            <div className="work-items-notification-actions">
+              {item.readAt === undefined ? <button type="button" onClick={() => onMarkRead(item.id)}>{locale === 'en' ? 'Mark read' : '标记已读'}</button> : null}
+              <button type="button" onClick={() => onDismiss(item.id)}>{locale === 'en' ? 'Dismiss' : '关闭'}</button>
+            </div>
+          </li>
+        })}
+      </ul>}
+  </section>
+}
+
 /**
  * Durable Work Items browser. Main remains the authority for task status and
  * actions; this page only queries, observes and renders its snapshots.
@@ -121,6 +159,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
   const [attention, setAttention] = useState<WorkbenchAttentionSnapshot>()
+  const [notificationInbox, setNotificationInbox] = useState<NotificationInboxSnapshot>()
   const [showArchived, setShowArchived] = useState(false)
   const [projectFilter, setProjectFilter] = useState<WorkItemProjectFilterValue>(() => projectFilterFromNavigation(navigation?.returnTo?.filter))
   const [projectDirectory, setProjectDirectory] = useState<WorkItemProjectDirectoryEntry[]>([])
@@ -131,6 +170,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
   const [revisionTaskId, setRevisionTaskId] = useState<string>()
   const listRequestSequence = useRef(0)
   const attentionRequestSequence = useRef(0)
+  const notificationInboxRequestSequence = useRef(0)
   const getRequestSequence = useRef(0)
   const handoffRequestSequence = useRef(0)
   const projectDirectoryRequestSequence = useRef(0)
@@ -163,6 +203,24 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     } catch {
       // The durable Work Item list remains usable when the optional summary is unavailable.
     }
+  }, [])
+
+  const refreshNotificationInbox = useCallback(async (): Promise<void> => {
+    const sequence = ++notificationInboxRequestSequence.current
+    try {
+      const next = await window.EzDSH.notifications.getInbox()
+      if (mounted.current && sequence === notificationInboxRequestSequence.current) setNotificationInbox(next)
+    } catch {
+      // The work item surface remains usable when the developer-only inbox is unavailable.
+    }
+  }, [])
+
+  const markNotificationRead = useCallback((id: string): void => {
+    void window.EzDSH.notifications.markInboxRead(id).catch(() => undefined)
+  }, [])
+
+  const dismissNotification = useCallback((id: string): void => {
+    void window.EzDSH.notifications.dismissInbox(id).catch(() => undefined)
   }, [])
 
   const selectTask = useCallback((taskId: string): void => {
@@ -434,6 +492,10 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     })
     void refresh()
     void refreshAttention()
+    void refreshNotificationInbox()
+    const unsubscribeNotificationInbox = window.EzDSH.notifications.onInboxChange((snapshot) => {
+      if (mounted.current) setNotificationInbox(snapshot)
+    })
     void window.EzDSH.employees.list().then((employees) => {
       if (!mounted.current) return
       setEmployeeDirectory(new Map(employees.map((employee) => [employee.id, employee])))
@@ -451,8 +513,9 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     return () => {
       mounted.current = false
       unsubscribe()
+      unsubscribeNotificationInbox()
     }
-  }, [refresh, refreshAttention])
+  }, [refresh, refreshAttention, refreshNotificationInbox])
 
   useEffect(() => {
     if ((navigation?.destination !== 'detail' && navigation?.destination !== 'work-items') || navigation.taskId === undefined) return
@@ -513,6 +576,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
 
       {error === undefined ? null : <p className="work-items-error" role="alert">{error}</p>}
       {showArchived ? null : <AttentionSummary snapshot={attention} locale={locale} onSelect={selectTask} />}
+      {showArchived ? null : <NotificationInbox snapshot={notificationInbox} locale={locale} onMarkRead={markNotificationRead} onDismiss={dismissNotification} />}
       <WorkItemProjectContextPanel locale={locale} includeArchived={showArchived} />
       <div className="work-items-layout">
         <aside className="work-items-list" aria-label={copy.tabWorkItems}>

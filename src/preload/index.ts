@@ -8,7 +8,7 @@ import type { NavigationTarget } from '../shared/navigation.js'
 import type { AppPlatform } from '../shared/platform.js'
 import type { NavConfig } from '../shared/navigation.js'
 import type { MobileRemoteSnapshot } from '../shared/mobile-remote.js'
-import type { NotificationSettings } from '../shared/notifications.js'
+import type { NotificationInboxItem, NotificationInboxSnapshot, NotificationSettings } from '../shared/notifications.js'
 import type { WorkbenchAttentionSnapshot } from '../shared/workbench-attention.js'
 import type { ProxyProfileInput, ProxySettingsSnapshot, ProxyTestResult } from '../shared/proxy.js'
 import type { RuntimeSnapshot } from '../main/runtime/runtime-types.js'
@@ -352,6 +352,14 @@ const bridge: EzDSHBridge = {
       const handler = (_event: Electron.IpcRendererEvent, notification: Parameters<typeof listener>[0]) => listener(notification)
       ipcRenderer.on('notifications:event', handler)
       return () => ipcRenderer.removeListener('notifications:event', handler)
+    },
+    getInbox: () => invoke<NotificationInboxSnapshot>('notifications:get-inbox'),
+    markInboxRead: (id: string) => invoke<NotificationInboxItem | undefined>('notifications:mark-read', id),
+    dismissInbox: (id: string) => invoke<NotificationInboxItem | undefined>('notifications:dismiss', id),
+    onInboxChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]) => listener(snapshot)
+      ipcRenderer.on('notifications:inbox-change', handler)
+      return () => ipcRenderer.removeListener('notifications:inbox-change', handler)
     },
   },
   updates: {
