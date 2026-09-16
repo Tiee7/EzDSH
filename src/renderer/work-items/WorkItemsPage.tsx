@@ -365,7 +365,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       setBusy(undefined)
     }
   }, [preview, refreshMigrationState, refreshReport, selected, sourceDirectory])
-  const apply = useCallback(async (identity: string): Promise<void> => {
+  const apply = useCallback(async (identity: string, allowUnknown = false): Promise<void> => {
     if (preparation === undefined) return
     const receipt = preparation.receipts.find((candidate) => candidate.identity === identity)
     if (receipt === undefined || receipt.status !== 'ready') return
@@ -378,6 +378,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
         sourceId: preparation.plan.sourceId,
         sourceSnapshotHash: preparation.plan.sourceHash,
         mappingHash: preparation.plan.mappingHash,
+        ...(allowUnknown ? { allowUnknown: true } : {}),
       })
       setPreparation((current) => current === undefined ? current : {
         ...current,
@@ -457,10 +458,10 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
         <ul className="work-items-migration-list">
           {preparation.receipts.map((receipt) => {
             const item = preparation.plan.items.find((candidate) => candidate.identity.identity === receipt.identity)
-            const canApply = item?.target.kind === 'work-item' && item.target.action === 'create' && receipt.status === 'ready'
+            const canApply = item?.target.kind === 'work-item' && item.target.action === 'create' && (receipt.status === 'ready' || receipt.status === 'unknown')
             return <li key={`${receipt.identity}:${receipt.sourceSnapshotHash}`}>
               <span><strong>{item?.source.title ?? receipt.identity}</strong><small>{receipt.status}{receipt.targetId === undefined ? '' : ` · ${receipt.targetId}`}</small></span>
-              {canApply ? <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined} onClick={() => { void apply(receipt.identity) }}>{locale === 'en' ? 'Apply' : '应用'}</button> : null}
+              {canApply ? <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined} onClick={() => { void apply(receipt.identity, receipt.status === 'unknown') }}>{receipt.status === 'unknown' ? (locale === 'en' ? 'Reconcile' : '对账重试') : (locale === 'en' ? 'Apply' : '应用')}</button> : null}
             </li>
           })}
         </ul>

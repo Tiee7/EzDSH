@@ -158,7 +158,7 @@ export class WorkbenchMigrationService {
       || currentPlan.mappingHash !== plan.mappingHash || currentItem?.identity.sourceFingerprint !== item.identity.sourceFingerprint) {
       throw new WorkbenchMigrationServiceError('SOURCE_CHANGED', '旧 Workbench 源数据已变化，请重新预览并保存确认计划')
     }
-    const begun = await this.store.beginApply(item.identity.identity, plan.sourceHash, plan.mappingHash)
+    const begun = await this.store.beginApply(item.identity.identity, plan.sourceHash, plan.mappingHash, request.allowUnknown === true)
     if (begun.status === 'applied') return { receipt: begun, targetId: begun.targetId }
     const createRequest = buildCreateRequest(plan, item)
     try {
@@ -201,15 +201,18 @@ function validateApplyRequest(request: WorkbenchMigrationApplyRequest): void {
     throw new WorkbenchMigrationServiceError('INVALID_REQUEST', '迁移 Apply 请求无效')
   }
   const value = request as unknown as Record<string, unknown>
-  const allowedKeys = ['requestId', 'identity', 'sourceId', 'sourceSnapshotHash', 'mappingHash']
+  const allowedKeys = ['requestId', 'identity', 'sourceId', 'sourceSnapshotHash', 'mappingHash', 'allowUnknown']
   if (Object.keys(value).some((key) => !allowedKeys.includes(key))) {
     throw new WorkbenchMigrationServiceError('INVALID_REQUEST', '迁移 Apply 请求包含未知字段')
   }
-  for (const key of allowedKeys) {
+  for (const key of ['requestId', 'identity', 'sourceId', 'sourceSnapshotHash', 'mappingHash']) {
     const field = value[key]
     if (typeof field !== 'string' || field.trim() === '' || field.length > 4_096) {
       throw new WorkbenchMigrationServiceError('INVALID_REQUEST', `${key} 无效`)
     }
+  }
+  if (value.allowUnknown !== undefined && typeof value.allowUnknown !== 'boolean') {
+    throw new WorkbenchMigrationServiceError('INVALID_REQUEST', 'allowUnknown 无效')
   }
 }
 

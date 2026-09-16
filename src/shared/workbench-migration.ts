@@ -79,6 +79,7 @@ export interface WorkbenchMigrationApplyRequest {
   sourceId: string
   sourceSnapshotHash: string
   mappingHash: string
+  allowUnknown?: boolean
 }
 
 export interface WorkbenchMigrationApplyResult {

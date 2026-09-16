@@ -148,7 +148,7 @@ export class WorkbenchMigrationStore {
     return plan === undefined ? undefined : copy(plan)
   }
 
-  async beginApply(identity: string, sourceSnapshotHash: string, mappingHash: string): Promise<WorkbenchMigrationReceipt> {
+  async beginApply(identity: string, sourceSnapshotHash: string, mappingHash: string, allowUnknown = false): Promise<WorkbenchMigrationReceipt> {
     return this.mutate(async () => {
       const receiptKey = `${identity}\u0000${sourceSnapshotHash}\u0000${mappingHash}`
       const existing = this.state.receipts[receiptKey]
@@ -156,7 +156,7 @@ export class WorkbenchMigrationStore {
         throw new WorkbenchMigrationStoreConflictError('RECEIPT_NOT_FOUND', `Migration receipt ${identity} was not found`)
       }
       if (existing.status === 'applied' || existing.status === 'applying') return copy(existing)
-      if (!['ready', 'failed'].includes(existing.status)) {
+      if (!['ready', 'failed'].includes(existing.status) && !(allowUnknown && existing.status === 'unknown')) {
         throw new WorkbenchMigrationStoreConflictError('INVALID_STATUS', `Migration receipt ${identity} is ${existing.status}`)
       }
       const { error: _error, ...withoutError } = existing
@@ -178,7 +178,17 @@ export class WorkbenchMigrationStore {
       const existing = this.state.receipts[receiptKey]
       if (existing === undefined) throw new WorkbenchMigrationStoreConflictError('RECEIPT_NOT_FOUND', `Migration receipt ${identity} was not found`)
       if (existing.status === 'applied') {
-        if (existing.targetId !== targetId) throw new WorkbenchMigrationStoreConflictError('TARGET_CONFLICT', `Migration identity ${identity} resolved to a different target`)
+        if (existing.targetId !== targetId) {
+          const nextReceipt: WorkbenchMigrationReceipt = {
+            ...existing,
+            status: 'unknown',
+            error: { code: 'TARGET_CONFLICT', message: `Migration identity ${identity} resolved to a different target` },
+          }
+          const next = copy(this.state)
+          next.receipts[receiptKey] = nextReceipt
+          await this.commit(next)
+          throw new WorkbenchMigrationStoreConflictError('TARGET_CONFLICT', `Migration identity ${identity} resolved to a different target`)
+        }
         return copy(existing)
       }
       if (existing.status !== 'applying') throw new WorkbenchMigrationStoreConflictError('INVALID_STATUS', `Migration receipt ${identity} is ${existing.status}`)
