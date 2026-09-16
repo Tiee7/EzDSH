@@ -1635,6 +1635,21 @@ export class WorkItemStore {
     return snapshot ? copy(snapshot) : undefined
   }
 
+  /**
+   * Read the durable dispatch receipt for an idempotent execution request.
+   * Callers that need to associate a follow-up event must use this receipt's
+   * command id instead of guessing from a concurrent task snapshot.
+   */
+  async getDispatchIntent(requestId: string): Promise<WorkDispatchIntentReceipt | undefined> {
+    this.assertInitialized()
+    if (typeof requestId !== 'string' || requestId.trim() === '') return undefined
+    const stored = ownValue(this.state.requests, requestId)
+    if (stored?.kind !== 'dispatch') return undefined
+    const snapshot = ownValue(this.state.tasks, stored.receipt.taskId)
+    if (snapshot === undefined) return undefined
+    return { ...copy(stored.receipt), snapshot: copy(snapshot) }
+  }
+
   async claimDispatch(requestId: string, commandId: string): Promise<WorkDispatchIntentReceipt> {
     return this.updateDispatch(requestId, commandId, (receipt, snapshot, run) => {
       if (receipt.stage !== 'recorded') return undefined

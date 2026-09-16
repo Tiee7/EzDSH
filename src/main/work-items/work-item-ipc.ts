@@ -29,6 +29,7 @@ import {
 import { deriveWorkbenchAttention, type WorkbenchAttentionSnapshot } from '../../shared/workbench-attention.js'
 import { validateWorkItemProjectContextQuery } from '../../shared/project-context.js'
 import type { WorkItemProjectContextService } from '../project-context/work-item-project-context-service.js'
+import type { WorkDispatchIntentReceipt } from './work-item-store.js'
 
 export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:list',
@@ -49,7 +50,10 @@ export const WORK_ITEM_IPC_CHANNELS = [
 
 export const WORK_ITEM_CHANGED_CHANNEL = 'work-items:changed'
 
-type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'acceptArtifact' | 'openArtifact'>
+type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'acceptArtifact' | 'openArtifact'> & {
+  /** Main-only durable lookup; omitted from the renderer bridge. */
+  getDispatchIntent?: (requestId: string) => Promise<WorkDispatchIntentReceipt | undefined>
+}
 type WorkItemRunDetailsService = Pick<WorkItemsBridge, 'getRunDetail'>
 type WorkItemProjectContextServicePort = Pick<WorkItemProjectContextService, 'read'>
 type WorkItemExecutionService = Pick<WorkItemsBridge, 'execute'>

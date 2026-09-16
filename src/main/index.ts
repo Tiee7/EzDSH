@@ -13,6 +13,7 @@ import type {
   WorkDuty,
   WorkDutyCreateReceipt,
   WorkDutyCreateRequest,
+  WorkDutyExecutorStatus,
   WorkDutyEvent,
   WorkDutyMutationReceipt,
   WorkDutyPauseRequest,
@@ -1320,6 +1321,10 @@ function emitWorkDutyEvent(event: WorkDutyEvent): void {
   }
 }
 
+function workflowWorkRunStatus(status: import('../shared/workflow.js').WorkflowRunStatus): import('../shared/work-items.js').WorkRunStatus {
+  return status === 'waiting-approval' || status === 'waiting-question' ? 'waiting' : status
+}
+
 function startWorkDutyScheduler(): void {
   const store = workDutyStore
   if (store === undefined) throw new Error('Work duty store is not ready')
@@ -1341,6 +1346,29 @@ function startWorkDutyScheduler(): void {
       const scope = workItemIpcScope
       if (scope === undefined) return Promise.reject(new Error('Work item workspace is unavailable'))
       return scope.invoke((services) => services.execution.execute(request))
+    },
+    getDispatch: (requestId) => {
+      const scope = workItemIpcScope
+      if (scope === undefined) return Promise.resolve(undefined)
+      return scope.invoke((services) => services.workItems.getDispatchIntent?.(requestId))
+    },
+    readExecutorStatus: async ({ runId, executor }) => {
+      if (executor.kind === 'workflow' || (executor.kind === 'employee' && executor.methodId !== undefined)) {
+        const record = workflowRunService?.get(runId)
+        if (record === undefined) return undefined
+        return {
+          status: workflowWorkRunStatus(record.status),
+          rawStatus: record.status,
+          observedAt: new Date().toISOString(),
+        } satisfies WorkDutyExecutorStatus
+      }
+      const record = await employeeService?.getWorkItemRun(runId)
+      if (record === undefined) return undefined
+      return {
+        status: record.status,
+        rawStatus: record.status,
+        observedAt: new Date().toISOString(),
+      } satisfies WorkDutyExecutorStatus
     },
     notify: handleNotificationSignal,
     onError: (error, duty) => {

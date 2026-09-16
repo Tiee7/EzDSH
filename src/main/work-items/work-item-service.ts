@@ -108,6 +108,12 @@ export class WorkItemService {
     return this.store.get(taskId)
   }
 
+  /** Main-only lookup used by scheduled duties to recover the exact command
+   * created for their stable execution request. */
+  getDispatchIntent(requestId: string): Promise<WorkDispatchIntentReceipt | undefined> {
+    return this.store.getDispatchIntent(requestId)
+  }
+
   list(query?: WorkItemQuery): Promise<WorkTaskSnapshot[]> {
     return this.store.list(query)
   }

@@ -368,6 +368,8 @@ export class WorkDutyStore {
           && occurrence.execution.taskId === request.taskId
           && occurrence.execution.runId === request.runId
           && occurrence.execution.commandId === request.commandId
+          && occurrence.execution.executorStatus?.status === request.executorStatus?.status
+          && occurrence.execution.executorStatus?.rawStatus === request.executorStatus?.rawStatus
           && occurrence.execution.error === request.error
         if (!same) throw new WorkDutyStoreConflictError('OCCURRENCE_CONFLICT', `Occurrence ${request.occurrenceId} already has a different execution result`)
         const receipt: WorkDutyExecutionRecordReceipt = {
@@ -390,6 +392,12 @@ export class WorkDutyStore {
         ...(request.runId === undefined ? {} : { runId: request.runId }),
         ...(request.commandId === undefined ? {} : { commandId: request.commandId }),
         recordedAt: isoNow(),
+        ...(request.executorStatus === undefined ? {} : {
+          executorStatus: {
+            ...request.executorStatus,
+            observedAt: isoNow(),
+          },
+        }),
         ...(request.error === undefined ? {} : { error: request.error }),
       }
       const updatedOccurrence: WorkDutyOccurrenceClaimReceipt = { ...copy(occurrence), execution }

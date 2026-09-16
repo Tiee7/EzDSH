@@ -1,4 +1,4 @@
-import type { WorkExecutor } from './work-items.js'
+import type { WorkExecutor, WorkRunStatus } from './work-items.js'
 import { isWorkflowValue } from './workflow.js'
 
 /**
@@ -59,12 +59,23 @@ export interface WorkDutyOccurrenceClaimRequest {
 
 export type WorkDutyExecutionStatus = 'submitted' | 'failed'
 
+/** Main's immediate reread of the executor record after a duty dispatch. */
+export interface WorkDutyExecutorStatus {
+  status: WorkRunStatus
+  rawStatus: string
+  observedAt: string
+}
+
+/** Request-side status projection. The store supplies the observation time. */
+export type WorkDutyExecutorStatusInput = Pick<WorkDutyExecutorStatus, 'status' | 'rawStatus'>
+
 export interface WorkDutyExecutionLink {
   status: WorkDutyExecutionStatus
   taskId: string
   runId?: string
   commandId?: string
   recordedAt: string
+  executorStatus?: WorkDutyExecutorStatus
   error?: string
 }
 
@@ -76,6 +87,7 @@ export interface WorkDutyExecutionRecordRequest {
   status: WorkDutyExecutionStatus
   runId?: string
   commandId?: string
+  executorStatus?: WorkDutyExecutorStatusInput
   error?: string
 }
 
@@ -304,12 +316,15 @@ function timestampAt(value: unknown, path: string): string {
 
 function executionLink(value: unknown, path: string): WorkDutyExecutionLink {
   const execution = record(value, path)
-  exactFields(execution, ['status', 'taskId', 'runId', 'commandId', 'recordedAt', 'error'], path)
+  exactFields(execution, ['status', 'taskId', 'runId', 'commandId', 'recordedAt', 'executorStatus', 'error'], path)
   if (execution.status !== 'submitted' && execution.status !== 'failed') {
     throw new WorkDutyValidationError('INVALID_VALUE', `${path}.status`, `${path}.status is not supported`)
   }
   const runId = execution.runId === undefined ? undefined : identifierAt(execution.runId, `${path}.runId`)
   const commandId = execution.commandId === undefined ? undefined : identifierAt(execution.commandId, `${path}.commandId`)
+  const executorStatus = execution.executorStatus === undefined
+    ? undefined
+    : executorStatusAt(execution.executorStatus, `${path}.executorStatus`)
   const error = execution.error === undefined ? undefined : textAt(execution.error, `${path}.error`, 4_000)
   return {
     status: execution.status,
@@ -317,7 +332,39 @@ function executionLink(value: unknown, path: string): WorkDutyExecutionLink {
     ...(runId === undefined ? {} : { runId }),
     ...(commandId === undefined ? {} : { commandId }),
     recordedAt: timestampAt(execution.recordedAt, `${path}.recordedAt`),
+    ...(executorStatus === undefined ? {} : { executorStatus }),
     ...(error === undefined ? {} : { error }),
+  }
+}
+
+function executorStatusAt(value: unknown, path: string): WorkDutyExecutorStatus {
+  const status = record(value, path)
+  exactFields(status, ['status', 'rawStatus', 'observedAt'], path)
+  const allowed: readonly WorkRunStatus[] = [
+    'queued', 'running', 'waiting', 'paused', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted',
+  ]
+  if (typeof status.status !== 'string' || !allowed.includes(status.status as WorkRunStatus)) {
+    throw new WorkDutyValidationError('INVALID_VALUE', `${path}.status`, `${path}.status is not supported`)
+  }
+  return {
+    status: status.status as WorkRunStatus,
+    rawStatus: textAt(status.rawStatus, `${path}.rawStatus`, 256),
+    observedAt: timestampAt(status.observedAt, `${path}.observedAt`),
+  }
+}
+
+function executorStatusInputAt(value: unknown, path: string): WorkDutyExecutorStatusInput {
+  const status = record(value, path)
+  exactFields(status, ['status', 'rawStatus'], path)
+  const allowed: readonly WorkRunStatus[] = [
+    'queued', 'running', 'waiting', 'paused', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted',
+  ]
+  if (typeof status.status !== 'string' || !allowed.includes(status.status as WorkRunStatus)) {
+    throw new WorkDutyValidationError('INVALID_VALUE', `${path}.status`, `${path}.status is not supported`)
+  }
+  return {
+    status: status.status as WorkRunStatus,
+    rawStatus: textAt(status.rawStatus, `${path}.rawStatus`, 256),
   }
 }
 
@@ -421,12 +468,15 @@ export function validateWorkDutyOccurrenceClaimRequest(value: unknown): WorkDuty
 
 export function validateWorkDutyExecutionRecordRequest(value: unknown): WorkDutyExecutionRecordRequest {
   const request = record(value, '$')
-  exactFields(request, ['requestId', 'dutyId', 'occurrenceId', 'taskId', 'status', 'runId', 'commandId', 'error'])
+  exactFields(request, ['requestId', 'dutyId', 'occurrenceId', 'taskId', 'status', 'runId', 'commandId', 'executorStatus', 'error'])
   if (request.status !== 'submitted' && request.status !== 'failed') {
     throw new WorkDutyValidationError('INVALID_VALUE', 'status', 'status is not supported')
   }
   const runId = request.runId === undefined ? undefined : identifierField(request, 'runId')
   const commandId = request.commandId === undefined ? undefined : identifierField(request, 'commandId')
+  const executorStatus = request.executorStatus === undefined
+    ? undefined
+    : executorStatusInputAt(request.executorStatus, 'executorStatus')
   const error = request.error === undefined ? undefined : textField(request, 'error', 4_000)
   return {
     requestId: identifierField(request, 'requestId'),
@@ -436,6 +486,7 @@ export function validateWorkDutyExecutionRecordRequest(value: unknown): WorkDuty
     status: request.status,
     ...(runId === undefined ? {} : { runId }),
     ...(commandId === undefined ? {} : { commandId }),
+    ...(executorStatus === undefined ? {} : { executorStatus }),
     ...(error === undefined ? {} : { error }),
   }
 }

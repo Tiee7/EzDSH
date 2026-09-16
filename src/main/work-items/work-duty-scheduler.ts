@@ -1,14 +1,29 @@
 import { createHash } from 'node:crypto'
 
 import type { WorkTaskExecuteRequest, WorkTaskSnapshot } from '../../shared/work-items.js'
-import { occurrenceId, type WorkDuty, type WorkDutyOccurrenceClaimReceipt } from '../../shared/work-duty.js'
+import {
+  occurrenceId,
+  type WorkDuty,
+  type WorkDutyExecutorStatus,
+  type WorkDutyOccurrenceClaimReceipt,
+} from '../../shared/work-duty.js'
 import type { NotificationSignal } from '../../shared/notifications.js'
+import type { WorkDispatchIntentReceipt } from './work-item-store.js'
 import { WorkDutyStore } from './work-duty-store.js'
 
 export interface WorkDutySchedulerOptions {
   store: WorkDutyStore
   getTask(taskId: string): Promise<WorkTaskSnapshot | undefined>
   execute(request: WorkTaskExecuteRequest): Promise<WorkTaskSnapshot>
+  /** Read the durable receipt created by `execute`, keyed by its stable request id. */
+  getDispatch?(requestId: string): Promise<WorkDispatchIntentReceipt | undefined>
+  /** Re-read the underlying Employee/Workflow record after dispatch linkage. */
+  readExecutorStatus?(input: {
+    taskId: string
+    commandId: string
+    runId: string
+    executor: WorkDuty['executor']
+  }): Promise<WorkDutyExecutorStatus | undefined>
   /** Returns false while the Runtime or durable execution worker is offline. */
   canExecute(): boolean
   pollIntervalMs?: number
@@ -129,15 +144,38 @@ export class WorkDutyScheduler {
         return
       }
       const knownCommands = new Set(task.runs.map((run) => run.commandId))
+      const executeRequestId = stableRequestId('execute', occurrence)
       const submitted = await this.options.execute({
-        requestId: stableRequestId('execute', occurrence),
+        requestId: executeRequestId,
         taskId: duty.taskId,
         expectedRevision: task.task.revision,
         executor: duty.executor,
         mode: 'initial',
         input: duty.input,
       })
-      const linkedRun = submitted.runs.find((run) => run.runId !== '' && !knownCommands.has(run.commandId))
+      // The dispatch receipt is the source of truth for the command created by
+      // this occurrence. The snapshot fallback is kept for older callers that
+      // do not expose the Main-only receipt lookup.
+      const dispatch = await this.options.getDispatch?.(executeRequestId)
+      const linkedRun = dispatch === undefined
+        ? submitted.runs.find((run) => run.runId !== '' && !knownCommands.has(run.commandId))
+        : dispatch.snapshot.runs.find((run) => run.commandId === dispatch.commandId && run.runId !== '')
+      let executorStatus: WorkDutyExecutorStatus | undefined
+      if (linkedRun?.runId !== undefined && linkedRun.runId !== '' && this.options.readExecutorStatus !== undefined) {
+        try {
+          executorStatus = await this.options.readExecutorStatus({
+            taskId: duty.taskId,
+            commandId: linkedRun.commandId,
+            runId: linkedRun.runId,
+            executor: duty.executor,
+          })
+          if (executorStatus === undefined) {
+            this.options.onError?.(new Error(`Executor record ${linkedRun.runId} was not available during final status reread`), duty)
+          }
+        } catch (statusError) {
+          this.options.onError?.(statusError, duty)
+        }
+      }
       try {
         await this.options.store.recordExecution({
           requestId: stableRequestId('result', occurrence),
@@ -147,6 +185,12 @@ export class WorkDutyScheduler {
           status: 'submitted',
           ...(linkedRun?.runId === undefined ? {} : { runId: linkedRun.runId }),
           ...(linkedRun?.commandId === undefined ? {} : { commandId: linkedRun.commandId }),
+          ...(executorStatus === undefined ? {} : {
+            executorStatus: {
+              status: executorStatus.status,
+              rawStatus: executorStatus.rawStatus,
+            },
+          }),
         })
       } catch (resultError) {
         this.options.onError?.(resultError, duty)
