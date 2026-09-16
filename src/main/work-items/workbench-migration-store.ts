@@ -85,7 +85,7 @@ function validPlan(value: unknown): value is WorkbenchMigrationPlan {
 }
 
 function validReceipt(value: unknown): value is WorkbenchMigrationReceipt {
-  if (!isRecord(value) || typeof value.requestId !== 'string' || typeof value.identity !== 'string'
+  if (!isRecord(value) || typeof value.requestId !== 'string' || value.requestId.trim() === '' || typeof value.identity !== 'string'
     || typeof value.sourceSnapshotHash !== 'string' || typeof value.mappingHash !== 'string'
     || typeof value.sourceFingerprint !== 'string' || typeof value.status !== 'string'
     || !['previewed', 'ready', 'applying', 'applied', 'skipped', 'conflict', 'failed', 'unknown'].includes(value.status)
@@ -108,6 +108,11 @@ function assertState(value: unknown): State {
     // use the source snapshot and mapping hash so a changed source can retain
     // its previous applied/unknown receipt instead of colliding with it.
     if (key !== receipt.identity && key !== keyForReceipt(receipt)) throw new Error(`Workbench migration receipt key ${key} does not match receipt identity`)
+    const matchingPlan = Object.values(value.plans).some((plan) => {
+      if (!validPlan(plan) || plan.sourceHash !== receipt.sourceSnapshotHash || plan.mappingHash !== receipt.mappingHash) return false
+      return plan.items.some((item) => item.identity.identity === receipt.identity)
+    })
+    if (!matchingPlan) throw new Error(`Workbench migration receipt ${receipt.identity} has no matching plan`)
   }
   return copy(value as unknown as State)
 }
@@ -240,7 +245,7 @@ export class WorkbenchMigrationStore {
         throw new Error('Invalid Workbench migration preparation')
       }
       const planIdentities = new Set(plan.items.map((item) => item.identity.identity))
-      if (receipts.length !== plan.items.length || receipts.some((receipt) => !validReceipt(receipt)
+      if (receipts.length !== plan.items.length || new Set(receipts.map((receipt) => receipt.identity)).size !== plan.items.length || receipts.some((receipt) => !validReceipt(receipt)
         || receipt.requestId !== requestId || !planIdentities.has(receipt.identity))) {
         throw new Error('Workbench migration receipts do not match plan')
       }
