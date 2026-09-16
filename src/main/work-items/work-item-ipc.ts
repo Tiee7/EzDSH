@@ -26,11 +26,13 @@ import {
   type WorkScope,
   type WorkTaskSnapshot,
 } from '../../shared/work-items.js'
+import { deriveWorkbenchAttention, type WorkbenchAttentionSnapshot } from '../../shared/workbench-attention.js'
 import { validateWorkItemProjectContextQuery } from '../../shared/project-context.js'
 import type { WorkItemProjectContextService } from '../project-context/work-item-project-context-service.js'
 
 export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:list',
+  'work-items:attention',
   'work-items:get',
   'work-items:get-run-detail',
   'work-items:project-context',
@@ -294,6 +296,10 @@ export function registerWorkItemIpc(
   }
 
   register('work-items:list', (services, input) => services.workItems.list(validateWorkItemQuery(input)))
+  register('work-items:attention', async (services): Promise<WorkbenchAttentionSnapshot> => {
+    const snapshots = await services.workItems.list({ includeArchived: false })
+    return deriveWorkbenchAttention(snapshots)
+  })
   register('work-items:get', (services, input) => services.workItems.get(validateTaskId(input)))
   register('work-items:get-run-detail', (services, input) => {
     if (services.runDetails === undefined) throw new Error('Work item run details are unavailable')

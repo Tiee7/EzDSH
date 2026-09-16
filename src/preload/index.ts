@@ -9,6 +9,7 @@ import type { AppPlatform } from '../shared/platform.js'
 import type { NavConfig } from '../shared/navigation.js'
 import type { MobileRemoteSnapshot } from '../shared/mobile-remote.js'
 import type { NotificationSettings } from '../shared/notifications.js'
+import type { WorkbenchAttentionSnapshot } from '../shared/workbench-attention.js'
 import type { ProxyProfileInput, ProxySettingsSnapshot, ProxyTestResult } from '../shared/proxy.js'
 import type { RuntimeSnapshot } from '../main/runtime/runtime-types.js'
 import type {
@@ -162,6 +163,9 @@ const bridge: EzDSHBridge = {
       ipcRenderer.on('work-items:changed', handler)
       return () => ipcRenderer.removeListener('work-items:changed', handler)
     },
+  },
+  workbench: {
+    getAttention: () => invoke<WorkbenchAttentionSnapshot>('work-items:attention'),
   },
   employees: {
     methods: {

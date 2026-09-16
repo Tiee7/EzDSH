@@ -91,6 +91,7 @@ import type {
   WorkflowReleaseSummary,
 } from './workflow-operations.js'
 import type { WorkItemsBridge } from './work-items.js'
+import type { WorkbenchAttentionSnapshot } from './workbench-attention.js'
 import type { ConversationSnapshot } from './conversation-work.js'
 
 /** Payload sent from main to renderer when a deep-link install should begin. */
@@ -158,6 +159,10 @@ export interface EzDSHBridge {
     onStateChange(listener: (state: InstallState) => void): () => void
   }
   workItems: WorkItemsBridge
+  /** Developer-only Main projection of the next attention buckets. */
+  workbench: {
+    getAttention(): Promise<WorkbenchAttentionSnapshot>
+  }
   employees: {
     methods: EmployeeMethodsBridge
     list(): Promise<EmployeeSnapshot[]>

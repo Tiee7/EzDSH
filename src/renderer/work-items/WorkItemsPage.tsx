@@ -12,6 +12,7 @@ import type {
   WorkTaskRevisionRequest,
   WorkTaskSnapshot,
 } from '../../shared/work-items.js'
+import type { WorkbenchAttentionGroup, WorkbenchAttentionItem, WorkbenchAttentionSnapshot } from '../../shared/workbench-attention.js'
 import { employeeDisplayLabel, type EmployeeSnapshot } from '../../shared/employees.js'
 import { WorkItemAttentionView } from './WorkItemAttentionView.js'
 import {
@@ -74,6 +75,42 @@ function mutationRequestId(prefix: string): string {
   return `${prefix}-${token}`
 }
 
+const ATTENTION_GROUPS: readonly { id: WorkbenchAttentionGroup; zh: string; en: string }[] = [
+  { id: 'needs-action', zh: '需要处理', en: 'Needs action' },
+  { id: 'in-progress', zh: '进行中', en: 'In progress' },
+  { id: 'review', zh: '待验收', en: 'Review' },
+  { id: 'failed', zh: '失败', en: 'Failed' },
+  { id: 'dispatch-anomalies', zh: '调度异常', en: 'Dispatch issues' },
+]
+
+function AttentionSummary({ snapshot, locale, onSelect }: { snapshot?: WorkbenchAttentionSnapshot; locale: 'zh' | 'en'; onSelect: (taskId: string) => void }): JSX.Element | null {
+  if (snapshot === undefined) return null
+  return <section className="work-items-attention-summary" aria-label={locale === 'en' ? 'Workbench attention summary' : '工作台关注摘要'}>
+    <div className="work-items-attention-summary-heading">
+      <div>
+        <strong>{locale === 'en' ? 'Workbench attention' : '工作台关注摘要'}</strong>
+        <span>{locale === 'en' ? `${snapshot.total} active items from Main` : `Main 汇总 ${snapshot.total} 个需要关注的工作项`}</span>
+      </div>
+      <small>{locale === 'en' ? 'Read-only projection' : '只读投影'}</small>
+    </div>
+    <div className="work-items-attention-summary-groups">
+      {ATTENTION_GROUPS.map(({ id, zh, en }) => {
+        const items = snapshot.groups[id]
+        const label = locale === 'en' ? en : zh
+        const first: WorkbenchAttentionItem | undefined = items[0]
+        return <div key={id} className="work-items-attention-summary-group" data-attention-group={id}>
+          <div className="work-items-attention-summary-label"><span>{label}</span><b>{items.length}</b></div>
+          {first === undefined
+            ? <span className="work-items-attention-summary-empty">{locale === 'en' ? 'None' : '无'}</span>
+            : <button type="button" className="work-items-attention-summary-item" onClick={() => onSelect(first.taskId)} title={first.reason}>
+              <span>{first.title}</span><small>{first.reason}</small>
+            </button>}
+        </div>
+      })}
+    </div>
+  </section>
+}
+
 /**
  * Durable Work Items browser. Main remains the authority for task status and
  * actions; this page only queries, observes and renders its snapshots.
@@ -83,6 +120,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
   const [selectedTaskId, setSelectedTaskId] = useState<string>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
+  const [attention, setAttention] = useState<WorkbenchAttentionSnapshot>()
   const [showArchived, setShowArchived] = useState(false)
   const [projectFilter, setProjectFilter] = useState<WorkItemProjectFilterValue>(() => projectFilterFromNavigation(navigation?.returnTo?.filter))
   const [projectDirectory, setProjectDirectory] = useState<WorkItemProjectDirectoryEntry[]>([])
@@ -92,6 +130,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
   const [handoff, setHandoff] = useState<{ mode: 'handoff' | 'redo'; snapshot: WorkTaskSnapshot; executors: WorkItemExecutorOption[]; loadingExecutors: boolean }>()
   const [revisionTaskId, setRevisionTaskId] = useState<string>()
   const listRequestSequence = useRef(0)
+  const attentionRequestSequence = useRef(0)
   const getRequestSequence = useRef(0)
   const handoffRequestSequence = useRef(0)
   const projectDirectoryRequestSequence = useRef(0)
@@ -115,6 +154,16 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
       if (mounted.current && sequence === listRequestSequence.current) setLoading(false)
     }
   }, [showArchived])
+
+  const refreshAttention = useCallback(async (): Promise<void> => {
+    const sequence = ++attentionRequestSequence.current
+    try {
+      const next = await window.EzDSH.workbench.getAttention()
+      if (mounted.current && sequence === attentionRequestSequence.current) setAttention(next)
+    } catch {
+      // The durable Work Item list remains usable when the optional summary is unavailable.
+    }
+  }, [])
 
   const selectTask = useCallback((taskId: string): void => {
     setSelectedTaskId(taskId)
@@ -381,8 +430,10 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     const unsubscribe = window.EzDSH.workItems.onChanged((snapshot) => {
       if (!mounted.current) return
       setSnapshots((current) => mergeSnapshot(current, snapshot))
+      void refreshAttention()
     })
     void refresh()
+    void refreshAttention()
     void window.EzDSH.employees.list().then((employees) => {
       if (!mounted.current) return
       setEmployeeDirectory(new Map(employees.map((employee) => [employee.id, employee])))
@@ -401,7 +452,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
       mounted.current = false
       unsubscribe()
     }
-  }, [refresh])
+  }, [refresh, refreshAttention])
 
   useEffect(() => {
     if ((navigation?.destination !== 'detail' && navigation?.destination !== 'work-items') || navigation.taskId === undefined) return
@@ -461,6 +512,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
       </header>
 
       {error === undefined ? null : <p className="work-items-error" role="alert">{error}</p>}
+      {showArchived ? null : <AttentionSummary snapshot={attention} locale={locale} onSelect={selectTask} />}
       <WorkItemProjectContextPanel locale={locale} includeArchived={showArchived} />
       <div className="work-items-layout">
         <aside className="work-items-list" aria-label={copy.tabWorkItems}>
