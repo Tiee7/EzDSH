@@ -130,6 +130,8 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     expect([...handlers.keys()]).toEqual([
       'work-items:list',
       'work-items:get',
+      'work-items:get-run-detail',
+      'work-items:project-context',
       'work-items:create',
       'work-items:execute',
       'work-items:revise',

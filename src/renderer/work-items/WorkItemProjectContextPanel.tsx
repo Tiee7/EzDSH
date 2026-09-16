@@ -41,20 +41,24 @@ export function WorkItemProjectContextPanel({ includeArchived, locale = 'zh' }: 
 
   useEffect(() => {
     let active = true
-    setLoading(true)
     const read = window.EzDSH.workItems.getProjectContext
     if (read === undefined) {
       setLoading(false)
       return () => { active = false }
     }
-    void read({ includeArchived, includeUnassigned: true }).then((next) => {
-      if (active) setSnapshot(next)
-    }).catch(() => {
-      if (active) setSnapshot(undefined)
-    }).finally(() => {
-      if (active) setLoading(false)
-    })
-    return () => { active = false }
+    const load = (): void => {
+      setLoading(true)
+      void read({ includeArchived, includeUnassigned: true }).then((next) => {
+        if (active) setSnapshot(next)
+      }).catch(() => {
+        if (active) setSnapshot(undefined)
+      }).finally(() => {
+        if (active) setLoading(false)
+      })
+    }
+    load()
+    const unsubscribe = window.EzDSH.workItems.onChanged(() => { if (active) load() })
+    return () => { active = false; unsubscribe() }
   }, [includeArchived])
 
   if (loading && snapshot === undefined) {
