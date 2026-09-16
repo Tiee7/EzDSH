@@ -87,6 +87,32 @@ export interface WorkbenchMigrationApplyResult {
   targetId?: string
 }
 
+export interface WorkbenchMigrationBatchApplyRequest {
+  batchRequestId: string
+  sourceId: string
+  sourceSnapshotHash: string
+  mappingHash: string
+  identities: string[]
+  allowUnknown?: boolean
+}
+
+export interface WorkbenchMigrationBatchApplyItem {
+  identity: string
+  status: WorkbenchMigrationReceiptStatus | 'missing'
+  receipt?: WorkbenchMigrationReceipt
+  targetId?: string
+  error?: { code: string; message: string }
+}
+
+export interface WorkbenchMigrationBatchApplyResult {
+  batchRequestId: string
+  sourceId: string
+  sourceSnapshotHash: string
+  mappingHash: string
+  status: 'completed' | 'partial'
+  items: WorkbenchMigrationBatchApplyItem[]
+}
+
 export interface WorkbenchMigrationReportItem {
   identity: string
   sourceKey: string

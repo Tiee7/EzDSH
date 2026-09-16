@@ -87,6 +87,30 @@ function workbenchCandidateConflict(preview: WorkbenchImportPreview, candidate: 
     || candidate.fileReferences.some((reference) => conflict.detail.includes(reference)))
 }
 
+function migrationBaseSourceKey(sourceKey: string): string {
+  return sourceKey.replace(/:duplicate-\d+$/u, '')
+}
+
+function selectionForMigrationPreview(
+  preview: WorkbenchImportPreview,
+  state: WorkbenchMigrationState | undefined,
+): string[] {
+  const savedPlan = state?.plans.find((plan) => plan.sourceId === preview.sourceId && plan.sourceHash === preview.sourceHash)
+  if (savedPlan === undefined) {
+    return preview.candidates.filter((candidate) => !workbenchCandidateConflict(preview, candidate)).map((candidate) => candidate.sourceKey)
+  }
+  const selectedBases = new Set((state?.receipts ?? [])
+    .filter((receipt) => receipt.sourceSnapshotHash === savedPlan.sourceHash
+      && receipt.mappingHash === savedPlan.mappingHash
+      && ['ready', 'failed', 'unknown'].includes(receipt.status))
+    .map((receipt) => savedPlan.items.find((item) => item.identity.identity === receipt.identity)?.identity.sourceKey)
+    .filter((sourceKey): sourceKey is string => sourceKey !== undefined)
+    .map(migrationBaseSourceKey))
+  return preview.candidates
+    .filter((candidate) => !workbenchCandidateConflict(preview, candidate) && selectedBases.has(migrationBaseSourceKey(candidate.sourceKey)))
+    .map((candidate) => candidate.sourceKey)
+}
+
 const ATTENTION_GROUPS: readonly { id: WorkbenchAttentionGroup; zh: string; en: string }[] = [
   { id: 'needs-action', zh: '需要处理', en: 'Needs action' },
   { id: 'in-progress', zh: '进行中', en: 'In progress' },
@@ -315,7 +339,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
   const [preparation, setPreparation] = useState<WorkbenchMigrationPreparation>()
   const [migrationState, setMigrationState] = useState<WorkbenchMigrationState>()
   const [report, setReport] = useState<WorkbenchMigrationReport>()
-  const [busy, setBusy] = useState<'preview' | 'prepare' | 'apply'>()
+  const [busy, setBusy] = useState<'preview' | 'prepare' | 'apply' | 'batch'>()
   const [error, setError] = useState<string>()
   const refreshMigrationState = useCallback(async (): Promise<void> => {
     try {
@@ -343,13 +367,14 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       const next = await window.EzDSH.workbench.migration.preview(sourceDirectory.trim())
       setPreview(next)
       setPreparation(undefined)
-      setSelected(new Set(next.candidates.filter((candidate) => !workbenchCandidateConflict(next, candidate)).map((candidate) => candidate.sourceKey)))
+      setReport(undefined)
+      setSelected(new Set(selectionForMigrationPreview(next, migrationState)))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setBusy(undefined)
     }
-  }, [locale, sourceDirectory])
+  }, [locale, migrationState, sourceDirectory])
   const prepare = useCallback(async (): Promise<void> => {
     if (preview === undefined) return
     setBusy('prepare')
@@ -375,7 +400,8 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
   const apply = useCallback(async (identity: string, allowUnknown = false): Promise<void> => {
     if (preparation === undefined) return
     const receipt = preparation.receipts.find((candidate) => candidate.identity === identity)
-    if (receipt === undefined || receipt.status !== 'ready') return
+    const canRetryUnknown = receipt?.status === 'unknown' && allowUnknown
+    if (receipt === undefined || (receipt.status !== 'ready' && !canRetryUnknown)) return
     setBusy('apply')
     setError(undefined)
     try {
@@ -391,6 +417,42 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
         ...current,
         message: locale === 'en' ? 'The selected Work Item was created and linked to this migration receipt.' : '已创建所选工作项，并将实际任务 ID 写入迁移回执。',
         receipts: current.receipts.map((candidate) => candidate.identity === identity ? result.receipt : candidate),
+      })
+      await refreshMigrationState()
+      await refreshReport(preparation.plan)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      await refreshMigrationState()
+    } finally {
+      setBusy(undefined)
+    }
+  }, [locale, preparation, refreshMigrationState, refreshReport])
+  const applyBatch = useCallback(async (): Promise<void> => {
+    if (preparation === undefined) return
+    const identities = preparation.receipts
+      .filter((receipt) => receipt.status === 'ready')
+      .filter((receipt) => {
+        const item = preparation.plan.items.find((candidate) => candidate.identity.identity === receipt.identity)
+        return item?.target.kind === 'work-item' && item.target.action === 'create' && item.conflicts.length === 0
+      })
+      .map((receipt) => receipt.identity)
+    if (identities.length === 0) return
+    setBusy('batch')
+    setError(undefined)
+    try {
+      const result = await window.EzDSH.workbench.migration.applyBatch({
+        batchRequestId: mutationRequestId('workbench-migration-batch'),
+        sourceId: preparation.plan.sourceId,
+        sourceSnapshotHash: preparation.plan.sourceHash,
+        mappingHash: preparation.plan.mappingHash,
+        identities,
+      })
+      setPreparation((current) => current === undefined ? current : {
+        ...current,
+        message: result.status === 'completed'
+          ? (locale === 'en' ? `Batch Apply completed for ${result.items.length} items.` : `批量应用已完成，共处理 ${result.items.length} 项。`)
+          : (locale === 'en' ? `Batch Apply stopped with ${result.items.filter((item) => item.status !== 'applied').length} item(s) needing attention.` : `批量应用部分完成，还有 ${result.items.filter((item) => item.status !== 'applied').length} 项需要处理。`),
+        receipts: current.receipts.map((receipt) => result.items.find((item) => item.identity === receipt.identity)?.receipt ?? receipt),
       })
       await refreshMigrationState()
       await refreshReport(preparation.plan)
@@ -426,7 +488,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
           const applied = receipts.filter((receipt) => receipt.status === 'applied').length
           return <li key={`${plan.sourceId}:${plan.sourceHash}`}>
             <span><strong>{plan.sourceDirectory}</strong><small>{locale === 'en' ? `${plan.items.length} mapped · ${ready} ready · ${applied} applied` : `${plan.items.length} 项映射 · ${ready} 项待执行 · ${applied} 项已应用`}</small></span>
-            <button type="button" className="work-items-button work-items-button-quiet" onClick={() => { setSourceDirectory(plan.sourceDirectory); setPreview(undefined); setPreparation(undefined); setError(undefined) }}>{locale === 'en' ? 'Use source' : '使用源目录'}</button>
+            <button type="button" className="work-items-button work-items-button-quiet" onClick={() => { setSourceDirectory(plan.sourceDirectory); setPreview(undefined); setPreparation(undefined); setReport(undefined); setError(undefined) }}>{locale === 'en' ? 'Use source' : '使用源目录'}</button>
           </li>
         })}
       </ul>
@@ -455,6 +517,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       </ul>
       <div className="work-items-duty-create-actions">
         <button type="button" className="work-items-button" disabled={busy !== undefined || selected.size === 0} onClick={() => { void prepare() }}>{busy === 'prepare' ? '…' : (locale === 'en' ? 'Save confirmation plan' : '保存确认计划')}</button>
+        {preparation === undefined ? null : <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined || !preparation.receipts.some((receipt) => receipt.status === 'ready')} onClick={() => { void applyBatch() }}>{busy === 'batch' ? '…' : (locale === 'en' ? 'Apply ready items' : '应用待执行项')}</button>}
       </div>
       {preparation === undefined ? null : <>
         <p className="work-items-migration-result" role="status">{preparation.message} {locale === 'en' ? `${preparation.receipts.filter((receipt) => receipt.status === 'ready').length} items ready.` : `${preparation.receipts.filter((receipt) => receipt.status === 'ready').length} 项已准备。`}</p>
@@ -466,8 +529,9 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
           {preparation.receipts.map((receipt) => {
             const item = preparation.plan.items.find((candidate) => candidate.identity.identity === receipt.identity)
             const canApply = item?.target.kind === 'work-item' && item.target.action === 'create' && (receipt.status === 'ready' || receipt.status === 'unknown')
+            const targetStatus = report?.items.find((candidate) => candidate.identity === receipt.identity)?.targetStatus
             return <li key={`${receipt.identity}:${receipt.sourceSnapshotHash}`}>
-              <span><strong>{item?.source.title ?? receipt.identity}</strong><small>{receipt.status}{receipt.targetId === undefined ? '' : ` · ${receipt.targetId}`}</small></span>
+              <span><strong>{item?.source.title ?? receipt.identity}</strong><small>{receipt.status}{receipt.targetId === undefined ? '' : ` · ${receipt.targetId}`}{targetStatus === undefined ? '' : ` · target ${targetStatus}`}</small></span>
               {canApply ? <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined} onClick={() => { void apply(receipt.identity, receipt.status === 'unknown') }}>{receipt.status === 'unknown' ? (locale === 'en' ? 'Reconcile' : '对账重试') : (locale === 'en' ? 'Apply' : '应用')}</button> : null}
             </li>
           })}

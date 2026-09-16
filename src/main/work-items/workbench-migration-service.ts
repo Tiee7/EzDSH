@@ -10,6 +10,9 @@ import type {
   WorkbenchMigrationIdentity,
   WorkbenchMigrationApplyRequest,
   WorkbenchMigrationApplyResult,
+  WorkbenchMigrationBatchApplyItem,
+  WorkbenchMigrationBatchApplyRequest,
+  WorkbenchMigrationBatchApplyResult,
   WorkbenchMigrationReport,
   WorkbenchMigrationReportItem,
   WorkbenchMigrationReportRequest,
@@ -123,7 +126,7 @@ export class WorkbenchMigrationService {
       const receipt = receipts.get(item.identity.identity)
       const status: WorkbenchMigrationReportItem['status'] = receipt?.status ?? 'missing'
       counts[status] += 1
-      const targetStatus = receipt?.targetId === undefined
+      const targetStatus = receipt?.targetId === undefined || item.target.kind !== 'work-item'
         ? undefined
         : this.targetReader === undefined
           ? 'unverified' as const
@@ -165,8 +168,12 @@ export class WorkbenchMigrationService {
       || currentPlan.mappingHash !== plan.mappingHash || currentItem?.identity.sourceFingerprint !== item.identity.sourceFingerprint) {
       throw new WorkbenchMigrationServiceError('SOURCE_CHANGED', '旧 Workbench 源数据已变化，请重新预览并保存确认计划')
     }
-    const begun = await this.store.beginApply(item.identity.identity, plan.sourceHash, plan.mappingHash, request.allowUnknown === true)
-    if (begun.status === 'applied') return { receipt: begun, targetId: begun.targetId }
+    const claim = await this.store.beginApply(item.identity.identity, plan.sourceHash, plan.mappingHash, request.allowUnknown === true)
+    const begun = claim.receipt
+    // Only the caller that atomically claimed the receipt may create a target.
+    // A second caller observes the durable applying/applied state and returns it
+    // without issuing another side effect.
+    if (!claim.claimed) return { receipt: begun, targetId: begun.targetId }
     const createRequest = buildCreateRequest(plan, item)
     try {
       const snapshot = await this.targetWriter.createWorkItem(createRequest)
@@ -176,6 +183,67 @@ export class WorkbenchMigrationService {
       const detail = error instanceof Error ? error.message : String(error)
       await this.store.failApply(item.identity.identity, plan.sourceHash, plan.mappingHash, { code: 'TARGET_CREATE_FAILED', message: detail }).catch(() => undefined)
       throw error
+    }
+  }
+
+  async applyBatch(request: WorkbenchMigrationBatchApplyRequest): Promise<WorkbenchMigrationBatchApplyResult> {
+    validateBatchApplyRequest(request)
+    const plan = await this.store.getPlan(request.sourceId, request.sourceSnapshotHash)
+    if (plan === undefined) throw new WorkbenchMigrationServiceError('PLAN_NOT_FOUND', '找不到对应的迁移计划，请重新预览并保存确认计划')
+    if (plan.mappingHash !== request.mappingHash) throw new WorkbenchMigrationServiceError('SOURCE_CHANGED', '迁移映射已变化，请重新预览并保存确认计划')
+
+    const items: WorkbenchMigrationBatchApplyItem[] = []
+    // Apply in request order. Each item keeps its own durable receipt, so a
+    // later failure never rolls back work that already completed.
+    for (const identity of request.identities) {
+      const planItem = plan.items.find((candidate) => candidate.identity.identity === identity)
+      const before = await this.store.stateSnapshot()
+      const existing = before.receipts.find((receipt) => receipt.identity === identity
+        && receipt.sourceSnapshotHash === plan.sourceHash && receipt.mappingHash === plan.mappingHash)
+      if (planItem === undefined) {
+        items.push({ identity, status: 'missing', error: { code: 'ITEM_NOT_FOUND', message: '迁移计划中不存在该 identity' } })
+        continue
+      }
+      if (planItem.target.kind !== 'work-item' || planItem.target.action !== 'create' || planItem.conflicts.length > 0) {
+        items.push({
+          identity,
+          status: existing?.status ?? 'conflict',
+          ...(existing === undefined ? {} : { receipt: existing, ...(existing.targetId === undefined ? {} : { targetId: existing.targetId }) }),
+          error: { code: 'ITEM_NOT_APPLICABLE', message: '该迁移项存在冲突或不是可创建的工作项' },
+        })
+        continue
+      }
+      try {
+        const result = await this.apply({
+          requestId: `workbench-migration-batch-${sha256(`${request.batchRequestId}\u0000${identity}`).slice(0, 32)}`,
+          identity,
+          sourceId: request.sourceId,
+          sourceSnapshotHash: request.sourceSnapshotHash,
+          mappingHash: request.mappingHash,
+          ...(request.allowUnknown === true ? { allowUnknown: true } : {}),
+        })
+        items.push({ identity, status: result.receipt.status, receipt: result.receipt, ...(result.targetId === undefined ? {} : { targetId: result.targetId }) })
+      } catch (error) {
+        const after = await this.store.stateSnapshot()
+        const receipt = after.receipts.find((candidate) => candidate.identity === identity
+          && candidate.sourceSnapshotHash === plan.sourceHash && candidate.mappingHash === plan.mappingHash)
+        const detail = error instanceof Error ? error.message : String(error)
+        items.push({
+          identity,
+          status: receipt?.status ?? 'failed',
+          ...(receipt === undefined ? {} : { receipt, ...(receipt.targetId === undefined ? {} : { targetId: receipt.targetId }) }),
+          error: { code: 'BATCH_ITEM_FAILED', message: detail },
+        })
+      }
+    }
+    const status = items.every((item) => item.status === 'applied' || item.status === 'skipped') ? 'completed' : 'partial'
+    return {
+      batchRequestId: request.batchRequestId,
+      sourceId: request.sourceId,
+      sourceSnapshotHash: request.sourceSnapshotHash,
+      mappingHash: request.mappingHash,
+      status,
+      items,
     }
   }
 }
@@ -217,6 +285,32 @@ function validateApplyRequest(request: WorkbenchMigrationApplyRequest): void {
     if (typeof field !== 'string' || field.trim() === '' || field.length > 4_096) {
       throw new WorkbenchMigrationServiceError('INVALID_REQUEST', `${key} 无效`)
     }
+  }
+  if (value.allowUnknown !== undefined && typeof value.allowUnknown !== 'boolean') {
+    throw new WorkbenchMigrationServiceError('INVALID_REQUEST', 'allowUnknown 无效')
+  }
+}
+
+function validateBatchApplyRequest(request: WorkbenchMigrationBatchApplyRequest): void {
+  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+    throw new WorkbenchMigrationServiceError('INVALID_REQUEST', '批量迁移 Apply 请求无效')
+  }
+  const value = request as unknown as Record<string, unknown>
+  const allowedKeys = ['batchRequestId', 'sourceId', 'sourceSnapshotHash', 'mappingHash', 'identities', 'allowUnknown']
+  if (Object.keys(value).some((key) => !allowedKeys.includes(key))) {
+    throw new WorkbenchMigrationServiceError('INVALID_REQUEST', '批量迁移 Apply 请求包含未知字段')
+  }
+  for (const key of ['batchRequestId', 'sourceId', 'sourceSnapshotHash', 'mappingHash']) {
+    const field = value[key]
+    if (typeof field !== 'string' || field.trim() === '' || field.length > 4_096) {
+      throw new WorkbenchMigrationServiceError('INVALID_REQUEST', `${key} 无效`)
+    }
+  }
+  const identities = value.identities
+  if (!Array.isArray(identities) || identities.length === 0 || identities.length > 1_000
+    || identities.some((entry) => typeof entry !== 'string' || entry.trim() === '' || entry.length > 4_096)
+    || new Set(identities).size !== identities.length) {
+    throw new WorkbenchMigrationServiceError('INVALID_REQUEST', '批量 identities 无效')
   }
   if (value.allowUnknown !== undefined && typeof value.allowUnknown !== 'boolean') {
     throw new WorkbenchMigrationServiceError('INVALID_REQUEST', 'allowUnknown 无效')

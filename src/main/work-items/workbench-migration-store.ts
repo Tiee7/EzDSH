@@ -20,6 +20,11 @@ interface State {
   requests: Record<string, StoredRequest>
 }
 
+export interface WorkbenchMigrationApplyClaim {
+  receipt: WorkbenchMigrationReceipt
+  claimed: boolean
+}
+
 export class WorkbenchMigrationStoreConflictError extends Error {
   readonly code: 'REQUEST_ID_CONFLICT' | 'PLAN_CONFLICT' | 'RECEIPT_NOT_FOUND' | 'INVALID_STATUS' | 'TARGET_CONFLICT'
 
@@ -42,6 +47,27 @@ function keyForPlan(plan: WorkbenchMigrationPlan): string {
 
 function keyForReceipt(receipt: WorkbenchMigrationReceipt): string {
   return `${receipt.identity}\u0000${receipt.sourceSnapshotHash}\u0000${receipt.mappingHash}`
+}
+
+function receiptLookupKey(state: State, identity: string, sourceSnapshotHash: string, mappingHash: string): string {
+  const composite = `${identity}\u0000${sourceSnapshotHash}\u0000${mappingHash}`
+  if (state.receipts[composite] !== undefined) return composite
+  // The first development snapshot used the identity as its JSON key. Keep
+  // reading it so an upgrade does not strand an in-flight migration receipt.
+  const legacy = state.receipts[identity]
+  if (legacy !== undefined && legacy.sourceSnapshotHash === sourceSnapshotHash && legacy.mappingHash === mappingHash) return identity
+  return composite
+}
+
+function canonicalizeReceipts(state: State): State {
+  const next = copy(state)
+  for (const [key, receipt] of Object.entries(next.receipts)) {
+    if (key !== receipt.identity) continue
+    const composite = keyForReceipt(receipt)
+    if (next.receipts[composite] === undefined) next.receipts[composite] = receipt
+    delete next.receipts[key]
+  }
+  return next
 }
 
 function digest(value: unknown): string {
@@ -131,7 +157,7 @@ export class WorkbenchMigrationStore {
     if (this.initialized) return
     await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 })
     try {
-      this.state = assertState(JSON.parse(await readFile(this.filePath, 'utf8')) as unknown)
+      this.state = canonicalizeReceipts(assertState(JSON.parse(await readFile(this.filePath, 'utf8')) as unknown))
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       this.state = copy(EMPTY_STATE)
@@ -153,14 +179,14 @@ export class WorkbenchMigrationStore {
     return plan === undefined ? undefined : copy(plan)
   }
 
-  async beginApply(identity: string, sourceSnapshotHash: string, mappingHash: string, allowUnknown = false): Promise<WorkbenchMigrationReceipt> {
+  async beginApply(identity: string, sourceSnapshotHash: string, mappingHash: string, allowUnknown = false): Promise<WorkbenchMigrationApplyClaim> {
     return this.mutate(async () => {
-      const receiptKey = `${identity}\u0000${sourceSnapshotHash}\u0000${mappingHash}`
+      const receiptKey = receiptLookupKey(this.state, identity, sourceSnapshotHash, mappingHash)
       const existing = this.state.receipts[receiptKey]
       if (existing === undefined) {
         throw new WorkbenchMigrationStoreConflictError('RECEIPT_NOT_FOUND', `Migration receipt ${identity} was not found`)
       }
-      if (existing.status === 'applied' || existing.status === 'applying') return copy(existing)
+      if (existing.status === 'applied' || existing.status === 'applying') return { receipt: copy(existing), claimed: false }
       if (!['ready', 'failed'].includes(existing.status) && !(allowUnknown && existing.status === 'unknown')) {
         throw new WorkbenchMigrationStoreConflictError('INVALID_STATUS', `Migration receipt ${identity} is ${existing.status}`)
       }
@@ -173,13 +199,13 @@ export class WorkbenchMigrationStore {
       const next = copy(this.state)
       next.receipts[receiptKey] = nextReceipt
       await this.commit(next)
-      return copy(nextReceipt)
+      return { receipt: copy(nextReceipt), claimed: true }
     })
   }
 
   async completeApply(identity: string, sourceSnapshotHash: string, mappingHash: string, targetId: string): Promise<WorkbenchMigrationReceipt> {
     return this.mutate(async () => {
-      const receiptKey = `${identity}\u0000${sourceSnapshotHash}\u0000${mappingHash}`
+      const receiptKey = receiptLookupKey(this.state, identity, sourceSnapshotHash, mappingHash)
       const existing = this.state.receipts[receiptKey]
       if (existing === undefined) throw new WorkbenchMigrationStoreConflictError('RECEIPT_NOT_FOUND', `Migration receipt ${identity} was not found`)
       if (existing.status === 'applied') {
@@ -220,7 +246,7 @@ export class WorkbenchMigrationStore {
     status: 'failed' | 'unknown' = 'failed',
   ): Promise<WorkbenchMigrationReceipt> {
     return this.mutate(async () => {
-      const receiptKey = `${identity}\u0000${sourceSnapshotHash}\u0000${mappingHash}`
+      const receiptKey = receiptLookupKey(this.state, identity, sourceSnapshotHash, mappingHash)
       const existing = this.state.receipts[receiptKey]
       if (existing === undefined) throw new WorkbenchMigrationStoreConflictError('RECEIPT_NOT_FOUND', `Migration receipt ${identity} was not found`)
       if (existing.status === 'applied') return copy(existing)
