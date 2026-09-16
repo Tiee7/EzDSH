@@ -886,8 +886,8 @@ export class WorkItemStore {
       const now = new Date().toISOString()
       let attemptId = snapshot.task.activeAttemptId
       if (request.mode === 'handoff') {
-        if (!attemptId || !snapshot.attempts.some((attempt) => attempt.id === attemptId)) {
-          throw new WorkItemStoreConflictError('ATTEMPT_NOT_FOUND', 'No active attempt is available to hand off')
+        if (snapshot.attempts.length === 0) {
+          throw new WorkItemStoreConflictError('ATTEMPT_NOT_FOUND', 'No prior attempt is available to hand off')
         }
         if (request.sourceRunId && !snapshot.runs.some((run) => run.runId === request.sourceRunId)) {
           throw new WorkItemStoreConflictError('RUN_NOT_FOUND', 'The handoff source run does not belong to this task')

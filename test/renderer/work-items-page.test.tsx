@@ -16,6 +16,7 @@ import type {
   WorkTaskArchiveRequest,
   WorkTaskCreateRequest,
   WorkTaskExecuteRequest,
+  WorkTaskRevisionRequest,
   WorkTaskSnapshot,
 } from '../../src/shared/work-items.js'
 import { workArtifactFixture, workTaskFixture } from '../work-items/fixtures.js'
@@ -58,6 +59,7 @@ async function mountPage(options: {
   get?: (taskId: string) => Promise<WorkTaskSnapshot | undefined>
   create?: (request: WorkTaskCreateRequest) => Promise<WorkTaskSnapshot>
   execute?: (request: WorkTaskExecuteRequest) => Promise<WorkTaskSnapshot>
+  revise?: (request: WorkTaskRevisionRequest) => Promise<WorkTaskSnapshot>
   archive?: (request: WorkTaskArchiveRequest) => Promise<WorkTaskSnapshot>
   answerAction?: (request: WorkActionAnswerRequest) => Promise<WorkTaskSnapshot>
   controlRun?: (request: WorkRunControlRequest) => Promise<WorkTaskSnapshot>
@@ -82,6 +84,7 @@ async function mountPage(options: {
     get: vi.fn(options.get ?? (async () => snapshot())),
     create: vi.fn(options.create ?? (async () => snapshot())),
     execute: vi.fn(options.execute ?? (async () => snapshot())),
+    revise: vi.fn(options.revise ?? (async () => snapshot())),
     archive: vi.fn(options.archive ?? (async (request: WorkTaskArchiveRequest) => snapshot({ task: { ...workTaskFixture(), revision: 3, ...(request.archived ? { archivedAt: '2026-09-16T08:00:00.000Z' } : {}) } }))),
     answerAction: vi.fn(options.answerAction ?? (async () => snapshot())),
     acceptArtifact: vi.fn(options.acceptArtifact ?? (async () => snapshot())),
@@ -185,6 +188,85 @@ describe('Work Items renderer', () => {
       await page.click('Prepare release notes')
       expect(page.dom.document.body.textContent).toContain('Prepare the release notes')
       expect(page.bridge.controlRun).not.toHaveBeenCalled()
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('revises the current requirement in place and keeps the prior requirement in history', async () => {
+    const current = snapshot()
+    const revised = snapshot({
+      task: {
+        ...current.task,
+        revision: 3,
+        status: 'open',
+        currentRequirementVersion: 3,
+        requirements: [
+          ...current.task.requirements,
+          { version: 3, goal: 'Publish a corrected summary', acceptance: 'Every change links to evidence', createdAt: '2026-09-16T08:00:00.000Z' },
+        ],
+      },
+    })
+    const revise = vi.fn(async () => revised)
+    const page = await mountPage({ list: async () => [current], get: async () => current, revise })
+    try {
+      await page.click('Prepare release notes')
+      await page.click('修改要求')
+      await changeControl(pageControl(page.dom, '新目标'), ' Publish a corrected summary ')
+      await changeControl(pageControl(page.dom, '新验收标准'), ' Every change links to evidence ')
+      await page.click('仅保存新要求')
+
+      expect(revise).toHaveBeenCalledWith({
+        requestId: expect.stringMatching(/^work-item-revise-/),
+        taskId: 'task-1', expectedRevision: 2,
+        goal: 'Publish a corrected summary', acceptance: 'Every change links to evidence',
+      })
+      expect(page.dom.document.querySelector('[role="dialog"]')).toBeFalsy()
+      const detail = page.dom.document.querySelector('[data-work-item-detail="task-1"]')?.textContent ?? ''
+      expect(detail).toContain('要求 v3')
+      expect(detail).toContain('Publish a corrected summary')
+      expect(detail).toContain('Prepare the release notes')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('revises once before redo and retries only the failed execution request', async () => {
+    const current = snapshot()
+    const revised = snapshot({
+      task: {
+        ...current.task,
+        revision: 3,
+        status: 'open',
+        currentRequirementVersion: 3,
+        requirements: [
+          ...current.task.requirements,
+          { version: 3, goal: 'Produce another version', acceptance: 'Use the corrected outline', createdAt: '2026-09-16T08:00:00.000Z' },
+        ],
+      },
+    })
+    const executed = { ...revised, task: { ...revised.task, revision: 4, status: 'active' as const } }
+    const revise = vi.fn(async () => revised)
+    const execute = vi.fn().mockRejectedValueOnce(new Error('executor unavailable')).mockResolvedValueOnce(executed)
+    const page = await mountPage({ list: async () => [current], get: async () => current, revise, execute })
+    try {
+      await page.click('Prepare release notes')
+      await page.click('修改要求')
+      await changeControl(pageControl(page.dom, '新目标'), 'Produce another version')
+      await changeControl(pageControl(page.dom, '新验收标准'), 'Use the corrected outline')
+      await page.click('修订后重做')
+
+      const dialog = page.dom.document.querySelector('[role="dialog"]') as HTMLElement
+      expect(dialog.textContent).toContain('要求 v3')
+      const submit = () => Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent?.trim() === '再做一版') as HTMLButtonElement
+      await act(async () => { submit().click(); await Promise.resolve(); await Promise.resolve() })
+      expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('executor unavailable')
+      await act(async () => { submit().click(); await Promise.resolve(); await Promise.resolve() })
+
+      expect(revise).toHaveBeenCalledOnce()
+      expect(execute).toHaveBeenCalledTimes(2)
+      expect(execute.mock.calls[0]?.[0]).toEqual(execute.mock.calls[1]?.[0])
+      expect(execute.mock.calls[0]?.[0]).toMatchObject({ taskId: 'task-1', expectedRevision: 3, mode: 'redo' })
     } finally {
       await page.cleanup()
     }

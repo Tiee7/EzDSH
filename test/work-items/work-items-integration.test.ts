@@ -175,4 +175,59 @@ describe('Work Items end-to-end composition', () => {
     expect(handoff.runs).toHaveLength(3)
     expect(f.workflowPort.start).toHaveBeenCalledTimes(2)
   })
+
+  it('starts a handoff attempt for revised requirements without relying on the prior active attempt', async () => {
+    const f = await fixture()
+    const created = await f.workItems.create({
+      requestId: 'create-revised-handoff',
+      title: 'Revised handoff',
+      goal: 'Draft the report',
+      acceptance: 'A complete first draft',
+      scope: { resourceRefs: [] },
+    })
+    const first = await f.execution.execute({
+      requestId: 'first-revised-handoff',
+      taskId: created.task.id,
+      expectedRevision: created.task.revision,
+      executor: { kind: 'employee', employeeId: 'researcher' },
+      mode: 'initial',
+      input: null,
+    })
+    const revised = await f.workItems.revise({
+      requestId: 'revise-before-handoff',
+      taskId: created.task.id,
+      expectedRevision: first.task.revision,
+      goal: 'Verify and publish the report',
+      acceptance: 'Every claim has a source',
+    })
+
+    expect(revised.task.activeAttemptId).toBeUndefined()
+    const handoff = await f.execution.execute({
+      requestId: 'handoff-revised-requirements',
+      taskId: created.task.id,
+      expectedRevision: revised.task.revision,
+      executor: { kind: 'workflow', workflowId: 'review-and-publish', workflowRevision: 3 },
+      mode: 'handoff',
+      sourceRunId: first.runs[0]!.runId,
+      input: { focus: 'citations' },
+    })
+
+    expect(handoff.attempts).toHaveLength(2)
+    expect(handoff.attempts[1]).toMatchObject({
+      reason: 'handoff',
+      requirementVersion: 2,
+      responsibility: { kind: 'workflow', workflowId: 'review-and-publish', workflowRevision: 3 },
+    })
+    expect(handoff.runs[1]).toMatchObject({
+      attemptId: handoff.attempts[1]!.id,
+      requirementVersion: 2,
+      sourceRunId: first.runs[0]!.runId,
+    })
+    expect(handoff.task.activeAttemptId).toBe(handoff.attempts[1]!.id)
+    expect(f.workflowPort.start).toHaveBeenLastCalledWith(expect.objectContaining({
+      attemptId: handoff.attempts[1]!.id,
+      requirementVersion: 2,
+      sourceRunId: first.runs[0]!.runId,
+    }))
+  })
 })

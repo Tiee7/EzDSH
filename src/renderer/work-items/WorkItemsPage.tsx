@@ -8,6 +8,7 @@ import type {
   WorkTaskArchiveRequest,
   WorkTaskCreateRequest,
   WorkTaskExecuteRequest,
+  WorkTaskRevisionRequest,
   WorkTaskSnapshot,
 } from '../../shared/work-items.js'
 import { employeeDisplayLabel, type EmployeeSnapshot } from '../../shared/employees.js'
@@ -21,6 +22,7 @@ import {
 import { WorkItemDetail } from './WorkItemDetail.js'
 import { WorkItemHandoffDialog, type WorkItemExecutorOption } from './WorkItemHandoffDialog.js'
 import { WorkItemProjectFilter } from './WorkItemProjectFilter.js'
+import { WorkItemRevisionDialog, type WorkItemRevisionFollowUp } from './WorkItemRevisionDialog.js'
 import {
   filterWorkItemsByProject,
   workItemProjectOptions,
@@ -86,6 +88,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
   const [loadingCreateOptions, setLoadingCreateOptions] = useState(false)
   const [employeeDirectory, setEmployeeDirectory] = useState<ReadonlyMap<string, EmployeeSnapshot>>(() => new Map())
   const [handoff, setHandoff] = useState<{ mode: 'handoff' | 'redo'; snapshot: WorkTaskSnapshot; executors: WorkItemExecutorOption[]; loadingExecutors: boolean }>()
+  const [revisionTaskId, setRevisionTaskId] = useState<string>()
   const listRequestSequence = useRef(0)
   const getRequestSequence = useRef(0)
   const handoffRequestSequence = useRef(0)
@@ -194,8 +197,8 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     })
   }, [])
 
-  const startHandoff = useCallback(async (mode: 'handoff' | 'redo'): Promise<void> => {
-    const current = selectedTaskId === undefined ? undefined : snapshots.get(selectedTaskId)
+  const startHandoff = useCallback(async (mode: 'handoff' | 'redo', snapshot?: WorkTaskSnapshot): Promise<void> => {
+    const current = snapshot ?? (selectedTaskId === undefined ? undefined : snapshots.get(selectedTaskId))
     if (current === undefined) return
     const sequence = ++handoffRequestSequence.current
     setError(undefined)
@@ -218,6 +221,21 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
       setError(reason instanceof Error ? reason.message : String(reason))
     }
   }, [selectedTaskId, snapshots])
+
+  const reviseTask = useCallback((request: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot> => {
+    return window.EzDSH.workItems.revise(request)
+  }, [])
+
+  const reloadRevisionTask = useCallback(async (taskId: string): Promise<WorkTaskSnapshot | undefined> => {
+    const latest = await window.EzDSH.workItems.get(taskId)
+    if (latest !== undefined) setSnapshots((current) => mergeSnapshot(current, latest))
+    return latest
+  }, [])
+
+  const applyRevisedSnapshot = useCallback((next: WorkTaskSnapshot, followUp: WorkItemRevisionFollowUp): void => {
+    setSnapshots((current) => mergeSnapshot(current, next))
+    if (followUp !== 'none') void startHandoff(followUp, next)
+  }, [startHandoff])
 
   const closeHandoff = useCallback((): void => {
     handoffRequestSequence.current += 1
@@ -456,6 +474,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
                 onAccepted={(next) => { setSnapshots((current) => mergeSnapshot(current, next)) }}
                 onOpenArtifact={openArtifact}
                 onStartHandoff={(mode) => { void startHandoff(mode) }}
+                onStartRevision={() => setRevisionTaskId(selected.task.id)}
                 onOpenExecutor={(runId) => { openExecutor(selected, runId) }}
                 onAnswerAction={answerAction}
                 onControlRun={controlRun}
@@ -476,6 +495,14 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
         onExecute={executeHandoff}
         onExecuted={(next) => { setSnapshots((current) => mergeSnapshot(current, next)) }}
         onClose={closeHandoff}
+      />}
+      {revisionTaskId === undefined || snapshots.get(revisionTaskId) === undefined ? null : <WorkItemRevisionDialog
+        snapshot={snapshots.get(revisionTaskId)!}
+        locale={locale}
+        onRevise={reviseTask}
+        onReload={reloadRevisionTask}
+        onRevised={applyRevisedSnapshot}
+        onClose={() => setRevisionTaskId(undefined)}
       />}
       {createOptions === undefined ? null : <WorkItemCreateDialog
         employees={createOptions.employees}

@@ -28,6 +28,7 @@ interface WorkItemDetailProps {
   onAccepted?: (snapshot: WorkTaskSnapshot) => void
   onOpenArtifact?: (artifact: WorkArtifact) => void
   onStartHandoff?: (mode: 'handoff' | 'redo') => void
+  onStartRevision?: () => void
   onOpenExecutor?: (runId?: string) => void
   onAnswerAction?: (request: WorkActionAnswerRequest) => Promise<WorkTaskSnapshot>
   onControlRun?: (request: WorkRunControlRequest) => Promise<WorkTaskSnapshot>
@@ -56,6 +57,7 @@ export function WorkItemDetail({
   onAccepted,
   onOpenArtifact,
   onStartHandoff,
+  onStartRevision,
   onOpenExecutor,
   onAnswerAction,
   onControlRun,
@@ -99,6 +101,9 @@ export function WorkItemDetail({
           <p>{copy.workItemsUpdatedAt(dateLabel(snapshot.task.updatedAt))}</p>
         </div>
         <div className="work-item-detail-header-actions">
+          {onStartRevision && snapshot.task.status !== 'cancelled' && snapshot.task.archivedAt === undefined
+            ? <button type="button" className="work-items-button work-items-button-quiet" onClick={onStartRevision}>{locale === 'en' ? 'Revise requirement' : '修改要求'}</button>
+            : null}
           {onStartHandoff ? <>
             <button type="button" className="work-items-button work-items-button-quiet" onClick={() => { onStartHandoff('redo') }}>{copy.workItemsRedo}</button>
             <button type="button" className="work-items-button" onClick={() => { onStartHandoff('handoff') }}>{copy.workItemsHandoff}</button>
