@@ -103,10 +103,10 @@ function normalizeFilter(value: unknown): WorkItemListFilter | undefined {
   const workflowId = optionalText(value.workflowId)
   const query = optionalText(value.query, MAX_QUERY_LENGTH)
   const projectId = optionalText(value.projectId)
-  const unassignedProject = value.unassignedProject === true ? true : undefined
+  const unassignedProject: true | undefined = value.unassignedProject === true ? true : undefined
   const hasProjectId = Object.prototype.hasOwnProperty.call(value, 'projectId')
   const hasUnassignedProject = Object.prototype.hasOwnProperty.call(value, 'unassignedProject')
-  const projectFilter = hasProjectId && hasUnassignedProject
+  const projectFilter: Pick<WorkItemListFilter, 'projectId' | 'unassignedProject'> = hasProjectId && hasUnassignedProject
     ? {}
     : {
         ...(projectId === undefined ? {} : { projectId }),
@@ -241,4 +241,19 @@ export function parseWorkItemNavigation(value: unknown): WorkItemNavigationConte
 /** Restore the origin after a linked surface closes without mutating task state. */
 export function restoreWorkItemNavigation(context: WorkItemNavigationContext): WorkItemReturnContext | undefined {
   return context.returnTo === undefined ? undefined : { ...context.returnTo, filter: context.returnTo.filter === undefined ? undefined : { ...context.returnTo.filter } }
+}
+
+/** Build the explicit linked-surface return while retaining the list restoration context. */
+export function returnToWorkItemsNavigation(
+  context: WorkItemNavigationContext,
+  source: 'employees' | 'workflow',
+): WorkItemNavigationContext | undefined {
+  const origin = restoreWorkItemNavigation(context)
+  if (origin?.destination !== 'work-items') return undefined
+  return createWorkItemNavigation({
+    destination: 'work-items',
+    source,
+    taskId: origin.selectedTaskId,
+    returnTo: origin,
+  })
 }

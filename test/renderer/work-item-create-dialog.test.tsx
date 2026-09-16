@@ -149,6 +149,36 @@ describe('WorkItemCreateDialog', () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
+  it('keeps create-only available when optional catalogs cannot be loaded', async () => {
+    const create = vi.fn(async () => ({
+      ...createdSnapshot,
+      task: { ...createdSnapshot.task, scope: { resourceRefs: [] } },
+    }))
+    const execute = vi.fn(async () => executedSnapshot)
+    const close = vi.fn()
+    const dom = await mount(dialog({
+      employees: [],
+      workflows: [],
+      projects: [],
+      unavailableCatalogs: ['employees', 'workflows', 'projects'],
+      onCreate: create,
+      onExecute: execute,
+      onClose: close,
+    }))
+
+    expect(dom.document.querySelector('[role="status"]')?.textContent).toContain('仍可不选项目并只创建工作项')
+    const mode = control<HTMLSelectElement>(dom, '处理方式')
+    expect(Array.from(mode.options).find((option) => option.value === 'employee')?.disabled).toBe(true)
+    expect(Array.from(mode.options).find((option) => option.value === 'workflow')?.disabled).toBe(true)
+
+    await fillRequired(dom)
+    await act(async () => { button(dom, '只创建').click(); await Promise.resolve(); await Promise.resolve() })
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ scope: { resourceRefs: [] } }))
+    expect(execute).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('rejects malformed or non-finite workflow JSON before creating the item', async () => {
     const create = vi.fn(async () => createdSnapshot)
     const execute = vi.fn(async () => executedSnapshot)

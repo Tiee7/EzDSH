@@ -32,6 +32,22 @@ function snapshot(overrides: Partial<WorkTaskSnapshot> = {}): WorkTaskSnapshot {
   }
 }
 
+function quietTask(id: string, title: string, projectId?: string): WorkTaskSnapshot {
+  const base = workTaskFixture()
+  return snapshot({
+    task: {
+      ...base,
+      id,
+      title,
+      scope: { ...(projectId === undefined ? {} : { projectId, cwd: `/workspace/${projectId}` }), resourceRefs: [] },
+    },
+    attempts: [],
+    runs: [],
+    artifacts: [],
+    actions: [],
+  })
+}
+
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void
   return { promise: new Promise<T>((done) => { resolve = done }), resolve }
@@ -256,6 +272,191 @@ describe('Work Items renderer', () => {
         taskId: 'task-1', actionId: 'action-1', expectedSourceEventId: 'event-1', answer: true,
       }))
       expect(page.dom.document.body.textContent).toContain('没有待处理事项')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('filters active work by resolved project and keeps unrelated events out of the visible groups', async () => {
+    const alpha = quietTask('task-alpha', 'Alpha task', 'project-1')
+    const beta = quietTask('task-beta', 'Beta task', 'project-2')
+    const unassigned = quietTask('task-personal', 'Personal task')
+    const page = await mountPage({
+      list: async () => [alpha, beta, unassigned],
+      listProjects: async () => [
+        { projectId: 'project-1', path: '/workspace/project-1', title: '项目一', sessionIds: [] },
+        { projectId: 'project-2', path: '/workspace/project-2', title: '项目二', sessionIds: [] },
+      ],
+    })
+    try {
+      const visible = () => page.dom.document.querySelector('.work-item-attention-view')?.textContent ?? ''
+      expect(visible()).toContain('Alpha task')
+      expect(visible()).toContain('Beta task')
+      expect(visible()).toContain('Personal task')
+
+      await changeControl(pageControl(page.dom, '项目范围'), 'project:project-1')
+      expect(visible()).toContain('Alpha task')
+      expect(visible()).not.toContain('Beta task')
+      expect(visible()).not.toContain('Personal task')
+      expect(visible()).toContain('项目一')
+
+      await page.emit({ ...beta, task: { ...beta.task, revision: beta.task.revision + 1, title: 'Updated beta task' } })
+      expect(visible()).not.toContain('Updated beta task')
+
+      await changeControl(pageControl(page.dom, '项目范围'), 'unassigned')
+      expect(visible()).toContain('Personal task')
+      expect(visible()).not.toContain('Alpha task')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('keeps project and archive filters composed', async () => {
+    const active = quietTask('task-active', 'Active alpha', 'project-1')
+    const archivedAlpha = quietTask('task-archived-alpha', 'Archived alpha', 'project-1')
+    archivedAlpha.task.archivedAt = '2026-09-16T08:00:00.000Z'
+    const archivedBeta = quietTask('task-archived-beta', 'Archived beta', 'project-2')
+    archivedBeta.task.archivedAt = '2026-09-16T08:00:00.000Z'
+    const page = await mountPage({
+      list: async (query) => query?.includeArchived ? [archivedAlpha, archivedBeta] : [active],
+      listProjects: async () => [
+        { projectId: 'project-1', path: '/workspace/project-1', title: '项目一', sessionIds: [] },
+        { projectId: 'project-2', path: '/workspace/project-2', title: '项目二', sessionIds: [] },
+      ],
+    })
+    try {
+      await changeControl(pageControl(page.dom, '项目范围'), 'project:project-1')
+      await page.click('查看归档')
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      expect(page.bridge.list).toHaveBeenLastCalledWith({ includeArchived: true })
+      const visible = page.dom.document.querySelector('.work-items-list')?.textContent ?? ''
+      expect(visible).toContain('Archived alpha')
+      expect(visible).not.toContain('Archived beta')
+      expect(visible).not.toContain('Active alpha')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('applies an older successful project directory when a newer dialog lookup fails', async () => {
+    const initialDirectory = deferred<Array<{ projectId: string; path: string; title: string; sessionIds: string[] }>>()
+    let projectCalls = 0
+    const task = quietTask('task-alpha', 'Alpha task', 'project-1')
+    const page = await mountPage({
+      list: async () => [task],
+      listProjects: async () => {
+        projectCalls += 1
+        if (projectCalls === 1) return initialDirectory.promise
+        throw new Error('dialog project directory offline')
+      },
+    })
+    try {
+      expect(page.dom.document.querySelector('.work-item-attention-view')?.textContent).toContain('project-1')
+      await page.click('新建工作项')
+      expect(page.dom.document.querySelector('.work-item-create-catalog-notice')?.textContent).toContain('项目')
+
+      await act(async () => {
+        initialDirectory.resolve([{ projectId: 'project-1', path: '/workspace/project-1', title: '项目一', sessionIds: [] }])
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(page.dom.document.querySelector('.work-item-attention-view')?.textContent).toContain('项目一')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('shows persisted scope and falls back to a raw project id when the directory has no match', async () => {
+    const orphan = quietTask('task-orphan', 'Orphaned project task', 'removed-project')
+    orphan.task.scope.resourceRefs = ['docs/brief.md']
+    const page = await mountPage({ list: async () => [orphan], get: async () => orphan, listProjects: async () => [] })
+    try {
+      expect(page.dom.document.querySelector('.work-item-attention-view')?.textContent).toContain('removed-project')
+      await page.click('Orphaned project task')
+      const scope = page.dom.document.querySelector('[data-work-item-scope-panel="true"]')
+      expect(scope?.textContent).toContain('removed-project')
+      expect(scope?.textContent).toContain('项目目录不可用')
+      expect(scope?.textContent).toContain('/workspace/removed-project')
+      expect(scope?.textContent).toContain('docs/brief.md')
+      expect(page.dom.document.querySelector('[data-work-item-scope-panel="true"] a')).toBeFalsy()
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('opens create-only when optional catalogs fail and reports only the unavailable capabilities', async () => {
+    const created = quietTask('task-created-offline', 'Offline capture')
+    const page = await mountPage({
+      create: async () => created,
+      listEmployees: async () => { throw new Error('employee directory offline') },
+      listWorkflows: async () => { throw new Error('workflow directory offline') },
+      listProjects: async () => { throw new Error('project directory offline') },
+    })
+    try {
+      await page.click('新建工作项')
+      expect(page.dom.document.querySelector('.work-item-create-catalog-notice')?.textContent).toContain('员工、Workflow、项目')
+      await changeControl(pageControl(page.dom, '标题'), 'Offline capture')
+      await changeControl(pageControl(page.dom, '目标'), '先保存任务')
+      await changeControl(pageControl(page.dom, '验收标准'), '稍后可继续处理')
+      await page.click('只创建')
+      expect(page.bridge.create).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Offline capture',
+        scope: { resourceRefs: [] },
+      }))
+      expect(page.bridge.execute).not.toHaveBeenCalled()
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('carries the current project filter into an executor and restores it on return', async () => {
+    const alpha = snapshot({ task: { ...workTaskFixture(), id: 'task-alpha', title: 'Alpha task', scope: { projectId: 'project-1', cwd: '/workspace/project-1', resourceRefs: [] } } })
+    const beta = quietTask('task-beta', 'Beta task', 'project-2')
+    const navigations: import('../../src/renderer/work-items/work-item-navigation.js').WorkItemNavigationContext[] = []
+    const page = await mountPage({ list: async () => [alpha, beta], get: async () => alpha, onNavigate: (context) => { navigations.push(context) } })
+    try {
+      await changeControl(pageControl(page.dom, '项目范围'), 'project:project-1')
+      await page.click('Alpha task')
+      await page.click('打开执行器')
+      expect(navigations[0]?.returnTo?.filter).toEqual({ projectId: 'project-1' })
+    } finally {
+      await page.cleanup()
+    }
+
+    const returned = createWorkItemNavigation({
+      destination: 'work-items',
+      source: 'employees',
+      taskId: 'task-alpha',
+      returnTo: { destination: 'work-items', source: 'work-items', selectedTaskId: 'task-alpha', filter: { projectId: 'project-1' } },
+    })
+    const restored = await mountPage({ list: async () => [alpha, beta], get: async () => alpha, navigation: returned })
+    try {
+      expect(restored.dom.document.querySelector('[data-work-item-detail="task-alpha"]')).toBeTruthy()
+      expect(restored.dom.document.querySelector('.work-item-attention-view')?.textContent).not.toContain('Beta task')
+      await restored.click('关闭详情')
+      expect(restored.dom.document.querySelector('[data-work-item-detail="task-alpha"]')).toBeFalsy()
+    } finally {
+      await restored.cleanup()
+    }
+  })
+
+  it('restores the project filter without showing a returned task outside that scope', async () => {
+    const alpha = quietTask('task-alpha', 'Alpha task', 'project-1')
+    const beta = quietTask('task-beta', 'Beta task', 'project-2')
+    const returned = createWorkItemNavigation({
+      destination: 'work-items',
+      source: 'employees',
+      taskId: 'task-beta',
+      returnTo: { destination: 'work-items', source: 'work-items', selectedTaskId: 'task-beta', filter: { projectId: 'project-1' } },
+    })
+    const page = await mountPage({ list: async () => [alpha, beta], get: async () => beta, navigation: returned })
+    try {
+      expect(page.dom.document.querySelector('.work-item-attention-view')?.textContent).toContain('Alpha task')
+      expect(page.dom.document.querySelector('.work-item-attention-view')?.textContent).not.toContain('Beta task')
+      expect(page.dom.document.querySelector('[data-work-item-detail="task-beta"]')).toBeFalsy()
     } finally {
       await page.cleanup()
     }

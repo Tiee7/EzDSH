@@ -66,7 +66,7 @@ export function WorkItemScopePanel({ scope, project, locale = 'zh' }: WorkItemSc
   const labels = copy[locale]
 
   return (
-    <section className="work-item-scope-panel" aria-label={labels.heading} data-work-item-scope-panel="true">
+    <section className="work-item-detail-section work-item-scope-panel" aria-label={labels.heading} data-work-item-scope-panel="true">
       <div className="work-item-detail-section-heading">
         <h3>{labels.heading}</h3>
       </div>

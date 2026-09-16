@@ -79,7 +79,7 @@ import { WorkflowGenerationPage } from './WorkflowGenerationPage.js'
 import { WorkflowDeadLetterPanel } from './WorkflowDeadLetterPanel.js'
 import { connectorReasonLabel, connectorStateLabel } from './workflow-evidence-labels.js'
 import { workflowWorkItemEntry } from '../work-items/work-item-entry.js'
-import { createWorkItemNavigation, type WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
+import { returnToWorkItemsNavigation, type WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
 import './workflow.css'
 
 export { layoutWorkflowNodes } from '../../shared/workflow-layout.js'
@@ -4435,7 +4435,7 @@ export function WorkflowPage({ copy, locale, developerMode: _developerMode = fal
             <button type="button" role="tab" aria-selected={workspaceView === 'executions'} className={workspaceView === 'executions' ? 'workflow-view-active' : ''} onClick={openExecutionView}>{copy.workflowExecutions}</button>
           </div>
           <div className="workflow-workspace-actions">
-            {navigation?.returnTo?.destination === 'work-items' && onOpenWorkItem ? <button type="button" className="workflow-button-quiet" onClick={() => { onOpenWorkItem(createWorkItemNavigation({ destination: 'work-items', source: 'workflow', taskId: navigation.returnTo?.selectedTaskId })) }}>返回工作项</button> : null}
+            {navigation?.returnTo?.destination === 'work-items' && onOpenWorkItem ? <button type="button" className="workflow-button-quiet" onClick={() => { const target = returnToWorkItemsNavigation(navigation, 'workflow'); if (target !== undefined) onOpenWorkItem(target) }}>返回工作项</button> : null}
             {selected !== undefined && workflowRunSummaries[selected.id]?.firstUnviewedRun !== undefined ? <button type="button" className="workflow-unviewed-run-button workflow-unviewed-run-header" onClick={openUnreadRun}>{copy.workflowUnviewedRuns(workflowRunSummaries[selected.id]?.unviewedCount ?? 0)}</button> : null}
             {_developerMode && linkedWorkItem !== undefined ? <label className="workflow-work-item-mode"><span>工作项目标</span><select aria-label="工作项目标" value={formalWorkItemMode} onChange={(event) => { setFormalWorkItemMode(event.target.value === 'existing' ? 'existing' : 'new') }}><option value="existing">继续当前工作项（{linkedWorkItem.taskId}）</option><option value="new">创建新的工作项</option></select></label> : null}
             {workspaceView === 'editor' && selected !== undefined ? <button type="button" className="workflow-button-quiet workflow-permission-button" onClick={() => setShowPermissionDialog(true)} disabled={busy}>{copy.workflowPermissionPolicy}</button> : null}

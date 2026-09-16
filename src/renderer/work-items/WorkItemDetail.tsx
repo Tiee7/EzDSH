@@ -17,6 +17,7 @@ import {
 } from './work-item-view-model.js'
 import { WorkItemDeliverables } from './WorkItemDeliverables.js'
 import { WorkItemActionPanel } from './WorkItemActionPanel.js'
+import { WorkItemScopePanel } from './WorkItemScopePanel.js'
 import type { WorkArtifact, WorkArtifactAcceptRequest } from '../../shared/work-items.js'
 
 interface WorkItemDetailProps {
@@ -33,6 +34,7 @@ interface WorkItemDetailProps {
   onChanged?: (snapshot: WorkTaskSnapshot) => void
   onArchive?: (archived: boolean) => Promise<void>
   employeeDirectory?: ReadonlyMap<string, Pick<EmployeeSnapshot, 'name' | 'displayName' | 'role'>>
+  project?: { projectId: string; title: string; path?: string }
   locale?: 'zh' | 'en'
 }
 
@@ -60,6 +62,7 @@ export function WorkItemDetail({
   onChanged,
   onArchive,
   employeeDirectory,
+  project,
   locale = 'zh',
 }: WorkItemDetailProps): JSX.Element {
   const [confirmArchive, setConfirmArchive] = useState(false)
@@ -131,6 +134,7 @@ export function WorkItemDetail({
             locale={locale}
           />
         </section> : null}
+        <WorkItemScopePanel scope={snapshot.task.scope} project={project} locale={locale} />
         <section className="work-item-detail-section">
           <div className="work-item-detail-section-heading">
             <h3>{copy.workItemsCurrentRequirement}</h3>

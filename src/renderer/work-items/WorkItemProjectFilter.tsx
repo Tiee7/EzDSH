@@ -37,7 +37,7 @@ export function WorkItemProjectFilter({ value, options, onChange, locale = 'zh' 
     .filter((title, index, titles) => titles.indexOf(title) !== index))
   const selectedValue = serializedValue(value, options)
   const handleChange = (event: ChangeEvent<HTMLSelectElement>): void => {
-    onChange(filterFromSerializedValue(event.currentTarget.value, options))
+    onChange(filterFromSerializedValue(event.target.value, options))
   }
 
   return <div className="work-item-project-filter" data-project-filter="true">

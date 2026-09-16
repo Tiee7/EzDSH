@@ -35,6 +35,7 @@ export interface WorkItemCreateDialogProps {
   employees: WorkItemCreateEmployeeCandidate[]
   workflows: WorkItemCreateWorkflowCandidate[]
   projects: WorkItemCreateProjectCandidate[]
+  unavailableCatalogs?: Array<'employees' | 'workflows' | 'projects'>
   locale?: 'zh' | 'en'
   onCreate: (request: WorkTaskCreateRequest) => Promise<WorkTaskSnapshot>
   onExecute: (request: WorkTaskExecuteRequest) => Promise<WorkTaskSnapshot>
@@ -75,6 +76,11 @@ const copy = {
     workflowJson: '请填写有效的 JSON。',
     workflowSafe: 'Workflow 输入必须是有限且安全的 JSON 值。',
     createdRetry: '工作项已创建。你可以用同一请求重试执行，关闭不会再次提交。',
+    catalogUnavailable: '部分目录暂时不可用：',
+    catalogEmployees: '员工',
+    catalogWorkflows: 'Workflow',
+    catalogProjects: '项目',
+    catalogFallback: '仍可不选项目并只创建工作项。',
   },
   en: {
     title: 'Create work item',
@@ -101,6 +107,11 @@ const copy = {
     workflowJson: 'Enter valid JSON.',
     workflowSafe: 'Workflow input must be a finite JSON-safe value.',
     createdRetry: 'The work item was created. You can retry execution with the same request; closing will not submit it again.',
+    catalogUnavailable: 'Some catalogs are unavailable: ',
+    catalogEmployees: 'employees',
+    catalogWorkflows: 'workflows',
+    catalogProjects: 'projects',
+    catalogFallback: 'You can still create the work item without a project.',
   },
 } as const
 
@@ -119,6 +130,7 @@ export function WorkItemCreateDialog({
   employees,
   workflows,
   projects,
+  unavailableCatalogs = [],
   locale = 'zh',
   onCreate,
   onExecute,
@@ -270,6 +282,13 @@ export function WorkItemCreateDialog({
     <section className="work-item-create-dialog" role="dialog" aria-modal="true" aria-labelledby="work-item-create-dialog-title">
       <div className="work-item-create-fields">
       <h2 id="work-item-create-dialog-title">{text.title}</h2>
+      {unavailableCatalogs.length === 0 ? null : <p className="work-item-create-catalog-notice" role="status">
+        {text.catalogUnavailable}{unavailableCatalogs.map((catalog) => catalog === 'employees'
+          ? text.catalogEmployees
+          : catalog === 'workflows'
+            ? text.catalogWorkflows
+            : text.catalogProjects).join(locale === 'en' ? ', ' : '、')}{locale === 'en' ? '. ' : '。'}{text.catalogFallback}
+      </p>}
       <label>{text.titleField}
         <input aria-label={text.titleField} aria-required="true" value={title} disabled={busy || locked} onChange={(event) => setTitle(event.target.value)} />
       </label>
@@ -288,8 +307,8 @@ export function WorkItemCreateDialog({
       <label>{text.executor}
         <select aria-label={text.executor} value={mode} disabled={busy || locked} onChange={(event) => selectMode(event.target.value as 'none' | 'employee' | 'workflow')}>
           <option value="none">{text.createOnly}</option>
-          <option value="employee">{text.employee}</option>
-          <option value="workflow">{text.workflow}</option>
+          <option value="employee" disabled={employees.length === 0}>{text.employee}</option>
+          <option value="workflow" disabled={workflows.length === 0}>{text.workflow}</option>
         </select>
       </label>
       {mode === 'employee' ? <>

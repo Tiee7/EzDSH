@@ -7,6 +7,7 @@ export interface WorkItemAttentionViewProps {
   onSelect: (taskId: string) => void
   selectedTaskId?: string
   onButtonRef?: (taskId: string, button: HTMLButtonElement | null) => void
+  projectLabels?: ReadonlyMap<string, string>
   locale?: 'zh' | 'en'
 }
 
@@ -19,7 +20,7 @@ const GROUPS: readonly { id: WorkItemAttentionGroup; en: string; zh: string }[] 
 ]
 
 /** A bridge-free projection: selecting a stable task id is its only effect. */
-export function WorkItemAttentionView({ snapshots, onSelect, selectedTaskId, onButtonRef, locale = 'en' }: WorkItemAttentionViewProps): JSX.Element {
+export function WorkItemAttentionView({ snapshots, onSelect, selectedTaskId, onButtonRef, projectLabels, locale = 'en' }: WorkItemAttentionViewProps): JSX.Element {
   const grouped = new Map<WorkItemAttentionGroup, WorkTaskSnapshot[]>(GROUPS.map(({ id }) => [id, []]))
   for (const snapshot of snapshots) grouped.get(attentionGroup(snapshot))?.push(snapshot)
 
@@ -46,7 +47,9 @@ export function WorkItemAttentionView({ snapshots, onSelect, selectedTaskId, onB
               >
                 <strong>{snapshot.task.title}</strong>
                 <span>{locale === 'en' ? `Requirement v${snapshot.task.currentRequirementVersion}` : `要求 v${snapshot.task.currentRequirementVersion}`}</span>
-                <small>{snapshot.task.scope.projectId ?? (locale === 'en' ? 'Unassigned' : '未归入项目')}</small>
+                <small>{snapshot.task.scope.projectId === undefined
+                  ? (locale === 'en' ? 'Unassigned' : '未归入项目')
+                  : projectLabels?.get(snapshot.task.scope.projectId) ?? snapshot.task.scope.projectId}</small>
               </button>
             </li>)}
           </ul>}

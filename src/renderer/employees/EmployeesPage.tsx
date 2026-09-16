@@ -14,7 +14,7 @@ import type { EmployeeWorkMethod } from '../../shared/employee-methods.js'
 import type { AppCopy } from '../../shared/locale.js'
 import { WandMagicSparklesIcon } from '../icons/WandMagicSparklesIcon.js'
 import { employeeWorkItemEntry } from '../work-items/work-item-entry.js'
-import { createWorkItemNavigation, type WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
+import { returnToWorkItemsNavigation, type WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
 import './employees.css'
 
 export const EMPLOYEES_REFRESH_EVENT = 'ezdsh:refresh-employees'
@@ -961,7 +961,7 @@ export function EmployeesPage({ copy, onOpenWorkItem, navigation }: EmployeesPag
               <p className="employees-description">{selectedEmployee.description || selectedEmployee.systemPrompt}</p>
             </div>
             <div className="employees-actions employees-profile-actions">
-              {navigation?.returnTo?.destination === 'work-items' && onOpenWorkItem ? <button type="button" className="employees-button employees-button-quiet" onClick={() => { onOpenWorkItem(createWorkItemNavigation({ destination: 'work-items', source: 'employees', taskId: navigation.returnTo?.selectedTaskId })) }}>返回工作项</button> : null}
+              {navigation?.returnTo?.destination === 'work-items' && onOpenWorkItem ? <button type="button" className="employees-button employees-button-quiet" onClick={() => { const target = returnToWorkItemsNavigation(navigation, 'employees'); if (target !== undefined) onOpenWorkItem(target) }}>返回工作项</button> : null}
               <button type="button" className="employees-button employees-button-primary" disabled={busy} onClick={openAssignment}>{copy.employeesAssignTask}</button>
               <button type="button" className="employees-button employees-button-quiet" disabled={busy} onClick={() => { void setEnabled(selectedEmployee) }}>{selectedEmployee.enabled ? copy.employeesDisable : copy.employeesEnable}</button>
               <button type="button" className="employees-button employees-button-quiet" disabled={busy} onClick={() => { beginEdit(selectedEmployee) }}>{copy.employeesEdit}</button>

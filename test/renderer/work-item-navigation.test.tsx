@@ -4,6 +4,7 @@ import {
   openEmployeeFromWorkItem,
   openExistingWorkItemRun,
   parseWorkItemNavigation,
+  returnToWorkItemsNavigation,
   restoreWorkItemNavigation,
   serializeWorkItemNavigation,
 } from '../../src/renderer/work-items/work-item-navigation.js'
@@ -99,6 +100,38 @@ describe('work item navigation context', () => {
     const restored = restoreWorkItemNavigation(parseWorkItemNavigation(serializeWorkItemNavigation(context))!)
     expect(restored).toEqual(origin)
     expect(restored).not.toBe(origin)
+  })
+
+  it.each(['employees', 'workflow'] as const)('keeps the project filter when returning from %s', (source) => {
+    const linked = createWorkItemNavigation({
+      destination: source,
+      source: 'work-items',
+      taskId: 'task-7',
+      ...(source === 'employees' ? { employeeId: 'writer' } : { workflowId: 'flow-2' }),
+      returnTo: {
+        destination: 'work-items',
+        source: 'work-items',
+        selectedTaskId: 'task-7',
+        filter: { projectId: 'project-1' },
+      },
+    })
+
+    expect(returnToWorkItemsNavigation(linked, source)).toMatchObject({
+      destination: 'work-items',
+      source,
+      taskId: 'task-7',
+      returnTo: { selectedTaskId: 'task-7', filter: { projectId: 'project-1' } },
+    })
+  })
+
+  it('does not invent a Work Items return for an unrelated origin', () => {
+    const context = createWorkItemNavigation({
+      destination: 'employees',
+      employeeId: 'writer',
+      returnTo: { destination: 'workflow', source: 'workflow', selectedWorkflowId: 'flow-2' },
+    })
+
+    expect(returnToWorkItemsNavigation(context, 'employees')).toBeUndefined()
   })
 
   it.each([

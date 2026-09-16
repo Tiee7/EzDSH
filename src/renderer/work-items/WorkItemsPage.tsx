@@ -20,8 +20,15 @@ import {
 } from './WorkItemCreateDialog.js'
 import { WorkItemDetail } from './WorkItemDetail.js'
 import { WorkItemHandoffDialog, type WorkItemExecutorOption } from './WorkItemHandoffDialog.js'
+import { WorkItemProjectFilter } from './WorkItemProjectFilter.js'
+import {
+  filterWorkItemsByProject,
+  workItemProjectOptions,
+  type WorkItemProjectDirectoryEntry,
+  type WorkItemProjectFilterValue,
+} from './work-item-project-filter.js'
 import { mergeSnapshot, mergeSnapshotList } from './work-item-view-model.js'
-import { createWorkItemNavigation, restoreWorkItemNavigation, type WorkItemNavigationContext } from './work-item-navigation.js'
+import { createWorkItemNavigation, restoreWorkItemNavigation, type WorkItemListFilter, type WorkItemNavigationContext } from './work-item-navigation.js'
 import './work-items.css'
 
 interface WorkItemsPageProps {
@@ -41,6 +48,19 @@ interface WorkItemCreateOptions {
   employees: WorkItemCreateEmployeeCandidate[]
   workflows: WorkItemCreateWorkflowCandidate[]
   projects: WorkItemCreateProjectCandidate[]
+  unavailableCatalogs: Array<'employees' | 'workflows' | 'projects'>
+}
+
+function projectFilterFromNavigation(filter?: WorkItemListFilter): WorkItemProjectFilterValue {
+  if (filter?.projectId !== undefined) return { kind: 'project', projectId: filter.projectId }
+  if (filter?.unassignedProject === true) return { kind: 'unassigned' }
+  return { kind: 'all' }
+}
+
+function navigationProjectFilter(filter: WorkItemProjectFilterValue): WorkItemListFilter | undefined {
+  if (filter.kind === 'project') return { projectId: filter.projectId }
+  if (filter.kind === 'unassigned') return { unassignedProject: true }
+  return undefined
 }
 
 function mutationRequestId(prefix: string): string {
@@ -60,6 +80,8 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
   const [showArchived, setShowArchived] = useState(false)
+  const [projectFilter, setProjectFilter] = useState<WorkItemProjectFilterValue>(() => projectFilterFromNavigation(navigation?.returnTo?.filter))
+  const [projectDirectory, setProjectDirectory] = useState<WorkItemProjectDirectoryEntry[]>([])
   const [createOptions, setCreateOptions] = useState<WorkItemCreateOptions>()
   const [loadingCreateOptions, setLoadingCreateOptions] = useState(false)
   const [employeeDirectory, setEmployeeDirectory] = useState<ReadonlyMap<string, EmployeeSnapshot>>(() => new Map())
@@ -67,6 +89,8 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
   const listRequestSequence = useRef(0)
   const getRequestSequence = useRef(0)
   const handoffRequestSequence = useRef(0)
+  const projectDirectoryRequestSequence = useRef(0)
+  const appliedProjectDirectorySequence = useRef(0)
   const taskButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const archiveRetries = useRef(new Map<string, WorkTaskArchiveRequest>())
   const mounted = useRef(true)
@@ -102,18 +126,18 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
 
   const closeDetails = useCallback((taskId: string): void => {
     const restored = navigation === undefined ? undefined : restoreWorkItemNavigation(navigation)
-    if (restored !== undefined && onNavigate !== undefined && restored.destination !== 'detail') {
-      const destination = restored.destination === 'work-items' ? 'work-items' : restored.destination
+    if (restored !== undefined && onNavigate !== undefined && restored.destination !== 'detail' && restored.destination !== 'work-items') {
+      const destination = restored.destination
       const context = createWorkItemNavigation({
         destination,
         source: 'work-items',
-        taskId: restored.selectedTaskId ?? (destination === 'work-items' ? taskId : undefined),
+        taskId: restored.selectedTaskId,
         employeeId: restored.selectedEmployeeId,
         methodId: restored.selectedMethodId,
         methodVersion: restored.selectedMethodVersion,
         workflowId: restored.selectedWorkflowId,
         runId: restored.selectedRunId,
-        returnTo: restored.destination === 'work-items' ? undefined : restored,
+        returnTo: restored,
       })
       onNavigate(context)
       return
@@ -134,7 +158,12 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
       .filter((run) => run.attemptId === latestAttempt.id && run.runId !== '')
       .sort((left, right) => left.observedAt.localeCompare(right.observedAt))
       .at(-1)
-    const returnTo = { destination: 'work-items' as const, source: 'work-items' as const, selectedTaskId: snapshot.task.id }
+    const returnTo = {
+      destination: 'work-items' as const,
+      source: 'work-items' as const,
+      selectedTaskId: snapshot.task.id,
+      ...(navigationProjectFilter(projectFilter) === undefined ? {} : { filter: navigationProjectFilter(projectFilter) }),
+    }
     // A handoff can add another run under the same attempt. The run is the
     // execution truth for the executor picker; only fall back to attempt
     // responsibility when no run was recorded yet.
@@ -150,7 +179,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
         destination: 'workflow', source: 'work-items', taskId: snapshot.task.id,
         workflowId: executor.workflowId, ...(latestRun?.runId === undefined ? {} : { runId: latestRun.runId }), returnTo,
       }))
-  }, [onNavigate])
+  }, [onNavigate, projectFilter])
 
   const acceptArtifact = useCallback(async (request: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot> => {
     const next = await window.EzDSH.workItems.acceptArtifact(request)
@@ -205,14 +234,22 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     if (loadingCreateOptions) return
     setLoadingCreateOptions(true)
     setError(undefined)
+    const projectSequence = ++projectDirectoryRequestSequence.current
     try {
-      const [employees, workflows, projects] = await Promise.all([
+      const [employeeResult, workflowResult, projectResult] = await Promise.allSettled([
         window.EzDSH.employees.list(),
         window.EzDSH.workflows.list(),
         window.EzDSH.employees.listProjects(),
       ])
       if (!mounted.current) return
-      setEmployeeDirectory(new Map(employees.map((employee) => [employee.id, employee])))
+      const employees = employeeResult.status === 'fulfilled' ? employeeResult.value : []
+      const workflows = workflowResult.status === 'fulfilled' ? workflowResult.value : []
+      const projects = projectResult.status === 'fulfilled' ? projectResult.value : []
+      if (employeeResult.status === 'fulfilled') setEmployeeDirectory(new Map(employees.map((employee) => [employee.id, employee])))
+      if (projectResult.status === 'fulfilled' && projectSequence > appliedProjectDirectorySequence.current) {
+        appliedProjectDirectorySequence.current = projectSequence
+        setProjectDirectory(projects.map((project) => ({ projectId: project.projectId, title: project.title, path: project.path })))
+      }
       setCreateOptions({
         employees: employees
           .filter((employee) => employee.enabled)
@@ -221,9 +258,12 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
           .filter((workflow) => workflow.enabled)
           .map((workflow) => ({ workflowId: workflow.id, workflowRevision: workflow.revision, label: workflow.name })),
         projects: projects.map((project) => ({ projectId: project.projectId, cwd: project.path, label: project.title })),
+        unavailableCatalogs: [
+          ...(employeeResult.status === 'rejected' ? ['employees' as const] : []),
+          ...(workflowResult.status === 'rejected' ? ['workflows' as const] : []),
+          ...(projectResult.status === 'rejected' ? ['projects' as const] : []),
+        ],
       })
-    } catch (reason) {
-      if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       if (mounted.current) setLoadingCreateOptions(false)
     }
@@ -287,6 +327,14 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     }).catch(() => {
       // Work item history remains readable with the persisted employee id if the directory is unavailable.
     })
+    const projectSequence = ++projectDirectoryRequestSequence.current
+    void window.EzDSH.employees.listProjects().then((projects) => {
+      if (!mounted.current || projectSequence <= appliedProjectDirectorySequence.current) return
+      appliedProjectDirectorySequence.current = projectSequence
+      setProjectDirectory(projects.map((project) => ({ projectId: project.projectId, title: project.title, path: project.path })))
+    }).catch(() => {
+      // The persisted project id remains visible when the runtime project directory is unavailable.
+    })
     return () => {
       mounted.current = false
       unsubscribe()
@@ -295,21 +343,32 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
 
   useEffect(() => {
     if ((navigation?.destination !== 'detail' && navigation?.destination !== 'work-items') || navigation.taskId === undefined) return
+    setProjectFilter(projectFilterFromNavigation(navigation.returnTo?.filter))
     setSelectedTaskId(navigation.taskId)
     selectTask(navigation.taskId)
   }, [navigation, selectTask])
 
-  const orderedSnapshots = useMemo(
-    () => [...snapshots.values()]
-      .filter((snapshot) => showArchived ? snapshot.task.archivedAt !== undefined : snapshot.task.archivedAt === undefined)
-      .sort(taskOrder),
-    [showArchived, snapshots],
+  const projectOptions = useMemo(
+    () => workItemProjectOptions([...snapshots.values()], projectDirectory),
+    [projectDirectory, snapshots],
   )
+  const projectLabels = useMemo(
+    () => new Map(projectOptions.map((option) => [option.projectId, option.orphaned ? option.projectId : option.title])),
+    [projectOptions],
+  )
+  const orderedSnapshots = useMemo(() => filterWorkItemsByProject(
+    [...snapshots.values()].filter((snapshot) => showArchived
+      ? snapshot.task.archivedAt !== undefined
+      : snapshot.task.archivedAt === undefined),
+    projectFilter,
+  ).sort(taskOrder), [projectFilter, showArchived, snapshots])
   const selectedCandidate = selectedTaskId === undefined ? undefined : snapshots.get(selectedTaskId)
-  const selected = selectedCandidate !== undefined
-    && (showArchived ? selectedCandidate.task.archivedAt !== undefined : selectedCandidate.task.archivedAt === undefined)
+  const selected = selectedCandidate !== undefined && orderedSnapshots.some((snapshot) => snapshot.task.id === selectedCandidate.task.id)
     ? selectedCandidate
     : undefined
+  const selectedProject = selected?.task.scope.projectId === undefined
+    ? undefined
+    : projectDirectory.find((project) => project.projectId === selected.task.scope.projectId)
 
   return (
     <div className="work-items-page" data-work-items-page>
@@ -342,6 +401,15 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
       {error === undefined ? null : <p className="work-items-error" role="alert">{error}</p>}
       <div className="work-items-layout">
         <aside className="work-items-list" aria-label={copy.tabWorkItems}>
+          <WorkItemProjectFilter
+            value={projectFilter}
+            options={projectOptions}
+            locale={locale}
+            onChange={(next) => {
+              setProjectFilter(next)
+              setSelectedTaskId(undefined)
+            }}
+          />
           {loading && orderedSnapshots.length === 0 ? <p className="work-items-muted">{copy.workItemsLoading}</p> : null}
           {!loading && orderedSnapshots.length === 0 ? <div className="work-items-empty"><h2>{copy.workItemsEmptyTitle}</h2><p>{copy.workItemsEmptyHint}</p></div> : null}
           {showArchived ? orderedSnapshots.map((snapshot) => (
@@ -358,12 +426,15 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
             >
               <span className="work-items-task-title">{snapshot.task.title}</span>
               <span>{copy.workItemsTaskStatus(snapshot.task.status)} · {copy.workItemsRequirementVersion(snapshot.task.currentRequirementVersion)}</span>
-              <small>{snapshot.task.scope.projectId ?? copy.workItemsUnassigned}</small>
+              <small>{snapshot.task.scope.projectId === undefined
+                ? copy.workItemsUnassigned
+                : projectLabels.get(snapshot.task.scope.projectId) ?? snapshot.task.scope.projectId}</small>
             </button>
           )) : orderedSnapshots.length === 0 ? null : <WorkItemAttentionView
             snapshots={orderedSnapshots}
             selectedTaskId={selectedTaskId}
             locale={locale}
+            projectLabels={projectLabels}
             onButtonRef={(taskId, button) => {
               if (button === null) taskButtonRefs.current.delete(taskId)
               else taskButtonRefs.current.set(taskId, button)
@@ -391,6 +462,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
                 onChanged={(next) => { setSnapshots((current) => mergeSnapshot(current, next)) }}
                 onArchive={archiveTask}
                 employeeDirectory={employeeDirectory}
+                project={selectedProject}
               />
             </>}
         </div>
@@ -409,6 +481,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
         employees={createOptions.employees}
         workflows={createOptions.workflows}
         projects={createOptions.projects}
+        unavailableCatalogs={createOptions.unavailableCatalogs}
         locale={locale}
         onCreate={createTask}
         onExecute={executeTask}
