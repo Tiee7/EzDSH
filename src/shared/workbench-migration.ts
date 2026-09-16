@@ -11,6 +11,17 @@ export interface WorkbenchMigrationIdentity {
   sourceFingerprint: string
 }
 
+/** Immutable provenance stored on a Work Item created by the legacy importer. */
+export interface WorkbenchMigrationOrigin {
+  kind: 'workbench-migration'
+  sourceType: 'ezdsh-workbench-v1'
+  sourceId: string
+  sourceSnapshotHash: string
+  mappingHash: string
+  identity: string
+  sourceFingerprint: string
+}
+
 export interface WorkbenchMigrationPlanItem {
   identity: WorkbenchMigrationIdentity
   source: {

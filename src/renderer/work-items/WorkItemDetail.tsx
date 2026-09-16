@@ -433,6 +433,16 @@ export function WorkItemDetail({
           </dl>
           <p className="work-item-origin-note">{locale === 'en' ? 'The original transcript is not copied into the Work Item; it can be re-read while the Runtime session remains available.' : '原始对话正文不会复制到工作项；只有在 Runtime 会话仍可访问时才能重新读取。'}</p>
         </section> : null}
+        {snapshot.task.origin?.kind === 'workbench-migration' ? <section className="work-item-detail-section work-item-origin-section">
+          <div className="work-item-detail-section-heading"><h3>{locale === 'en' ? 'Legacy Workbench source' : '旧 Workbench 来源'}</h3><span>{locale === 'en' ? 'Migration provenance' : '迁移来源凭证'}</span></div>
+          <dl className="work-item-requirement">
+            <div><dt>{locale === 'en' ? 'Source ID' : '源 ID'}</dt><dd><code>{snapshot.task.origin.sourceId}</code></dd></div>
+            <div><dt>{locale === 'en' ? 'Migration identity' : '迁移 identity'}</dt><dd><code>{snapshot.task.origin.identity}</code></dd></div>
+            <div><dt>{locale === 'en' ? 'Source snapshot' : '源快照'}</dt><dd><code>{snapshot.task.origin.sourceSnapshotHash}</code></dd></div>
+            <div><dt>{locale === 'en' ? 'Mapping' : '映射哈希'}</dt><dd><code>{snapshot.task.origin.mappingHash}</code></dd></div>
+          </dl>
+          <p className="work-item-origin-note">{locale === 'en' ? 'This immutable marker links the Work Item to the exact legacy source snapshot and mapping used to create it.' : '此不可变标记将工作项绑定到创建它时使用的旧 Workbench 源快照与映射。'}</p>
+        </section> : null}
         <WorkItemScopePanel scope={snapshot.task.scope} project={project} locale={locale} />
         <section className="work-item-detail-section">
           <div className="work-item-detail-section-heading">

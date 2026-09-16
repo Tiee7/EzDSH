@@ -401,7 +401,9 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
     if (preparation === undefined) return
     const receipt = preparation.receipts.find((candidate) => candidate.identity === identity)
     const canRetryUnknown = receipt?.status === 'unknown' && allowUnknown
-    if (receipt === undefined || (receipt.status !== 'ready' && !canRetryUnknown)) return
+    const targetStatus = report?.items.find((candidate) => candidate.identity === identity)?.targetStatus
+    const canRecoverMissing = receipt?.status === 'applied' && targetStatus === 'missing' && allowUnknown
+    if (receipt === undefined || (receipt.status !== 'ready' && !canRetryUnknown && !canRecoverMissing)) return
     setBusy('apply')
     setError(undefined)
     try {
@@ -426,7 +428,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
     } finally {
       setBusy(undefined)
     }
-  }, [locale, preparation, refreshMigrationState, refreshReport])
+  }, [locale, preparation, refreshMigrationState, refreshReport, report])
   const applyBatch = useCallback(async (): Promise<void> => {
     if (preparation === undefined) return
     const identities = preparation.receipts
@@ -528,11 +530,13 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
         <ul className="work-items-migration-list">
           {preparation.receipts.map((receipt) => {
             const item = preparation.plan.items.find((candidate) => candidate.identity.identity === receipt.identity)
-            const canApply = item?.target.kind === 'work-item' && item.target.action === 'create' && (receipt.status === 'ready' || receipt.status === 'unknown')
             const targetStatus = report?.items.find((candidate) => candidate.identity === receipt.identity)?.targetStatus
+            const canRecoverMissing = receipt.status === 'applied' && targetStatus === 'missing'
+            const canApply = item?.target.kind === 'work-item' && item.target.action === 'create'
+              && (receipt.status === 'ready' || receipt.status === 'unknown' || canRecoverMissing)
             return <li key={`${receipt.identity}:${receipt.sourceSnapshotHash}`}>
               <span><strong>{item?.source.title ?? receipt.identity}</strong><small>{receipt.status}{receipt.targetId === undefined ? '' : ` · ${receipt.targetId}`}{targetStatus === undefined ? '' : ` · target ${targetStatus}`}</small></span>
-              {canApply ? <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined} onClick={() => { void apply(receipt.identity, receipt.status === 'unknown') }}>{receipt.status === 'unknown' ? (locale === 'en' ? 'Reconcile' : '对账重试') : (locale === 'en' ? 'Apply' : '应用')}</button> : null}
+              {canApply ? <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined} onClick={() => { void apply(receipt.identity, receipt.status === 'unknown' || canRecoverMissing) }}>{canRecoverMissing ? (locale === 'en' ? 'Recover target' : '恢复缺失目标') : receipt.status === 'unknown' ? (locale === 'en' ? 'Reconcile' : '对账重试') : (locale === 'en' ? 'Apply' : '应用')}</button> : null}
             </li>
           })}
         </ul>

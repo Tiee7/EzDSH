@@ -26,7 +26,7 @@ import type {
 import type { WorkTaskCreateRequest, WorkTaskSnapshot } from '../../shared/work-items.js'
 
 export class WorkbenchMigrationServiceError extends Error {
-  readonly code: 'INVALID_REQUEST' | 'SOURCE_CHANGED' | 'PLAN_NOT_FOUND' | 'ITEM_NOT_APPLICABLE' | 'TARGET_WRITER_UNAVAILABLE'
+  readonly code: 'INVALID_REQUEST' | 'SOURCE_CHANGED' | 'PLAN_NOT_FOUND' | 'ITEM_NOT_APPLICABLE' | 'TARGET_WRITER_UNAVAILABLE' | 'TARGET_READER_UNAVAILABLE'
 
   constructor(code: WorkbenchMigrationServiceError['code'], message: string) {
     super(message)
@@ -130,7 +130,9 @@ export class WorkbenchMigrationService {
         ? undefined
         : this.targetReader === undefined
           ? 'unverified' as const
-          : await this.targetReader.getWorkItem(receipt.targetId).then((target) => target === undefined ? 'missing' as const : 'present' as const).catch(() => 'unverified' as const)
+          : await this.targetReader.getWorkItem(receipt.targetId)
+            .then((target) => target === undefined ? 'missing' as const : migrationTargetStatus(target, plan, item))
+            .catch(() => 'unverified' as const)
       return {
         identity: item.identity.identity,
         sourceKey: item.identity.sourceKey,
@@ -167,6 +169,22 @@ export class WorkbenchMigrationService {
     if (current.sourceId !== plan.sourceId || current.sourceHash !== plan.sourceHash
       || currentPlan.mappingHash !== plan.mappingHash || currentItem?.identity.sourceFingerprint !== item.identity.sourceFingerprint) {
       throw new WorkbenchMigrationServiceError('SOURCE_CHANGED', '旧 Workbench 源数据已变化，请重新预览并保存确认计划')
+    }
+    if (request.allowUnknown === true && this.targetReader !== undefined) {
+      const existing = (await this.store.stateSnapshot()).receipts.find((receipt) => receipt.identity === item.identity.identity
+        && receipt.sourceSnapshotHash === plan.sourceHash && receipt.mappingHash === plan.mappingHash)
+      if (existing?.status === 'applied' && existing.targetId !== undefined) {
+        let target: WorkTaskSnapshot | undefined
+        try {
+          target = await this.targetReader.getWorkItem(existing.targetId)
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error)
+          throw new WorkbenchMigrationServiceError('TARGET_READER_UNAVAILABLE', `无法核对迁移目标 ${existing.targetId}: ${detail}`)
+        }
+        if (target === undefined) {
+          await this.store.markTargetMissing(item.identity.identity, plan.sourceHash, plan.mappingHash)
+        }
+      }
     }
     const claim = await this.store.beginApply(item.identity.identity, plan.sourceHash, plan.mappingHash, request.allowUnknown === true)
     const begun = claim.receipt
@@ -333,11 +351,37 @@ function buildCreateRequest(plan: WorkbenchMigrationPlan, item: WorkbenchMigrati
     title,
     goal,
     acceptance,
+    origin: {
+      kind: 'workbench-migration',
+      sourceType: 'ezdsh-workbench-v1',
+      sourceId: plan.sourceId,
+      sourceSnapshotHash: plan.sourceHash,
+      mappingHash: plan.mappingHash,
+      identity: item.identity.identity,
+      sourceFingerprint: item.identity.sourceFingerprint,
+    },
     scope: {
       ...(projectId === undefined ? {} : { projectId }),
       resourceRefs: [...source.fileReferences],
     },
   }
+}
+
+function migrationTargetStatus(
+  target: WorkTaskSnapshot,
+  plan: WorkbenchMigrationPlan,
+  item: WorkbenchMigrationPlanItem,
+): 'present' | 'unverified' {
+  const origin = target.task.origin
+  if (origin?.kind !== 'workbench-migration') return 'unverified'
+  return origin.sourceType === 'ezdsh-workbench-v1'
+    && origin.sourceId === plan.sourceId
+    && origin.sourceSnapshotHash === plan.sourceHash
+    && origin.mappingHash === plan.mappingHash
+    && origin.identity === item.identity.identity
+    && origin.sourceFingerprint === item.identity.sourceFingerprint
+    ? 'present'
+    : 'unverified'
 }
 
 function buildPlan(preview: WorkbenchImportPreview): WorkbenchMigrationPlan {

@@ -238,6 +238,33 @@ export class WorkbenchMigrationStore {
     })
   }
 
+  /** Mark a previously applied target as missing after an explicit Main-side lookup. */
+  async markTargetMissing(identity: string, sourceSnapshotHash: string, mappingHash: string): Promise<WorkbenchMigrationReceipt> {
+    return this.mutate(async () => {
+      const receiptKey = receiptLookupKey(this.state, identity, sourceSnapshotHash, mappingHash)
+      const existing = this.state.receipts[receiptKey]
+      if (existing === undefined) {
+        throw new WorkbenchMigrationStoreConflictError('RECEIPT_NOT_FOUND', `Migration receipt ${identity} was not found`)
+      }
+      if (existing.status === 'unknown') return copy(existing)
+      if (existing.status !== 'applied' || existing.targetId === undefined) {
+        throw new WorkbenchMigrationStoreConflictError('INVALID_STATUS', `Migration receipt ${identity} is ${existing.status}`)
+      }
+      const nextReceipt: WorkbenchMigrationReceipt = {
+        ...existing,
+        status: 'unknown',
+        error: {
+          code: 'TARGET_MISSING',
+          message: `Migration target ${existing.targetId} is no longer present; explicit reconciliation is required.`,
+        },
+      }
+      const next = copy(this.state)
+      next.receipts[receiptKey] = nextReceipt
+      await this.commit(next)
+      return copy(nextReceipt)
+    })
+  }
+
   async failApply(
     identity: string,
     sourceSnapshotHash: string,

@@ -1,5 +1,6 @@
 import { isWorkflowValue, type WorkflowQuestionProtocol, type WorkflowQuestionResponse } from './workflow.js'
 import type { ConversationWorkOrigin } from './conversation-work.js'
+import type { WorkbenchMigrationOrigin } from './workbench-migration.js'
 import type {
   EmployeeRunContext,
   EmployeeRunObserverState,
@@ -132,8 +133,8 @@ export interface WorkTask {
   status: WorkTaskStatus
   activeAttemptId?: string
   acceptedArtifactIds: string[]
-  /** Optional provenance for tasks explicitly converted from a conversation. */
-  origin?: ConversationWorkOrigin
+  /** Optional provenance for tasks explicitly converted from another surface. */
+  origin?: ConversationWorkOrigin | WorkbenchMigrationOrigin
   cancellation?: WorkTaskCancellation
   archivedAt?: string
   createdAt: string
@@ -302,7 +303,7 @@ export interface WorkTaskCreateRequest {
   goal: string
   acceptance: string
   scope: WorkScope
-  origin?: ConversationWorkOrigin
+  origin?: ConversationWorkOrigin | WorkbenchMigrationOrigin
 }
 
 export interface WorkTaskExecuteRequest {
@@ -713,24 +714,52 @@ function workScope(value: unknown): WorkScope {
   }
 }
 
-function conversationOrigin(value: unknown): ConversationWorkOrigin {
+function workOrigin(value: unknown): ConversationWorkOrigin | WorkbenchMigrationOrigin {
   const origin = record(value, 'origin')
-  exactFields(origin, ['kind', 'sessionId', 'throughSeq', 'snapshotHash'], 'origin')
-  if (origin.kind !== 'conversation') {
-    throw new WorkItemValidationError('INVALID_VALUE', 'origin.kind', 'origin.kind is not supported')
+  if (origin.kind === 'conversation') {
+    exactFields(origin, ['kind', 'sessionId', 'throughSeq', 'snapshotHash'], 'origin')
+    if (typeof origin.throughSeq !== 'number' || !Number.isSafeInteger(origin.throughSeq) || origin.throughSeq < -1) {
+      throw new WorkItemValidationError('INVALID_INTEGER', 'origin.throughSeq', 'origin.throughSeq must be a safe sequence number')
+    }
+    if (typeof origin.snapshotHash !== 'string' || !/^[a-f0-9]{64}$/u.test(origin.snapshotHash)) {
+      throw new WorkItemValidationError('INVALID_VALUE', 'origin.snapshotHash', 'origin.snapshotHash must be a SHA-256 hex digest')
+    }
+    return {
+      kind: 'conversation',
+      sessionId: identifierField(origin, 'sessionId', WORK_ITEM_LIMITS.id, 'origin.sessionId'),
+      throughSeq: origin.throughSeq,
+      snapshotHash: origin.snapshotHash,
+    }
   }
-  if (typeof origin.throughSeq !== 'number' || !Number.isSafeInteger(origin.throughSeq) || origin.throughSeq < -1) {
-    throw new WorkItemValidationError('INVALID_INTEGER', 'origin.throughSeq', 'origin.throughSeq must be a safe sequence number')
+  if (origin.kind === 'workbench-migration') {
+    exactFields(origin, ['kind', 'sourceType', 'sourceId', 'sourceSnapshotHash', 'mappingHash', 'identity', 'sourceFingerprint'], 'origin')
+    if (origin.sourceType !== 'ezdsh-workbench-v1') {
+      throw new WorkItemValidationError('INVALID_VALUE', 'origin.sourceType', 'origin.sourceType is not supported')
+    }
+    const hashes = {
+      sourceSnapshotHash: origin.sourceSnapshotHash,
+      mappingHash: origin.mappingHash,
+      sourceFingerprint: origin.sourceFingerprint,
+    }
+    for (const key of ['sourceSnapshotHash', 'mappingHash', 'sourceFingerprint'] as const) {
+      if (typeof hashes[key] !== 'string' || !/^[a-f0-9]{64}$/u.test(hashes[key])) {
+        throw new WorkItemValidationError('INVALID_VALUE', `origin.${key}`, `origin.${key} must be a SHA-256 hex digest`)
+      }
+    }
+    const sourceSnapshotHash = hashes.sourceSnapshotHash as string
+    const mappingHash = hashes.mappingHash as string
+    const sourceFingerprint = hashes.sourceFingerprint as string
+    return {
+      kind: 'workbench-migration',
+      sourceType: 'ezdsh-workbench-v1',
+      sourceId: identifierField(origin, 'sourceId', WORK_ITEM_LIMITS.id, 'origin.sourceId'),
+      sourceSnapshotHash,
+      mappingHash,
+      identity: identifierField(origin, 'identity', WORK_ITEM_LIMITS.id, 'origin.identity'),
+      sourceFingerprint,
+    }
   }
-  if (typeof origin.snapshotHash !== 'string' || !/^[a-f0-9]{64}$/u.test(origin.snapshotHash)) {
-    throw new WorkItemValidationError('INVALID_VALUE', 'origin.snapshotHash', 'origin.snapshotHash must be a SHA-256 hex digest')
-  }
-  return {
-    kind: 'conversation',
-    sessionId: identifierField(origin, 'sessionId', WORK_ITEM_LIMITS.id, 'origin.sessionId'),
-    throughSeq: origin.throughSeq,
-    snapshotHash: origin.snapshotHash,
-  }
+  throw new WorkItemValidationError('INVALID_VALUE', 'origin.kind', 'origin.kind is not supported')
 }
 
 function workExecutor(value: unknown): WorkExecutor {
@@ -774,7 +803,7 @@ export function validateWorkTaskCreateRequest(value: unknown): WorkTaskCreateReq
     goal: textField(request, 'goal', WORK_ITEM_LIMITS.requirementText),
     acceptance: textField(request, 'acceptance', WORK_ITEM_LIMITS.requirementText),
     scope: workScope(request.scope),
-    ...(request.origin === undefined ? {} : { origin: conversationOrigin(request.origin) }),
+    ...(request.origin === undefined ? {} : { origin: workOrigin(request.origin) }),
   }
 }
 
