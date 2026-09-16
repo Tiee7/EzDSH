@@ -1,4 +1,26 @@
 import { isWorkflowValue, type WorkflowQuestionProtocol, type WorkflowQuestionResponse } from './workflow.js'
+import type {
+  EmployeeRunContext,
+  EmployeeRunObserverState,
+  EmployeeRunSessionEvidence,
+  EmployeeRunTaskInput,
+  EmployeeRunTerminalEvidence,
+  EmployeeRunCancelRequestState,
+  EmployeeRunDispatchStage,
+  EmployeeExecutionStatus,
+} from './employee-runs.js'
+import type {
+  WorkflowApprovalDecisionReceipt,
+  WorkflowCompensationEntry,
+  WorkflowEffectReconciliationTarget,
+  WorkflowNodeRunState,
+  WorkflowQuestionAnswerReceipt,
+  WorkflowRunEvent,
+  WorkflowRunQueueState,
+  WorkflowRunStatus,
+  WorkflowValue,
+  WorkflowWaitingQuestion,
+} from './workflow.js'
 
 export type WorkExecutor =
   | { kind: 'employee'; employeeId: string; methodId?: string; methodVersion?: number }
@@ -134,6 +156,94 @@ export interface WorkTaskSnapshot {
   artifacts: WorkArtifact[]
   actions: WorkAction[]
 }
+
+/** The renderer may inspect a durable run only through this explicit, redacted projection. */
+export interface WorkTaskRunDetailRequest {
+  taskId: string
+  runId: string
+}
+
+/** Details for a direct Employee execution. The immutable employee profile is intentionally omitted. */
+export interface WorkTaskEmployeeRunDetail {
+  kind: 'employee'
+  executor: Extract<WorkExecutor, { kind: 'employee' }>
+  taskId: string
+  attemptId?: string
+  requirementVersion?: number
+  runId: string
+  commandId: string
+  requestDigest: string
+  sourceRunId?: string
+  employeeId: string
+  employeeVersion: number
+  task: EmployeeRunTaskInput
+  round?: { description?: string; roundId?: string }
+  context: EmployeeRunContext
+  projectId?: string
+  cwd: string
+  sessionId: string
+  sessionEvidence: EmployeeRunSessionEvidence
+  status: EmployeeExecutionStatus
+  dispatchStage: EmployeeRunDispatchStage
+  promptRequestId: string
+  promptAcceptedAt?: string
+  observationCursor?: number
+  observerState?: EmployeeRunObserverState
+  observationError?: string
+  terminalEvidence?: EmployeeRunTerminalEvidence
+  cancelRequestState?: EmployeeRunCancelRequestState
+  cancelRequestError?: string
+  partialOutput: string
+  output: string
+  error?: string
+  cancelReason?: string
+  createdAt: string
+  updatedAt: string
+  completedAt?: string
+  cancelRequestedAt?: string
+}
+
+/** Details for a Workflow execution, including node checkpoints and event history. */
+export interface WorkTaskWorkflowRunDetail {
+  kind: 'workflow'
+  executor: WorkExecutor
+  taskId: string
+  attemptId?: string
+  requirementVersion?: number
+  runId: string
+  commandId: string
+  sourceRunId?: string
+  workflowId: string
+  workflowRevision: number
+  environmentId?: string
+  releaseId?: string
+  traceId?: string
+  idempotencyKey?: string
+  parentRunId?: string
+  workflowAncestry?: string[]
+  origin?: { kind: 'top-level' } | { kind: 'child'; parentRunId: string }
+  status: WorkflowRunStatus
+  queue?: Omit<WorkflowRunQueueState, 'lease'>
+  input: WorkflowValue
+  output?: WorkflowValue
+  nodeStates: WorkflowNodeRunState[]
+  events: WorkflowRunEvent[]
+  approvalDecisionReceipts?: WorkflowApprovalDecisionReceipt[]
+  questionAnswerReceipts?: WorkflowQuestionAnswerReceipt[]
+  compensationStack?: WorkflowCompensationEntry[]
+  compensationBlocker?: string
+  effectReconciliationTargets?: WorkflowEffectReconciliationTarget[]
+  allowShellFile: boolean
+  allowCode?: boolean
+  debug?: boolean
+  waitingApprovalNodeId?: string
+  waitingQuestionNodeId?: string
+  waitingQuestion?: WorkflowWaitingQuestion
+  startedAt?: string
+  completedAt?: string
+}
+
+export type WorkTaskRunDetail = WorkTaskEmployeeRunDetail | WorkTaskWorkflowRunDetail
 
 export interface WorkTaskCreateRequest {
   requestId: string
@@ -284,11 +394,14 @@ export interface WorkActionAnswerRequest {
 export interface WorkItemsBridge {
   list(query?: WorkItemQuery): Promise<WorkTaskSnapshot[]>
   get(taskId: string): Promise<WorkTaskSnapshot | undefined>
+  getRunDetail(taskId: string, runId: string): Promise<WorkTaskRunDetail | undefined>
   create(request: WorkTaskCreateRequest): Promise<WorkTaskSnapshot>
   execute(request: WorkTaskExecuteRequest): Promise<WorkTaskSnapshot>
   revise(request: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot>
   cancelTask(request: WorkTaskCancelRequest): Promise<WorkTaskSnapshot>
   archive(request: WorkTaskArchiveRequest): Promise<WorkTaskSnapshot>
+  /** Main implementation is available now; renderer bridge remains optional until its UI entry is integrated. */
+  previewDelete?(request: WorkTaskDeletePreviewRequest): Promise<WorkTaskDeletionPreview>
   acceptArtifact(request: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot>
   openArtifact(taskId: string, artifactId: string): Promise<void>
   controlRun(request: WorkRunControlRequest): Promise<WorkTaskSnapshot>
@@ -552,6 +665,15 @@ export function validateWorkTaskCancelRequest(value: unknown): WorkTaskCancelReq
     requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
     taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
     expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
+  }
+}
+
+export function validateWorkTaskRunDetailRequest(value: unknown): WorkTaskRunDetailRequest {
+  const request = record(value, '$')
+  exactFields(request, ['taskId', 'runId'])
+  return {
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    runId: identifierField(request, 'runId', WORK_ITEM_LIMITS.id),
   }
 }
 

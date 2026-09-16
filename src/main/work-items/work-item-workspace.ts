@@ -17,6 +17,7 @@ import {
 } from './work-item-ipc.js'
 import { WorkItemService } from './work-item-service.js'
 import { WorkItemStore } from './work-item-store.js'
+import { WorkItemRunDetailsService } from './work-item-run-details-service.js'
 import { WorkflowTaskBridge, type WorkflowTaskRunPort } from './workflow-task-bridge.js'
 
 export interface WorkItemWorkspaceEmployeeRunPort {
@@ -72,6 +73,11 @@ export function initializeWorkItemWorkspaceScope(
         },
       )
       const workflowBridge = new WorkflowTaskBridge(options.workflowRuns)
+      const runDetails = new WorkItemRunDetailsService(
+        workItems,
+        { getWorkItemRun: (runId) => options.employeeRuns.getWorkItemRun(runId) },
+        workflowBridge,
+      )
       const execution = new WorkItemExecutionService({
         workItems,
         employeeRuns: {
@@ -106,6 +112,7 @@ export function initializeWorkItemWorkspaceScope(
       })
       return {
         workItems,
+        runDetails,
         execution,
         actions: workspaceActionService,
         cancellation: workspaceCancellationService,

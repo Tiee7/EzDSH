@@ -12,6 +12,7 @@ import {
   validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
+  validateWorkTaskRunDetailRequest,
   validateWorkTaskRevisionRequest,
   validateWorkRunControlRequest,
   type WorkItemQuery,
@@ -22,6 +23,7 @@ import {
 export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:list',
   'work-items:get',
+  'work-items:get-run-detail',
   'work-items:create',
   'work-items:execute',
   'work-items:revise',
@@ -36,6 +38,7 @@ export const WORK_ITEM_IPC_CHANNELS = [
 export const WORK_ITEM_CHANGED_CHANNEL = 'work-items:changed'
 
 type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'acceptArtifact' | 'openArtifact'>
+type WorkItemRunDetailsService = Pick<WorkItemsBridge, 'getRunDetail'>
 type WorkItemExecutionService = Pick<WorkItemsBridge, 'execute'>
 type WorkItemCancellationService = Pick<WorkItemsBridge, 'cancelTask'>
 type WorkItemActionService = Pick<WorkItemsBridge, 'controlRun' | 'answerAction'>
@@ -43,6 +46,7 @@ export type WorkItemExecutionOperation = 'execute' | 'control-run' | 'answer-act
 
 export interface WorkItemIpcServices {
   workItems: WorkItemReadService
+  runDetails?: WorkItemRunDetailsService
   execution: WorkItemExecutionService
   cancellation: WorkItemCancellationService
   actions: WorkItemActionService
@@ -180,6 +184,11 @@ export function registerWorkItemIpc(
 
   register('work-items:list', (services, input) => services.workItems.list(validateWorkItemQuery(input)))
   register('work-items:get', (services, input) => services.workItems.get(validateTaskId(input)))
+  register('work-items:get-run-detail', (services, input) => {
+    if (services.runDetails === undefined) throw new Error('Work item run details are unavailable')
+    const request = validateWorkTaskRunDetailRequest(input)
+    return services.runDetails.getRunDetail(request.taskId, request.runId)
+  })
   register('work-items:create', async (services, input) => {
     const request = validateWorkTaskCreateRequest(input)
     const scope = services.authorizeScope === undefined
