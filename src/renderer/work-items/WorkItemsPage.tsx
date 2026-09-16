@@ -417,7 +417,11 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       })
       setPreparation((current) => current === undefined ? current : {
         ...current,
-        message: locale === 'en' ? 'The selected Work Item was created and linked to this migration receipt.' : '已创建所选工作项，并将实际任务 ID 写入迁移回执。',
+        message: result.receipt.status === 'applying'
+          ? (locale === 'en' ? 'Another Apply is already in progress for this identity; no duplicate target was created.' : '该 identity 已有 Apply 正在进行；本次没有重复创建目标。')
+          : result.receipt.status === 'applied'
+            ? (locale === 'en' ? 'The selected Work Item is linked to this migration receipt.' : '所选工作项已与迁移回执关联。')
+            : (locale === 'en' ? `Migration status: ${result.receipt.status}.` : `迁移状态：${result.receipt.status}。`),
         receipts: current.receipts.map((candidate) => candidate.identity === identity ? result.receipt : candidate),
       })
       await refreshMigrationState()
