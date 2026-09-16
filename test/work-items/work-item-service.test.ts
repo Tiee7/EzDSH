@@ -65,4 +65,173 @@ describe('WorkItemService', () => {
       .rejects.toBeInstanceOf(WorkItemStoreConflictError)
     expect(await subject.list({ workflowId: 'wf-1' })).toHaveLength(1)
   })
+
+  it('archives and restores durably with exact request replay and default filtering', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ezdsh-work-item-archive-'))
+    directories.push(directory)
+    const firstStore = new WorkItemStore(directory)
+    const firstService = new WorkItemService(firstStore, async () => true)
+    await firstService.initialize()
+    const created = await firstService.create({
+      requestId: 'create-archive', title: 'Task', goal: 'Goal', acceptance: 'Done', scope: { resourceRefs: [] }
+    })
+    const dispatch = await firstService.recordDispatchIntent({
+      requestId: 'dispatch-archive',
+      taskId: created.task.id,
+      expectedRevision: 1,
+      executor: { kind: 'workflow', workflowId: 'wf-1' },
+      mode: 'initial',
+      input: null,
+    })
+    await firstService.linkDispatch(dispatch.requestId, dispatch.commandId, {
+      runId: 'run-archive',
+      status: 'completed',
+      rawStatus: 'completed',
+      capabilities: { cancel: false, resume: false, append: false },
+    })
+    await firstStore.beginArtifactWrite({
+      requestId: 'write-archive',
+      artifactId: 'artifact-archive',
+      taskId: created.task.id,
+      attemptId: dispatch.attemptId,
+      runId: 'run-archive',
+      requirementVersion: 1,
+      contentVersion: 1,
+      contentHash: 'a'.repeat(64),
+      kind: 'text',
+      name: 'artifact.txt',
+      storedPath: '/tmp/artifact.txt',
+    })
+    const written = await firstStore.completeArtifactWrite('write-archive', 'artifact-archive', async () => true)
+    const accepted = await firstService.acceptArtifact({
+      requestId: 'accept-archive',
+      taskId: created.task.id,
+      expectedRevision: written.snapshot.task.revision,
+      artifactId: 'artifact-archive',
+      contentVersion: 1,
+      requirementVersion: 1,
+    })
+
+    const legacyService = new WorkItemService(new WorkItemStore(directory))
+    await legacyService.initialize()
+    expect(await legacyService.list()).toEqual([accepted])
+    const archiveRequest = {
+      requestId: 'archive-1', taskId: created.task.id, expectedRevision: accepted.task.revision, archived: true,
+    }
+
+    await expect(legacyService.archive({
+      ...archiveRequest,
+      requestId: 'archive-stale',
+      expectedRevision: accepted.task.revision - 1,
+    })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
+    const archived = await legacyService.archive(archiveRequest)
+    expect(archived.task).toMatchObject({
+      id: created.task.id,
+      revision: accepted.task.revision + 1,
+      status: accepted.task.status,
+      archivedAt: expect.any(String),
+      acceptedArtifactIds: accepted.task.acceptedArtifactIds,
+      requirements: accepted.task.requirements,
+    })
+    expect(archived.task.updatedAt).toBe(archived.task.archivedAt)
+    expect(archived.attempts).toEqual(accepted.attempts)
+    expect(archived.runs).toEqual(accepted.runs)
+    expect(archived.artifacts).toEqual(accepted.artifacts)
+    expect(await legacyService.list()).toEqual([])
+    expect(await legacyService.list({ includeArchived: true })).toEqual([archived])
+
+    const restoredService = new WorkItemService(new WorkItemStore(directory))
+    await restoredService.initialize()
+    expect(await restoredService.archive(archiveRequest)).toEqual(archived)
+    await expect(restoredService.archive({ ...archiveRequest, archived: false }))
+      .rejects.toMatchObject({ code: 'REQUEST_ID_CONFLICT' })
+
+    const restored = await restoredService.archive({
+      requestId: 'restore-1', taskId: created.task.id, expectedRevision: archived.task.revision, archived: false,
+    })
+    expect(restored.task.archivedAt).toBeUndefined()
+    expect(restored.task).toMatchObject({
+      id: created.task.id,
+      revision: archived.task.revision + 1,
+      status: accepted.task.status,
+      acceptedArtifactIds: accepted.task.acceptedArtifactIds,
+      requirements: accepted.task.requirements,
+    })
+    expect(restored.task.updatedAt).toEqual(expect.any(String))
+    expect(restored.attempts).toEqual(accepted.attempts)
+    expect(restored.runs).toEqual(accepted.runs)
+    expect(restored.artifacts).toEqual(accepted.artifacts)
+    expect(await restoredService.archive(archiveRequest)).toEqual(archived)
+    expect(await restoredService.list()).toEqual([restored])
+  })
+
+  it.each(['queued', 'running', 'waiting', 'paused', 'cancelling'] as const)(
+    'rejects archive while a %s run exists',
+    async (status) => {
+      const subject = await service()
+      const created = await subject.create({
+        requestId: `create-${status}`, title: 'Task', goal: 'Goal', acceptance: 'Done', scope: { resourceRefs: [] }
+      })
+      const dispatch = await subject.recordDispatchIntent({
+        requestId: `dispatch-${status}`,
+        taskId: created.task.id,
+        expectedRevision: 1,
+        executor: { kind: 'workflow', workflowId: 'wf-1' },
+        mode: 'initial',
+        input: null,
+      })
+      if (status !== 'queued') {
+        await subject.linkDispatch(dispatch.requestId, dispatch.commandId, {
+          runId: `run-${status}`,
+          status,
+          rawStatus: status,
+          capabilities: { cancel: true, resume: true, append: true },
+        })
+      }
+
+      await expect(subject.archive({
+        requestId: `archive-${status}`,
+        taskId: created.task.id,
+        expectedRevision: 2,
+        archived: true,
+      })).rejects.toMatchObject({ code: 'ARCHIVE_CONFLICT' })
+    }
+  )
+
+  it('rejects archive while an open action exists even after its run completes', async () => {
+    const subject = await service()
+    const created = await subject.create({
+      requestId: 'create-open-action', title: 'Task', goal: 'Goal', acceptance: 'Done', scope: { resourceRefs: [] }
+    })
+    const dispatch = await subject.recordDispatchIntent({
+      requestId: 'dispatch-open-action',
+      taskId: created.task.id,
+      expectedRevision: 1,
+      executor: { kind: 'workflow', workflowId: 'wf-1' },
+      mode: 'initial',
+      input: null,
+    })
+    await subject.linkDispatch(dispatch.requestId, dispatch.commandId, {
+      runId: 'run-open-action',
+      status: 'completed',
+      rawStatus: 'completed',
+      capabilities: { cancel: false, resume: false, append: false },
+    })
+    const withAction = await subject.syncWorkflowActions(created.task.id, 'run-open-action', [{
+      id: 'action-1',
+      taskId: created.task.id,
+      runId: 'run-open-action',
+      sourceEventId: 'event-1',
+      requirementVersion: 1,
+      kind: 'question',
+      status: 'open',
+    }])
+
+    await expect(subject.archive({
+      requestId: 'archive-open-action',
+      taskId: created.task.id,
+      expectedRevision: withAction.task.revision,
+      archived: true,
+    })).rejects.toMatchObject({ code: 'ARCHIVE_CONFLICT' })
+  })
 })

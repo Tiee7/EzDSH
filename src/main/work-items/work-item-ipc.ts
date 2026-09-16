@@ -8,6 +8,7 @@ import {
   WorkItemValidationError,
   validateWorkActionAnswerRequest,
   validateWorkArtifactAcceptRequest,
+  validateWorkTaskArchiveRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
@@ -23,6 +24,7 @@ export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:create',
   'work-items:execute',
   'work-items:revise',
+  'work-items:archive',
   'work-items:accept-artifact',
   'work-items:open-artifact',
   'work-items:control-run',
@@ -31,7 +33,7 @@ export const WORK_ITEM_IPC_CHANNELS = [
 
 export const WORK_ITEM_CHANGED_CHANNEL = 'work-items:changed'
 
-type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'acceptArtifact' | 'openArtifact'>
+type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'acceptArtifact' | 'openArtifact'>
 type WorkItemExecutionService = Pick<WorkItemsBridge, 'execute'>
 type WorkItemActionService = Pick<WorkItemsBridge, 'controlRun' | 'answerAction'>
 export type WorkItemExecutionOperation = 'execute' | 'control-run' | 'answer-action'
@@ -197,6 +199,7 @@ export function registerWorkItemIpc(
     return services.execution.execute(request)
   })
   register('work-items:revise', (services, input) => services.workItems.revise(validateWorkTaskRevisionRequest(input)))
+  register('work-items:archive', (services, input) => services.workItems.archive(validateWorkTaskArchiveRequest(input)))
   register('work-items:accept-artifact', (services, input) => services.workItems.acceptArtifact(validateWorkArtifactAcceptRequest(input)))
   register('work-items:open-artifact', (services, input) => {
     const request = validateArtifactOpenRequest(input)
@@ -257,7 +260,7 @@ function validateWorkItemQuery(value: unknown): WorkItemQuery {
   }
   const query = value as Record<string, unknown>
   for (const field of Object.keys(query)) {
-    if (!['projectId', 'employeeId', 'workflowId'].includes(field)) {
+    if (!['projectId', 'employeeId', 'workflowId', 'includeArchived'].includes(field)) {
       throw new WorkItemValidationError('UNKNOWN_FIELD', field, `${field} is not allowed`)
     }
   }
@@ -265,7 +268,15 @@ function validateWorkItemQuery(value: unknown): WorkItemQuery {
     ...(query.projectId === undefined ? {} : { projectId: validateIdentifier(query.projectId, 'projectId') }),
     ...(query.employeeId === undefined ? {} : { employeeId: validateIdentifier(query.employeeId, 'employeeId') }),
     ...(query.workflowId === undefined ? {} : { workflowId: validateIdentifier(query.workflowId, 'workflowId') }),
+    ...(query.includeArchived === undefined ? {} : { includeArchived: validateBoolean(query.includeArchived, 'includeArchived') }),
   }
+}
+
+function validateBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new WorkItemValidationError('INVALID_TYPE', path, `${path} must be a boolean`)
+  }
+  return value
 }
 
 function validateTaskId(value: unknown): string {

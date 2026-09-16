@@ -130,12 +130,15 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       'work-items:create',
       'work-items:execute',
       'work-items:revise',
+      'work-items:archive',
       'work-items:accept-artifact',
       'work-items:open-artifact',
       'work-items:control-run',
       'work-items:answer-action',
     ])
     await expect(handlers.get('work-items:list')!({}, { projectId: 'project-1' }))
+      .resolves.toEqual({ ok: true, data: [task] })
+    await expect(handlers.get('work-items:list')!({}, { projectId: 'project-1', includeArchived: true }))
       .resolves.toEqual({ ok: true, data: [task] })
     await expect(handlers.get('work-items:get')!({}, task.task.id))
       .resolves.toEqual({ ok: true, data: task })
@@ -154,7 +157,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     const handlers = new Map<string, (event: unknown, request?: unknown) => Promise<any>>()
     const workItems = {
       list: vi.fn(async () => []), get: vi.fn(async () => undefined), create: vi.fn(),
-      revise: vi.fn(), acceptArtifact: vi.fn(), openArtifact: vi.fn(),
+      revise: vi.fn(), archive: vi.fn(), acceptArtifact: vi.fn(), openArtifact: vi.fn(),
     }
     const execution = { execute: vi.fn() }
     const actions = { controlRun: vi.fn(), answerAction: vi.fn() }
@@ -167,6 +170,10 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     expect(unknownQuery).toMatchObject({ ok: false, error: { code: 'UNKNOWN_FIELD' } })
     expect(workItems.list).not.toHaveBeenCalled()
 
+    const invalidArchiveQuery = await handlers.get('work-items:list')!({}, { includeArchived: 'yes' })
+    expect(invalidArchiveQuery).toMatchObject({ ok: false, error: { code: 'INVALID_TYPE' } })
+    expect(workItems.list).not.toHaveBeenCalled()
+
     const invalidGet = await handlers.get('work-items:get')!({}, '   ')
     expect(invalidGet).toMatchObject({ ok: false, error: { code: 'EMPTY_STRING' } })
     expect(workItems.get).not.toHaveBeenCalled()
@@ -177,6 +184,12 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     })
     expect(unknownCreate).toMatchObject({ ok: false, error: { code: 'UNKNOWN_FIELD' } })
     expect(workItems.create).not.toHaveBeenCalled()
+
+    const invalidArchive = await handlers.get('work-items:archive')!({}, {
+      requestId: 'archive', taskId: 'task-1', expectedRevision: 1, archived: 'yes',
+    })
+    expect(invalidArchive).toMatchObject({ ok: false, error: { code: 'INVALID_TYPE' } })
+    expect(workItems.archive).not.toHaveBeenCalled()
 
     const invalidOpen = await handlers.get('work-items:open-artifact')!({}, { taskId: 'task-1', artifactId: 'artifact-1', storedPath: '/tmp/private' })
     expect(invalidOpen).toMatchObject({ ok: false, error: { code: 'UNKNOWN_FIELD' } })
@@ -198,7 +211,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     const snapshot = { task: { id: 'task-1' } } as WorkTaskSnapshot
     const workItems = {
       list: vi.fn(), get: vi.fn(), create: vi.fn(async () => snapshot), revise: vi.fn(async () => snapshot),
-      acceptArtifact: vi.fn(async () => snapshot), openArtifact: vi.fn(async () => undefined),
+      archive: vi.fn(async () => snapshot), acceptArtifact: vi.fn(async () => snapshot), openArtifact: vi.fn(async () => undefined),
     }
     const execution = { execute: vi.fn(async () => snapshot) }
     const actions = { controlRun: vi.fn(async () => snapshot), answerAction: vi.fn(async () => snapshot) }
@@ -211,6 +224,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       create: { requestId: 'create', title: ' Task ', goal: ' Goal ', acceptance: ' Done ', scope: { resourceRefs: [] } },
       execute: { requestId: 'execute', taskId: 'task-1', expectedRevision: 1, executor: { kind: 'workflow' as const, workflowId: 'workflow-1' }, mode: 'initial' as const, input: null },
       revise: { requestId: 'revise', taskId: 'task-1', expectedRevision: 1, goal: ' New ', acceptance: ' Check ' },
+      archive: { requestId: 'archive', taskId: 'task-1', expectedRevision: 1, archived: true },
       accept: { requestId: 'accept', taskId: 'task-1', expectedRevision: 1, artifactId: 'artifact-1', contentVersion: 1, requirementVersion: 1 },
       open: { taskId: 'task-1', artifactId: 'artifact-1' },
       control: { requestId: 'control', taskId: 'task-1', runId: 'run-1', expectedRevision: 1, action: 'cancel' as const },
@@ -220,6 +234,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     await handlers.get('work-items:create')!({}, requests.create)
     await handlers.get('work-items:execute')!({}, requests.execute)
     await handlers.get('work-items:revise')!({}, requests.revise)
+    await handlers.get('work-items:archive')!({}, requests.archive)
     await handlers.get('work-items:accept-artifact')!({}, requests.accept)
     await handlers.get('work-items:open-artifact')!({}, requests.open)
     await handlers.get('work-items:control-run')!({}, requests.control)
@@ -228,6 +243,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     expect(workItems.create).toHaveBeenCalledWith({ ...requests.create, title: 'Task', goal: 'Goal', acceptance: 'Done' })
     expect(execution.execute).toHaveBeenCalledWith(requests.execute)
     expect(workItems.revise).toHaveBeenCalledWith({ ...requests.revise, goal: 'New', acceptance: 'Check' })
+    expect(workItems.archive).toHaveBeenCalledWith(requests.archive)
     expect(workItems.acceptArtifact).toHaveBeenCalledWith(requests.accept)
     expect(workItems.openArtifact).toHaveBeenCalledWith('task-1', 'artifact-1')
     expect(actions.controlRun).toHaveBeenCalledWith(requests.control)
@@ -437,6 +453,8 @@ describe('WorkItem preload bridge', () => {
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:execute', request)
     await bridge.workItems.revise(request)
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:revise', request)
+    await bridge.workItems.archive(request)
+    expect(electron.invoke).toHaveBeenLastCalledWith('work-items:archive', request)
     await bridge.workItems.acceptArtifact(request)
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:accept-artifact', request)
     await bridge.workItems.openArtifact('task-1', 'artifact-1')

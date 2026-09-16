@@ -7,6 +7,7 @@ import type {
   WorkTaskSnapshot,
 } from '../../shared/work-items.js'
 import type { AppCopy } from '../../shared/locale.js'
+import { employeeDisplayLabel, type EmployeeSnapshot } from '../../shared/employees.js'
 
 /**
  * Renderer-only helpers for the Work Items surface.  They deliberately retain
@@ -17,9 +18,9 @@ export function currentRequirement(snapshot: WorkTaskSnapshot): WorkRequirement 
   return snapshot.task.requirements.find((requirement) => requirement.version === snapshot.task.currentRequirementVersion)
 }
 
-export function executorLabel(copy: AppCopy, executor: WorkAttempt['responsibility'] | WorkRunRef['executor']): string {
+export function executorLabel(copy: AppCopy, executor: WorkAttempt['responsibility'] | WorkRunRef['executor'], employees?: ReadonlyMap<string, Pick<EmployeeSnapshot, 'name' | 'displayName' | 'role'>>): string {
   return executor.kind === 'employee'
-    ? copy.workItemsExecutorEmployee(executor.employeeId)
+    ? copy.workItemsExecutorEmployee(employees?.get(executor.employeeId) === undefined ? executor.employeeId : employeeDisplayLabel(employees.get(executor.employeeId)!))
     : copy.workItemsExecutorWorkflow(executor.workflowId, executor.workflowRevision)
 }
 

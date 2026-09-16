@@ -1,0 +1,121 @@
+.work-item-attention-view {
+  display: grid;
+  gap: 14px;
+}
+
+.work-item-attention-group,
+.work-item-action-section {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-color, rgba(127, 127, 127, 0.25));
+  border-radius: 12px;
+}
+
+.work-item-attention-heading,
+.work-item-action-list header,
+.work-item-run-control-list > li,
+.work-item-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.work-item-attention-heading {
+  justify-content: space-between;
+}
+
+.work-item-attention-heading h2,
+.work-item-action-section h3 {
+  margin: 0;
+}
+
+.work-item-attention-heading span {
+  min-width: 2em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-align: center;
+  background: rgba(127, 127, 127, 0.14);
+}
+
+.work-item-attention-list,
+.work-item-action-list,
+.work-item-run-control-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.work-item-attention-task {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  padding: 10px;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  color: inherit;
+  background: rgba(127, 127, 127, 0.08);
+  cursor: pointer;
+}
+
+.work-item-attention-task:hover,
+.work-item-attention-task-selected {
+  outline: 1px solid color-mix(in srgb, var(--ezdsh-brand) 42%, var(--ezdsh-panel-border));
+  background: var(--ezdsh-active-background);
+}
+
+.work-item-attention-task span,
+.work-item-attention-task small {
+  color: var(--ezdsh-text-muted);
+  font-size: 11px;
+}
+
+.work-item-attention-task code,
+.work-item-action-list code {
+  overflow-wrap: anywhere;
+  color: inherit;
+  opacity: 0.66;
+}
+
+.work-item-attention-empty {
+  margin: 12px 0 0;
+  opacity: 0.66;
+}
+
+.work-item-action-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.work-item-action-list > li,
+.work-item-run-control-list > li {
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.work-item-action-list header {
+  justify-content: space-between;
+}
+
+.work-item-run-control-list > li {
+  justify-content: space-between;
+}
+
+.work-item-run-control-list > li > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.work-item-run-control-list span {
+  overflow-wrap: anywhere;
+  opacity: 0.7;
+}
+
+.work-item-action-error {
+  margin: 0;
+  color: var(--danger-color, #c43d3d);
+}

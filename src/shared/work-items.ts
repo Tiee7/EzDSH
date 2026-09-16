@@ -39,6 +39,7 @@ export interface WorkTask {
   status: WorkTaskStatus
   activeAttemptId?: string
   acceptedArtifactIds: string[]
+  archivedAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -121,6 +122,7 @@ export interface WorkItemQuery {
   projectId?: string
   employeeId?: string
   workflowId?: string
+  includeArchived?: boolean
 }
 
 export interface WorkTaskRevisionRequest {
@@ -129,6 +131,13 @@ export interface WorkTaskRevisionRequest {
   expectedRevision: number
   goal: string
   acceptance: string
+}
+
+export interface WorkTaskArchiveRequest {
+  requestId: string
+  taskId: string
+  expectedRevision: number
+  archived: boolean
 }
 
 export interface WorkArtifactAcceptRequest {
@@ -163,6 +172,7 @@ export interface WorkItemsBridge {
   create(request: WorkTaskCreateRequest): Promise<WorkTaskSnapshot>
   execute(request: WorkTaskExecuteRequest): Promise<WorkTaskSnapshot>
   revise(request: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot>
+  archive(request: WorkTaskArchiveRequest): Promise<WorkTaskSnapshot>
   acceptArtifact(request: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot>
   openArtifact(taskId: string, artifactId: string): Promise<void>
   controlRun(request: WorkRunControlRequest): Promise<WorkTaskSnapshot>
@@ -389,6 +399,23 @@ export function validateWorkTaskRevisionRequest(value: unknown): WorkTaskRevisio
     expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
     goal: textField(request, 'goal', WORK_ITEM_LIMITS.requirementText),
     acceptance: textField(request, 'acceptance', WORK_ITEM_LIMITS.requirementText),
+  }
+}
+
+export function validateWorkTaskArchiveRequest(value: unknown): WorkTaskArchiveRequest {
+  const request = record(value, '$')
+  exactFields(request, ['requestId', 'taskId', 'expectedRevision', 'archived'])
+  if (!('archived' in request)) {
+    throw new WorkItemValidationError('MISSING_FIELD', 'archived', 'archived is required')
+  }
+  if (typeof request.archived !== 'boolean') {
+    throw new WorkItemValidationError('INVALID_TYPE', 'archived', 'archived must be a boolean')
+  }
+  return {
+    requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
+    archived: request.archived,
   }
 }
 

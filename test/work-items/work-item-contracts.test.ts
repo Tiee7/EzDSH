@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   WorkItemValidationError,
   canAcceptWorkArtifact,
+  validateWorkTaskArchiveRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest
 } from '../../src/shared/work-items'
@@ -124,6 +125,37 @@ describe('validateWorkTaskCreateRequest', () => {
       () => validateWorkTaskCreateRequest({ ...validRequest(), scope: { resourceRefs: [], grants: ['shell'] } }),
       'UNKNOWN_FIELD',
       'scope.grants'
+    )
+  })
+})
+
+describe('validateWorkTaskArchiveRequest', () => {
+  const validRequest = () => ({
+    requestId: 'archive-1',
+    taskId: 'task-1',
+    expectedRevision: 2,
+    archived: true,
+  })
+
+  it('normalizes identities and accepts archive and restore requests', () => {
+    expect(validateWorkTaskArchiveRequest({
+      ...validRequest(),
+      requestId: ' archive-1 ',
+      taskId: ' task-1 ',
+    })).toEqual(validRequest())
+    expect(validateWorkTaskArchiveRequest({ ...validRequest(), archived: false }).archived).toBe(false)
+  })
+
+  it('rejects non-boolean archive state and unknown fields', () => {
+    expectInvalid(
+      () => validateWorkTaskArchiveRequest({ ...validRequest(), archived: 'yes' }),
+      'INVALID_TYPE',
+      'archived'
+    )
+    expectInvalid(
+      () => validateWorkTaskArchiveRequest({ ...validRequest(), force: true }),
+      'UNKNOWN_FIELD',
+      'force'
     )
   })
 })

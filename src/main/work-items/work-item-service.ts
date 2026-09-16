@@ -2,6 +2,7 @@ import {
   validateWorkActionAnswerRequest,
   validateWorkArtifactAcceptRequest,
   validateWorkRunControlRequest,
+  validateWorkTaskArchiveRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
@@ -11,6 +12,7 @@ import {
   type WorkArtifactAcceptRequest,
   type WorkItemQuery,
   type WorkRunControlRequest,
+  type WorkTaskArchiveRequest,
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
@@ -42,6 +44,11 @@ export class WorkItemService {
 
   async revise(input: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot> {
     const receipt = await this.store.revise(validateWorkTaskRevisionRequest(input))
+    return receipt.snapshot
+  }
+
+  async archive(input: WorkTaskArchiveRequest): Promise<WorkTaskSnapshot> {
+    const receipt = await this.store.archive(validateWorkTaskArchiveRequest(input))
     return receipt.snapshot
   }
 

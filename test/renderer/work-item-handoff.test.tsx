@@ -19,9 +19,9 @@ let cleanup: (() => Promise<void>) | undefined
 afterEach(async () => { await cleanup?.(); cleanup = undefined })
 async function mount(element: ReactElement) {
   const dom = createWindow('<html><body><div id="root"></div></body></html>')
-  const keys = ['window', 'document', 'HTMLElement', 'Node', 'Event', 'MouseEvent', 'IS_REACT_ACT_ENVIRONMENT'] as const
+  const keys = ['window', 'document', 'HTMLElement', 'Node', 'Event', 'MouseEvent', 'KeyboardEvent', 'IS_REACT_ACT_ENVIRONMENT'] as const
   const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
-  Object.assign(globalThis, { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Node: dom.Node, Event: dom.Event, MouseEvent: dom.MouseEvent, IS_REACT_ACT_ENVIRONMENT: true })
+  Object.assign(globalThis, { window: dom, document: dom.document, HTMLElement: dom.HTMLElement, Node: dom.Node, Event: dom.Event, MouseEvent: dom.MouseEvent, KeyboardEvent: dom.KeyboardEvent, IS_REACT_ACT_ENVIRONMENT: true })
   const root = createRoot(dom.document.getElementById('root')!)
   cleanup = async () => { await act(async () => root.unmount()); for (const [key, descriptor] of previous) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key) } }
   await act(async () => root.render(element))
@@ -34,6 +34,27 @@ function button(dom: ReturnType<typeof createWindow>, label: string): HTMLButton
 }
 
 describe('work item handoff and acceptance UI', () => {
+  it('closes on Escape while preserving an IME composition Escape', async () => {
+    const close = vi.fn()
+    const { dom } = await mount(<WorkItemHandoffDialog snapshot={snapshot} executors={[{ label: '编辑', executor: { kind: 'employee', employeeId: 'editor' } }]} mode="handoff" onExecute={vi.fn()} onExecuted={vi.fn()} onClose={close} />)
+    const textarea = dom.document.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Simulate.compositionStart(textarea)
+      const composingEscape = new dom.Event('keydown', { bubbles: true }) as KeyboardEvent
+      Object.defineProperty(composingEscape, 'key', { value: 'Escape' })
+      Object.defineProperty(composingEscape, 'isComposing', { value: true })
+      dom.document.dispatchEvent(composingEscape)
+    })
+    expect(close).not.toHaveBeenCalled()
+    await act(async () => {
+      Simulate.compositionEnd(textarea)
+      const plainEscape = new dom.Event('keydown', { bubbles: true }) as KeyboardEvent
+      Object.defineProperty(plainEscape, 'key', { value: 'Escape' })
+      dom.document.dispatchEvent(plainEscape)
+    })
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it('dispatches an explicit new handoff on the same task with source and input, without copying prior conversation', async () => {
     const execute = vi.fn(async () => snapshot)
     const close = vi.fn()
@@ -95,6 +116,11 @@ describe('work item handoff and acceptance UI', () => {
     expect(accepted).toHaveBeenCalledWith(result)
     await render(<WorkItemDeliverables snapshot={result} onAcceptArtifact={accept} onAccepted={accepted} />)
     expect(dom.document.body.textContent).toContain('已接受')
+  })
+
+  it('uses the shared button style for opening a saved artifact version', async () => {
+    const { dom } = await mount(<WorkItemDeliverables snapshot={snapshot} onAcceptArtifact={vi.fn()} onAccepted={vi.fn()} onOpenArtifact={vi.fn()} />)
+    expect(button(dom, '查看这一版').className).toContain('work-items-button')
   })
 
   it('leaves failed acceptance unaccepted and disables older requirement artifacts', async () => {

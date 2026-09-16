@@ -7,6 +7,7 @@ import {
   validateWorkActionAnswerRequest,
   validateWorkArtifactAcceptRequest,
   validateWorkRunControlRequest,
+  validateWorkTaskArchiveRequest,
   validateWorkTaskCreateRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
@@ -17,6 +18,7 @@ import {
   type WorkItemQuery,
   type WorkRunControlRequest,
   type WorkTask,
+  type WorkTaskArchiveRequest,
   type WorkTaskCreateRequest,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
@@ -25,7 +27,7 @@ import {
 } from '../../shared/work-items.js'
 
 export class WorkItemStoreConflictError extends Error {
-  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT'
+  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'ARCHIVE_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT'
 
   constructor(
     code: WorkItemStoreConflictError['code'],
@@ -102,6 +104,14 @@ export interface WorkTaskRevisionReceipt {
   replayed: boolean
 }
 
+export interface WorkTaskArchiveReceipt {
+  requestId: string
+  digest: string
+  taskId: string
+  snapshot: WorkTaskSnapshot
+  replayed: boolean
+}
+
 export interface WorkArtifactAcceptReceipt {
   requestId: string
   digest: string
@@ -140,6 +150,7 @@ type StoredReceipt =
   | { kind: 'action-answer'; digest: string; receipt: WorkActionAnswerReceipt }
   | { kind: 'run-control'; digest: string; receipt: WorkRunControlReceipt }
   | { kind: 'revise'; digest: string; receipt: WorkTaskRevisionReceipt }
+  | { kind: 'archive'; digest: string; receipt: WorkTaskArchiveReceipt }
   | { kind: 'artifact-accept'; digest: string; receipt: WorkArtifactAcceptReceipt }
   | { kind: 'artifact-write'; digest: string; receipt: WorkArtifactWriteReceipt }
 
@@ -580,6 +591,68 @@ export class WorkItemStore {
     })
   }
 
+  async archive(input: WorkTaskArchiveRequest): Promise<WorkTaskArchiveReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkTaskArchiveRequest(input)
+      const digest = requestDigest('archive', request)
+      const replay = this.replay<WorkTaskArchiveReceipt>('archive', request.requestId, digest)
+      if (replay) return replay
+
+      const current = ownValue(this.state.tasks, request.taskId)
+      if (current === undefined) {
+        throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      }
+      if (current.task.revision !== request.expectedRevision) {
+        throw new WorkItemStoreConflictError(
+          'REVISION_CONFLICT',
+          `Expected task revision ${request.expectedRevision}, found ${current.task.revision}`
+        )
+      }
+
+      const isArchived = current.task.archivedAt !== undefined
+      const snapshot = copy(current)
+      if (isArchived !== request.archived) {
+        if (request.archived) {
+          const activeRun = snapshot.runs.find((run) =>
+            ['queued', 'running', 'waiting', 'paused', 'cancelling'].includes(run.status)
+          )
+          if (activeRun !== undefined) {
+            throw new WorkItemStoreConflictError(
+              'ARCHIVE_CONFLICT',
+              `Task ${request.taskId} has an active ${activeRun.status} run`
+            )
+          }
+          if (snapshot.actions.some((action) => action.status === 'open')) {
+            throw new WorkItemStoreConflictError(
+              'ARCHIVE_CONFLICT',
+              `Task ${request.taskId} has an open action`
+            )
+          }
+        }
+
+        const now = new Date().toISOString()
+        if (request.archived) snapshot.task.archivedAt = now
+        else delete snapshot.task.archivedAt
+        snapshot.task.revision += 1
+        snapshot.task.updatedAt = now
+      }
+
+      const receipt: WorkTaskArchiveReceipt = {
+        requestId: request.requestId,
+        digest,
+        taskId: request.taskId,
+        snapshot,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.tasks, request.taskId, snapshot)
+      setOwnValue(next.requests, request.requestId, { kind: 'archive', digest, receipt })
+      await this.commit(next)
+      if (isArchived !== request.archived) this.emit(snapshot)
+      return copy(receipt)
+    })
+  }
+
   async beginArtifactWrite(input: WorkArtifactWriteIntent): Promise<WorkArtifactWriteReceipt> {
     return this.mutate(async () => {
       const request = normalizeArtifactWriteIntent(input)
@@ -922,6 +995,7 @@ export class WorkItemStore {
   async list(query: WorkItemQuery = {}): Promise<WorkTaskSnapshot[]> {
     this.assertInitialized()
     return Object.values(this.state.tasks).filter((snapshot) => {
+      if (!query.includeArchived && snapshot.task.archivedAt !== undefined) return false
       if (query.projectId && snapshot.task.scope.projectId !== query.projectId) return false
       if (query.employeeId && !snapshot.attempts.some((attempt) =>
         attempt.responsibility.kind === 'employee' && attempt.responsibility.employeeId === query.employeeId
@@ -1192,6 +1266,7 @@ export class WorkItemStore {
     | WorkActionAnswerReceipt
     | WorkRunControlReceipt
     | WorkTaskRevisionReceipt
+    | WorkTaskArchiveReceipt
     | WorkArtifactAcceptReceipt
     | WorkArtifactWriteReceipt
   >(

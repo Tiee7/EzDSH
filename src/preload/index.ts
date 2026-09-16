@@ -147,6 +147,7 @@ const bridge: EzDSHBridge = {
     create: (request) => invoke('work-items:create', request),
     execute: (request) => invoke('work-items:execute', request),
     revise: (request) => invoke('work-items:revise', request),
+    archive: (request) => invoke('work-items:archive', request),
     acceptArtifact: (request) => invoke('work-items:accept-artifact', request),
     openArtifact: (taskId, artifactId) => invoke('work-items:open-artifact', { taskId, artifactId }),
     controlRun: (request) => invoke('work-items:control-run', request),
