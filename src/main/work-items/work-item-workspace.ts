@@ -4,6 +4,7 @@ import type { EmployeeRunEvent, EmployeeRunRecord, EmployeeRunStartReceipt, Empl
 import type { UserDataLayout } from '../../shared/state.js'
 import type { WorkTaskSnapshot } from '../../shared/work-items.js'
 import type { WorkflowRunRecord } from '../../shared/workflow.js'
+import type { ProjectContextDirectoryPort } from '../project-context/work-item-project-context-service.js'
 import { WorkActionService } from './work-action-service.js'
 import { WorkArtifactService } from './work-artifact-service.js'
 import { WorkItemCancellationService } from './work-item-cancellation-service.js'
@@ -19,6 +20,7 @@ import {
 import { WorkItemService } from './work-item-service.js'
 import { WorkItemStore } from './work-item-store.js'
 import { WorkItemRunDetailsService } from './work-item-run-details-service.js'
+import { WorkItemProjectContextService } from '../project-context/work-item-project-context-service.js'
 import { WorkflowTaskBridge, type WorkflowTaskRunPort } from './workflow-task-bridge.js'
 
 export interface WorkItemWorkspaceEmployeeRunPort {
@@ -44,6 +46,7 @@ export interface WorkItemWorkspaceOptions {
   employeeRuns: WorkItemWorkspaceEmployeeRunPort
   employeeMethods?: WorkItemWorkspaceEmployeeMethodPort
   workflowRuns: WorkItemWorkspaceWorkflowRunPort
+  projectDirectory?: ProjectContextDirectoryPort
   assertExecutionAvailable?: (operation: WorkItemExecutionOperation, request: unknown) => void
   onChanged?: (snapshot: WorkTaskSnapshot) => void
   onObserverError?: (error: unknown) => void
@@ -82,6 +85,9 @@ export function initializeWorkItemWorkspaceScope(
         { getWorkItemRun: (runId) => options.employeeRuns.getWorkItemRun(runId) },
         workflowBridge,
       )
+      const projectContext = options.projectDirectory === undefined
+        ? undefined
+        : new WorkItemProjectContextService({ directory: options.projectDirectory, workItems })
       const execution = new WorkItemExecutionService({
         workItems,
         employeeRuns: {
@@ -118,6 +124,7 @@ export function initializeWorkItemWorkspaceScope(
       return {
         workItems,
         runDetails,
+        projectContext,
         execution,
         actions: workspaceActionService,
         cancellation: workspaceCancellationService,

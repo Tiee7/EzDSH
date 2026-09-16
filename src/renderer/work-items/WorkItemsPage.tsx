@@ -21,6 +21,7 @@ import {
   type WorkItemCreateWorkflowCandidate,
 } from './WorkItemCreateDialog.js'
 import { WorkItemDetail } from './WorkItemDetail.js'
+import { WorkItemProjectContextPanel } from './WorkItemProjectContextPanel.js'
 import { WorkItemHandoffDialog, type WorkItemExecutorOption } from './WorkItemHandoffDialog.js'
 import { WorkItemProjectFilter } from './WorkItemProjectFilter.js'
 import { WorkItemRevisionDialog, type WorkItemRevisionFollowUp } from './WorkItemRevisionDialog.js'
@@ -460,6 +461,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
       </header>
 
       {error === undefined ? null : <p className="work-items-error" role="alert">{error}</p>}
+      <WorkItemProjectContextPanel locale={locale} includeArchived={showArchived} />
       <div className="work-items-layout">
         <aside className="work-items-list" aria-label={copy.tabWorkItems}>
           <WorkItemProjectFilter

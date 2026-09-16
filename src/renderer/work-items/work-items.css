@@ -10,6 +10,14 @@
 .work-items-button-quiet { border-color: var(--ezdsh-button-border); background: var(--ezdsh-panel-background); color: var(--ezdsh-button-text); }
 .work-items-button-cancel { border-color: color-mix(in srgb, var(--ezdsh-accent-red) 55%, var(--ezdsh-button-border)); background: var(--ezdsh-panel-background); color: var(--ezdsh-accent-red); }
 .work-items-error { margin: 0 0 14px; border: 1px solid color-mix(in srgb, var(--ezdsh-accent-red) 45%, var(--ezdsh-panel-border)); border-radius: 10px; padding: 10px 12px; color: var(--ezdsh-accent-red); font-size: 12px; }
+.work-item-project-context { display: grid; gap: 10px; margin: 16px 0; border: 1px solid var(--ezdsh-panel-border); border-radius: 12px; padding: 12px; background: var(--ezdsh-panel-background); }
+.work-item-project-context-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.work-item-project-context-header h2 { margin: 0; color: var(--ezdsh-text-body); font-size: 13px; }
+.work-item-project-context-warning { color: var(--ezdsh-accent-orange); font-size: 11px; }
+.work-item-project-context-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.work-item-project-context-card { display: grid; gap: 3px; min-width: 0; border: 1px solid var(--ezdsh-hairline); border-radius: 8px; padding: 9px; background: var(--ezdsh-code-background); }
+.work-item-project-context-card strong { overflow: hidden; color: var(--ezdsh-text-body); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.work-item-project-context-card small { color: var(--ezdsh-text-faint); font-size: 10px; line-height: 1.35; }
 .work-items-layout { display: grid; grid-template-columns: minmax(230px, .7fr) minmax(0, 1.6fr); align-items: start; gap: 16px; }
 .work-items-list, .work-items-detail, .work-items-empty { border: 1px solid var(--ezdsh-panel-border); border-radius: 14px; background: var(--ezdsh-panel-background); box-shadow: 0 12px 30px rgba(20, 30, 50, .04); }
 .work-items-list { display: grid; gap: 7px; min-height: 180px; padding: 10px; }

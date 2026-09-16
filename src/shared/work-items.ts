@@ -445,6 +445,8 @@ export interface WorkItemsBridge {
   list(query?: WorkItemQuery): Promise<WorkTaskSnapshot[]>
   get(taskId: string): Promise<WorkTaskSnapshot | undefined>
   getRunDetail(taskId: string, runId: string): Promise<WorkTaskRunDetail | undefined>
+  /** Optional read-only project join; unavailable during workspace startup. */
+  getProjectContext?(query?: import('./project-context.js').WorkItemProjectContextQuery): Promise<import('./project-context.js').WorkItemProjectContextSnapshot>
   create(request: WorkTaskCreateRequest): Promise<WorkTaskSnapshot>
   execute(request: WorkTaskExecuteRequest): Promise<WorkTaskSnapshot>
   revise(request: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot>

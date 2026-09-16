@@ -26,11 +26,14 @@ import {
   type WorkScope,
   type WorkTaskSnapshot,
 } from '../../shared/work-items.js'
+import { validateWorkItemProjectContextQuery } from '../../shared/project-context.js'
+import type { WorkItemProjectContextService } from '../project-context/work-item-project-context-service.js'
 
 export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:list',
   'work-items:get',
   'work-items:get-run-detail',
+  'work-items:project-context',
   'work-items:create',
   'work-items:execute',
   'work-items:revise',
@@ -46,6 +49,7 @@ export const WORK_ITEM_CHANGED_CHANNEL = 'work-items:changed'
 
 type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'acceptArtifact' | 'openArtifact'>
 type WorkItemRunDetailsService = Pick<WorkItemsBridge, 'getRunDetail'>
+type WorkItemProjectContextServicePort = Pick<WorkItemProjectContextService, 'read'>
 type WorkItemExecutionService = Pick<WorkItemsBridge, 'execute'>
 type WorkItemCancellationService = Pick<WorkItemsBridge, 'cancelTask'>
 type WorkItemActionService = Pick<WorkItemsBridge, 'controlRun' | 'answerAction'>
@@ -54,6 +58,7 @@ export type WorkItemExecutionOperation = 'execute' | 'control-run' | 'answer-act
 export interface WorkItemIpcServices {
   workItems: WorkItemReadService
   runDetails?: WorkItemRunDetailsService
+  projectContext?: WorkItemProjectContextServicePort
   execution: WorkItemExecutionService
   cancellation: WorkItemCancellationService
   actions: WorkItemActionService
@@ -294,6 +299,10 @@ export function registerWorkItemIpc(
     if (services.runDetails === undefined) throw new Error('Work item run details are unavailable')
     const request = validateWorkTaskRunDetailRequest(input)
     return services.runDetails.getRunDetail(request.taskId, request.runId)
+  })
+  register('work-items:project-context', (services, input) => {
+    if (services.projectContext === undefined) throw new Error('Project context is unavailable')
+    return services.projectContext.read(validateWorkItemProjectContextQuery(input))
   })
   register('work-items:create', async (services, input) => {
     const request = validateWorkTaskCreateRequest(input)

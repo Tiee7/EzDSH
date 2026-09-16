@@ -145,6 +145,7 @@ const bridge: EzDSHBridge = {
     list: (query) => invoke('work-items:list', query),
     get: (taskId) => invoke('work-items:get', taskId),
     getRunDetail: (taskId, runId) => invoke('work-items:get-run-detail', { taskId, runId }),
+    getProjectContext: (query) => invoke<import('../shared/project-context.js').WorkItemProjectContextSnapshot>('work-items:project-context', query),
     create: (request) => invoke('work-items:create', request),
     execute: (request) => invoke('work-items:execute', request),
     revise: (request) => invoke('work-items:revise', request),
