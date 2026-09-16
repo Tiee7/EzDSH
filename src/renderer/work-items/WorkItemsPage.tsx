@@ -452,7 +452,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       {preparation === undefined ? null : <>
         <p className="work-items-migration-result" role="status">{preparation.message} {locale === 'en' ? `${preparation.receipts.filter((receipt) => receipt.status === 'ready').length} items ready.` : `${preparation.receipts.filter((receipt) => receipt.status === 'ready').length} 项已准备。`}</p>
         {report === undefined ? null : <div className="work-items-migration-report">
-          <span>{locale === 'en' ? `Report: ${report.counts.applied} applied · ${report.counts.failed} failed · ${report.counts.unknown} unknown · ${report.counts.missing} missing` : `报告：${report.counts.applied} 已应用 · ${report.counts.failed} 失败 · ${report.counts.unknown} 未知 · ${report.counts.missing} 缺失`}</span>
+          <span>{locale === 'en' ? `Report: ${report.counts.applied} applied · ${report.counts.failed} failed · ${report.counts.unknown} unknown · ${report.items.filter((item) => item.targetStatus === 'missing').length} targets missing` : `报告：${report.counts.applied} 已应用 · ${report.counts.failed} 失败 · ${report.counts.unknown} 未知 · ${report.items.filter((item) => item.targetStatus === 'missing').length} 个目标缺失`}</span>
           <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined} onClick={() => { void refreshReport(preparation.plan) }}>{locale === 'en' ? 'Refresh report' : '刷新报告'}</button>
         </div>}
         <ul className="work-items-migration-list">

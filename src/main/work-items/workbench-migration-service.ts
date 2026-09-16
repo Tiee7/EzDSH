@@ -36,6 +36,7 @@ export class WorkbenchMigrationService {
   constructor(
     private readonly store: WorkbenchMigrationStore,
     private readonly targetWriter?: { createWorkItem(input: WorkTaskCreateRequest): Promise<WorkTaskSnapshot> },
+    private readonly targetReader?: { getWorkItem(taskId: string): Promise<WorkTaskSnapshot | undefined> },
   ) {}
 
   initialize(): Promise<void> {
@@ -118,10 +119,15 @@ export class WorkbenchMigrationService {
       .map((receipt) => [receipt.identity, receipt]))
     const statuses: Array<keyof WorkbenchMigrationReport['counts']> = ['previewed', 'ready', 'applying', 'applied', 'skipped', 'conflict', 'failed', 'unknown', 'missing']
     const counts = Object.fromEntries(statuses.map((status) => [status, 0])) as WorkbenchMigrationReport['counts']
-    const items = plan.items.map((item) => {
+    const items = await Promise.all(plan.items.map(async (item) => {
       const receipt = receipts.get(item.identity.identity)
       const status: WorkbenchMigrationReportItem['status'] = receipt?.status ?? 'missing'
       counts[status] += 1
+      const targetStatus = receipt?.targetId === undefined
+        ? undefined
+        : this.targetReader === undefined
+          ? 'unverified' as const
+          : await this.targetReader.getWorkItem(receipt.targetId).then((target) => target === undefined ? 'missing' as const : 'present' as const).catch(() => 'unverified' as const)
       return {
         identity: item.identity.identity,
         sourceKey: item.identity.sourceKey,
@@ -129,9 +135,10 @@ export class WorkbenchMigrationService {
         action: item.target.action,
         status,
         ...(receipt?.targetId === undefined ? {} : { targetId: receipt.targetId }),
+        ...(targetStatus === undefined ? {} : { targetStatus }),
         ...(receipt?.error === undefined ? {} : { error: receipt.error }),
       }
-    })
+    }))
     return { schemaVersion: 1, sourceId, sourceHash, mappingHash, generatedAt: new Date().toISOString(), counts, items }
   }
 

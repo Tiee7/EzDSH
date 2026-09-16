@@ -94,6 +94,7 @@ export interface WorkbenchMigrationReportItem {
   action: WorkbenchMigrationAction
   status: WorkbenchMigrationReceiptStatus | 'missing'
   targetId?: string
+  targetStatus?: 'present' | 'missing' | 'unverified'
   error?: { code: string; message: string }
 }
 

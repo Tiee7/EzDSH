@@ -878,6 +878,12 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
         return services.workItems.create({ ...request, scope: authorizedScope })
       })
     },
+  }, {
+    getWorkItem: async (taskId) => {
+      const scope = workItemIpcScope
+      if (scope === undefined) throw new Error('Work item workspace is not ready')
+      return scope.invoke((services) => services.workItems.get(taskId))
+    },
   })
   await workbenchMigrationService.initialize()
   startWorkDutyScheduler()
