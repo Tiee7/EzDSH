@@ -42,7 +42,53 @@ export interface WorkScope {
   projectId?: string
   cwd?: string
   resourceRefs: string[]
+  /**
+   * Typed material identities selected for this Work Item. `resourceRefs` is
+   * retained for schema-v1 compatibility and is display-only until a typed
+   * selection is explicitly authorized by Main.
+   */
+  materialRefs?: WorkMaterialRef[]
 }
+
+export type WorkMaterialKind = 'local-file' | 'project-document' | 'external-link' | 'generated-artifact'
+
+interface WorkMaterialRefBase {
+  materialId: string
+  label?: string
+}
+
+/** A durable identity, never proof that the bytes have been read or granted. */
+export type WorkMaterialRef =
+  | (WorkMaterialRefBase & { kind: 'local-file'; path: string })
+  | (WorkMaterialRefBase & { kind: 'project-document'; projectId: string; documentId: string })
+  | (WorkMaterialRefBase & { kind: 'external-link'; url: string })
+  | (WorkMaterialRefBase & { kind: 'generated-artifact'; artifactId: string; contentVersion: number })
+
+/** Explicit per-attempt selection. Omitting a material means it is not sent to an executor. */
+export interface WorkMaterialInput {
+  materialId: string
+  /** Optional optimistic identity check supplied by a stale-safe caller. */
+  expectedVersion?: string
+}
+
+/** Main-owned, redacted snapshot proving which selected material was authorized. */
+export interface WorkMaterialAuthorization {
+  materialId: string
+  kind: WorkMaterialKind
+  version: string
+  fingerprint: string
+  authorizedAt: string
+}
+
+export interface WorkMaterialAuthorizationRequest {
+  task: WorkTaskSnapshot
+  requirementVersion: number
+  inputs: WorkMaterialInput[]
+}
+
+export type WorkMaterialAuthorizer = (
+  request: WorkMaterialAuthorizationRequest,
+) => Promise<WorkMaterialAuthorization[]>
 
 export interface WorkRequirement {
   version: number
@@ -97,6 +143,8 @@ export interface WorkAttempt {
   requirementVersion: number
   reason: 'initial' | 'redo' | 'handoff' | 'requirements-changed'
   responsibility: WorkExecutor
+  /** Immutable Main authorization snapshot for this attempt, if materials were selected. */
+  materialAuthorizations?: WorkMaterialAuthorization[]
   createdAt: string
 }
 
@@ -260,6 +308,8 @@ export interface WorkTaskExecuteRequest {
   executor: WorkExecutor
   mode: 'initial' | 'continue-attempt' | 'redo' | 'handoff'
   input: unknown
+  /** Explicit material selection; legacy scope.resourceRefs are never inferred here. */
+  materialInputs?: WorkMaterialInput[]
   sourceRunId?: string
 }
 
@@ -438,7 +488,8 @@ export const WORK_ITEM_LIMITS = {
   requirementText: 10_000,
   cwd: 4_096,
   resourceRef: 2_048,
-  resourceRefs: 100
+  resourceRefs: 100,
+  materialRefs: 100
 } as const
 
 type UnknownRecord = Record<string, unknown>
@@ -493,6 +544,15 @@ function optionalIdentifierField(
   return key in value ? identifierField(value, key, maxLength, path) : undefined
 }
 
+function optionalTextField(
+  value: UnknownRecord,
+  key: string,
+  maxLength: number,
+  path: string,
+): string | undefined {
+  return key in value ? textField(value, key, maxLength, path) : undefined
+}
+
 function positiveSafeInteger(value: unknown, path: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) {
     throw new WorkItemValidationError('INVALID_INTEGER', path, `${path} must be a positive safe integer`)
@@ -500,9 +560,89 @@ function positiveSafeInteger(value: unknown, path: string): number {
   return value as number
 }
 
+function workMaterialRef(value: unknown, path: string): WorkMaterialRef {
+  const material = record(value, path)
+  if (!('kind' in material)) {
+    throw new WorkItemValidationError('MISSING_FIELD', `${path}.kind`, `${path}.kind is required`)
+  }
+  const materialId = identifierField(material, 'materialId', WORK_ITEM_LIMITS.id, `${path}.materialId`)
+  const label = optionalTextField(material, 'label', WORK_ITEM_LIMITS.title, `${path}.label`)
+  if (material.kind === 'local-file') {
+    exactFields(material, ['kind', 'materialId', 'label', 'path'], path)
+    return {
+      kind: 'local-file', materialId,
+      path: identifierField(material, 'path', WORK_ITEM_LIMITS.cwd, `${path}.path`),
+      ...(label === undefined ? {} : { label }),
+    }
+  }
+  if (material.kind === 'project-document') {
+    exactFields(material, ['kind', 'materialId', 'label', 'projectId', 'documentId'], path)
+    return {
+      kind: 'project-document', materialId,
+      projectId: identifierField(material, 'projectId', WORK_ITEM_LIMITS.id, `${path}.projectId`),
+      documentId: identifierField(material, 'documentId', WORK_ITEM_LIMITS.id, `${path}.documentId`),
+      ...(label === undefined ? {} : { label }),
+    }
+  }
+  if (material.kind === 'external-link') {
+    exactFields(material, ['kind', 'materialId', 'label', 'url'], path)
+    const url = textField(material, 'url', WORK_ITEM_LIMITS.resourceRef, `${path}.url`)
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      throw new WorkItemValidationError('INVALID_VALUE', `${path}.url`, `${path}.url must be an absolute HTTP(S) URL`)
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username !== '' || parsed.password !== '') {
+      throw new WorkItemValidationError('INVALID_VALUE', `${path}.url`, `${path}.url must be an HTTP(S) URL without embedded credentials`)
+    }
+    return { kind: 'external-link', materialId, url, ...(label === undefined ? {} : { label }) }
+  }
+  if (material.kind === 'generated-artifact') {
+    exactFields(material, ['kind', 'materialId', 'label', 'artifactId', 'contentVersion'], path)
+    return {
+      kind: 'generated-artifact', materialId,
+      artifactId: identifierField(material, 'artifactId', WORK_ITEM_LIMITS.id, `${path}.artifactId`),
+      contentVersion: positiveSafeInteger(material.contentVersion, `${path}.contentVersion`),
+      ...(label === undefined ? {} : { label }),
+    }
+  }
+  throw new WorkItemValidationError('INVALID_VALUE', `${path}.kind`, `${path}.kind is not supported`)
+}
+
+function workMaterialInputs(value: unknown): WorkMaterialInput[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new WorkItemValidationError('INVALID_TYPE', 'materialInputs', 'materialInputs must be an array')
+  }
+  if (value.length > WORK_ITEM_LIMITS.materialRefs) {
+    throw new WorkItemValidationError(
+      'COLLECTION_TOO_LARGE', 'materialInputs', `materialInputs exceeds ${WORK_ITEM_LIMITS.materialRefs} items`,
+    )
+  }
+  const inputs = value.map((candidate, index) => {
+    const input = record(candidate, `materialInputs[${index}]`)
+    exactFields(input, ['materialId', 'expectedVersion'], `materialInputs[${index}]`)
+    return {
+      materialId: identifierField(input, 'materialId', WORK_ITEM_LIMITS.id, `materialInputs[${index}].materialId`),
+      ...(input.expectedVersion === undefined
+        ? {}
+        : { expectedVersion: identifierField(input, 'expectedVersion', WORK_ITEM_LIMITS.resourceRef, `materialInputs[${index}].expectedVersion`) }),
+    }
+  })
+  const seen = new Set<string>()
+  inputs.forEach((input, index) => {
+    if (seen.has(input.materialId)) {
+      throw new WorkItemValidationError('DUPLICATE_VALUE', `materialInputs[${index}].materialId`, `materialInputs[${index}].materialId duplicates an earlier material`)
+    }
+    seen.add(input.materialId)
+  })
+  return inputs
+}
+
 function workScope(value: unknown): WorkScope {
   const scope = record(value, 'scope')
-  exactFields(scope, ['projectId', 'cwd', 'resourceRefs'], 'scope')
+  exactFields(scope, ['projectId', 'cwd', 'resourceRefs', 'materialRefs'], 'scope')
   if (!('resourceRefs' in scope)) {
     throw new WorkItemValidationError('MISSING_FIELD', 'scope.resourceRefs', 'scope.resourceRefs is required')
   }
@@ -536,6 +676,25 @@ function workScope(value: unknown): WorkScope {
     }
     firstRefIndex.set(resourceRef, index)
   })
+  let materialRefs: WorkMaterialRef[] | undefined
+  if (scope.materialRefs !== undefined) {
+    if (!Array.isArray(scope.materialRefs)) {
+      throw new WorkItemValidationError('INVALID_TYPE', 'scope.materialRefs', 'scope.materialRefs must be an array')
+    }
+    if (scope.materialRefs.length > WORK_ITEM_LIMITS.materialRefs) {
+      throw new WorkItemValidationError(
+        'COLLECTION_TOO_LARGE', 'scope.materialRefs', `scope.materialRefs exceeds ${WORK_ITEM_LIMITS.materialRefs} items`,
+      )
+    }
+    materialRefs = scope.materialRefs.map((candidate, index) => workMaterialRef(candidate, `scope.materialRefs[${index}]`))
+    const seenMaterialIds = new Set<string>()
+    materialRefs.forEach((material, index) => {
+      if (seenMaterialIds.has(material.materialId)) {
+        throw new WorkItemValidationError('DUPLICATE_VALUE', `scope.materialRefs[${index}].materialId`, `scope.materialRefs[${index}].materialId duplicates an earlier material`)
+      }
+      seenMaterialIds.add(material.materialId)
+    })
+  }
   return {
     ...(scope.projectId === undefined
       ? {}
@@ -543,7 +702,8 @@ function workScope(value: unknown): WorkScope {
     ...(scope.cwd === undefined
       ? {}
       : { cwd: textField(scope, 'cwd', WORK_ITEM_LIMITS.cwd, 'scope.cwd') }),
-    resourceRefs
+    resourceRefs,
+    ...(materialRefs === undefined ? {} : { materialRefs }),
   }
 }
 
@@ -594,7 +754,7 @@ export function validateWorkTaskCreateRequest(value: unknown): WorkTaskCreateReq
 export function validateWorkTaskExecuteRequest(value: unknown): WorkTaskExecuteRequest {
   const request = record(value, '$')
   exactFields(request, [
-    'requestId', 'taskId', 'expectedRevision', 'executor', 'mode', 'input', 'sourceRunId'
+    'requestId', 'taskId', 'expectedRevision', 'executor', 'mode', 'input', 'materialInputs', 'sourceRunId'
   ])
   if (!('input' in request)) {
     throw new WorkItemValidationError('MISSING_FIELD', 'input', 'input is required')
@@ -613,6 +773,7 @@ export function validateWorkTaskExecuteRequest(value: unknown): WorkTaskExecuteR
     executor,
     mode: request.mode as WorkTaskExecuteRequest['mode'],
     input: request.input,
+    ...(request.materialInputs === undefined ? {} : { materialInputs: workMaterialInputs(request.materialInputs) }),
     ...(request.sourceRunId === undefined
       ? {}
       : { sourceRunId: optionalIdentifierField(request, 'sourceRunId', WORK_ITEM_LIMITS.id, 'sourceRunId') })

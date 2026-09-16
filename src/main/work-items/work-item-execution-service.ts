@@ -1,5 +1,11 @@
 import type { EmployeeRunRecord, EmployeeRunStartRequest, EmployeeRunStartReceipt } from '../../shared/employee-runs.js'
-import { validateWorkTaskExecuteRequest, type WorkRunStatus, type WorkTaskExecuteRequest, type WorkTaskSnapshot } from '../../shared/work-items.js'
+import {
+  validateWorkTaskExecuteRequest,
+  type WorkMaterialAuthorizer,
+  type WorkRunStatus,
+  type WorkTaskExecuteRequest,
+  type WorkTaskSnapshot,
+} from '../../shared/work-items.js'
 import { isWorkflowValue, type WorkflowRunRecord, type WorkflowValue } from '../../shared/workflow.js'
 import type { EmployeeWorkMethod } from '../../shared/employee-methods.js'
 import { WorkItemService } from './work-item-service.js'
@@ -23,6 +29,17 @@ export interface WorkItemExecutionServiceOptions {
   employeeMethods?: WorkItemEmployeeMethodPort
   workflowBridge: WorkItemWorkflowBridgePort
   defaultCwd: string
+  /** Main-only resolver. Legacy resourceRefs never reach this callback. */
+  authorizeMaterials?: WorkMaterialAuthorizer
+}
+
+export class WorkItemMaterialAuthorizationError extends Error {
+  readonly code = 'WORK_ITEM_MATERIAL_UNAUTHORIZED'
+
+  constructor(message = 'Selected work item materials are not authorized by Main') {
+    super(message)
+    this.name = 'WorkItemMaterialAuthorizationError'
+  }
 }
 
 export class WorkItemExecutionService {
@@ -36,13 +53,50 @@ export class WorkItemExecutionService {
   }
 
   private async executeOnce(input: WorkTaskExecuteRequest): Promise<WorkTaskSnapshot> {
-    const intent = await this.options.workItems.recordDispatchIntent(input)
+    let intent: WorkDispatchIntentReceipt | undefined
+    // Probe the durable receipt before resolving bytes. A replay must remain
+    // idempotent even when a previously authorized file has since moved or
+    // disappeared; no new filesystem read is needed for an existing receipt.
+    if (input.materialInputs !== undefined && input.materialInputs.length > 0) {
+      try {
+        intent = await this.options.workItems.recordDispatchIntent(input)
+      } catch (error) {
+        if (!isMaterialConflict(error)) throw error
+      }
+      if (intent !== undefined) return this.finishIntent(input, intent)
+    }
+    const materialAuthorizations = await this.authorizeMaterials(input)
+    intent = await this.options.workItems.recordDispatchIntent(input, materialAuthorizations)
+    return this.finishIntent(input, intent)
+  }
+
+  private async finishIntent(input: WorkTaskExecuteRequest, intent: WorkDispatchIntentReceipt): Promise<WorkTaskSnapshot> {
     if (intent.replayed) {
       if (intent.stage === 'linked') return intent.snapshot
       if (intent.stage !== 'recorded') return this.reconcile(intent.requestId, intent.commandId, intent.snapshot)
     }
 
     return this.dispatch(input, intent)
+  }
+
+  private async authorizeMaterials(input: WorkTaskExecuteRequest) {
+    if (input.materialInputs === undefined || input.materialInputs.length === 0) return []
+    const task = await this.options.workItems.get(input.taskId)
+    if (task === undefined) throw new WorkItemMaterialAuthorizationError(`Work item task ${input.taskId} was not found`)
+    if (this.options.authorizeMaterials === undefined) {
+      throw new WorkItemMaterialAuthorizationError(
+        '本次执行选择了资料，但当前 Main 没有可用的资料授权器；旧 resourceRefs 不会被自动授权。',
+      )
+    }
+    const authorizations = await this.options.authorizeMaterials({
+      task,
+      requirementVersion: task.task.currentRequirementVersion,
+      inputs: input.materialInputs,
+    })
+    if (authorizations.length !== input.materialInputs.length) {
+      throw new WorkItemMaterialAuthorizationError('Main did not authorize every selected work item material')
+    }
+    return authorizations
   }
 
   private async dispatch(input: WorkTaskExecuteRequest, intent: WorkDispatchIntentReceipt): Promise<WorkTaskSnapshot> {
@@ -151,6 +205,10 @@ export class WorkItemExecutionService {
     void tail.finally(() => { if (this.requestTails.get(requestId) === tail) this.requestTails.delete(requestId) })
     return result
   }
+}
+
+function isMaterialConflict(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 'MATERIAL_CONFLICT'
 }
 
 function projectExecution(execution: EmployeeRunRecord | WorkflowRunRecord): Pick<WorkTaskSnapshot['runs'][number], 'runId' | 'status' | 'rawStatus' | 'capabilities'> {

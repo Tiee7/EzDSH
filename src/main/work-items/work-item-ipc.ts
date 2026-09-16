@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto'
-import { lstat, realpath, stat } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
+import { lstat, open, realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 import { toEzDSHError, type IpcResult } from '../../shared/errors.js'
@@ -16,8 +17,14 @@ import {
   validateWorkTaskRevisionRequest,
   validateWorkRunControlRequest,
   type WorkItemQuery,
+  type WorkArtifact,
+  type WorkMaterialAuthorization,
+  type WorkMaterialAuthorizer,
+  type WorkMaterialInput,
+  type WorkMaterialRef,
   type WorkItemsBridge,
   type WorkScope,
+  type WorkTaskSnapshot,
 } from '../../shared/work-items.js'
 
 export const WORK_ITEM_IPC_CHANNELS = [
@@ -130,11 +137,110 @@ export async function createWorkItemScopeAuthorizer(
   }
 
   return async (scope) => {
-    if (scope.cwd === undefined) return { ...scope, resourceRefs: [...scope.resourceRefs] }
+    const materialRefs = scope.materialRefs?.map((ref) => ({ ...ref }))
+    if (scope.cwd === undefined) return {
+      ...scope,
+      resourceRefs: [...scope.resourceRefs],
+      ...(materialRefs === undefined ? {} : { materialRefs }),
+    }
     const candidate = resolve(canonicalRoot, scope.cwd)
     const canonicalCwd = await canonicalizeWorkspacePath(canonicalRoot, candidate)
-    return { ...scope, cwd: canonicalCwd, resourceRefs: [...scope.resourceRefs] }
+    return {
+      ...scope,
+      cwd: canonicalCwd,
+      resourceRefs: [...scope.resourceRefs],
+      ...(materialRefs === undefined ? {} : { materialRefs }),
+    }
   }
+}
+
+export interface WorkItemMaterialAuthorizerOptions {
+  /** Generated artifacts must still pass the existing Main integrity verifier. */
+  verifyArtifact?: (artifact: WorkArtifact) => Promise<boolean>
+}
+
+/**
+ * Creates the narrow Main resolver used by WorkItemExecutionService. This
+ * resolves only explicit typed selections, records a content fingerprint, and
+ * rejects material kinds whose backing store or network grant is not wired.
+ * Legacy `scope.resourceRefs` are intentionally ignored.
+ */
+export async function createWorkItemMaterialAuthorizer(
+  workspaceRoot: string,
+  options: WorkItemMaterialAuthorizerOptions = {},
+): Promise<WorkMaterialAuthorizer> {
+  const canonicalRoot = await realpath(workspaceRoot)
+  if (!(await stat(canonicalRoot)).isDirectory()) {
+    throw new WorkItemScopeUnauthorizedError('Active workspace root must be a directory')
+  }
+
+  return async ({ task, inputs }): Promise<WorkMaterialAuthorization[]> => {
+    const refs = new Map((task.task.scope.materialRefs ?? []).map((ref) => [ref.materialId, ref]))
+    const authorizedAt = new Date().toISOString()
+    return Promise.all(inputs.map(async (input) => {
+      const ref = refs.get(input.materialId)
+      if (ref === undefined) throw materialUnauthorized(`Material ${input.materialId} is not declared by this work item`)
+      const authorization = await authorizeMaterial(canonicalRoot, task, ref, options)
+      if (input.expectedVersion !== undefined && input.expectedVersion !== authorization.version) {
+        throw materialUnauthorized(`Material ${input.materialId} changed since it was selected`)
+      }
+      return { ...authorization, authorizedAt }
+    }))
+  }
+}
+
+async function authorizeMaterial(
+  canonicalRoot: string,
+  task: WorkTaskSnapshot,
+  ref: WorkMaterialRef,
+  options: WorkItemMaterialAuthorizerOptions,
+): Promise<Omit<WorkMaterialAuthorization, 'authorizedAt'>> {
+  if (ref.kind === 'local-file') {
+    const base = task.task.scope.cwd ?? canonicalRoot
+    const candidate = resolve(base, ref.path)
+    const canonicalPath = await canonicalizeMaterialFile(canonicalRoot, candidate)
+    const handle = await open(canonicalPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    try {
+      const bytes = await handle.readFile()
+      const fingerprint = createHash('sha256').update(bytes).digest('hex')
+      return { materialId: ref.materialId, kind: ref.kind, version: fingerprint, fingerprint }
+    } finally {
+      await handle.close()
+    }
+  }
+  if (ref.kind === 'generated-artifact') {
+    const artifact = task.artifacts.find((candidate) =>
+      candidate.id === ref.artifactId && candidate.contentVersion === ref.contentVersion)
+    if (artifact === undefined) throw materialUnauthorized(`Generated artifact ${ref.artifactId} is not attached to this work item`)
+    if (options.verifyArtifact === undefined || !await options.verifyArtifact(artifact)) {
+      throw materialUnauthorized(`Generated artifact ${ref.artifactId} failed Main integrity verification`)
+    }
+    return { materialId: ref.materialId, kind: ref.kind, version: artifact.contentHash, fingerprint: artifact.contentHash }
+  }
+  if (ref.kind === 'project-document') {
+    throw materialUnauthorized(`Project document ${ref.documentId} has no Main document resolver yet`)
+  }
+  throw materialUnauthorized(`External link ${ref.url} requires an explicit network grant before execution`)
+}
+
+async function canonicalizeMaterialFile(canonicalRoot: string, candidate: string): Promise<string> {
+  let entry
+  try {
+    entry = await lstat(candidate)
+  } catch {
+    throw materialUnauthorized('Selected local material does not exist')
+  }
+  if (entry.isSymbolicLink()) throw materialUnauthorized('Selected local material must not be a symbolic link')
+  const canonicalCandidate = await realpath(candidate)
+  if (!isWithinWorkspace(canonicalRoot, canonicalCandidate)) {
+    throw materialUnauthorized('Selected local material escapes the active workspace')
+  }
+  if (!(await stat(canonicalCandidate)).isFile()) throw materialUnauthorized('Selected local material must be a regular file')
+  return canonicalCandidate
+}
+
+function materialUnauthorized(message: string): Error {
+  return Object.assign(new Error(message), { code: 'WORK_ITEM_MATERIAL_UNAUTHORIZED' })
 }
 
 export interface WorkItemIpcWorkspaceInitializer<Restored> {

@@ -21,7 +21,8 @@ import {
   type WorkTaskDeletionPreview,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
-  type WorkTaskSnapshot
+  type WorkTaskSnapshot,
+  type WorkMaterialAuthorization,
 } from '../../shared/work-items.js'
 import {
   WorkItemStore,
@@ -111,8 +112,11 @@ export class WorkItemService {
     return this.store.list(query)
   }
 
-  recordDispatchIntent(input: WorkTaskExecuteRequest): Promise<WorkDispatchIntentReceipt> {
-    return this.store.recordDispatchIntent(validateWorkTaskExecuteRequest(input))
+  recordDispatchIntent(
+    input: WorkTaskExecuteRequest,
+    materialAuthorizations: WorkMaterialAuthorization[] = [],
+  ): Promise<WorkDispatchIntentReceipt> {
+    return this.store.recordDispatchIntent(validateWorkTaskExecuteRequest(input), materialAuthorizations)
   }
 
   claimDispatch(requestId: string, commandId: string): Promise<WorkDispatchIntentReceipt> {

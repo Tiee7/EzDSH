@@ -10,6 +10,7 @@ import { WorkItemCancellationService } from './work-item-cancellation-service.js
 import { WorkItemExecutionService } from './work-item-execution-service.js'
 import {
   createWorkItemScopeAuthorizer,
+  createWorkItemMaterialAuthorizer,
   initializeWorkItemIpcWorkspace,
   WorkItemWorkspaceUnavailableError,
   type WorkItemExecutionOperation,
@@ -59,11 +60,14 @@ export function initializeWorkItemWorkspaceScope(
     restore: async () => {
       const store = new WorkItemStore(options.layout.state)
       const artifacts = new WorkArtifactService(store, join(options.layout.root, 'work-artifacts'))
-      const authorizeScope = await createWorkItemScopeAuthorizer(options.layout.root)
       await artifacts.initialize()
-      return { store, artifacts, authorizeScope }
+      const authorizeScope = await createWorkItemScopeAuthorizer(options.layout.root)
+      const authorizeMaterials = await createWorkItemMaterialAuthorizer(options.layout.root, {
+        verifyArtifact: (artifact) => artifacts.verifyStoredArtifact(artifact),
+      })
+      return { store, artifacts, authorizeScope, authorizeMaterials }
     },
-    construct: ({ store, artifacts, authorizeScope }) => {
+    construct: ({ store, artifacts, authorizeScope, authorizeMaterials }) => {
       const workItems = new WorkItemService(
         store,
         (artifact) => artifacts.verifyStoredArtifact(artifact),
@@ -87,6 +91,7 @@ export function initializeWorkItemWorkspaceScope(
         employeeMethods: options.employeeMethods,
         workflowBridge,
         defaultCwd: options.layout.root,
+        authorizeMaterials,
       })
       workspaceActionService = new WorkActionService({
         workItems,

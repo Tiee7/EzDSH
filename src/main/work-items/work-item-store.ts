@@ -34,11 +34,12 @@ import {
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
   type WorkTaskSnapshot,
-  type WorkExecutor
+  type WorkExecutor,
+  type WorkMaterialAuthorization,
 } from '../../shared/work-items.js'
 
 export class WorkItemStoreConflictError extends Error {
-  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'ARCHIVE_CONFLICT' | 'TASK_CANCELLATION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT'
+  readonly code: 'REQUEST_ID_CONFLICT' | 'REVISION_CONFLICT' | 'ARCHIVE_CONFLICT' | 'TASK_CANCELLATION_CONFLICT' | 'TASK_NOT_FOUND' | 'ATTEMPT_NOT_FOUND' | 'RUN_NOT_FOUND' | 'ACTION_NOT_FOUND' | 'ACTION_CONFLICT' | 'ARTIFACT_NOT_FOUND' | 'ARTIFACT_CONFLICT' | 'MATERIAL_CONFLICT'
 
   constructor(
     code: WorkItemStoreConflictError['code'],
@@ -578,6 +579,51 @@ function normalizeArtifactWriteIntent(input: WorkArtifactWriteIntent): WorkArtif
     runId: identifier(input.runId, 'runId'),
     name: input.name.trim(),
   }
+}
+
+function normalizeMaterialAuthorizations(input: WorkMaterialAuthorization[]): WorkMaterialAuthorization[] {
+  if (!Array.isArray(input)) throw new WorkItemStoreInputError('materialAuthorizations', 'materialAuthorizations must be an array')
+  const seen = new Set<string>()
+  return input.map((authorization, index) => {
+    const path = `materialAuthorizations[${index}]`
+    if (authorization === null || typeof authorization !== 'object' || Array.isArray(authorization)) {
+      throw new WorkItemStoreInputError(path, `${path} must be an object`)
+    }
+    const candidate = authorization as unknown as Record<string, unknown>
+    for (const key of Object.keys(candidate)) {
+      if (!['materialId', 'kind', 'version', 'fingerprint', 'authorizedAt'].includes(key)) {
+        throw new WorkItemStoreInputError(`${path}.${key}`, `${path}.${key} is not allowed`)
+      }
+    }
+    const text = (key: string, maxLength: number): string => {
+      const value = candidate[key]
+      if (typeof value !== 'string' || value.trim() === '' || value.length > maxLength || /[\u0000-\u001f\u007f]/u.test(value)) {
+        throw new WorkItemStoreInputError(`${path}.${key}`, `${path}.${key} is invalid`)
+      }
+      return value.trim()
+    }
+    if (!['materialId', 'kind', 'version', 'fingerprint', 'authorizedAt'].every((key) => Object.hasOwn(candidate, key))) {
+      throw new WorkItemStoreInputError(path, `${path} is incomplete`)
+    }
+    const kind = text('kind', 64)
+    if (!['local-file', 'project-document', 'external-link', 'generated-artifact'].includes(kind)) {
+      throw new WorkItemStoreInputError(`${path}.kind`, `${path}.kind is invalid`)
+    }
+    const authorizedAt = text('authorizedAt', 128)
+    if (Number.isNaN(Date.parse(authorizedAt))) throw new WorkItemStoreInputError(`${path}.authorizedAt`, `${path}.authorizedAt is invalid`)
+    const materialId = text('materialId', 128)
+    if (seen.has(materialId)) {
+      throw new WorkItemStoreInputError(`${path}.materialId`, `${path}.materialId duplicates an earlier authorization`)
+    }
+    seen.add(materialId)
+    return {
+      materialId,
+      kind: kind as WorkMaterialAuthorization['kind'],
+      version: text('version', 256),
+      fingerprint: text('fingerprint', 256),
+      authorizedAt,
+    }
+  })
 }
 
 interface ArtifactReservationEvidence {
@@ -1460,9 +1506,13 @@ export class WorkItemStore {
     })
   }
 
-  async recordDispatchIntent(input: WorkTaskExecuteRequest): Promise<WorkDispatchIntentReceipt> {
+  async recordDispatchIntent(
+    input: WorkTaskExecuteRequest,
+    materialAuthorizations: WorkMaterialAuthorization[] = [],
+  ): Promise<WorkDispatchIntentReceipt> {
     return this.mutate(async () => {
       const request = validateWorkTaskExecuteRequest(input)
+      const normalizedMaterials = normalizeMaterialAuthorizations(materialAuthorizations)
       const digest = requestDigest('dispatch', request)
       const replay = this.replay<WorkDispatchIntentReceipt>('dispatch', request.requestId, digest)
       if (replay) return replay
@@ -1479,6 +1529,27 @@ export class WorkItemStore {
       }
       assertTaskAcceptsBusinessMutation(current)
 
+      const selectedMaterialIds = new Set((request.materialInputs ?? []).map((material) => material.materialId))
+      const scopedMaterials = new Map((current.task.scope.materialRefs ?? []).map((material) => [material.materialId, material]))
+      const authorizedMaterialIds = new Set<string>()
+      for (const authorization of normalizedMaterials) {
+        const scoped = scopedMaterials.get(authorization.materialId)
+        if (scoped === undefined || scoped.kind !== authorization.kind || !selectedMaterialIds.has(authorization.materialId)) {
+          throw new WorkItemStoreConflictError(
+            'MATERIAL_CONFLICT',
+            `Material authorization ${authorization.materialId} does not match the selected task materials`,
+          )
+        }
+        authorizedMaterialIds.add(authorization.materialId)
+      }
+      if (authorizedMaterialIds.size !== selectedMaterialIds.size
+        || [...selectedMaterialIds].some((materialId) => !authorizedMaterialIds.has(materialId))) {
+        throw new WorkItemStoreConflictError(
+          'MATERIAL_CONFLICT',
+          'Every selected material must have a Main authorization snapshot before dispatch',
+        )
+      }
+
       const snapshot = copy(current)
       const now = new Date().toISOString()
       let attemptId = snapshot.task.activeAttemptId
@@ -1494,6 +1565,17 @@ export class WorkItemStore {
         if (!attemptId || !snapshot.attempts.some((attempt) => attempt.id === attemptId)) {
           throw new WorkItemStoreConflictError('ATTEMPT_NOT_FOUND', 'No active attempt is available to continue')
         }
+        const attempt = snapshot.attempts.find((candidate) => candidate.id === attemptId)!
+        if (normalizedMaterials.length > 0) {
+          if (attempt.materialAuthorizations !== undefined
+            && JSON.stringify(attempt.materialAuthorizations) !== JSON.stringify(normalizedMaterials)) {
+            throw new WorkItemStoreConflictError(
+              'MATERIAL_CONFLICT',
+              `Attempt ${attemptId} already has a different material authorization snapshot`,
+            )
+          }
+          attempt.materialAuthorizations = normalizedMaterials
+        }
       } else {
         attemptId = randomUUID()
         snapshot.attempts.push({
@@ -1502,6 +1584,7 @@ export class WorkItemStore {
           requirementVersion: snapshot.task.currentRequirementVersion,
           reason: request.mode === 'redo' ? 'redo' : request.mode === 'handoff' ? 'handoff' : 'initial',
           responsibility: request.executor,
+          ...(normalizedMaterials.length === 0 ? {} : { materialAuthorizations: normalizedMaterials }),
           createdAt: now
         })
       }

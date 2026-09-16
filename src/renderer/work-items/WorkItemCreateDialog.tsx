@@ -81,6 +81,8 @@ const copy = {
     catalogWorkflows: 'Workflow',
     catalogProjects: '项目',
     catalogFallback: '仍可不选项目并只创建工作项。',
+    materials: '资料',
+    materialsCatalogUnavailable: '创建或立即执行时，当前没有资料目录；不会虚构可选资料，也不会自动附加资料引用。资料解析与授权由主进程负责。',
   },
   en: {
     title: 'Create work item',
@@ -112,6 +114,8 @@ const copy = {
     catalogWorkflows: 'workflows',
     catalogProjects: 'projects',
     catalogFallback: 'You can still create the work item without a project.',
+    materials: 'Materials',
+    materialsCatalogUnavailable: 'No material catalog is available for creation or immediate execution. No selectable materials or references will be invented; Main owns material resolution and authorization.',
   },
 } as const
 
@@ -304,6 +308,10 @@ export function WorkItemCreateDialog({
           {projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.label}</option>)}
         </select>
       </label>
+      <section className="work-item-create-material-notice" data-material-catalog="unavailable" aria-label={text.materials}>
+        <strong>{text.materials}</strong>
+        <p>{text.materialsCatalogUnavailable}</p>
+      </section>
       <label>{text.executor}
         <select aria-label={text.executor} value={mode} disabled={busy || locked} onChange={(event) => selectMode(event.target.value as 'none' | 'employee' | 'workflow')}>
           <option value="none">{text.createOnly}</option>
