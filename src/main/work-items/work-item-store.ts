@@ -10,6 +10,7 @@ import {
   validateWorkTaskArchiveRequest,
   validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
+  validateWorkTaskDeletePreviewRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
   type WorkAction,
@@ -25,6 +26,11 @@ import {
   type WorkTaskCancellationTargetState,
   type WorkTaskCancelRequest,
   type WorkTaskCreateRequest,
+  type WorkTaskDeletePreviewRequest,
+  type WorkTaskDeletionBlocker,
+  type WorkTaskDeletionInventory,
+  type WorkTaskDeletionPreview,
+  type WorkTaskTombstonePreview,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
   type WorkTaskSnapshot,
@@ -117,6 +123,14 @@ export interface WorkTaskArchiveReceipt {
   replayed: boolean
 }
 
+export interface WorkTaskDeletionPreviewReceipt {
+  requestId: string
+  digest: string
+  taskId: string
+  preview: WorkTaskDeletionPreview
+  replayed: boolean
+}
+
 export interface WorkTaskCancellationReceipt {
   requestId: string
   digest: string
@@ -173,6 +187,7 @@ type StoredReceipt =
   | { kind: 'run-control'; digest: string; receipt: WorkRunControlReceipt }
   | { kind: 'revise'; digest: string; receipt: WorkTaskRevisionReceipt }
   | { kind: 'archive'; digest: string; receipt: WorkTaskArchiveReceipt }
+  | { kind: 'delete-preview'; digest: string; receipt: WorkTaskDeletionPreviewReceipt }
   | { kind: 'task-cancellation'; digest: string; receipt: WorkTaskCancellationReceipt }
   | { kind: 'artifact-accept'; digest: string; receipt: WorkArtifactAcceptReceipt }
   | { kind: 'artifact-write'; digest: string; receipt: WorkArtifactWriteReceipt }
@@ -374,6 +389,106 @@ function cancellationStage(targets: WorkTaskCancellationTarget[]): WorkTaskCance
 function cancellationFinalStatus(snapshot: WorkTaskSnapshot, commandId: string): WorkTaskCancellationTarget['finalRunStatus'] {
   const target = snapshot.task.cancellation?.targets.find((candidate) => candidate.commandId === commandId)
   return target?.state === 'cancelled' || target?.state === 'settled' ? target.finalRunStatus : undefined
+}
+
+const DELETION_ACTIVE_RUN_STATUSES = new Set<WorkTaskSnapshot['runs'][number]['status']>([
+  'queued', 'running', 'waiting', 'paused', 'cancelling', 'interrupted',
+])
+
+function deletionReferenceId(id: string, fallback: string): string {
+  return id === '' ? fallback : id
+}
+
+function deletionInventory(snapshot: WorkTaskSnapshot): WorkTaskDeletionInventory {
+  return {
+    attemptIds: snapshot.attempts.map((attempt) => attempt.id),
+    runIds: snapshot.runs.map((run) => deletionReferenceId(run.runId, run.commandId)),
+    actionIds: snapshot.actions.map((action) => action.id),
+    artifactIds: snapshot.artifacts.map((artifact) => artifact.id),
+    acceptedArtifactIds: [...snapshot.task.acceptedArtifactIds],
+    resourceRefs: [...snapshot.task.scope.resourceRefs],
+    artifactPaths: snapshot.artifacts.map((artifact) => artifact.storedPath),
+  }
+}
+
+function snapshotHash(snapshot: WorkTaskSnapshot): string {
+  return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')
+}
+
+function deletionPreview(
+  request: WorkTaskDeletePreviewRequest,
+  snapshot: WorkTaskSnapshot,
+  generatedAt: string,
+): WorkTaskDeletionPreview {
+  const inventory = deletionInventory(snapshot)
+  const blockers: WorkTaskDeletionBlocker[] = [
+    {
+      code: 'PERMANENT_DELETE_DISABLED',
+      message: '当前版本仅支持删除预览；永久删除必须在明确确认、可恢复证据和行为验证完成后开放。',
+      referenceIds: [],
+    },
+  ]
+  if (snapshot.task.archivedAt === undefined) {
+    blockers.push({
+      code: 'TASK_NOT_ARCHIVED',
+      message: '工作项必须先归档，才能进入永久删除评估。',
+      referenceIds: [snapshot.task.id],
+    })
+  }
+  const activeRuns = snapshot.runs.filter((run) => DELETION_ACTIVE_RUN_STATUSES.has(run.status))
+  if (activeRuns.length > 0) {
+    blockers.push({
+      code: 'ACTIVE_RUN',
+      message: '仍有未达到可核实终态的执行记录，不能清理工作项。',
+      referenceIds: activeRuns.map((run) => deletionReferenceId(run.runId, run.commandId)),
+    })
+  }
+  const openActions = snapshot.actions.filter((action) => action.status === 'open')
+  if (openActions.length > 0) {
+    blockers.push({
+      code: 'OPEN_ACTION',
+      message: '仍有待处理动作，不能清理工作项。',
+      referenceIds: openActions.map((action) => action.id),
+    })
+  }
+  if (snapshot.task.cancellation !== undefined && snapshot.task.cancellation.state !== 'cancelled') {
+    blockers.push({
+      code: 'CANCELLATION_UNRESOLVED',
+      message: '整项取消尚未进入可核实终态，不能清理工作项。',
+      referenceIds: snapshot.task.cancellation.targets.map((target) => target.commandId),
+    })
+  }
+  const tombstone: WorkTaskTombstonePreview = {
+    kind: 'work-item-tombstone-preview',
+    schemaVersion: 1,
+    taskId: snapshot.task.id,
+    sourceRevision: snapshot.task.revision,
+    snapshotHash: snapshotHash(snapshot),
+    createdAt: generatedAt,
+    references: inventory,
+    retention: 'indefinite-until-explicit-purge',
+    artifactCleanup: {
+      strategy: 'task-owned-artifact-directory',
+      status: 'not-executed',
+      paths: [...inventory.artifactPaths],
+    },
+    recovery: {
+      beforePurge: 'restore-from-retained-snapshot',
+      afterPurge: 'unsupported',
+    },
+  }
+  return {
+    requestId: request.requestId,
+    taskId: request.taskId,
+    expectedRevision: request.expectedRevision,
+    observedRevision: snapshot.task.revision,
+    generatedAt,
+    canDelete: false,
+    blockers,
+    inventory,
+    tombstone,
+    message: '删除预览已生成。当前版本不会删除工作项、运行、成果、回执或成果目录。',
+  }
 }
 
 function assertTaskAcceptsBusinessMutation(snapshot: WorkTaskSnapshot): void {
@@ -841,6 +956,52 @@ export class WorkItemStore {
       setOwnValue(next.requests, request.requestId, { kind: 'archive', digest, receipt })
       await this.commit(next)
       if (isArchived !== request.archived) this.emit(snapshot)
+      return copy(receipt)
+    })
+  }
+
+  /**
+   * Produce and durably record a deletion plan. This deliberately performs no
+   * task or artifact mutation; a later purge must consume this receipt only
+   * after a separate explicit confirmation and a newly verified snapshot.
+   */
+  async previewDelete(input: WorkTaskDeletePreviewRequest): Promise<WorkTaskDeletionPreviewReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkTaskDeletePreviewRequest(input)
+      const digest = requestDigest('delete-preview', request)
+      const stored = ownValue(this.state.requests, request.requestId)
+      if (stored !== undefined) {
+        if (stored.kind !== 'delete-preview' || stored.digest !== digest) {
+          throw new WorkItemStoreConflictError(
+            'REQUEST_ID_CONFLICT',
+            `Request id ${request.requestId} was already used with different content`,
+          )
+        }
+        return { ...copy(stored.receipt), replayed: true }
+      }
+
+      const current = ownValue(this.state.tasks, request.taskId)
+      if (current === undefined) {
+        throw new WorkItemStoreConflictError('TASK_NOT_FOUND', `Task ${request.taskId} was not found`)
+      }
+      if (current.task.revision !== request.expectedRevision) {
+        throw new WorkItemStoreConflictError(
+          'REVISION_CONFLICT',
+          `Expected task revision ${request.expectedRevision}, found ${current.task.revision}`,
+        )
+      }
+
+      const preview = deletionPreview(request, current, new Date().toISOString())
+      const receipt: WorkTaskDeletionPreviewReceipt = {
+        requestId: request.requestId,
+        digest,
+        taskId: request.taskId,
+        preview,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.requests, request.requestId, { kind: 'delete-preview', digest, receipt })
+      await this.commit(next)
       return copy(receipt)
     })
   }
@@ -1730,6 +1891,7 @@ export class WorkItemStore {
     | WorkRunControlReceipt
     | WorkTaskRevisionReceipt
     | WorkTaskArchiveReceipt
+    | WorkTaskDeletionPreviewReceipt
     | WorkArtifactAcceptReceipt
     | WorkArtifactWriteReceipt
   >(

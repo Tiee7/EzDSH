@@ -175,6 +175,78 @@ export interface WorkTaskArchiveRequest {
   archived: boolean
 }
 
+/**
+ * Permanent deletion is deliberately a preview-only capability in 1.8.
+ * The preview is durable and carries enough identity to make a later purge
+ * explicit, reviewable, and recoverable before any bytes are removed.
+ */
+export type WorkTaskDeletionBlockerCode =
+  | 'PERMANENT_DELETE_DISABLED'
+  | 'TASK_NOT_ARCHIVED'
+  | 'ACTIVE_RUN'
+  | 'OPEN_ACTION'
+  | 'CANCELLATION_UNRESOLVED'
+
+export interface WorkTaskDeletionBlocker {
+  code: WorkTaskDeletionBlockerCode
+  message: string
+  referenceIds: string[]
+}
+
+export interface WorkTaskDeletionInventory {
+  attemptIds: string[]
+  runIds: string[]
+  actionIds: string[]
+  artifactIds: string[]
+  acceptedArtifactIds: string[]
+  resourceRefs: string[]
+  artifactPaths: string[]
+}
+
+/**
+ * A planned tombstone, not a claim that the task has been deleted. It keeps
+ * task identity and every cross-record reference visible while deletion is
+ * still disabled.
+ */
+export interface WorkTaskTombstonePreview {
+  kind: 'work-item-tombstone-preview'
+  schemaVersion: 1
+  taskId: string
+  sourceRevision: number
+  snapshotHash: string
+  createdAt: string
+  references: WorkTaskDeletionInventory
+  retention: 'indefinite-until-explicit-purge'
+  artifactCleanup: {
+    strategy: 'task-owned-artifact-directory'
+    status: 'not-executed'
+    paths: string[]
+  }
+  recovery: {
+    beforePurge: 'restore-from-retained-snapshot'
+    afterPurge: 'unsupported'
+  }
+}
+
+export interface WorkTaskDeletionPreview {
+  requestId: string
+  taskId: string
+  expectedRevision: number
+  observedRevision: number
+  generatedAt: string
+  canDelete: false
+  blockers: WorkTaskDeletionBlocker[]
+  inventory: WorkTaskDeletionInventory
+  tombstone: WorkTaskTombstonePreview
+  message: string
+}
+
+export interface WorkTaskDeletePreviewRequest {
+  requestId: string
+  taskId: string
+  expectedRevision: number
+}
+
 export interface WorkTaskCancelRequest {
   requestId: string
   taskId: string
@@ -460,6 +532,16 @@ export function validateWorkTaskArchiveRequest(value: unknown): WorkTaskArchiveR
     taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
     expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
     archived: request.archived,
+  }
+}
+
+export function validateWorkTaskDeletePreviewRequest(value: unknown): WorkTaskDeletePreviewRequest {
+  const request = record(value, '$')
+  exactFields(request, ['requestId', 'taskId', 'expectedRevision'])
+  return {
+    requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
+    taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
+    expectedRevision: positiveSafeInteger(request.expectedRevision, 'expectedRevision'),
   }
 }
 

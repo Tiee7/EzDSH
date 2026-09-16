@@ -5,6 +5,7 @@ import {
   validateWorkTaskArchiveRequest,
   validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
+  validateWorkTaskDeletePreviewRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRevisionRequest,
   type WorkAction,
@@ -16,6 +17,8 @@ import {
   type WorkTaskArchiveRequest,
   type WorkTaskCancelRequest,
   type WorkTaskCreateRequest,
+  type WorkTaskDeletePreviewRequest,
+  type WorkTaskDeletionPreview,
   type WorkTaskExecuteRequest,
   type WorkTaskRevisionRequest,
   type WorkTaskSnapshot
@@ -28,6 +31,7 @@ import {
   type WorkRunControlReceipt,
   type WorkTaskCancellationReceipt,
   type WorkTaskCancellationTargetUpdate,
+  type WorkTaskDeletionPreviewReceipt,
 } from './work-item-store.js'
 
 export class WorkItemService {
@@ -54,6 +58,10 @@ export class WorkItemService {
   async archive(input: WorkTaskArchiveRequest): Promise<WorkTaskSnapshot> {
     const receipt = await this.store.archive(validateWorkTaskArchiveRequest(input))
     return receipt.snapshot
+  }
+
+  previewDelete(input: WorkTaskDeletePreviewRequest): Promise<WorkTaskDeletionPreview> {
+    return this.store.previewDelete(validateWorkTaskDeletePreviewRequest(input)).then((receipt: WorkTaskDeletionPreviewReceipt) => receipt.preview)
   }
 
   beginTaskCancellation(input: WorkTaskCancelRequest): Promise<WorkTaskCancellationReceipt> {
