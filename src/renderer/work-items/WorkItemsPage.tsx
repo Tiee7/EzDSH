@@ -505,6 +505,22 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
         <span>{locale === 'en' ? `${preview.summary.projects} projects · ${preview.summary.tasks} tasks · ${preview.summary.ideas} ideas` : `${preview.summary.projects} 个项目 · ${preview.summary.tasks} 个任务 · ${preview.summary.ideas} 个思路`}</span>
         <small>{preview.conflicts.length === 0 ? (locale === 'en' ? 'No source conflicts' : '没有源冲突') : (locale === 'en' ? `${preview.conflicts.length} source conflicts` : `${preview.conflicts.length} 个源冲突`)}</small>
       </div>
+      {preview.files.length === 0 ? null : <div className="work-items-migration-files" aria-label={locale === 'en' ? 'Legacy material references' : '旧 Workbench 资料引用'}>
+        <small>{locale === 'en' ? 'Material references are preview-only; no file is copied or injected.' : '资料引用仅用于预览；当前不会复制文件或注入执行器。'}</small>
+        <ul className="work-items-migration-list">
+          {preview.files.map((file) => {
+            const status = file.status === 'available'
+              ? (locale === 'en' ? 'available' : '可读取')
+              : file.status === 'missing'
+                ? (locale === 'en' ? 'missing' : '缺失')
+                : (locale === 'en' ? 'unsafe' : '不安全')
+            return <li key={file.relativePath}>
+              <span><strong>{file.relativePath}</strong><small>{status} · {file.linkedSourceKeys.length} {locale === 'en' ? 'linked item(s)' : '个关联项'}</small></span>
+              {file.contentHash === undefined ? null : <code>{file.contentHash.slice(0, 12)}</code>}
+            </li>
+          })}
+        </ul>
+      </div>}
       <ul className="work-items-migration-list">
         {preview.candidates.map((candidate) => {
           const conflict = workbenchCandidateConflict(preview, candidate)
