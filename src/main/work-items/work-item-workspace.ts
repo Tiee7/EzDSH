@@ -31,6 +31,7 @@ export interface WorkItemWorkspaceEmployeeMethodPort {
 }
 
 export interface WorkItemWorkspaceWorkflowRunPort extends WorkflowTaskRunPort {
+  list(): WorkflowRunRecord[]
   watch(listener: (record: WorkflowRunRecord) => void): () => void
 }
 
@@ -42,6 +43,7 @@ export interface WorkItemWorkspaceOptions {
   assertExecutionAvailable?: (operation: WorkItemExecutionOperation, request: unknown) => void
   onChanged?: (snapshot: WorkTaskSnapshot) => void
   onObserverError?: (error: unknown) => void
+  openArtifact?: (storedPath: string) => Promise<string | void>
 }
 
 /** Production composition boundary for one workspace's durable WorkItem state and IPC scope. */
@@ -58,7 +60,14 @@ export function initializeWorkItemWorkspaceScope(
       return { store, artifacts, authorizeScope }
     },
     construct: ({ store, artifacts, authorizeScope }) => {
-      const workItems = new WorkItemService(store, (artifact) => artifacts.verifyStoredArtifact(artifact))
+      const workItems = new WorkItemService(
+        store,
+        (artifact) => artifacts.verifyStoredArtifact(artifact),
+        options.openArtifact === undefined ? undefined : async (artifact) => {
+          const error = await options.openArtifact!(artifact.storedPath)
+          if (typeof error === 'string' && error !== '') throw new Error(error)
+        },
+      )
       const workflowBridge = new WorkflowTaskBridge(options.workflowRuns)
       const execution = new WorkItemExecutionService({
         workItems,
@@ -88,17 +97,31 @@ export function initializeWorkItemWorkspaceScope(
       }
     },
     attachListeners: (_services, { store }, scope) => {
-      const listeners = [
-        options.workflowRuns.watch((record) => {
-          void scope.invoke(() => workspaceActionService.observeWorkflowRun(record)).catch((error: unknown) => {
+      const listeners: Array<() => void> = []
+      let workflowObservationTail = Promise.resolve()
+      const projectWorkflowRun = (run: WorkflowRunRecord): void => {
+        workflowObservationTail = workflowObservationTail
+          .then(() => {
+            const current = options.workflowRuns.get(run.id) ?? run
+            return scope.invoke(() => workspaceActionService.observeWorkflowRun(current)).then(() => undefined)
+          })
+          .catch((error: unknown) => {
             if (!(error instanceof WorkItemWorkspaceUnavailableError)) options.onObserverError?.(error)
           })
-        }),
-      ]
+      }
+      const workflowInitialProjection = Promise.resolve().then(() => options.workflowRuns.list()).then((runs) => {
+        for (const run of runs) projectWorkflowRun(run)
+      }).catch((error: unknown) => options.onObserverError?.(error))
+      listeners.push(options.workflowRuns.watch((record) => {
+        void workflowInitialProjection.then(() => { projectWorkflowRun(record) })
+      }))
       let employeeObservationTail = Promise.resolve()
       const projectEmployeeRun = (run: EmployeeRunRecord): void => {
         employeeObservationTail = employeeObservationTail
-          .then(() => scope.invoke(() => workspaceActionService.observeEmployeeRun(run)).then(() => undefined))
+          .then(async () => {
+            const current = await options.employeeRuns.getWorkItemRun(run.runId) ?? run
+            return scope.invoke(() => workspaceActionService.observeEmployeeRun(current)).then(() => undefined)
+          })
           .catch((error: unknown) => {
             if (!(error instanceof WorkItemWorkspaceUnavailableError)) options.onObserverError?.(error)
           })
@@ -115,7 +138,23 @@ export function initializeWorkItemWorkspaceScope(
           void employeeInitialProjection.then(() => { projectEmployeeRun(event.run) })
         }))
       }
-      if (options.onChanged !== undefined) listeners.unshift(store.onChanged(options.onChanged))
+      const reconcileLinkedRuns = (snapshot: WorkTaskSnapshot): void => {
+        for (const run of snapshot.runs) {
+          if (run.executor.kind === 'workflow' || run.executor.methodId !== undefined) {
+            const current = options.workflowRuns.get(run.runId)
+            if (current !== undefined) void workflowInitialProjection.then(() => { projectWorkflowRun(current) })
+            continue
+          }
+          void employeeInitialProjection.then(async () => {
+            const current = await options.employeeRuns.getWorkItemRun(run.runId)
+            if (current !== undefined) projectEmployeeRun(current)
+          }).catch((error: unknown) => options.onObserverError?.(error))
+        }
+      }
+      listeners.unshift(store.onChanged((snapshot) => {
+        options.onChanged?.(snapshot)
+        reconcileLinkedRuns(snapshot)
+      }))
       return listeners
     },
   })

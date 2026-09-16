@@ -10,7 +10,7 @@ import {
   newestFirst,
 } from './work-item-view-model.js'
 import { WorkItemDeliverables } from './WorkItemDeliverables.js'
-import type { WorkArtifactAcceptRequest } from '../../shared/work-items.js'
+import type { WorkArtifact, WorkArtifactAcceptRequest } from '../../shared/work-items.js'
 
 interface WorkItemDetailProps {
   copy: AppCopy
@@ -18,6 +18,7 @@ interface WorkItemDetailProps {
   onClose: () => void
   onAcceptArtifact?: (request: WorkArtifactAcceptRequest) => Promise<WorkTaskSnapshot>
   onAccepted?: (snapshot: WorkTaskSnapshot) => void
+  onOpenArtifact?: (artifact: WorkArtifact) => void
   onStartHandoff?: (mode: 'handoff' | 'redo') => void
   onOpenExecutor?: () => void
   locale?: 'zh' | 'en'
@@ -33,7 +34,7 @@ function requirementLabel(copy: AppCopy, version: number): string {
 }
 
 /** Read-only detail surface. Closing it only changes the selected task. */
-export function WorkItemDetail({ copy, snapshot, onClose, onAcceptArtifact, onAccepted, onStartHandoff, onOpenExecutor, locale = 'zh' }: WorkItemDetailProps): JSX.Element {
+export function WorkItemDetail({ copy, snapshot, onClose, onAcceptArtifact, onAccepted, onOpenArtifact, onStartHandoff, onOpenExecutor, locale = 'zh' }: WorkItemDetailProps): JSX.Element {
   const requirement = currentRequirement(snapshot)
   const historicalRequirements = chronological(snapshot.task.requirements)
   const attempts = chronological(snapshot.attempts)
@@ -122,7 +123,7 @@ export function WorkItemDetail({ copy, snapshot, onClose, onAcceptArtifact, onAc
           )}
         </section>
 
-        {onAcceptArtifact && onAccepted ? <WorkItemDeliverables snapshot={snapshot} locale={locale} onAcceptArtifact={onAcceptArtifact} onAccepted={onAccepted} /> : null}
+        {onAcceptArtifact && onAccepted ? <WorkItemDeliverables snapshot={snapshot} locale={locale} onAcceptArtifact={onAcceptArtifact} onAccepted={onAccepted} onOpenArtifact={onOpenArtifact} /> : null}
       </div>
     </section>
   )

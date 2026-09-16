@@ -32,6 +32,7 @@ async function mountPage(options: {
   list?: () => Promise<WorkTaskSnapshot[]>
   get?: (taskId: string) => Promise<WorkTaskSnapshot | undefined>
   acceptArtifact?: (request: import('../../src/shared/work-items.js').WorkArtifactAcceptRequest) => Promise<WorkTaskSnapshot>
+  openArtifact?: (taskId: string, artifactId: string) => Promise<void>
   runtimeAvailable?: boolean
   onNavigate?: (context: import('../../src/renderer/work-items/work-item-navigation.js').WorkItemNavigationContext) => void
   navigation?: import('../../src/renderer/work-items/work-item-navigation.js').WorkItemNavigationContext
@@ -47,6 +48,7 @@ async function mountPage(options: {
     list: vi.fn(options.list ?? (async () => [snapshot()])),
     get: vi.fn(options.get ?? (async () => snapshot())),
     acceptArtifact: vi.fn(options.acceptArtifact ?? (async () => snapshot())),
+    openArtifact: vi.fn(options.openArtifact ?? (async () => undefined)),
     controlRun: vi.fn(),
     onChanged: vi.fn((next: (value: WorkTaskSnapshot) => void) => { listener = next; return () => { listener = undefined } }),
   }
@@ -156,6 +158,17 @@ describe('Work Items renderer', () => {
       await page.click('接受这一版')
       expect(page.bridge.acceptArtifact).toHaveBeenCalledOnce()
       expect(page.dom.document.body.textContent).toContain('已接受')
+    } finally {
+      await page.cleanup()
+    }
+  })
+
+  it('opens the selected immutable artifact through Main', async () => {
+    const page = await mountPage()
+    try {
+      await page.click('Prepare release notes')
+      await page.click('查看这一版')
+      expect(page.bridge.openArtifact).toHaveBeenCalledWith('task-1', 'artifact-1')
     } finally {
       await page.cleanup()
     }

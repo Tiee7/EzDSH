@@ -24,13 +24,14 @@ export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:execute',
   'work-items:revise',
   'work-items:accept-artifact',
+  'work-items:open-artifact',
   'work-items:control-run',
   'work-items:answer-action',
 ] as const
 
 export const WORK_ITEM_CHANGED_CHANNEL = 'work-items:changed'
 
-type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'acceptArtifact'>
+type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'acceptArtifact' | 'openArtifact'>
 type WorkItemExecutionService = Pick<WorkItemsBridge, 'execute'>
 type WorkItemActionService = Pick<WorkItemsBridge, 'controlRun' | 'answerAction'>
 export type WorkItemExecutionOperation = 'execute' | 'control-run' | 'answer-action'
@@ -197,6 +198,10 @@ export function registerWorkItemIpc(
   })
   register('work-items:revise', (services, input) => services.workItems.revise(validateWorkTaskRevisionRequest(input)))
   register('work-items:accept-artifact', (services, input) => services.workItems.acceptArtifact(validateWorkArtifactAcceptRequest(input)))
+  register('work-items:open-artifact', (services, input) => {
+    const request = validateArtifactOpenRequest(input)
+    return services.workItems.openArtifact(request.taskId, request.artifactId)
+  })
   register('work-items:control-run', (services, input) => {
     const request = validateWorkRunControlRequest(input)
     services.assertExecutionAvailable?.('control-run', request)
@@ -265,6 +270,20 @@ function validateWorkItemQuery(value: unknown): WorkItemQuery {
 
 function validateTaskId(value: unknown): string {
   return validateIdentifier(value, 'taskId')
+}
+
+function validateArtifactOpenRequest(value: unknown): { taskId: string; artifactId: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new WorkItemValidationError('INVALID_TYPE', '$', '$ must be an object')
+  }
+  const request = value as Record<string, unknown>
+  for (const field of Object.keys(request)) {
+    if (field !== 'taskId' && field !== 'artifactId') throw new WorkItemValidationError('UNKNOWN_FIELD', field, `${field} is not allowed`)
+  }
+  return {
+    taskId: validateIdentifier(request.taskId, 'taskId'),
+    artifactId: validateIdentifier(request.artifactId, 'artifactId'),
+  }
 }
 
 function validateIdentifier(value: unknown, path: string): string {

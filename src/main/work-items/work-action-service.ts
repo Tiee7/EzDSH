@@ -98,6 +98,8 @@ export class WorkActionService {
         nodeId: event.nodeId,
       }
     })
+    const statusProjection = await this.options.workItems.syncWorkflowRun(record.workTask.taskId, record.id, projectWorkflow(record))
+    if (statusProjection === undefined) return undefined
     const projection = await this.options.workItems.syncWorkflowActions(record.workTask.taskId, record.id, actions)
     if (projection !== undefined && record.status === 'completed' && record.output !== undefined) {
       await this.saveWorkflowOutput(record, reference, record.output)

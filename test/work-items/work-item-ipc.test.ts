@@ -131,6 +131,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       'work-items:execute',
       'work-items:revise',
       'work-items:accept-artifact',
+      'work-items:open-artifact',
       'work-items:control-run',
       'work-items:answer-action',
     ])
@@ -153,7 +154,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     const handlers = new Map<string, (event: unknown, request?: unknown) => Promise<any>>()
     const workItems = {
       list: vi.fn(async () => []), get: vi.fn(async () => undefined), create: vi.fn(),
-      revise: vi.fn(), acceptArtifact: vi.fn(),
+      revise: vi.fn(), acceptArtifact: vi.fn(), openArtifact: vi.fn(),
     }
     const execution = { execute: vi.fn() }
     const actions = { controlRun: vi.fn(), answerAction: vi.fn() }
@@ -177,6 +178,10 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     expect(unknownCreate).toMatchObject({ ok: false, error: { code: 'UNKNOWN_FIELD' } })
     expect(workItems.create).not.toHaveBeenCalled()
 
+    const invalidOpen = await handlers.get('work-items:open-artifact')!({}, { taskId: 'task-1', artifactId: 'artifact-1', storedPath: '/tmp/private' })
+    expect(invalidOpen).toMatchObject({ ok: false, error: { code: 'UNKNOWN_FIELD' } })
+    expect(workItems.openArtifact).not.toHaveBeenCalled()
+
     workItems.revise.mockRejectedValueOnce(Object.assign(new Error('Revision conflict'), { code: 'REVISION_CONFLICT' }))
     const failed = await handlers.get('work-items:revise')!({}, {
       requestId: 'revise', taskId: 'task-1', expectedRevision: 1, goal: 'New goal', acceptance: 'New check',
@@ -193,7 +198,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     const snapshot = { task: { id: 'task-1' } } as WorkTaskSnapshot
     const workItems = {
       list: vi.fn(), get: vi.fn(), create: vi.fn(async () => snapshot), revise: vi.fn(async () => snapshot),
-      acceptArtifact: vi.fn(async () => snapshot),
+      acceptArtifact: vi.fn(async () => snapshot), openArtifact: vi.fn(async () => undefined),
     }
     const execution = { execute: vi.fn(async () => snapshot) }
     const actions = { controlRun: vi.fn(async () => snapshot), answerAction: vi.fn(async () => snapshot) }
@@ -207,6 +212,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       execute: { requestId: 'execute', taskId: 'task-1', expectedRevision: 1, executor: { kind: 'workflow' as const, workflowId: 'workflow-1' }, mode: 'initial' as const, input: null },
       revise: { requestId: 'revise', taskId: 'task-1', expectedRevision: 1, goal: ' New ', acceptance: ' Check ' },
       accept: { requestId: 'accept', taskId: 'task-1', expectedRevision: 1, artifactId: 'artifact-1', contentVersion: 1, requirementVersion: 1 },
+      open: { taskId: 'task-1', artifactId: 'artifact-1' },
       control: { requestId: 'control', taskId: 'task-1', runId: 'run-1', expectedRevision: 1, action: 'cancel' as const },
       answer: { requestId: 'answer', taskId: 'task-1', actionId: 'action-1', expectedSourceEventId: 'event-1', expectedRequirementVersion: 1, answer: true },
     }
@@ -215,6 +221,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     await handlers.get('work-items:execute')!({}, requests.execute)
     await handlers.get('work-items:revise')!({}, requests.revise)
     await handlers.get('work-items:accept-artifact')!({}, requests.accept)
+    await handlers.get('work-items:open-artifact')!({}, requests.open)
     await handlers.get('work-items:control-run')!({}, requests.control)
     await handlers.get('work-items:answer-action')!({}, requests.answer)
 
@@ -222,6 +229,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
     expect(execution.execute).toHaveBeenCalledWith(requests.execute)
     expect(workItems.revise).toHaveBeenCalledWith({ ...requests.revise, goal: 'New', acceptance: 'Check' })
     expect(workItems.acceptArtifact).toHaveBeenCalledWith(requests.accept)
+    expect(workItems.openArtifact).toHaveBeenCalledWith('task-1', 'artifact-1')
     expect(actions.controlRun).toHaveBeenCalledWith(requests.control)
     expect(actions.answerAction).toHaveBeenCalledWith(requests.answer)
     expect(assertExecutionAvailable.mock.calls.map(([operation]) => operation)).toEqual(['execute', 'control-run', 'answer-action'])
@@ -431,6 +439,8 @@ describe('WorkItem preload bridge', () => {
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:revise', request)
     await bridge.workItems.acceptArtifact(request)
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:accept-artifact', request)
+    await bridge.workItems.openArtifact('task-1', 'artifact-1')
+    expect(electron.invoke).toHaveBeenLastCalledWith('work-items:open-artifact', { taskId: 'task-1', artifactId: 'artifact-1' })
     await bridge.workItems.controlRun(request)
     expect(electron.invoke).toHaveBeenLastCalledWith('work-items:control-run', request)
     await bridge.workItems.answerAction(request)

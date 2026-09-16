@@ -809,6 +809,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     assertExecutionAvailable: assertWorkItemExecutionAvailable,
     onChanged: emitWorkItemState,
     onObserverError: logWorkItemObserverError,
+    openArtifact: (storedPath) => shell.openPath(storedPath),
   })
   await workflowRunService.cleanupExpiredInternalArtifacts(async (sessionId) => {
     const deleted = await deleteArchivedSessionFromStore(layout.harness, sessionId)
@@ -1190,6 +1191,7 @@ async function reopenWorkItemWorkspaceScope(): Promise<void> {
     assertExecutionAvailable: assertWorkItemExecutionAvailable,
     onChanged: emitWorkItemState,
     onObserverError: logWorkItemObserverError,
+    openArtifact: (storedPath) => shell.openPath(storedPath),
   })
   if (userDataLayout !== layout || workflowRunService !== workspaceWorkflowRunService || employeeService !== workspaceEmployeeService) {
     await reopened.dispose()

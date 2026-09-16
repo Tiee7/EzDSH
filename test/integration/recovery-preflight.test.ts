@@ -144,6 +144,7 @@ async function workItemRecoveryFixture() {
     cancelWorkItemRun: vi.fn(),
   } as WorkItemWorkspaceEmployeeRunPort
   const workflowRuns = {
+    list: vi.fn(() => []),
     watch: vi.fn(() => vi.fn()),
   } as unknown as WorkItemWorkspaceWorkflowRunPort
   const options = {

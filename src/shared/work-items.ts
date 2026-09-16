@@ -164,6 +164,7 @@ export interface WorkItemsBridge {
   execute(request: WorkTaskExecuteRequest): Promise<WorkTaskSnapshot>
   revise(request: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot>
   acceptArtifact(request: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot>
+  openArtifact(taskId: string, artifactId: string): Promise<void>
   controlRun(request: WorkRunControlRequest): Promise<WorkTaskSnapshot>
   answerAction(request: WorkActionAnswerRequest): Promise<WorkTaskSnapshot>
   onChanged(listener: (snapshot: WorkTaskSnapshot) => void): () => void

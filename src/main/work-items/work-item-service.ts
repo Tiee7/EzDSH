@@ -28,6 +28,7 @@ export class WorkItemService {
   constructor(
     private readonly store: WorkItemStore,
     private readonly artifactVerifier?: (artifact: WorkArtifact) => Promise<boolean>,
+    private readonly artifactOpener?: (artifact: WorkArtifact) => Promise<void>,
   ) {}
 
   initialize(): Promise<void> {
@@ -53,6 +54,18 @@ export class WorkItemService {
       this.artifactVerifier,
     )
     return receipt.snapshot
+  }
+
+  async openArtifact(taskId: string, artifactId: string): Promise<void> {
+    const snapshot = await this.store.get(taskId)
+    if (snapshot === undefined) throw new Error(`Task ${taskId} was not found`)
+    const artifact = snapshot.artifacts.find((candidate) => candidate.id === artifactId)
+    if (artifact === undefined) throw new Error(`Artifact ${artifactId} was not found on task ${taskId}`)
+    if (this.artifactVerifier === undefined || !await this.artifactVerifier(artifact)) {
+      throw new Error(`Artifact ${artifactId} failed integrity verification`)
+    }
+    if (this.artifactOpener === undefined) throw new Error('Artifact opening is unavailable')
+    await this.artifactOpener(artifact)
   }
 
   get(taskId: string): Promise<WorkTaskSnapshot | undefined> {
@@ -88,6 +101,10 @@ export class WorkItemService {
   }
 
   syncEmployeeRun(taskId: string, runId: string, execution: Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'>): Promise<WorkTaskSnapshot | undefined> {
+    return this.store.syncRun(taskId, runId, execution)
+  }
+
+  syncWorkflowRun(taskId: string, runId: string, execution: Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'>): Promise<WorkTaskSnapshot | undefined> {
     return this.store.syncRun(taskId, runId, execution)
   }
 

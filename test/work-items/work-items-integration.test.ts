@@ -53,7 +53,7 @@ function workflowRun(commandId: string, workflowId: string): WorkflowRunRecord {
     workflowRevision: 3,
     idempotencyKey: commandId,
     origin: { kind: 'top-level' },
-    status: 'completed',
+    status: 'queued',
     input: null,
     nodeStates: [],
     events: [],
@@ -68,7 +68,8 @@ async function fixture() {
   const store = new WorkItemStore(join(directory, 'state'))
   const artifactService = new WorkArtifactService(store, join(directory, 'artifacts'))
   await artifactService.initialize()
-  const workItems = new WorkItemService(store, (artifact) => artifactService.verifyStoredArtifact(artifact))
+  const openArtifact = vi.fn(async () => undefined)
+  const workItems = new WorkItemService(store, (artifact) => artifactService.verifyStoredArtifact(artifact), openArtifact)
   await workItems.initialize()
   const employeeRuns: EmployeeRunRecord[] = []
   const employeePort = {
@@ -89,7 +90,7 @@ async function fixture() {
     findByCommand: vi.fn(async (commandId: string) => workflowRuns.find((run) => run.idempotencyKey === commandId)),
   }
   const execution = new WorkItemExecutionService({ workItems, employeeRuns: employeePort, workflowBridge: workflowPort, defaultCwd: directory })
-  return { directory, store, workItems, artifactService, execution, employeePort, workflowPort }
+  return { directory, store, workItems, artifactService, execution, employeePort, workflowPort, openArtifact }
 }
 
 describe('Work Items end-to-end composition', () => {
@@ -126,13 +127,19 @@ describe('Work Items end-to-end composition', () => {
     const dispatched = await f.execution.execute({ requestId: 'dispatch-workflow-output', taskId: created.task.id, expectedRevision: created.task.revision, executor: { kind: 'workflow', workflowId: 'workflow-1', workflowRevision: 3 }, mode: 'initial', input: { source: 'test' } })
     const reference = dispatched.runs[0]!
     const record = workflowRun(reference.commandId, 'workflow-1')
+    record.status = 'completed'
     record.output = { summary: 'done', count: 3 }
     record.workTask = { taskId: created.task.id, attemptId: reference.attemptId, requirementVersion: reference.requirementVersion, commandId: reference.commandId }
 
     const observed = await new WorkActionService({ workItems: f.workItems, employeeRuns: {}, workflowBridge: {}, artifacts: f.artifactService }).observeWorkflowRun(record)
 
+    expect(dispatched.runs[0]).toMatchObject({ status: 'queued', rawStatus: 'queued', capabilities: { cancel: true } })
+    expect(observed?.runs[0]).toMatchObject({ status: 'completed', rawStatus: 'completed', capabilities: { cancel: false } })
     expect(observed?.artifacts).toHaveLength(1)
     await expect(f.artifactService.read(observed!.artifacts[0]!)).resolves.toEqual(Buffer.from('{\n  "summary": "done",\n  "count": 3\n}\n'))
+    await f.workItems.openArtifact(created.task.id, observed!.artifacts[0]!.id)
+    expect(f.openArtifact).toHaveBeenCalledWith(observed!.artifacts[0])
+    await expect(f.workItems.openArtifact(created.task.id, 'missing-artifact')).rejects.toThrow(/not found/iu)
   })
 
   it('creates, dispatches, accepts a deliverable, and reopens the accepted state', async () => {

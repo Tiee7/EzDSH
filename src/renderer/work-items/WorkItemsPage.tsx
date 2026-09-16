@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppCopy } from '../../shared/locale.js'
-import type { WorkTaskSnapshot } from '../../shared/work-items.js'
+import type { WorkArtifact, WorkTaskSnapshot } from '../../shared/work-items.js'
 import type { WorkArtifactAcceptRequest, WorkTaskExecuteRequest } from '../../shared/work-items.js'
 import { employeeDisplayLabel, type EmployeeSnapshot } from '../../shared/employees.js'
 import { WorkItemDetail } from './WorkItemDetail.js'
@@ -119,6 +119,13 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     return next
   }, [])
 
+  const openArtifact = useCallback((artifact: WorkArtifact): void => {
+    setError(undefined)
+    void window.EzDSH.workItems.openArtifact(artifact.taskId, artifact.id).catch((reason) => {
+      if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }, [])
+
   const startHandoff = useCallback(async (mode: 'handoff' | 'redo'): Promise<void> => {
     const current = selectedTaskId === undefined ? undefined : snapshots.get(selectedTaskId)
     if (current === undefined) return
@@ -213,6 +220,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
                 onClose={() => { closeDetails(selected.task.id) }}
                 onAcceptArtifact={acceptArtifact}
                 onAccepted={(next) => { setSnapshots((current) => mergeSnapshot(current, next)) }}
+                onOpenArtifact={openArtifact}
                 onStartHandoff={(mode) => { void startHandoff(mode) }}
                 onOpenExecutor={() => { openExecutor(selected) }}
               />
