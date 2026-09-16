@@ -86,6 +86,21 @@ export class WorkDutyScheduler {
   }
 
   private async claimAndDispatch(duty: WorkDuty): Promise<void> {
+    let task: WorkTaskSnapshot | undefined
+    try {
+      task = await this.options.getTask(duty.taskId)
+    } catch (error) {
+      this.options.onError?.(error, duty)
+      return
+    }
+    if (task === undefined) {
+      await this.pauseTerminalDuty(duty, 'work-item-missing')
+      return
+    }
+    if (task.task.archivedAt !== undefined || task.task.status === 'cancelled') {
+      await this.pauseTerminalDuty(duty, task.task.status === 'cancelled' ? 'work-item-cancelled' : 'work-item-archived')
+      return
+    }
     const occurrence = occurrenceId(duty.id, duty.nextOccurrenceAt)
     const claimRequestId = stableRequestId('claim', occurrence)
     let claim: WorkDutyOccurrenceClaimReceipt | undefined
@@ -104,12 +119,12 @@ export class WorkDutyScheduler {
     this.options.onClaim?.(claim)
     if (!this.options.canExecute()) return
 
-    let task: WorkTaskSnapshot | undefined
     try {
       task = await this.options.getTask(duty.taskId)
       if (task === undefined) throw new Error(`Work item task ${duty.taskId} was not found`)
       if (task.task.archivedAt !== undefined || task.task.status === 'cancelled') {
-        throw new Error(`Work item task ${duty.taskId} is archived or cancelled`)
+        await this.pauseTerminalDuty(duty, task.task.status === 'cancelled' ? 'work-item-cancelled' : 'work-item-archived')
+        return
       }
       await this.options.execute({
         requestId: stableRequestId('execute', occurrence),
@@ -123,9 +138,22 @@ export class WorkDutyScheduler {
       this.options.onError?.(error, duty)
     }
   }
+
+  private async pauseTerminalDuty(duty: WorkDuty, reason: string): Promise<void> {
+    if (duty.paused) return
+    try {
+      await this.options.store.pause({
+        requestId: stableRequestId('auto-pause', `${duty.id}:${reason}:${duty.revision}`),
+        dutyId: duty.id,
+        expectedRevision: duty.revision,
+      })
+    } catch (error) {
+      this.options.onError?.(error, duty)
+    }
+  }
 }
 
-function stableRequestId(kind: 'claim' | 'execute', occurrence: string): string {
+function stableRequestId(kind: 'claim' | 'execute' | 'auto-pause', occurrence: string): string {
   const digest = createHash('sha256').update(occurrence).digest('hex')
   return `work-duty-${kind}-${digest}`
 }
