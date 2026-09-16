@@ -10,6 +10,9 @@ import type {
   WorkbenchMigrationIdentity,
   WorkbenchMigrationApplyRequest,
   WorkbenchMigrationApplyResult,
+  WorkbenchMigrationReport,
+  WorkbenchMigrationReportItem,
+  WorkbenchMigrationReportRequest,
   WorkbenchMigrationPlan,
   WorkbenchMigrationPlanItem,
   WorkbenchMigrationPreparation,
@@ -93,6 +96,43 @@ export class WorkbenchMigrationService {
 
   async state(): Promise<WorkbenchMigrationState> {
     return this.store.stateSnapshot()
+  }
+
+  async report(request: WorkbenchMigrationReportRequest): Promise<WorkbenchMigrationReport> {
+    if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+      throw new WorkbenchMigrationServiceError('INVALID_REQUEST', '迁移报告请求无效')
+    }
+    if (Object.keys(request as unknown as Record<string, unknown>).some((key) => !['sourceId', 'sourceHash', 'mappingHash'].includes(key))) {
+      throw new WorkbenchMigrationServiceError('INVALID_REQUEST', '迁移报告请求包含未知字段')
+    }
+    const { sourceId, sourceHash, mappingHash } = request
+    for (const [name, value] of [['sourceId', sourceId], ['sourceHash', sourceHash], ['mappingHash', mappingHash]] as const) {
+      if (typeof value !== 'string' || value.trim() === '') throw new WorkbenchMigrationServiceError('INVALID_REQUEST', `${name} 无效`)
+    }
+    const plan = await this.store.getPlan(sourceId, sourceHash)
+    if (plan === undefined) throw new WorkbenchMigrationServiceError('PLAN_NOT_FOUND', '找不到对应的迁移计划')
+    if (plan.mappingHash !== mappingHash) throw new WorkbenchMigrationServiceError('SOURCE_CHANGED', '迁移映射已变化，请重新生成报告')
+    const snapshot = await this.store.stateSnapshot()
+    const receipts = new Map(snapshot.receipts
+      .filter((receipt) => receipt.sourceSnapshotHash === sourceHash && receipt.mappingHash === mappingHash)
+      .map((receipt) => [receipt.identity, receipt]))
+    const statuses: Array<keyof WorkbenchMigrationReport['counts']> = ['previewed', 'ready', 'applying', 'applied', 'skipped', 'conflict', 'failed', 'unknown', 'missing']
+    const counts = Object.fromEntries(statuses.map((status) => [status, 0])) as WorkbenchMigrationReport['counts']
+    const items = plan.items.map((item) => {
+      const receipt = receipts.get(item.identity.identity)
+      const status: WorkbenchMigrationReportItem['status'] = receipt?.status ?? 'missing'
+      counts[status] += 1
+      return {
+        identity: item.identity.identity,
+        sourceKey: item.identity.sourceKey,
+        title: item.source.title,
+        action: item.target.action,
+        status,
+        ...(receipt?.targetId === undefined ? {} : { targetId: receipt.targetId }),
+        ...(receipt?.error === undefined ? {} : { error: receipt.error }),
+      }
+    })
+    return { schemaVersion: 1, sourceId, sourceHash, mappingHash, generatedAt: new Date().toISOString(), counts, items }
   }
 
   async apply(request: WorkbenchMigrationApplyRequest): Promise<WorkbenchMigrationApplyResult> {

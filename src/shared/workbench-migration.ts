@@ -86,6 +86,32 @@ export interface WorkbenchMigrationApplyResult {
   targetId?: string
 }
 
+export interface WorkbenchMigrationReportItem {
+  identity: string
+  sourceKey: string
+  title: string
+  action: WorkbenchMigrationAction
+  status: WorkbenchMigrationReceiptStatus | 'missing'
+  targetId?: string
+  error?: { code: string; message: string }
+}
+
+export interface WorkbenchMigrationReport {
+  schemaVersion: 1
+  sourceId: string
+  sourceHash: string
+  mappingHash: string
+  generatedAt: string
+  counts: Record<WorkbenchMigrationReceiptStatus | 'missing', number>
+  items: WorkbenchMigrationReportItem[]
+}
+
+export interface WorkbenchMigrationReportRequest {
+  sourceId: string
+  sourceHash: string
+  mappingHash: string
+}
+
 export interface WorkbenchMigrationState {
   plans: WorkbenchMigrationPlan[]
   receipts: WorkbenchMigrationReceipt[]

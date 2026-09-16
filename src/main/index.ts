@@ -155,7 +155,7 @@ import { WorkDutyScheduler } from './work-items/work-duty-scheduler.js'
 import { WorkDutyStore } from './work-items/work-duty-store.js'
 import { WorkbenchMigrationService } from './work-items/workbench-migration-service.js'
 import { WorkbenchMigrationStore } from './work-items/workbench-migration-store.js'
-import type { WorkbenchMigrationApplyRequest, WorkbenchMigrationPreparationRequest } from '../shared/workbench-migration.js'
+import type { WorkbenchMigrationApplyRequest, WorkbenchMigrationPreparationRequest, WorkbenchMigrationReportRequest } from '../shared/workbench-migration.js'
 import {
   CURRENT_DATA_SCHEMA_VERSION,
   RecoveryManager,
@@ -1741,6 +1741,15 @@ function registerIpcHandlers(): void {
       requireDeveloperModeFeature()
       if (workbenchMigrationService === undefined) throw new Error('Workbench migration service is not ready')
       return success(await workbenchMigrationService.apply(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workbench-migration:report', async (_event, input: WorkbenchMigrationReportRequest): Promise<IpcResult<Awaited<ReturnType<WorkbenchMigrationService['report']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workbenchMigrationService === undefined) throw new Error('Workbench migration service is not ready')
+      return success(await workbenchMigrationService.report(input))
     } catch (error) {
       return failure(error)
     }

@@ -181,6 +181,7 @@ export interface EzDSHBridge {
       preview(sourceDirectory: string): Promise<import('../main/work-items/workbench-import.js').WorkbenchImportPreview>
       prepare(request: import('./workbench-migration.js').WorkbenchMigrationPreparationRequest): Promise<import('./workbench-migration.js').WorkbenchMigrationPreparation>
       apply(request: import('./workbench-migration.js').WorkbenchMigrationApplyRequest): Promise<import('./workbench-migration.js').WorkbenchMigrationApplyResult>
+      report(request: import('./workbench-migration.js').WorkbenchMigrationReportRequest): Promise<import('./workbench-migration.js').WorkbenchMigrationReport>
       state(): Promise<import('./workbench-migration.js').WorkbenchMigrationState>
     }
   }

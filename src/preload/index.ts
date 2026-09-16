@@ -15,6 +15,8 @@ import type {
   WorkbenchMigrationPreparationRequest,
   WorkbenchMigrationApplyRequest,
   WorkbenchMigrationApplyResult,
+  WorkbenchMigrationReport,
+  WorkbenchMigrationReportRequest,
   WorkbenchMigrationState,
 } from '../shared/workbench-migration.js'
 import type { WorkbenchImportPreview } from '../main/work-items/workbench-import.js'
@@ -198,6 +200,7 @@ const bridge: EzDSHBridge = {
       preview: (sourceDirectory: string) => invoke<WorkbenchImportPreview>('workbench-migration:preview', sourceDirectory),
       prepare: (request: WorkbenchMigrationPreparationRequest) => invoke<WorkbenchMigrationPreparation>('workbench-migration:prepare', request),
       apply: (request: WorkbenchMigrationApplyRequest) => invoke<WorkbenchMigrationApplyResult>('workbench-migration:apply', request),
+      report: (request: WorkbenchMigrationReportRequest) => invoke<WorkbenchMigrationReport>('workbench-migration:report', request),
       state: () => invoke<WorkbenchMigrationState>('workbench-migration:state'),
     },
   },

@@ -18,7 +18,7 @@ import { employeeDisplayLabel, type EmployeeSnapshot } from '../../shared/employ
 import type { WorkDuty } from '../../shared/work-duty.js'
 import type { WorkflowDefinition } from '../../shared/workflow.js'
 import type { WorkbenchImportPreview } from '../../main/work-items/workbench-import.js'
-import type { WorkbenchMigrationPreparation, WorkbenchMigrationState } from '../../shared/workbench-migration.js'
+import type { WorkbenchMigrationPreparation, WorkbenchMigrationReport, WorkbenchMigrationState } from '../../shared/workbench-migration.js'
 import { WorkItemAttentionView } from './WorkItemAttentionView.js'
 import {
   WorkItemCreateDialog,
@@ -307,6 +307,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [preparation, setPreparation] = useState<WorkbenchMigrationPreparation>()
   const [migrationState, setMigrationState] = useState<WorkbenchMigrationState>()
+  const [report, setReport] = useState<WorkbenchMigrationReport>()
   const [busy, setBusy] = useState<'preview' | 'prepare' | 'apply'>()
   const [error, setError] = useState<string>()
   const refreshMigrationState = useCallback(async (): Promise<void> => {
@@ -317,6 +318,13 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
     }
   }, [])
   useEffect(() => { void refreshMigrationState() }, [refreshMigrationState])
+  const refreshReport = useCallback(async (plan: WorkbenchMigrationPreparation['plan']): Promise<void> => {
+    try {
+      setReport(await window.EzDSH.workbench.migration.report({ sourceId: plan.sourceId, sourceHash: plan.sourceHash, mappingHash: plan.mappingHash }))
+    } catch {
+      // A report is a read-only projection and may be unavailable during recovery.
+    }
+  }, [])
   const previewSource = useCallback(async (): Promise<void> => {
     if (sourceDirectory.trim() === '') {
       setError(locale === 'en' ? 'Enter the legacy Workbench directory.' : '请输入旧 Workbench 目录。')
@@ -349,13 +357,14 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       })
       setPreparation(next)
       await refreshMigrationState()
+      if (!next.stale) await refreshReport(next.plan)
       if (next.stale) setError(next.message)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setBusy(undefined)
     }
-  }, [preview, refreshMigrationState, selected, sourceDirectory])
+  }, [preview, refreshMigrationState, refreshReport, selected, sourceDirectory])
   const apply = useCallback(async (identity: string): Promise<void> => {
     if (preparation === undefined) return
     const receipt = preparation.receipts.find((candidate) => candidate.identity === identity)
@@ -376,13 +385,14 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
         receipts: current.receipts.map((candidate) => candidate.identity === identity ? result.receipt : candidate),
       })
       await refreshMigrationState()
+      await refreshReport(preparation.plan)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       await refreshMigrationState()
     } finally {
       setBusy(undefined)
     }
-  }, [locale, preparation, refreshMigrationState])
+  }, [locale, preparation, refreshMigrationState, refreshReport])
   const toggle = useCallback((sourceKey: string): void => {
     setSelected((current) => {
       const next = new Set(current)
@@ -440,6 +450,10 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       </div>
       {preparation === undefined ? null : <>
         <p className="work-items-migration-result" role="status">{preparation.message} {locale === 'en' ? `${preparation.receipts.filter((receipt) => receipt.status === 'ready').length} items ready.` : `${preparation.receipts.filter((receipt) => receipt.status === 'ready').length} 项已准备。`}</p>
+        {report === undefined ? null : <div className="work-items-migration-report">
+          <span>{locale === 'en' ? `Report: ${report.counts.applied} applied · ${report.counts.failed} failed · ${report.counts.unknown} unknown · ${report.counts.missing} missing` : `报告：${report.counts.applied} 已应用 · ${report.counts.failed} 失败 · ${report.counts.unknown} 未知 · ${report.counts.missing} 缺失`}</span>
+          <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined} onClick={() => { void refreshReport(preparation.plan) }}>{locale === 'en' ? 'Refresh report' : '刷新报告'}</button>
+        </div>}
         <ul className="work-items-migration-list">
           {preparation.receipts.map((receipt) => {
             const item = preparation.plan.items.find((candidate) => candidate.identity.identity === receipt.identity)
