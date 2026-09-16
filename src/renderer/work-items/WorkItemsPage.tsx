@@ -114,11 +114,12 @@ function AttentionSummary({ snapshot, locale, onSelect }: { snapshot?: Workbench
   </section>
 }
 
-function NotificationInbox({ snapshot, locale, onMarkRead, onDismiss }: {
+function NotificationInbox({ snapshot, locale, onMarkRead, onDismiss, onSelectWorkItem }: {
   snapshot?: NotificationInboxSnapshot
   locale: 'zh' | 'en'
   onMarkRead: (id: string) => void
   onDismiss: (id: string) => void
+  onSelectWorkItem?: (taskId: string) => void
 }): JSX.Element | null {
   if (snapshot === undefined) return null
   const items = snapshot.items.filter((item) => item.dismissedAt === undefined).slice(-8).reverse()
@@ -137,7 +138,9 @@ function NotificationInbox({ snapshot, locale, onMarkRead, onDismiss }: {
           const text = getNotificationText(locale, item.signal)
           return <li key={item.id} className={item.readAt === undefined ? 'work-items-notification-unread' : undefined}>
             <div className="work-items-notification-copy">
-              <strong>{text.title}</strong>
+              {item.signal.workItemId !== undefined && onSelectWorkItem !== undefined
+                ? <button type="button" className="work-items-notification-link" onClick={() => onSelectWorkItem(item.signal.workItemId!)}>{text.title}</button>
+                : <strong>{text.title}</strong>}
               <span>{item.signal.detail ?? text.body}</span>
               <small>{new Date(item.createdAt).toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN')}</small>
             </div>
@@ -723,7 +726,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
 
       {error === undefined ? null : <p className="work-items-error" role="alert">{error}</p>}
       {showArchived ? null : <AttentionSummary snapshot={attention} locale={locale} onSelect={selectTask} />}
-      {showArchived ? null : <NotificationInbox snapshot={notificationInbox} locale={locale} onMarkRead={markNotificationRead} onDismiss={dismissNotification} />}
+      {showArchived ? null : <NotificationInbox snapshot={notificationInbox} locale={locale} onMarkRead={markNotificationRead} onDismiss={dismissNotification} onSelectWorkItem={selectTask} />}
       {showArchived ? null : <WorkDutyPanel snapshots={[...snapshots.values()]} employees={employeeDirectory} locale={locale} />}
       <WorkItemProjectContextPanel locale={locale} includeArchived={showArchived} />
       <div className="work-items-layout">

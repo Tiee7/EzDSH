@@ -76,6 +76,11 @@ export interface NotificationSignal {
   detail?: string
   /** Stable within the Runtime stream; used to prevent replay duplicates. */
   dedupeKey: string
+  /** Optional Main-owned references for Work Item attention notifications. */
+  workItemId?: string
+  dutyId?: string
+  occurrenceId?: string
+  runId?: string
 }
 
 /**
@@ -89,6 +94,7 @@ export const NOTIFICATION_SESSION_ID_MAX_LENGTH = 512 as const
 export const NOTIFICATION_DEDUPE_KEY_MAX_LENGTH = 512 as const
 export const NOTIFICATION_DETAIL_MAX_LENGTH = 4_000 as const
 export const NOTIFICATION_INBOX_ITEM_ID_MAX_LENGTH = 128 as const
+export const NOTIFICATION_REFERENCE_ID_MAX_LENGTH = 256 as const
 
 /** A notification retained in the Main-owned durable attention inbox. */
 export interface NotificationInboxItem {
@@ -132,11 +138,25 @@ export function normalizeNotificationSignal(value: unknown): NotificationSignal 
   const dedupeKey = boundedText(value.dedupeKey, NOTIFICATION_DEDUPE_KEY_MAX_LENGTH)
   if (event === undefined || sessionId === undefined || dedupeKey === undefined) return undefined
   const detail = value.detail === undefined ? undefined : boundedText(value.detail, NOTIFICATION_DETAIL_MAX_LENGTH)
+  const references = {
+    workItemId: value.workItemId === undefined ? undefined : boundedText(value.workItemId, NOTIFICATION_REFERENCE_ID_MAX_LENGTH),
+    dutyId: value.dutyId === undefined ? undefined : boundedText(value.dutyId, NOTIFICATION_REFERENCE_ID_MAX_LENGTH),
+    occurrenceId: value.occurrenceId === undefined ? undefined : boundedText(value.occurrenceId, NOTIFICATION_REFERENCE_ID_MAX_LENGTH),
+    runId: value.runId === undefined ? undefined : boundedText(value.runId, NOTIFICATION_REFERENCE_ID_MAX_LENGTH),
+  }
+  if ((value.workItemId !== undefined && references.workItemId === undefined)
+    || (value.dutyId !== undefined && references.dutyId === undefined)
+    || (value.occurrenceId !== undefined && references.occurrenceId === undefined)
+    || (value.runId !== undefined && references.runId === undefined)) return undefined
   return {
     event,
     sessionId,
     ...(detail === undefined ? {} : { detail }),
     dedupeKey,
+    ...(references.workItemId === undefined ? {} : { workItemId: references.workItemId }),
+    ...(references.dutyId === undefined ? {} : { dutyId: references.dutyId }),
+    ...(references.occurrenceId === undefined ? {} : { occurrenceId: references.occurrenceId }),
+    ...(references.runId === undefined ? {} : { runId: references.runId }),
   }
 }
 

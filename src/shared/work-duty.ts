@@ -57,6 +57,28 @@ export interface WorkDutyOccurrenceClaimRequest {
   occurrenceAt?: string
 }
 
+export type WorkDutyExecutionStatus = 'submitted' | 'failed'
+
+export interface WorkDutyExecutionLink {
+  status: WorkDutyExecutionStatus
+  taskId: string
+  runId?: string
+  commandId?: string
+  recordedAt: string
+  error?: string
+}
+
+export interface WorkDutyExecutionRecordRequest {
+  requestId: string
+  dutyId: string
+  occurrenceId: string
+  taskId: string
+  status: WorkDutyExecutionStatus
+  runId?: string
+  commandId?: string
+  error?: string
+}
+
 export interface WorkDutyCreateReceipt {
   requestId: string
   digest: string
@@ -83,13 +105,25 @@ export interface WorkDutyOccurrenceClaimReceipt {
   /** Number of additional due slots skipped after the one catch-up. */
   skippedOccurrences: number
   duty: WorkDuty
+  execution?: WorkDutyExecutionLink
+  replayed: boolean
+}
+
+export interface WorkDutyExecutionRecordReceipt {
+  requestId: string
+  digest: string
+  dutyId: string
+  occurrenceId: string
+  execution: WorkDutyExecutionLink
+  occurrence: WorkDutyOccurrenceClaimReceipt
   replayed: boolean
 }
 
 export interface WorkDutyEvent {
-  kind: 'created' | 'updated' | 'occurrence-claimed'
+  kind: 'created' | 'updated' | 'occurrence-claimed' | 'occurrence-execution-recorded'
   duty: WorkDuty
   occurrence?: WorkDutyOccurrenceClaimReceipt
+  execution?: WorkDutyExecutionLink
 }
 
 export type WorkDutyValidationErrorCode =
@@ -268,6 +302,29 @@ function timestampAt(value: unknown, path: string): string {
   return timestamp(value, path)
 }
 
+function executionLink(value: unknown, path: string): WorkDutyExecutionLink {
+  const execution = record(value, path)
+  exactFields(execution, ['status', 'taskId', 'runId', 'commandId', 'recordedAt', 'error'], path)
+  if (execution.status !== 'submitted' && execution.status !== 'failed') {
+    throw new WorkDutyValidationError('INVALID_VALUE', `${path}.status`, `${path}.status is not supported`)
+  }
+  const runId = execution.runId === undefined ? undefined : identifierAt(execution.runId, `${path}.runId`)
+  const commandId = execution.commandId === undefined ? undefined : identifierAt(execution.commandId, `${path}.commandId`)
+  const error = execution.error === undefined ? undefined : textAt(execution.error, `${path}.error`, 4_000)
+  return {
+    status: execution.status,
+    taskId: identifierAt(execution.taskId, `${path}.taskId`),
+    ...(runId === undefined ? {} : { runId }),
+    ...(commandId === undefined ? {} : { commandId }),
+    recordedAt: timestampAt(execution.recordedAt, `${path}.recordedAt`),
+    ...(error === undefined ? {} : { error }),
+  }
+}
+
+export function validateWorkDutyExecutionLink(value: unknown): WorkDutyExecutionLink {
+  return executionLink(value, '$')
+}
+
 function timezoneAt(value: unknown, path: string): string {
   const zone = textAt(value, path, WORK_DUTY_LIMITS.timezone)
   try {
@@ -359,6 +416,27 @@ export function validateWorkDutyOccurrenceClaimRequest(value: unknown): WorkDuty
     dutyId: identifierField(request, 'dutyId'),
     ...(now === undefined ? {} : { now }),
     ...(occurrenceAt === undefined ? {} : { occurrenceAt }),
+  }
+}
+
+export function validateWorkDutyExecutionRecordRequest(value: unknown): WorkDutyExecutionRecordRequest {
+  const request = record(value, '$')
+  exactFields(request, ['requestId', 'dutyId', 'occurrenceId', 'taskId', 'status', 'runId', 'commandId', 'error'])
+  if (request.status !== 'submitted' && request.status !== 'failed') {
+    throw new WorkDutyValidationError('INVALID_VALUE', 'status', 'status is not supported')
+  }
+  const runId = request.runId === undefined ? undefined : identifierField(request, 'runId')
+  const commandId = request.commandId === undefined ? undefined : identifierField(request, 'commandId')
+  const error = request.error === undefined ? undefined : textField(request, 'error', 4_000)
+  return {
+    requestId: identifierField(request, 'requestId'),
+    dutyId: identifierField(request, 'dutyId'),
+    occurrenceId: textField(request, 'occurrenceId', 256),
+    taskId: identifierField(request, 'taskId'),
+    status: request.status,
+    ...(runId === undefined ? {} : { runId }),
+    ...(commandId === undefined ? {} : { commandId }),
+    ...(error === undefined ? {} : { error }),
   }
 }
 

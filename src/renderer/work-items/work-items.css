@@ -35,6 +35,8 @@
 .work-items-notification-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--ezdsh-hairline); padding-top: 8px; }
 .work-items-notification-copy { display: grid; gap: 2px; min-width: 0; }
 .work-items-notification-copy strong { color: var(--ezdsh-text-body); font-size: 11px; }
+.work-items-notification-link { overflow: hidden; border: 0; padding: 0; background: transparent; color: var(--ezdsh-text-body); cursor: pointer; font: inherit; font-size: 11px; font-weight: 700; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.work-items-notification-link:hover { color: var(--ezdsh-brand); text-decoration: underline; }
 .work-items-notification-copy span { overflow: hidden; color: var(--ezdsh-text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .work-items-notification-copy small { color: var(--ezdsh-text-faint); font-size: 10px; }
 .work-items-notification-unread .work-items-notification-copy strong { color: var(--ezdsh-brand); }

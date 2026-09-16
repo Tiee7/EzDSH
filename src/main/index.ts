@@ -1342,6 +1342,7 @@ function startWorkDutyScheduler(): void {
       if (scope === undefined) return Promise.reject(new Error('Work item workspace is unavailable'))
       return scope.invoke((services) => services.execution.execute(request))
     },
+    notify: handleNotificationSignal,
     onError: (error, duty) => {
       const suffix = duty === undefined ? '' : ` duty=${duty.id} task=${duty.taskId}`
       console.error(`[work-duties] scheduled execution failed${suffix}:`, error instanceof Error ? error.message : String(error))

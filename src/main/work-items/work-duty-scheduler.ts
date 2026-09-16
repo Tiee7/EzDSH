@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 import type { WorkTaskExecuteRequest, WorkTaskSnapshot } from '../../shared/work-items.js'
 import { occurrenceId, type WorkDuty, type WorkDutyOccurrenceClaimReceipt } from '../../shared/work-duty.js'
+import type { NotificationSignal } from '../../shared/notifications.js'
 import { WorkDutyStore } from './work-duty-store.js'
 
 export interface WorkDutySchedulerOptions {
@@ -13,6 +14,7 @@ export interface WorkDutySchedulerOptions {
   pollIntervalMs?: number
   now?: () => string
   onClaim?: (receipt: WorkDutyOccurrenceClaimReceipt) => void
+  notify?: (signal: NotificationSignal) => void
   onError?: (error: unknown, duty?: WorkDuty) => void
 }
 
@@ -126,7 +128,8 @@ export class WorkDutyScheduler {
         await this.pauseTerminalDuty(duty, task.task.status === 'cancelled' ? 'work-item-cancelled' : 'work-item-archived')
         return
       }
-      await this.options.execute({
+      const knownCommands = new Set(task.runs.map((run) => run.commandId))
+      const submitted = await this.options.execute({
         requestId: stableRequestId('execute', occurrence),
         taskId: duty.taskId,
         expectedRevision: task.task.revision,
@@ -134,7 +137,43 @@ export class WorkDutyScheduler {
         mode: 'initial',
         input: duty.input,
       })
+      const linkedRun = submitted.runs.find((run) => run.runId !== '' && !knownCommands.has(run.commandId))
+      try {
+        await this.options.store.recordExecution({
+          requestId: stableRequestId('result', occurrence),
+          dutyId: duty.id,
+          occurrenceId: claim.occurrenceId,
+          taskId: duty.taskId,
+          status: 'submitted',
+          ...(linkedRun?.runId === undefined ? {} : { runId: linkedRun.runId }),
+          ...(linkedRun?.commandId === undefined ? {} : { commandId: linkedRun.commandId }),
+        })
+      } catch (resultError) {
+        this.options.onError?.(resultError, duty)
+      }
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      try {
+        await this.options.store.recordExecution({
+          requestId: stableRequestId('result', occurrence),
+          dutyId: duty.id,
+          occurrenceId: claim.occurrenceId,
+          taskId: duty.taskId,
+          status: 'failed',
+          error: detail.slice(0, 4_000),
+        })
+      } catch (resultError) {
+        this.options.onError?.(resultError, duty)
+      }
+      this.options.notify?.({
+        event: 'error',
+        sessionId: `work-duty:${duty.id}`,
+        dedupeKey: stableRequestId('notification', occurrence),
+        detail,
+        workItemId: duty.taskId,
+        dutyId: duty.id,
+        occurrenceId: claim.occurrenceId,
+      })
       this.options.onError?.(error, duty)
     }
   }
@@ -147,13 +186,21 @@ export class WorkDutyScheduler {
         dutyId: duty.id,
         expectedRevision: duty.revision,
       })
+      this.options.notify?.({
+        event: 'error',
+        sessionId: `work-duty:${duty.id}`,
+        dedupeKey: stableRequestId('notification', `${duty.id}:${reason}:${duty.revision}`),
+        detail: `周期职责已暂停：${reason}`,
+        workItemId: duty.taskId,
+        dutyId: duty.id,
+      })
     } catch (error) {
       this.options.onError?.(error, duty)
     }
   }
 }
 
-function stableRequestId(kind: 'claim' | 'execute' | 'auto-pause', occurrence: string): string {
+function stableRequestId(kind: 'claim' | 'execute' | 'result' | 'notification' | 'auto-pause', occurrence: string): string {
   const digest = createHash('sha256').update(occurrence).digest('hex')
   return `work-duty-${kind}-${digest}`
 }

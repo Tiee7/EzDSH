@@ -6,12 +6,17 @@ import {
   occurrenceId,
   validateWorkDuty,
   validateWorkDutyCreateRequest,
+  validateWorkDutyExecutionLink,
+  validateWorkDutyExecutionRecordRequest,
   validateWorkDutyOccurrenceClaimRequest,
   validateWorkDutyPauseRequest,
   validateWorkDutyResumeRequest,
   type WorkDuty,
   type WorkDutyCreateReceipt,
   type WorkDutyCreateRequest,
+  type WorkDutyExecutionLink,
+  type WorkDutyExecutionRecordReceipt,
+  type WorkDutyExecutionRecordRequest,
   type WorkDutyEvent,
   type WorkDutyMutationReceipt,
   type WorkDutyOccurrenceClaimReceipt,
@@ -25,6 +30,7 @@ type StoredDutyRequest =
   | { kind: 'pause'; digest: string; receipt: WorkDutyMutationReceipt }
   | { kind: 'resume'; digest: string; receipt: WorkDutyMutationReceipt }
   | { kind: 'occurrence'; digest: string; receipt: WorkDutyOccurrenceClaimReceipt }
+  | { kind: 'execution'; digest: string; receipt: WorkDutyExecutionRecordReceipt }
 
 interface WorkDutyState {
   version: 1
@@ -83,11 +89,13 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 }
 
 function persistedOccurrence(value: unknown): value is WorkDutyOccurrenceClaimReceipt {
-  if (!isRecord(value) || !hasExactKeys(value, [
-    'requestId', 'dutyId', 'occurrenceId', 'occurrenceAt', 'nextOccurrenceAt', 'skippedOccurrences', 'duty', 'replayed',
-  ])) return false
+  if (!isRecord(value)) return false
+  const required = ['requestId', 'dutyId', 'occurrenceId', 'occurrenceAt', 'nextOccurrenceAt', 'skippedOccurrences', 'duty', 'replayed']
+  const allowed = [...required, 'execution']
+  if (!Object.keys(value).every((key) => allowed.includes(key)) || !required.every((key) => key in value)) return false
   try {
     const duty = validateWorkDuty(value.duty)
+    const execution = value.execution === undefined ? undefined : validateWorkDutyExecutionLink(value.execution)
     const requestId = value.requestId
     const dutyId = value.dutyId
     const occurrenceAt = value.occurrenceAt
@@ -103,6 +111,7 @@ function persistedOccurrence(value: unknown): value is WorkDutyOccurrenceClaimRe
       || new Date(occurrenceAt).toISOString() !== occurrenceAt
       || new Date(nextOccurrenceAt).toISOString() !== nextOccurrenceAt) return false
     return duty.nextOccurrenceAt === nextOccurrenceAt
+      && (execution === undefined || execution.taskId === duty.taskId)
   } catch {
     return false
   }
@@ -136,6 +145,22 @@ function persistedRequest(value: unknown): value is StoredDutyRequest {
   if (value.kind === 'occurrence') {
     return persistedOccurrence(value.receipt)
   }
+  if (value.kind === 'execution') {
+    const receipt = value.receipt
+    if (!isRecord(receipt) || !hasExactKeys(receipt, ['requestId', 'digest', 'dutyId', 'occurrenceId', 'execution', 'occurrence', 'replayed'])) return false
+    try {
+      const execution = validateWorkDutyExecutionLink(receipt.execution)
+      const occurrence = receipt.occurrence
+      return persistedOccurrence(occurrence)
+        && typeof receipt.requestId === 'string' && receipt.requestId.trim() !== ''
+        && typeof receipt.dutyId === 'string' && receipt.dutyId === occurrence.dutyId
+        && typeof receipt.occurrenceId === 'string' && receipt.occurrenceId === occurrence.occurrenceId
+        && execution.taskId === occurrence.duty.taskId
+        && receipt.digest === value.digest && receipt.replayed === false
+    } catch {
+      return false
+    }
+  }
   return false
 }
 
@@ -160,7 +185,7 @@ function assertState(value: unknown): WorkDutyState {
   return copy(value as unknown as WorkDutyState)
 }
 
-function replayReceipt<T extends WorkDutyCreateReceipt | WorkDutyMutationReceipt | WorkDutyOccurrenceClaimReceipt>(
+function replayReceipt<T extends WorkDutyCreateReceipt | WorkDutyMutationReceipt | WorkDutyOccurrenceClaimReceipt | WorkDutyExecutionRecordReceipt>(
   state: WorkDutyState,
   requestId: string,
   digest: string,
@@ -318,6 +343,70 @@ export class WorkDutyStore {
       setOwnValue(next.requests, request.requestId, { kind: 'occurrence', digest, receipt: copy(receipt) })
       await this.commit(next)
       this.emit({ kind: 'occurrence-claimed', duty: updatedDuty, occurrence: receipt })
+      return copy(receipt)
+    })
+  }
+
+  /** Persist the result of submitting one claimed occurrence to Work Items. */
+  async recordExecution(input: WorkDutyExecutionRecordRequest): Promise<WorkDutyExecutionRecordReceipt> {
+    return this.mutate(async () => {
+      const request = validateWorkDutyExecutionRecordRequest(input)
+      const digest = requestDigest('execution', request)
+      const replay = replayReceipt<WorkDutyExecutionRecordReceipt>(this.state, request.requestId, digest)
+      if (replay !== undefined) return replay
+      const duty = ownValue(this.state.duties, request.dutyId)
+      if (duty === undefined) throw new WorkDutyStoreConflictError('DUTY_NOT_FOUND', `Duty ${request.dutyId} was not found`)
+      const occurrence = ownValue(this.state.occurrences, request.occurrenceId)
+      if (occurrence === undefined || occurrence.dutyId !== duty.id || occurrence.duty.taskId !== request.taskId) {
+        throw new WorkDutyStoreConflictError('OCCURRENCE_CONFLICT', `Occurrence ${request.occurrenceId} does not belong to duty ${duty.id}`)
+      }
+      if (request.occurrenceId !== occurrenceId(duty.id, occurrence.occurrenceAt)) {
+        throw new WorkDutyStoreConflictError('OCCURRENCE_CONFLICT', `Occurrence ${request.occurrenceId} has an invalid identity`)
+      }
+      if (occurrence.execution !== undefined) {
+        const same = occurrence.execution.status === request.status
+          && occurrence.execution.taskId === request.taskId
+          && occurrence.execution.runId === request.runId
+          && occurrence.execution.commandId === request.commandId
+          && occurrence.execution.error === request.error
+        if (!same) throw new WorkDutyStoreConflictError('OCCURRENCE_CONFLICT', `Occurrence ${request.occurrenceId} already has a different execution result`)
+        const receipt: WorkDutyExecutionRecordReceipt = {
+          requestId: request.requestId,
+          digest,
+          dutyId: duty.id,
+          occurrenceId: occurrence.occurrenceId,
+          execution: copy(occurrence.execution),
+          occurrence: copy(occurrence),
+          replayed: false,
+        }
+        const next = copy(this.state)
+        setOwnValue(next.requests, request.requestId, { kind: 'execution', digest, receipt: copy(receipt) })
+        await this.commit(next)
+        return copy(receipt)
+      }
+      const execution: WorkDutyExecutionLink = {
+        status: request.status,
+        taskId: request.taskId,
+        ...(request.runId === undefined ? {} : { runId: request.runId }),
+        ...(request.commandId === undefined ? {} : { commandId: request.commandId }),
+        recordedAt: isoNow(),
+        ...(request.error === undefined ? {} : { error: request.error }),
+      }
+      const updatedOccurrence: WorkDutyOccurrenceClaimReceipt = { ...copy(occurrence), execution }
+      const receipt: WorkDutyExecutionRecordReceipt = {
+        requestId: request.requestId,
+        digest,
+        dutyId: duty.id,
+        occurrenceId: occurrence.occurrenceId,
+        execution,
+        occurrence: updatedOccurrence,
+        replayed: false,
+      }
+      const next = copy(this.state)
+      setOwnValue(next.occurrences, occurrence.occurrenceId, copy(updatedOccurrence))
+      setOwnValue(next.requests, request.requestId, { kind: 'execution', digest, receipt: copy(receipt) })
+      await this.commit(next)
+      this.emit({ kind: 'occurrence-execution-recorded', duty, occurrence: updatedOccurrence, execution })
       return copy(receipt)
     })
   }
