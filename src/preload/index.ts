@@ -10,6 +10,15 @@ import type { NavConfig } from '../shared/navigation.js'
 import type { MobileRemoteSnapshot } from '../shared/mobile-remote.js'
 import type { NotificationInboxItem, NotificationInboxSnapshot, NotificationSettings } from '../shared/notifications.js'
 import type { WorkbenchAttentionSnapshot } from '../shared/workbench-attention.js'
+import type {
+  WorkDuty,
+  WorkDutyCreateReceipt,
+  WorkDutyCreateRequest,
+  WorkDutyEvent,
+  WorkDutyMutationReceipt,
+  WorkDutyPauseRequest,
+  WorkDutyResumeRequest,
+} from '../shared/work-duty.js'
 import type { ProxyProfileInput, ProxySettingsSnapshot, ProxyTestResult } from '../shared/proxy.js'
 import type { RuntimeSnapshot } from '../main/runtime/runtime-types.js'
 import type {
@@ -166,6 +175,17 @@ const bridge: EzDSHBridge = {
   },
   workbench: {
     getAttention: () => invoke<WorkbenchAttentionSnapshot>('work-items:attention'),
+    duties: {
+      list: () => invoke<WorkDuty[]>('work-duties:list'),
+      create: (request: WorkDutyCreateRequest) => invoke<WorkDutyCreateReceipt>('work-duties:create', request),
+      pause: (request: WorkDutyPauseRequest) => invoke<WorkDutyMutationReceipt>('work-duties:pause', request),
+      resume: (request: WorkDutyResumeRequest) => invoke<WorkDutyMutationReceipt>('work-duties:resume', request),
+      onChange: (listener: (event: WorkDutyEvent) => void) => {
+        const handler = (_event: Electron.IpcRendererEvent, event: WorkDutyEvent) => listener(event)
+        ipcRenderer.on('work-duties:state-change', handler)
+        return () => ipcRenderer.removeListener('work-duties:state-change', handler)
+      },
+    },
   },
   employees: {
     methods: {

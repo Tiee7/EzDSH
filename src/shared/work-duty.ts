@@ -1,4 +1,5 @@
 import type { WorkExecutor } from './work-items.js'
+import { isWorkflowValue } from './workflow.js'
 
 /**
  * A Work Duty is a durable responsibility attached to one Work Item.  The
@@ -9,6 +10,8 @@ export interface WorkDuty {
   id: string
   taskId: string
   executor: WorkExecutor
+  /** JSON-safe input passed to each recurring Work Item attempt. */
+  input: unknown
   everySeconds: number
   /** IANA time zone used for display and future calendar-aware policies. */
   timezone: string
@@ -26,6 +29,7 @@ export interface WorkDutyCreateRequest {
   requestId: string
   taskId: string
   executor: WorkExecutor
+  input: unknown
   everySeconds: number
   timezone: string
   nextOccurrenceAt: string
@@ -221,7 +225,7 @@ function workExecutor(value: unknown): WorkExecutor {
 
 function dutyFields(value: UnknownRecord, path: string): WorkDuty {
   exactFields(value, [
-    'id', 'taskId', 'executor', 'everySeconds', 'timezone', 'nextOccurrenceAt', 'paused',
+    'id', 'taskId', 'executor', 'input', 'everySeconds', 'timezone', 'nextOccurrenceAt', 'paused',
     'missedPolicy', 'revision', 'createdAt', 'updatedAt',
   ], path)
   if (!('paused' in value)) {
@@ -233,10 +237,14 @@ function dutyFields(value: UnknownRecord, path: string): WorkDuty {
   if (value.missedPolicy !== 'catch-up-once') {
     throw new WorkDutyValidationError('INVALID_VALUE', `${path}.missedPolicy`, `${path}.missedPolicy is not supported`)
   }
+  if (!isWorkflowValue(value.input)) {
+    throw new WorkDutyValidationError('INVALID_VALUE', `${path}.input`, `${path}.input must be a finite JSON-safe value`)
+  }
   return {
     id: identifierField(value, 'id', `${path}.id`),
     taskId: identifierField(value, 'taskId', `${path}.taskId`),
     executor: workExecutorAt(value.executor, `${path}.executor`),
+    input: structuredClone(value.input),
     everySeconds: everySeconds(value.everySeconds, `${path}.everySeconds`),
     timezone: timezoneAt(value.timezone, `${path}.timezone`),
     nextOccurrenceAt: timestampAt(value.nextOccurrenceAt, `${path}.nextOccurrenceAt`),
@@ -302,7 +310,10 @@ export function occurrenceId(dutyId: string, occurrenceAt: string): string {
 
 export function validateWorkDutyCreateRequest(value: unknown): WorkDutyCreateRequest {
   const request = record(value, '$')
-  exactFields(request, ['requestId', 'taskId', 'executor', 'everySeconds', 'timezone', 'nextOccurrenceAt', 'paused'])
+  exactFields(request, ['requestId', 'taskId', 'executor', 'input', 'everySeconds', 'timezone', 'nextOccurrenceAt', 'paused'])
+  if (!('input' in request) || !isWorkflowValue(request.input)) {
+    throw new WorkDutyValidationError('INVALID_VALUE', 'input', 'input must be a finite JSON-safe value')
+  }
   if (request.paused !== undefined && typeof request.paused !== 'boolean') {
     throw new WorkDutyValidationError('INVALID_TYPE', 'paused', 'paused must be a boolean')
   }
@@ -310,6 +321,7 @@ export function validateWorkDutyCreateRequest(value: unknown): WorkDutyCreateReq
     requestId: identifierField(request, 'requestId'),
     taskId: identifierField(request, 'taskId'),
     executor: workExecutor(request.executor),
+    input: structuredClone(request.input),
     everySeconds: everySeconds(request.everySeconds),
     timezone: timezone(request.timezone),
     nextOccurrenceAt: timestamp(request.nextOccurrenceAt, 'nextOccurrenceAt'),

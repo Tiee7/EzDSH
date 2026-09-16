@@ -242,6 +242,7 @@ export class WorkDutyStore {
         id: randomUUID(),
         taskId: request.taskId,
         executor: copy(request.executor),
+        input: copy(request.input),
         everySeconds: request.everySeconds,
         timezone: request.timezone,
         nextOccurrenceAt: request.nextOccurrenceAt,

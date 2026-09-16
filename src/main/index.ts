@@ -10,6 +10,15 @@ import type { IpcResult } from '../shared/errors.js'
 import { toEzDSHError } from '../shared/errors.js'
 import type { RuntimeSnapshot } from './runtime/runtime-types.js'
 import type {
+  WorkDuty,
+  WorkDutyCreateReceipt,
+  WorkDutyCreateRequest,
+  WorkDutyEvent,
+  WorkDutyMutationReceipt,
+  WorkDutyPauseRequest,
+  WorkDutyResumeRequest,
+} from '../shared/work-duty.js'
+import type {
   DeleteProviderResult,
   ListModelsInput,
   ProviderModel,
@@ -141,6 +150,8 @@ import { readNotificationSettings, writeNotificationSettings } from './notificat
 import { RuntimeNotificationService } from './notifications/runtime-notification-service.js'
 import { NativeNotificationService, type NativeNotificationLike } from './notifications/native-notification-service.js'
 import { NotificationInboxStore } from './notifications/notification-inbox-store.js'
+import { WorkDutyScheduler } from './work-items/work-duty-scheduler.js'
+import { WorkDutyStore } from './work-items/work-duty-store.js'
 import {
   CURRENT_DATA_SCHEMA_VERSION,
   RecoveryManager,
@@ -185,6 +196,9 @@ let runtimeNotificationService: RuntimeNotificationService | undefined
 let nativeNotificationService: NativeNotificationService | undefined
 let notificationInboxStore: NotificationInboxStore | undefined
 let stopNotificationInboxListener: (() => void) | undefined
+let workDutyStore: WorkDutyStore | undefined
+let workDutyScheduler: WorkDutyScheduler | undefined
+let stopWorkDutyListener: (() => void) | undefined
 let notificationRuntimeUrl: string | undefined
 let storeService: StoreService | undefined
 let dshPluginCommandRunner: PluginCommandRunner | undefined
@@ -513,6 +527,10 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   notificationInboxStore = new NotificationInboxStore(layout.state)
   await notificationInboxStore.initialize()
   stopNotificationInboxListener = notificationInboxStore.onChanged(emitNotificationInbox)
+  workDutyStore = new WorkDutyStore(layout.state)
+  await workDutyStore.initialize()
+  stopWorkDutyListener?.()
+  stopWorkDutyListener = workDutyStore.onChanged(emitWorkDutyEvent)
 
   if (await repairInstalledDshPlugin(layout.harness, 'web', 'dsh-codex')) {
     console.warn('[dsh-plugin] repaired dsh-codex account status compatibility')
@@ -844,6 +862,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     onObserverError: logWorkItemObserverError,
     openArtifact: (storedPath) => shell.openPath(storedPath),
   })
+  startWorkDutyScheduler()
   await workflowRunService.cleanupExpiredInternalArtifacts(async (sessionId) => {
     const deleted = await deleteArchivedSessionFromStore(layout.harness, sessionId)
     if (!deleted) throw new Error(`Workflow 内部 Session ${sessionId} 不在 DSH 归档列表中，保留以便下次安全重试`)
@@ -1235,9 +1254,14 @@ async function reopenWorkItemWorkspaceScope(): Promise<void> {
     throw new Error('Work item workspace changed while reopening restored state')
   }
   workItemIpcScope = reopened
+  startWorkDutyScheduler()
 }
 
 async function stopApplicationComponents(reportProgress?: RecoveryStopProgressReporter): Promise<void> {
+  await workDutyScheduler?.stop()
+  workDutyScheduler = undefined
+  stopWorkDutyListener?.()
+  stopWorkDutyListener = undefined
   const workspaceScope = workItemIpcScope
   workItemIpcScope = undefined
   await workspaceScope?.dispose()
@@ -1288,6 +1312,41 @@ function emitWorkItemState(snapshot: WorkTaskSnapshot): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send('work-items:changed', snapshot)
   }
+}
+
+function emitWorkDutyEvent(event: WorkDutyEvent): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('work-duties:state-change', event)
+  }
+}
+
+function startWorkDutyScheduler(): void {
+  if (workDutyScheduler !== undefined) return
+  const store = workDutyStore
+  if (store === undefined) throw new Error('Work duty store is not ready')
+  workDutyScheduler = new WorkDutyScheduler({
+    store,
+    canExecute: () => {
+      try {
+        assertWorkItemExecutionAvailable()
+        return true
+      } catch {
+        return false
+      }
+    },
+    getTask: (taskId) => workItemIpcScope?.invoke((services) => services.workItems.get(taskId))
+      ?? Promise.resolve(undefined),
+    execute: (request) => {
+      const scope = workItemIpcScope
+      if (scope === undefined) return Promise.reject(new Error('Work item workspace is unavailable'))
+      return scope.invoke((services) => services.execution.execute(request))
+    },
+    onError: (error, duty) => {
+      const suffix = duty === undefined ? '' : ` duty=${duty.id} task=${duty.taskId}`
+      console.error(`[work-duties] scheduled execution failed${suffix}:`, error instanceof Error ? error.message : String(error))
+    },
+  })
+  workDutyScheduler.start()
 }
 
 function logWorkItemObserverError(error: unknown): void {
@@ -1571,6 +1630,42 @@ function registerIpcHandlers(): void {
       if (typeof id !== 'string' || id.trim() === '') throw new Error('Notification inbox item id is invalid')
       if (notificationInboxStore === undefined) throw new Error('Notification inbox is not ready')
       return success(await notificationInboxStore.dismiss(id))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('work-duties:list', async (): Promise<IpcResult<WorkDuty[]>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workDutyStore === undefined) throw new Error('Work duty store is not ready')
+      return success(await workDutyStore.list())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('work-duties:create', async (_event, input: WorkDutyCreateRequest): Promise<IpcResult<WorkDutyCreateReceipt>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workDutyStore === undefined) throw new Error('Work duty store is not ready')
+      return success(await workDutyStore.create(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('work-duties:pause', async (_event, input: WorkDutyPauseRequest): Promise<IpcResult<WorkDutyMutationReceipt>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workDutyStore === undefined) throw new Error('Work duty store is not ready')
+      return success(await workDutyStore.pause(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('work-duties:resume', async (_event, input: WorkDutyResumeRequest): Promise<IpcResult<WorkDutyMutationReceipt>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workDutyStore === undefined) throw new Error('Work duty store is not ready')
+      return success(await workDutyStore.resume(input))
     } catch (error) {
       return failure(error)
     }

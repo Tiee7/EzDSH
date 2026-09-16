@@ -15,6 +15,8 @@ import type {
 import type { WorkbenchAttentionGroup, WorkbenchAttentionItem, WorkbenchAttentionSnapshot } from '../../shared/workbench-attention.js'
 import { getNotificationText, type NotificationInboxItem, type NotificationInboxSnapshot } from '../../shared/notifications.js'
 import { employeeDisplayLabel, type EmployeeSnapshot } from '../../shared/employees.js'
+import type { WorkDuty } from '../../shared/work-duty.js'
+import type { WorkflowDefinition } from '../../shared/workflow.js'
 import { WorkItemAttentionView } from './WorkItemAttentionView.js'
 import {
   WorkItemCreateDialog,
@@ -146,6 +148,151 @@ function NotificationInbox({ snapshot, locale, onMarkRead, onDismiss }: {
           </li>
         })}
       </ul>}
+  </section>
+}
+
+function WorkDutyPanel({ snapshots, employees, locale }: {
+  snapshots: ReadonlyArray<WorkTaskSnapshot>
+  employees: ReadonlyMap<string, EmployeeSnapshot>
+  locale: 'zh' | 'en'
+}): JSX.Element | null {
+  const [duties, setDuties] = useState<WorkDuty[]>([])
+  const [busyDutyId, setBusyDutyId] = useState<string>()
+  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([])
+  const [creating, setCreating] = useState(false)
+  const [creatingDuty, setCreatingDuty] = useState(false)
+  const [createError, setCreateError] = useState<string>()
+  const activeTasks = useMemo(() => snapshots.filter((snapshot) => snapshot.task.archivedAt === undefined && snapshot.task.status !== 'cancelled'), [snapshots])
+  const employeeOptions = useMemo(() => [...employees.values()].filter((employee) => employee.enabled), [employees])
+  const taskTitles = useMemo(() => new Map(snapshots.map((snapshot) => [snapshot.task.id, snapshot.task.title])), [snapshots])
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      setDuties(await window.EzDSH.workbench.duties.list())
+    } catch {
+      // The Work Items surface remains usable when the optional duty store is unavailable.
+    }
+  }, [])
+  useEffect(() => {
+    void refresh()
+    void window.EzDSH.workflows.list().then(setWorkflows).catch(() => setWorkflows([]))
+    return window.EzDSH.workbench.duties.onChange(() => { void refresh() })
+  }, [refresh])
+
+  const setPaused = useCallback(async (duty: WorkDuty, paused: boolean): Promise<void> => {
+    setBusyDutyId(duty.id)
+    try {
+      const request = {
+        requestId: mutationRequestId(paused ? 'work-duty-pause' : 'work-duty-resume'),
+        dutyId: duty.id,
+        expectedRevision: duty.revision,
+      }
+      if (paused) await window.EzDSH.workbench.duties.pause(request)
+      else await window.EzDSH.workbench.duties.resume(request)
+      await refresh()
+    } finally {
+      setBusyDutyId(undefined)
+    }
+  }, [refresh])
+
+  const createDuty = useCallback(async (form: HTMLFormElement): Promise<void> => {
+    const data = new FormData(form)
+    const taskId = String(data.get('taskId') ?? '').trim()
+    const executorKey = String(data.get('executor') ?? '').trim()
+    const everySeconds = Number(data.get('everySeconds') ?? 300)
+    const rawInput = String(data.get('input') ?? '').trim()
+    if (taskId === '' || executorKey === '' || !Number.isSafeInteger(everySeconds) || everySeconds < 300) {
+      setCreateError(locale === 'en' ? 'Choose a task and executor; interval must be at least 300 seconds.' : '请选择工作项和执行者，间隔至少为 300 秒。')
+      return
+    }
+    let input: unknown = rawInput
+    if (rawInput === '') input = {}
+    else {
+      try { input = JSON.parse(rawInput) } catch { /* Plain text is a valid recurring input. */ }
+    }
+    const executor = executorKey.startsWith('employee:')
+      ? { kind: 'employee' as const, employeeId: executorKey.slice('employee:'.length) }
+      : { kind: 'workflow' as const, workflowId: executorKey.slice('workflow:'.length), workflowRevision: workflows.find((workflow) => `workflow:${workflow.id}` === executorKey)?.revision }
+    setCreatingDuty(true)
+    setCreateError(undefined)
+    try {
+      await window.EzDSH.workbench.duties.create({
+        requestId: mutationRequestId('work-duty-create'),
+        taskId,
+        executor,
+        input,
+        everySeconds,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        nextOccurrenceAt: new Date(Date.now() + everySeconds * 1000).toISOString(),
+      })
+      setCreating(false)
+      await refresh()
+    } catch (reason) {
+      setCreateError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCreatingDuty(false)
+    }
+  }, [locale, refresh, workflows])
+
+  return <section className="work-items-duty-panel" aria-label={locale === 'en' ? 'Scheduled duties' : '周期职责'}>
+    <div className="work-items-duty-heading">
+      <div>
+        <strong>{locale === 'en' ? 'Scheduled duties' : '周期职责'}</strong>
+        <span>{duties.length === 0
+          ? (locale === 'en' ? 'No duties configured' : '尚未配置职责')
+          : (locale === 'en' ? `${duties.length} durable responsibilities` : `${duties.length} 个持久职责`)}</span>
+      </div>
+      <button type="button" className="work-items-button work-items-button-quiet" onClick={() => { setCreating((current) => !current); setCreateError(undefined) }}>
+        {creating ? (locale === 'en' ? 'Close' : '收起') : (locale === 'en' ? 'New duty' : '新建职责')}
+      </button>
+    </div>
+    {creating ? <form className="work-items-duty-create" onSubmit={(event) => { event.preventDefault(); void createDuty(event.currentTarget) }}>
+      <label>{locale === 'en' ? 'Work item' : '工作项'}
+        <select name="taskId" defaultValue={activeTasks[0]?.task.id ?? ''} disabled={activeTasks.length === 0}>
+          {activeTasks.map((snapshot) => <option key={snapshot.task.id} value={snapshot.task.id}>{snapshot.task.title}</option>)}
+        </select>
+      </label>
+      <label>{locale === 'en' ? 'Executor' : '执行者'}
+        <select name="executor" defaultValue={employeeOptions[0] === undefined ? (workflows.find((workflow) => workflow.enabled) === undefined ? '' : `workflow:${workflows.find((workflow) => workflow.enabled)!.id}`) : `employee:${employeeOptions[0].id}`}>
+          {employeeOptions.map((employee) => <option key={`employee:${employee.id}`} value={`employee:${employee.id}`}>{employeeDisplayLabel(employee)}</option>)}
+          {workflows.filter((workflow) => workflow.enabled).map((workflow) => <option key={`workflow:${workflow.id}`} value={`workflow:${workflow.id}`}>{workflow.name}</option>)}
+        </select>
+      </label>
+      <label>{locale === 'en' ? 'Every seconds' : '间隔秒数'}
+        <input name="everySeconds" type="number" min={300} step={1} defaultValue={300} />
+      </label>
+      <label>{locale === 'en' ? 'Input (JSON or text)' : '输入（JSON 或文本）'}
+        <textarea name="input" rows={2} placeholder={locale === 'en' ? '{} or a plain text prompt' : '{} 或一段文本'} />
+      </label>
+      {createError === undefined ? null : <p className="work-items-duty-create-error" role="alert">{createError}</p>}
+      <div className="work-items-duty-create-actions">
+        <button type="submit" className="work-items-button" disabled={creatingDuty || activeTasks.length === 0}>{creatingDuty ? '…' : (locale === 'en' ? 'Create' : '创建')}</button>
+      </div>
+    </form> : null}
+    {duties.length === 0 ? <p className="work-items-duty-empty">{locale === 'en' ? 'A duty runs this Work Item on a durable interval after the Runtime is available.' : '创建后，Runtime 可用时会按持久化间隔执行这个工作项。'}</p> : null}
+    {duties.length === 0 ? null : <ul className="work-items-duty-list">
+      {duties.map((duty) => {
+        const executor = duty.executor.kind === 'employee'
+          ? employees.get(duty.executor.employeeId) === undefined
+            ? duty.executor.employeeId
+            : employeeDisplayLabel(employees.get(duty.executor.employeeId)!)
+          : duty.executor.workflowId
+        return <li key={duty.id} className={duty.paused ? 'work-items-duty-paused' : undefined}>
+          <div className="work-items-duty-copy">
+            <strong>{taskTitles.get(duty.taskId) ?? duty.taskId}</strong>
+            <span>{executor} · {duty.everySeconds}s · {duty.timezone}</span>
+            <small>{locale === 'en' ? 'Next' : '下次'} {new Date(duty.nextOccurrenceAt).toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN')}</small>
+          </div>
+          <button
+            type="button"
+            className="work-items-button work-items-button-quiet"
+            disabled={busyDutyId === duty.id}
+            onClick={() => { void setPaused(duty, !duty.paused) }}
+          >{busyDutyId === duty.id ? '…' : duty.paused
+            ? (locale === 'en' ? 'Resume' : '恢复')
+            : (locale === 'en' ? 'Pause' : '暂停')}</button>
+        </li>
+      })}
+    </ul>}
   </section>
 }
 
@@ -577,6 +724,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
       {error === undefined ? null : <p className="work-items-error" role="alert">{error}</p>}
       {showArchived ? null : <AttentionSummary snapshot={attention} locale={locale} onSelect={selectTask} />}
       {showArchived ? null : <NotificationInbox snapshot={notificationInbox} locale={locale} onMarkRead={markNotificationRead} onDismiss={dismissNotification} />}
+      {showArchived ? null : <WorkDutyPanel snapshots={[...snapshots.values()]} employees={employeeDirectory} locale={locale} />}
       <WorkItemProjectContextPanel locale={locale} includeArchived={showArchived} />
       <div className="work-items-layout">
         <aside className="work-items-list" aria-label={copy.tabWorkItems}>

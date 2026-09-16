@@ -92,6 +92,14 @@ import type {
 } from './workflow-operations.js'
 import type { WorkItemsBridge } from './work-items.js'
 import type { WorkbenchAttentionSnapshot } from './workbench-attention.js'
+import type {
+  WorkDuty,
+  WorkDutyCreateReceipt,
+  WorkDutyCreateRequest,
+  WorkDutyMutationReceipt,
+  WorkDutyPauseRequest,
+  WorkDutyResumeRequest,
+} from './work-duty.js'
 import type { ConversationSnapshot } from './conversation-work.js'
 
 /** Payload sent from main to renderer when a deep-link install should begin. */
@@ -162,6 +170,13 @@ export interface EzDSHBridge {
   /** Developer-only Main projection of the next attention buckets. */
   workbench: {
     getAttention(): Promise<WorkbenchAttentionSnapshot>
+    duties: {
+      list(): Promise<WorkDuty[]>
+      create(request: WorkDutyCreateRequest): Promise<WorkDutyCreateReceipt>
+      pause(request: WorkDutyPauseRequest): Promise<WorkDutyMutationReceipt>
+      resume(request: WorkDutyResumeRequest): Promise<WorkDutyMutationReceipt>
+      onChange(listener: (event: import('./work-duty.js').WorkDutyEvent) => void): () => void
+    }
   }
   employees: {
     methods: EmployeeMethodsBridge
