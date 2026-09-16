@@ -4,6 +4,8 @@ import type { EmployeeSnapshot } from '../../shared/employees.js'
 import type {
   WorkActionAnswerRequest,
   WorkRunControlRequest,
+  WorkTaskDeletePreviewRequest,
+  WorkTaskDeletionPreview,
   WorkTaskRunDetail,
   WorkTaskSnapshot,
 } from '../../shared/work-items.js'
@@ -36,6 +38,9 @@ interface WorkItemDetailProps {
   onChanged?: (snapshot: WorkTaskSnapshot) => void
   onArchive?: (archived: boolean) => Promise<void>
   onCancelTask?: () => Promise<WorkTaskSnapshot>
+  /** Developer-only read-only deletion assessment; never removes a task. */
+  onPreviewDelete?: (request: WorkTaskDeletePreviewRequest) => Promise<WorkTaskDeletionPreview>
+  developerMode?: boolean
   employeeDirectory?: ReadonlyMap<string, Pick<EmployeeSnapshot, 'name' | 'displayName' | 'role'>>
   project?: { projectId: string; title: string; path?: string }
   locale?: 'zh' | 'en'
@@ -94,6 +99,85 @@ function detailJson(value: unknown, missing: string): { value: string; missing: 
   } catch {
     return { value: missing, missing: true }
   }
+}
+
+function deletionPreviewRequestId(): string {
+  const token = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return `work-item-delete-preview-${token}`
+}
+
+function DeletionReferenceList({
+  label,
+  values,
+  locale,
+}: {
+  label: string
+  values: string[]
+  locale: 'zh' | 'en'
+}): JSX.Element {
+  return <div className="work-item-delete-preview-reference-group">
+    <dt>{label}</dt>
+    <dd>{values.length === 0
+      ? <span className="work-item-delete-preview-empty">{locale === 'en' ? 'None' : '无'}</span>
+      : <ul>{values.map((value, index) => <li key={`${value}-${index}`}><code>{value}</code></li>)}</ul>}</dd>
+  </div>
+}
+
+function DeletionPreviewPanel({
+  preview,
+  busy,
+  error,
+  locale,
+}: {
+  preview: WorkTaskDeletionPreview | undefined
+  busy: boolean
+  error: string
+  locale: 'zh' | 'en'
+}): JSX.Element | null {
+  if (!busy && preview === undefined && error === '') return null
+  return <section className="work-item-detail-section work-item-delete-preview" aria-label={locale === 'en' ? 'Deletion preview' : '删除预览'}>
+    <div className="work-item-detail-section-heading">
+      <h3>{locale === 'en' ? 'Deletion preview' : '删除预览'}</h3>
+      <span>{locale === 'en' ? 'Read-only · no deletion' : '只读 · 不会删除'}</span>
+    </div>
+    {busy ? <p className="work-item-delete-preview-status" role="status">{locale === 'en' ? 'Building a durable deletion preview…' : '正在生成持久化删除预览…'}</p> : null}
+    {error ? <p className="work-item-delete-preview-error" role="alert">{error}</p> : null}
+    {preview === undefined ? null : <>
+      <p className="work-item-delete-preview-note">{locale === 'en'
+        ? 'This assessment records what would block a future purge. It has not changed the work item, its history, or its artifacts.'
+        : '此评估只记录未来清理会遇到的阻断项；它没有改变工作项、历史记录或成果。'}</p>
+      <dl className="work-item-delete-preview-summary">
+        <div><dt>{locale === 'en' ? 'Result' : '结果'}</dt><dd>{preview.canDelete ? (locale === 'en' ? 'Eligible for deletion' : '可删除') : (locale === 'en' ? 'Blocked' : '已阻断')}</dd></div>
+        <div><dt>{locale === 'en' ? 'Observed revision' : '观察到的版本'}</dt><dd>{preview.observedRevision}</dd></div>
+        <div><dt>{locale === 'en' ? 'Generated at' : '生成时间'}</dt><dd>{dateLabel(preview.generatedAt)}</dd></div>
+        <div><dt>{locale === 'en' ? 'Snapshot hash' : '快照哈希'}</dt><dd><code>{preview.tombstone.snapshotHash}</code></dd></div>
+      </dl>
+      <div className="work-item-delete-preview-blockers">
+        <h4>{locale === 'en' ? 'Blocking reasons' : '阻断原因'}</h4>
+        {preview.blockers.length === 0
+          ? <p className="work-item-delete-preview-empty">{locale === 'en' ? 'No blockers were recorded.' : '没有记录阻断原因。'}</p>
+          : <ul>{preview.blockers.map((blocker, index) => <li key={`${blocker.code}-${index}`}>
+            <strong>{blocker.code}</strong>
+            <span>{blocker.message}</span>
+            {blocker.referenceIds.length === 0 ? null : <small>{locale === 'en' ? 'References' : '引用'}：{blocker.referenceIds.map((id) => <code key={id}>{id}</code>)}</small>}
+          </li>)}</ul>}
+      </div>
+      <div className="work-item-delete-preview-references">
+        <h4>{locale === 'en' ? 'Reference inventory' : '引用清单'}</h4>
+        <dl>
+          <DeletionReferenceList label={locale === 'en' ? 'Attempts' : '执行轮次'} values={preview.inventory.attemptIds} locale={locale} />
+          <DeletionReferenceList label={locale === 'en' ? 'Runs' : '运行记录'} values={preview.inventory.runIds} locale={locale} />
+          <DeletionReferenceList label={locale === 'en' ? 'Actions' : '待处理动作'} values={preview.inventory.actionIds} locale={locale} />
+          <DeletionReferenceList label={locale === 'en' ? 'Artifacts' : '成果'} values={preview.inventory.artifactIds} locale={locale} />
+          <DeletionReferenceList label={locale === 'en' ? 'Accepted artifacts' : '已验收成果'} values={preview.inventory.acceptedArtifactIds} locale={locale} />
+          <DeletionReferenceList label={locale === 'en' ? 'Resource references' : '资源引用'} values={preview.inventory.resourceRefs} locale={locale} />
+          <DeletionReferenceList label={locale === 'en' ? 'Artifact paths' : '成果路径'} values={preview.inventory.artifactPaths} locale={locale} />
+        </dl>
+      </div>
+    </>}
+  </section>
 }
 
 function RunRecordField({
@@ -205,6 +289,8 @@ export function WorkItemDetail({
   onChanged,
   onArchive,
   onCancelTask,
+  onPreviewDelete,
+  developerMode = false,
   employeeDirectory,
   project,
   locale = 'zh',
@@ -214,8 +300,13 @@ export function WorkItemDetail({
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [cancelBusy, setCancelBusy] = useState(false)
   const [cancelError, setCancelError] = useState('')
+  const [deletePreview, setDeletePreview] = useState<WorkTaskDeletionPreview>()
+  const [deletePreviewBusy, setDeletePreviewBusy] = useState(false)
+  const [deletePreviewError, setDeletePreviewError] = useState('')
   const [runDetailStates, setRunDetailStates] = useState<Map<string, RunDetailState>>(() => new Map())
   const cancelInFlight = useRef(false)
+  const deletePreviewInFlight = useRef(false)
+  const deletePreviewRequest = useRef<WorkTaskDeletePreviewRequest>()
   const confirmationRevision = useRef<number>()
   const runDetailRequestSequence = useRef(new Map<string, number>())
   const requirement = currentRequirement(snapshot)
@@ -234,6 +325,13 @@ export function WorkItemDetail({
     && snapshot.task.status !== 'completed'
     && snapshot.task.status !== 'cancelled'
     && snapshot.task.archivedAt === undefined
+  const canPreviewDelete = developerMode && onPreviewDelete !== undefined
+
+  useEffect(() => {
+    setDeletePreview(undefined)
+    setDeletePreviewError('')
+    deletePreviewRequest.current = undefined
+  }, [snapshot.task.id, snapshot.task.revision])
 
   function runDetailKey(runId: string): string {
     return `${snapshot.task.id}\u0000${runId}`
@@ -327,6 +425,30 @@ export function WorkItemDetail({
     }
   }
 
+  async function requestDeletePreview(): Promise<void> {
+    if (!canPreviewDelete || onPreviewDelete === undefined || deletePreviewInFlight.current) return
+    const request = deletePreviewRequest.current?.taskId === snapshot.task.id
+      && deletePreviewRequest.current.expectedRevision === snapshot.task.revision
+      ? deletePreviewRequest.current
+      : {
+          requestId: deletionPreviewRequestId(),
+          taskId: snapshot.task.id,
+          expectedRevision: snapshot.task.revision,
+        }
+    deletePreviewRequest.current = request
+    deletePreviewInFlight.current = true
+    setDeletePreviewBusy(true)
+    setDeletePreviewError('')
+    try {
+      setDeletePreview(await onPreviewDelete(request))
+    } catch (cause) {
+      setDeletePreviewError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      deletePreviewInFlight.current = false
+      setDeletePreviewBusy(false)
+    }
+  }
+
   return (
     <section className="work-item-detail" aria-label={copy.workItemsDetails} data-work-item-detail={snapshot.task.id}>
       <header className="work-item-detail-header">
@@ -366,7 +488,15 @@ export function WorkItemDetail({
               ? (locale === 'en' ? 'Restore' : '恢复')
               : confirmArchive
                 ? (locale === 'en' ? 'Confirm archive' : '确认归档')
-                : (locale === 'en' ? 'Archive' : '归档')}</button> : null}
+              : (locale === 'en' ? 'Archive' : '归档')}</button> : null}
+          {canPreviewDelete ? <button
+            type="button"
+            className="work-items-button work-items-button-quiet"
+            disabled={deletePreviewBusy}
+            onClick={() => { void requestDeletePreview() }}
+          >{deletePreviewBusy
+            ? (locale === 'en' ? 'Preparing…' : '正在准备…')
+            : (locale === 'en' ? 'Preview deletion' : '预览删除')}</button> : null}
           <button type="button" className="work-items-button work-items-button-quiet" onClick={onClose}>
             {copy.workItemsCloseDetails}
           </button>
@@ -414,6 +544,7 @@ export function WorkItemDetail({
           }}>{locale === 'en' ? 'Keep work item' : '保留工作项'}</button>
         </section> : null}
         {cancelError ? <p className="work-item-cancellation-error" role="alert">{cancelError}</p> : null}
+        <DeletionPreviewPanel preview={deletePreview} busy={deletePreviewBusy} error={deletePreviewError} locale={locale} />
         {actionable && !cancellationLocked ? <section className="work-item-detail-section">
           <WorkItemActionPanel
             snapshot={snapshot}

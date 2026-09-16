@@ -12,6 +12,7 @@ import {
   validateWorkTaskArchiveRequest,
   validateWorkTaskCancelRequest,
   validateWorkTaskCreateRequest,
+  validateWorkTaskDeletePreviewRequest,
   validateWorkTaskExecuteRequest,
   validateWorkTaskRunDetailRequest,
   validateWorkTaskRevisionRequest,
@@ -42,6 +43,7 @@ export const WORK_ITEM_IPC_CHANNELS = [
   'work-items:revise',
   'work-items:cancel-task',
   'work-items:archive',
+  'work-items:preview-delete',
   'work-items:accept-artifact',
   'work-items:open-artifact',
   'work-items:control-run',
@@ -50,7 +52,7 @@ export const WORK_ITEM_IPC_CHANNELS = [
 
 export const WORK_ITEM_CHANGED_CHANNEL = 'work-items:changed'
 
-type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'acceptArtifact' | 'openArtifact'> & {
+type WorkItemReadService = Pick<WorkItemsBridge, 'list' | 'get' | 'create' | 'revise' | 'archive' | 'previewDelete' | 'acceptArtifact' | 'openArtifact'> & {
   /** Main-only durable lookup; omitted from the renderer bridge. */
   getDispatchIntent?: (requestId: string) => Promise<WorkDispatchIntentReceipt | undefined>
 }
@@ -341,6 +343,11 @@ export function registerWorkItemIpc(
   register('work-items:revise', (services, input) => services.workItems.revise(validateWorkTaskRevisionRequest(input)))
   register('work-items:cancel-task', (services, input) => services.cancellation.cancelTask(validateWorkTaskCancelRequest(input)))
   register('work-items:archive', (services, input) => services.workItems.archive(validateWorkTaskArchiveRequest(input)))
+  register('work-items:preview-delete', (services, input) => {
+    if (!isDeveloperMode()) throw new Error('Work item deletion preview is available only in developer mode')
+    if (services.workItems.previewDelete === undefined) throw new Error('Work item deletion preview is unavailable')
+    return services.workItems.previewDelete(validateWorkTaskDeletePreviewRequest(input))
+  })
   register('work-items:accept-artifact', (services, input) => services.workItems.acceptArtifact(validateWorkArtifactAcceptRequest(input)))
   register('work-items:open-artifact', (services, input) => {
     const request = validateArtifactOpenRequest(input)

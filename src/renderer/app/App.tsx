@@ -511,7 +511,7 @@ export function App() {
                   : null
               case 'work-items':
                 return activeTab === 'work-items'
-                  ? <section key="work-items" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabWorkItems}><WorkItemsPage copy={copy} locale={locale} runtimeAvailable={runtime.phase === 'ready'} navigation={workItemNavigation} onNavigate={openWorkItemNavigation} /></section>
+                  ? <section key="work-items" className="workspace-pane workspace-pane-active workspace-pane-page" aria-label={copy.tabWorkItems}><WorkItemsPage copy={copy} locale={locale} developerMode={developerMode} runtimeAvailable={runtime.phase === 'ready'} navigation={workItemNavigation} onNavigate={openWorkItemNavigation} /></section>
                   : null
               case 'docs':
                 return (

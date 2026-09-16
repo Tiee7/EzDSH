@@ -8,6 +8,8 @@ import type {
   WorkTaskArchiveRequest,
   WorkTaskCancelRequest,
   WorkTaskCreateRequest,
+  WorkTaskDeletePreviewRequest,
+  WorkTaskDeletionPreview,
   WorkTaskExecuteRequest,
   WorkTaskRevisionRequest,
   WorkTaskSnapshot,
@@ -44,6 +46,7 @@ import './work-items.css'
 interface WorkItemsPageProps {
   copy: AppCopy
   locale?: 'zh' | 'en'
+  developerMode?: boolean
   /** DSH Runtime is not a prerequisite for reading Main's durable task records. */
   runtimeAvailable?: boolean
   navigation?: WorkItemNavigationContext
@@ -580,7 +583,7 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
  * Durable Work Items browser. Main remains the authority for task status and
  * actions; this page only queries, observes and renders its snapshots.
  */
-export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, navigation, onNavigate }: WorkItemsPageProps): JSX.Element {
+export function WorkItemsPage({ copy, locale = 'zh', developerMode = false, runtimeAvailable = true, navigation, onNavigate }: WorkItemsPageProps): JSX.Element {
   const [snapshots, setSnapshots] = useState<Map<string, WorkTaskSnapshot>>(() => new Map())
   const [selectedTaskId, setSelectedTaskId] = useState<string>()
   const [loading, setLoading] = useState(true)
@@ -845,6 +848,13 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
     return window.EzDSH.workItems.controlRun(request)
   }, [])
 
+  const previewDelete = useCallback(async (request: WorkTaskDeletePreviewRequest): Promise<WorkTaskDeletionPreview> => {
+    if (!developerMode || window.EzDSH.workItems.previewDelete === undefined) {
+      throw new Error(locale === 'en' ? 'Work item deletion preview is unavailable.' : '工作项删除预览当前不可用。')
+    }
+    return window.EzDSH.workItems.previewDelete(request)
+  }, [developerMode, locale])
+
   const archiveTask = useCallback(async (archived: boolean): Promise<void> => {
     if (selectedTaskId === undefined) return
     const current = snapshots.get(selectedTaskId)
@@ -1058,6 +1068,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
                 key={selected.task.id}
                 copy={copy}
                 locale={locale}
+                developerMode={developerMode}
                 snapshot={selected}
                 onClose={() => { closeDetails(selected.task.id) }}
                 onAcceptArtifact={acceptArtifact}
@@ -1071,6 +1082,7 @@ export function WorkItemsPage({ copy, locale = 'zh', runtimeAvailable = true, na
                 onChanged={(next) => { setSnapshots((current) => mergeSnapshot(current, next)) }}
                 onArchive={archiveTask}
                 onCancelTask={cancelTask}
+                onPreviewDelete={developerMode ? previewDelete : undefined}
                 employeeDirectory={employeeDirectory}
                 project={selectedProject}
               />

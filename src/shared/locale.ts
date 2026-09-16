@@ -166,7 +166,6 @@ export interface AppCopy {
   tabDocs: string
   tabEmployees: string
   tabWorkItems: string
-  workItemsPreview: string
   workItemsTitle: string
   workItemsHint: string
   workItemsRefresh: string
@@ -1166,7 +1165,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     tabDocs: '使用手册',
     tabEmployees: '员工',
     tabWorkItems: '工作项',
-    workItemsPreview: '工作项预览页面正在构建中。',
     workItemsTitle: '持续工作台',
     workItemsHint: '这里显示 Main 持久保存的任务、执行历史、成果和待处理事项。状态与动作以执行服务的记录为准。',
     workItemsRefresh: '刷新任务',
@@ -2193,7 +2191,6 @@ const APP_COPY: Record<AppLocale, AppCopy> = {
     tabDocs: 'Docs',
     tabEmployees: 'Employees',
     tabWorkItems: 'Work Items',
-    workItemsPreview: 'The Work Items preview page is under construction.',
     workItemsTitle: 'Continuous workbench',
     workItemsHint: 'View Main-owned durable tasks, execution history, deliverables, and pending actions. Status and actions come from the execution service.',
     workItemsRefresh: 'Refresh tasks',

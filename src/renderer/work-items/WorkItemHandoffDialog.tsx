@@ -24,6 +24,8 @@ export function WorkItemHandoffDialog({ snapshot, executors, mode, loadingExecut
   const [selected, setSelected] = useState('0')
   const [input, setInput] = useState('')
   const [sourceRunId, setSourceRunId] = useState(() => [...snapshot.runs].reverse().find((run) => run.runId)?.runId ?? '')
+  /** Materials are opt-in for every new attempt; an empty selection is deliberate. */
+  const [selectedMaterialIds, setSelectedMaterialIds] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const inFlight = useRef(false)
@@ -31,6 +33,7 @@ export function WorkItemHandoffDialog({ snapshot, executors, mode, loadingExecut
   const retry = useRef<{ signature: string; request: WorkTaskExecuteRequest }>()
   const executor = executors[Number(selected)]?.executor
   const requirement = snapshot.task.requirements.find((item) => item.version === snapshot.task.currentRequirementVersion)
+  const localMaterials = (snapshot.task.scope.materialRefs ?? []).filter((material): material is Extract<typeof material, { kind: 'local-file' }> => material.kind === 'local-file')
   const title = mode === 'redo' ? (english ? 'Make another version' : '再做一版') : (english ? 'Hand off this task' : '交接这项工作')
 
   useEffect(() => {
@@ -61,6 +64,11 @@ export function WorkItemHandoffDialog({ snapshot, executors, mode, loadingExecut
       mode,
       input: parsed,
       ...(sourceRunId ? { sourceRunId } : {}),
+      ...(selectedMaterialIds.length === 0 ? {} : {
+        materialInputs: localMaterials
+          .filter((material) => selectedMaterialIds.includes(material.materialId))
+          .map((material) => ({ materialId: material.materialId })),
+      }),
     }
     const signature = JSON.stringify(payload)
     const request = retry.current?.signature === signature ? retry.current.request : { ...payload, requestId: crypto.randomUUID() }
@@ -107,6 +115,23 @@ export function WorkItemHandoffDialog({ snapshot, executors, mode, loadingExecut
             </label>
           </div>
           {executor?.kind === 'workflow' ? <p className="work-item-handoff-note">{english ? 'Map the required inputs explicitly. To use an unfinished result, wait for it or specify a saved draft version. No conversation or artifact is copied automatically.' : '请明确填写流程所需的输入映射。依赖未完成的成果时，等待成果产生或明确指定已保存的草稿版本。聊天和成果不会自动复制到输入。'}</p> : null}
+          {localMaterials.length === 0 ? null : <section className="work-item-handoff-materials" aria-label={english ? 'Materials for this attempt' : '本轮资料'}>
+            <strong>{english ? 'Materials for this attempt (optional)' : '本轮资料（可选）'}</strong>
+            <p>{english ? 'Nothing is selected by default. Only checked local files are sent as material inputs; Main authorizes them and checks their current version before execution.' : '默认不选择任何资料。只有勾选的本地文件会作为本轮资料输入发送；Main 会在执行前授权并校验当前版本。'}</p>
+            <div className="work-item-handoff-material-list">
+              {localMaterials.map((material) => <label className="work-item-handoff-material-option" key={material.materialId}>
+                <input
+                  type="checkbox"
+                  checked={selectedMaterialIds.includes(material.materialId)}
+                  disabled={busy}
+                  onChange={() => setSelectedMaterialIds((current) => current.includes(material.materialId)
+                    ? current.filter((id) => id !== material.materialId)
+                    : [...current, material.materialId])}
+                />
+                <span><code>{material.path}</code><small>{material.materialId}</small></span>
+              </label>)}
+            </div>
+          </section>}
           {snapshot.artifacts.length ? <div className="work-item-handoff-artifacts"><strong>{english ? 'Available artifact versions' : '可引用的成果版本'}</strong><ul aria-label={english ? 'Available artifact versions' : '可引用的成果版本'}>{snapshot.artifacts.map((artifact) => <li key={artifact.id}>{artifact.name} · {english ? 'content' : '内容'} v{artifact.contentVersion} · {english ? 'requirement' : '要求'} v{artifact.requirementVersion} · {artifact.id}</li>)}</ul></div> : null}
           <p className="work-item-handoff-note">{english ? 'Updated instructions apply to this new attempt. They are not appended to an existing run.' : '新的执行说明用于本轮执行，不会追加到已有运行。'}</p>
           {error ? <p className="work-items-error" role="alert">{error}</p> : null}

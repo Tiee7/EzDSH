@@ -457,7 +457,7 @@ export interface WorkItemsBridge {
   revise(request: WorkTaskRevisionRequest): Promise<WorkTaskSnapshot>
   cancelTask(request: WorkTaskCancelRequest): Promise<WorkTaskSnapshot>
   archive(request: WorkTaskArchiveRequest): Promise<WorkTaskSnapshot>
-  /** Main implementation is available now; renderer bridge remains optional until its UI entry is integrated. */
+  /** Developer-only, durable read-only preview; it never deletes a task or artifact. */
   previewDelete?(request: WorkTaskDeletePreviewRequest): Promise<WorkTaskDeletionPreview>
   acceptArtifact(request: WorkArtifactAcceptRequest): Promise<WorkTaskSnapshot>
   openArtifact(taskId: string, artifactId: string): Promise<void>

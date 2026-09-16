@@ -7,7 +7,9 @@ import type {
 } from '../../shared/work-items.js'
 import {
   buildWorkItemCreateSubmission,
+  buildLocalMaterialRefs,
   finalizeWorkItemCreateExecution,
+  parseLocalMaterialPaths,
   type WorkItemCreateExecutor,
   type WorkItemCreateSubmission,
 } from './work-item-create-flow.js'
@@ -82,7 +84,10 @@ const copy = {
     catalogProjects: '项目',
     catalogFallback: '仍可不选项目并只创建工作项。',
     materials: '资料',
-    materialsCatalogUnavailable: '创建或立即执行时，当前没有资料目录；不会虚构可选资料，也不会自动附加资料引用。资料解析与授权由主进程负责。',
+    materialsPlaceholder: '每行输入一个工作项工作目录内的相对本地文件路径，例如 docs/brief.md',
+    materialsHelp: '这里仅登记你明确输入的资料身份，不会读取、猜测或复制文件。Main 会在创建和执行时检查路径是否存在并校验授权。',
+    materialsNone: '尚未选择资料。',
+    materialsInvalid: '资料路径必须是工作项工作目录内的相对路径，每行一个文件；不能使用绝对路径或 ..。',
   },
   en: {
     title: 'Create work item',
@@ -115,7 +120,10 @@ const copy = {
     catalogProjects: 'projects',
     catalogFallback: 'You can still create the work item without a project.',
     materials: 'Materials',
-    materialsCatalogUnavailable: 'No material catalog is available for creation or immediate execution. No selectable materials or references will be invented; Main owns material resolution and authorization.',
+    materialsPlaceholder: 'One work-item-working-directory-relative local file per line, for example docs/brief.md',
+    materialsHelp: 'This only records the material identities you explicitly enter. Files are not read, guessed, or copied. Main checks the path and authorization during creation and execution.',
+    materialsNone: 'No materials selected.',
+    materialsInvalid: 'Material paths must stay within the work item working directory, one file per line; absolute paths and .. are not allowed.',
   },
 } as const
 
@@ -147,6 +155,7 @@ export function WorkItemCreateDialog({
   const [goal, setGoal] = useState('')
   const [acceptance, setAcceptance] = useState('')
   const [projectId, setProjectId] = useState('')
+  const [materialPaths, setMaterialPaths] = useState('')
   const [mode, setMode] = useState<'none' | 'employee' | 'workflow'>('none')
   const [employeeId, setEmployeeId] = useState(employees[0]?.employeeId ?? '')
   const [workflowId, setWorkflowId] = useState(workflows[0]?.workflowId ?? '')
@@ -226,12 +235,21 @@ export function WorkItemCreateDialog({
     }
 
     const project = projectId === '' ? undefined : projects.find((item) => item.projectId === projectId)
+    let normalizedMaterialPaths: string[]
+    try {
+      normalizedMaterialPaths = parseLocalMaterialPaths(materialPaths)
+    } catch {
+      setError(text.materialsInvalid)
+      return undefined
+    }
+    const materialRefs = buildLocalMaterialRefs(normalizedMaterialPaths)
     const signature = JSON.stringify({
       title: title.trim(),
       goal: goal.trim(),
       acceptance: acceptance.trim(),
       projectId: project?.projectId,
       cwd: project?.cwd,
+      materialRefs,
       executor,
       executionInput: parsedInput,
     })
@@ -245,6 +263,7 @@ export function WorkItemCreateDialog({
         acceptance,
         projectId: project?.projectId,
         cwd: project?.cwd,
+        materialPaths: normalizedMaterialPaths,
         executor,
         executionInput: parsedInput,
         ...requestIds(),
@@ -308,9 +327,34 @@ export function WorkItemCreateDialog({
           {projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.label}</option>)}
         </select>
       </label>
-      <section className="work-item-create-material-notice" data-material-catalog="unavailable" aria-label={text.materials}>
-        <strong>{text.materials}</strong>
-        <p>{text.materialsCatalogUnavailable}</p>
+      <section className="work-item-create-materials" data-material-selection="manual-local-file" aria-label={text.materials}>
+        <label>{text.materials}
+          <textarea
+            aria-label={text.materials}
+            aria-describedby="work-item-create-material-help"
+            placeholder={text.materialsPlaceholder}
+            rows={3}
+            value={materialPaths}
+            disabled={busy || locked}
+            onChange={(event) => setMaterialPaths(event.target.value)}
+          />
+        </label>
+        <p id="work-item-create-material-help">{text.materialsHelp}</p>
+        {(() => {
+          try {
+            const paths = parseLocalMaterialPaths(materialPaths)
+            if (paths.length === 0) return <p className="work-item-create-material-empty">{text.materialsNone}</p>
+            const refs = buildLocalMaterialRefs(paths)
+            return <ul className="work-item-create-material-list">
+              {refs.map((ref) => <li key={ref.materialId}>
+                <code>{ref.kind === 'local-file' ? ref.path : ref.materialId}</code>
+                <small>{ref.materialId}</small>
+              </li>)}
+            </ul>
+          } catch {
+            return null
+          }
+        })()}
       </section>
       <label>{text.executor}
         <select aria-label={text.executor} value={mode} disabled={busy || locked} onChange={(event) => selectMode(event.target.value as 'none' | 'employee' | 'workflow')}>
