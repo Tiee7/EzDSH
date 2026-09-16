@@ -300,7 +300,7 @@ describe('DshPluginInstaller', () => {
     await writeFile(runtimeEntryPath, '')
     await writeFile(join(profile.dshHome, 'runtime', 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json'), JSON.stringify({
       name: '@deepseek-ai/dsh-llm',
-      version: '0.1.5-rc.2',
+      version: '0.1.6-alpha.1',
       exports: { './package.json': './package.json', '.': './lib/index.js' },
     }))
     const pluginDirectory = join(profile.dshHome, 'profiles', 'web', 'node_modules', 'dsh-agy-provider')
@@ -463,7 +463,7 @@ describe('DshPluginInstaller', () => {
     await mkdir(pluginDirectory, { recursive: true })
     await writeFile(join(pluginDirectory, 'package.json'), JSON.stringify({
       name: 'dsh-codex-connect', dsh: { bundle: { patch: './cordis.patch.yml' } },
-      peerDependencies: { '@deepseek-ai/dsh-client-ui-primitives': '0.1.5-rc.2' },
+      peerDependencies: { '@deepseek-ai/dsh-client-ui-primitives': '0.1.6-alpha.1' },
     }))
     const manifest = JSON.stringify({
       dependencies: { 'dsh-codex-connect': '0.1.0-alpha.4.35' },
@@ -492,7 +492,7 @@ describe('DshPluginInstaller', () => {
     await mkdir(directory, { recursive: true })
     await writeFile(join(directory, 'package.json'), JSON.stringify({
       name: 'direct-plugin', dsh: { client: { platform: 'web' } },
-      peerDependencies: { '@deepseek-ai/dsh-missing-peer': '0.1.5-rc.2' },
+      peerDependencies: { '@deepseek-ai/dsh-missing-peer': '0.1.6-alpha.1' },
     }))
     await writeFile(profile.packagePath, JSON.stringify({
       dependencies: { 'direct-plugin': '1.0.0' },
@@ -518,7 +518,7 @@ describe('DshPluginInstaller', () => {
     await mkdir(directory, { recursive: true })
     await writeFile(join(directory, 'package.json'), JSON.stringify({
       name: 'optional-plugin', dsh: { bundle: { patch: './cordis.patch.yml' } },
-      peerDependencies: { '@deepseek-ai/dsh-optional-peer': '0.1.5-rc.2' },
+      peerDependencies: { '@deepseek-ai/dsh-optional-peer': '0.1.6-alpha.1' },
       peerDependenciesMeta: { '@deepseek-ai/dsh-optional-peer': { optional: true } },
     }))
     await writeFile(profile.packagePath, JSON.stringify({

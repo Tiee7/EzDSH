@@ -113,6 +113,7 @@ describe('DshSessionClient', () => {
     await client.listSessions()
     await client.cancelSession('session-1')
     await client.archiveSession('session-1')
+    await client.unarchiveSession('session-1')
     await client.createWorkspace('/work')
     await client.renameWorkspace('workspace-1', 'Renamed')
 
@@ -144,6 +145,10 @@ describe('DshSessionClient', () => {
       expect.objectContaining({
         url: 'http://127.0.0.1:4567/api/workspace/archiveSession',
         body: expect.objectContaining({ method: 'workspace/archiveSession', payload: { args: { request: { sessionId: 'session-1' } } } }),
+      }),
+      expect.objectContaining({
+        url: 'http://127.0.0.1:4567/api/workspace/unarchiveSession',
+        body: expect.objectContaining({ method: 'workspace/unarchiveSession', payload: { args: { request: { sessionId: 'session-1' } } } }),
       }),
       expect.objectContaining({
         url: 'http://127.0.0.1:4567/api/workspace/create',
@@ -300,10 +305,9 @@ describe('DshSessionClient', () => {
     vi.unstubAllGlobals()
   })
 
-  it('fails clearly for RC1 operations that still have no compatible endpoint', async () => {
+  it('fails clearly for Runtime operations that still have no compatible endpoint', async () => {
     const client = new DshSessionClient({ baseUrl: 'http://127.0.0.1:4567/?token=runtime-token', timeoutMs: 1000 })
 
-    await expect(client.unarchiveSession('session-1')).rejects.toThrow(/does not provide.*unarchive/i)
     await expect(client.getSessionModels('session-1')).rejects.toThrow(/does not provide.*per-session model/i)
   })
 

@@ -230,7 +230,7 @@ export class DshApiError extends Error {
   }
 }
 
-/** A public EzDSH operation with no unary equivalent in DSH 0.1.5-rc.2. */
+/** A public EzDSH operation that is unavailable in the selected DSH Runtime. */
 export class DshRuntimeCompatibilityError extends Error {
   constructor(message: string) {
     super(message)
@@ -270,7 +270,6 @@ export class DshSessionClient {
   }
 
   async unarchiveSession(sessionId: string): Promise<WorkspaceArchiveResponse> {
-    if (this.modernRuntime) throw new DshRuntimeCompatibilityError('DSH RC1 does not provide a workspace unarchive endpoint')
     return this.post<WorkspaceArchiveResponse>('/api/workspace.unarchiveSession', { sessionId })
   }
 
@@ -363,7 +362,7 @@ export class DshSessionClient {
   }
 
   async getSessionModels(sessionId: string): Promise<DshSessionModels> {
-    if (this.modernRuntime) throw new DshRuntimeCompatibilityError('DSH RC1 does not provide a per-session model endpoint; use session/modelCatalog')
+    if (this.modernRuntime) throw new DshRuntimeCompatibilityError('The selected DSH Runtime does not provide a per-session model endpoint; use session/modelCatalog')
     return this.post<DshSessionModels>('/api/session.models', { sessionId })
   }
 
@@ -537,13 +536,13 @@ export class DshSessionClient {
     const response = await this.post<SessionListResponse>('/api/session.list', {})
     const summary = response.items.find((item) => item.sessionId === sessionId)
     if (summary === undefined) {
-      throw new DshRuntimeCompatibilityError(`DSH RC1 session/list did not include session ${sessionId}`)
+      throw new DshRuntimeCompatibilityError(`The selected DSH Runtime session/list did not include session ${sessionId}`)
     }
 
     const asOfSeq = summary.projections?.asOfSeq
     if (isSessionSeqCursor(asOfSeq)) return asOfSeq
     if (summary.blank === true) return -1
-    throw new DshRuntimeCompatibilityError(`DSH RC1 session/list did not provide a valid projection cursor for session ${sessionId}`)
+    throw new DshRuntimeCompatibilityError(`The selected DSH Runtime session/list did not provide a valid projection cursor for session ${sessionId}`)
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
@@ -639,7 +638,7 @@ export class DshSessionClient {
     return this.post<WorkspaceListResponse>('/api/workspace.list', {})
   }
 
-  /** Read the RC1 workspace baseline from its multiplexed follow stream. */
+  /** Read the workspace baseline from the Runtime's multiplexed follow stream. */
   private async followWorkspaceBaseline(): Promise<WorkspaceListResponse> {
     const cookie = await this.exchangeRuntimeToken()
     const socket = new WebSocket(`${this.modernApiBaseUrl.replace(/^http/u, 'ws')}/api/remote.mux`, {
@@ -698,6 +697,7 @@ export class DshSessionClient {
       case '/api/workspace.create':
       case '/api/workspace.rename':
       case '/api/workspace.archiveSession':
+      case '/api/workspace.unarchiveSession':
         return { endpoint: path.slice('/api/'.length).replace(/\./gu, '/'), args: { request: body } }
       case '/api/session.list':
         return { endpoint: 'session/list', args: { _request: body } }
@@ -706,7 +706,7 @@ export class DshSessionClient {
       case '/api/session.history': {
         const request = body as SessionHistoryRequest
         if (!Number.isSafeInteger(request.throughSeq) || (request.throughSeq as number) < -1) {
-          throw new DshRuntimeCompatibilityError('DSH RC1 session/page requires a session/follow throughSeq cursor')
+          throw new DshRuntimeCompatibilityError('The selected DSH Runtime session/page requires a session/follow throughSeq cursor')
         }
         return {
           endpoint: 'session/page',
@@ -721,7 +721,7 @@ export class DshSessionClient {
         }
       }
       default:
-        throw new DshRuntimeCompatibilityError(`DSH RC1 does not provide a compatible unary endpoint for ${path}`)
+        throw new DshRuntimeCompatibilityError(`The selected DSH Runtime does not provide a compatible unary endpoint for ${path}`)
     }
   }
 }

@@ -12,7 +12,7 @@ const peer = '@deepseek-ai/dsh-client-ui-primitives'
 const seed = `function seed(){return{react:R,"react/jsx-runtime":J,"react-dom":D,"react-dom/client":C,"@deepseek-ai/cordis":H,"@deepseek-ai/dsh-client-store":S,"@deepseek-ai/dsh-client-ui-slots":L,"${peer}":P,"@deepseek-ai/dsh-client-ui-dockkit":K}}`
 const boot = 'loader.create({boot:win.__DSH_BOOT__,staticModules:seed()})'
 
-async function fixture(version = '0.1.5-rc.2', dependency = `^${version}`) {
+async function fixture(version = '0.1.6-alpha.1', dependency = `^${version}`) {
   const root = await mkdtemp(join(tmpdir(), 'ezdsh-client-modules-'))
   roots.push(root)
   const frontend = join(root, 'node_modules', '@deepseek-ai', 'dsh-web-frontend')
@@ -34,10 +34,10 @@ afterEach(async () => {
 })
 
 describe('Runtime browser platform module versions', () => {
-  it.each(['^0.1.5-rc.2', 'workspace:^'])('accepts an embedded seed under the official same-version release contract (%s)', async dependency => {
-    const setup = await fixture('0.1.5-rc.2', dependency)
+  it.each(['^0.1.6-alpha.1', 'workspace:^'])('accepts an embedded seed under the official same-version release contract (%s)', async dependency => {
+    const setup = await fixture('0.1.6-alpha.1', dependency)
     expect(() => setup.require.resolve(`${peer}/package.json`)).toThrow()
-    await expect(resolveRuntimeClientModuleVersion(setup.require, peer)).resolves.toBe('0.1.5-rc.2')
+    await expect(resolveRuntimeClientModuleVersion(setup.require, peer)).resolves.toBe('0.1.6-alpha.1')
   })
 
   it('does not infer an older frontend provides a newer browser peer version', async () => {
@@ -68,7 +68,7 @@ describe('Runtime browser platform module versions', () => {
   })
 
   it.each(['0.1.4', '^0.1.4', '*', 'file:../unrelated'])('rejects a browser dependency outside the same-version contract (%s)', async dependency => {
-    const setup = await fixture('0.1.5-rc.2', dependency)
+    const setup = await fixture('0.1.6-alpha.1', dependency)
     await expect(resolveRuntimeClientModuleVersion(setup.require, peer)).resolves.toBeUndefined()
   })
 
@@ -94,7 +94,7 @@ describe('Runtime browser platform module versions', () => {
     const packageDirectory = join(profile, 'node_modules', 'example-plugin')
     await mkdir(packageDirectory, { recursive: true })
     await writeFile(join(packageDirectory, 'package.json'), JSON.stringify({
-      name: 'example-plugin', peerDependencies: { [peer]: '^0.1.5-rc.2' },
+      name: 'example-plugin', peerDependencies: { [peer]: '^0.1.6-alpha.1' },
       dsh: kind === 'bundle' ? { bundle: { patch: './cordis.patch.yml' } } : { client: { platform: 'web' } },
     }))
     const manifest = JSON.stringify({ dependencies: { 'example-plugin': '1.0.0' }, dsh: { profile: { bundles: kind === 'bundle' ? ['example-plugin'] : [] } } })
@@ -116,10 +116,10 @@ describe('Runtime browser platform module versions', () => {
     const pluginManifest = JSON.parse(await readFile(join(packageDirectory, 'package.json'), 'utf8'))
     pluginManifest.peerDependencies[peer] = '^0.1.5-rc.3'
     await writeFile(join(packageDirectory, 'package.json'), JSON.stringify(pluginManifest))
-    await expect(installer.assertCanEnable(record, undefined)).rejects.toThrow('selected Runtime provides 0.1.5-rc.2')
+    await expect(installer.assertCanEnable(record, undefined)).rejects.toThrow('selected Runtime provides 0.1.6-alpha.1')
     expect(await readFile(join(profile, 'package.json'), 'utf8')).toBe(manifest)
     await expect(installer.repairIncompatiblePlugins('web', runtimeEntryPath)).resolves.toEqual([
-      { packageName: 'example-plugin', reason: expect.stringContaining('selected Runtime provides 0.1.5-rc.2') },
+      { packageName: 'example-plugin', reason: expect.stringContaining('selected Runtime provides 0.1.6-alpha.1') },
     ])
     expect((await installer.listInstalledPlugins()).find(plugin => plugin.packageName === 'example-plugin')?.enabled).toBe(false)
   })
