@@ -119,3 +119,54 @@
   margin: 0;
   color: var(--danger-color, #c43d3d);
 }
+
+.work-item-question-form,
+.work-item-question-fields,
+.work-item-question-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.work-item-question-prompt {
+  margin: 10px 0 2px;
+  white-space: pre-wrap;
+}
+
+.work-item-question-form label {
+  color: var(--ezdsh-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.work-item-question-form input,
+.work-item-question-form select,
+.work-item-question-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--ezdsh-panel-border-strong);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--ezdsh-input-background);
+  color: var(--ezdsh-text-body);
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.work-item-question-form textarea {
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.work-item-question-form input:focus,
+.work-item-question-form select:focus,
+.work-item-question-form textarea:focus {
+  border-color: var(--ezdsh-brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ezdsh-brand) 14%, transparent);
+}
+
+.work-item-question-error {
+  margin: 0;
+  color: var(--danger-color, #c43d3d);
+}

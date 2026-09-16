@@ -35,7 +35,7 @@ const connectorReasons: Record<WorkflowConnectorHealthReason, Label> = {
 }
 const runStates: Record<WorkflowRunStatus, Label> = {
   queued: { zh: '已排队', en: 'Queued' }, running: { zh: '运行中', en: 'Running' }, paused: { zh: '已暂停', en: 'Paused' },
-  'waiting-approval': { zh: '等待审批', en: 'Awaiting approval' }, completed: { zh: '已完成', en: 'Completed' },
+  'waiting-approval': { zh: '等待审批', en: 'Awaiting approval' }, 'waiting-question': { zh: '等待回答', en: 'Awaiting answer' }, completed: { zh: '已完成', en: 'Completed' },
   failed: { zh: '已失败', en: 'Failed' }, cancelled: { zh: '已取消', en: 'Cancelled' },
 }
 const recoveryReasons: Record<WorkflowRecoveryReason, Label> = {

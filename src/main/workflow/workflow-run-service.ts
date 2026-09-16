@@ -38,6 +38,8 @@ import type {
   WorkflowEffectReconciliationTarget,
   WorkflowRunTaskAssociation,
   WorkflowApprovalDecisionRequest,
+  WorkflowQuestionAnswerRequest,
+  WorkflowQuestionProtocol,
   WorkflowResumeRequest,
 } from '../../shared/workflow.js'
 import { EMPLOYEE_CAPABILITIES, employeeDisplayName } from '../../shared/employees.js'
@@ -266,7 +268,7 @@ export class WorkflowRunService {
     try {
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-      if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') {
+      if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval' || record.status === 'waiting-question') {
         throw new Error('运行中的记录不能删除，请先取消运行')
       }
       const removed = await this.options.runStore.remove(runId)
@@ -303,7 +305,7 @@ export class WorkflowRunService {
         if (removeDefinition && this.options.workflowStore.get(workflowId) === undefined) throw new Error(`Workflow not found: ${workflowId}`)
         administrativeRecords = this.options.runStore.list(workflowId)
         for (const record of administrativeRecords) this.assertRunAdministrationAvailable(record.id)
-        const active = administrativeRecords.find((record) => record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval')
+        const active = administrativeRecords.find((record) => record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval' || record.status === 'waiting-question')
         if (active !== undefined) throw new Error('工作流仍有运行中的记录，请先取消运行后再删除工作流')
         for (const record of administrativeRecords) this.administrativeActive.add(record.id)
         return await this.options.runStore.deleteWorkflow(this.options.workflowStore, workflowId, removeDefinition)
@@ -888,7 +890,7 @@ export class WorkflowRunService {
     try {
       const record = this.options.runStore.get(runId)
       if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
-      if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval') throw new Error('运行尚未结束，不能核对补偿副作用')
+      if (record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval' || record.status === 'waiting-question') throw new Error('运行尚未结束，不能核对补偿副作用')
       const entry = record.compensationStack?.find((candidate) => candidate.occurrenceId === request.occurrenceId)
       if (entry === undefined || entry.status !== 'failed' || entry.effectState !== 'unknown') throw new Error('指定补偿 occurrence 不存在或不再需要人工核对')
       const resolvedAt = new Date().toISOString()
@@ -941,6 +943,58 @@ export class WorkflowRunService {
   async approveExpected(runId: string, input: WorkflowApprovalDecisionRequest): Promise<WorkflowRunRecord> {
     const request = normalizeApprovalDecisionRequest(input)
     return this.decideApproval(runId, request.approved, request)
+  }
+
+  async answerExpected(runId: string, input: WorkflowQuestionAnswerRequest): Promise<WorkflowRunRecord> {
+    const request = normalizeQuestionAnswerRequest(input)
+    await this.initialize()
+    this.assertAccepting()
+    const releaseMutation = await this.acquireKeyedMutex(this.runMutationTails, runId)
+    try {
+      const record = this.options.runStore.get(runId)
+      if (record === undefined) throw new Error(`Workflow run not found: ${runId}`)
+      const replay = record.questionAnswerReceipts?.find((receipt) => receipt.requestId === request.requestId)
+      if (replay !== undefined) {
+        if (!sameQuestionAnswerRequest(replay, request)) throw new Error(`Question request id ${request.requestId} was already used with different content`)
+        return record
+      }
+      const question = record.waitingQuestion
+      const currentEvent = [...record.events].reverse().find((event) => event.type === 'question-requested')
+      if (record.origin?.kind !== 'top-level'
+        || record.workTask?.taskId !== request.expectedTaskId
+        || record.workTask?.requirementVersion !== request.expectedRequirementVersion
+        || record.status !== 'waiting-question'
+        || record.waitingQuestionNodeId !== request.expectedNodeId
+        || question === undefined
+        || question.nodeId !== request.expectedNodeId
+        || question.sourceEventId !== request.expectedQuestionEventId
+        || currentEvent?.id !== request.expectedQuestionEventId
+        || currentEvent.nodeId !== request.expectedNodeId
+        || question.version !== request.expectedActionVersion
+        || question.sourceRevision !== request.sourceRevision) throw new Error('Workflow question target is stale')
+      const workflow = this.requireWorkflowForRecord(record)
+      const node = workflow.nodes.find((candidate) => candidate.id === question.nodeId)
+      const state = record.nodeStates.find((candidate) => candidate.nodeId === question.nodeId)
+      if (node?.type !== 'wait-input' || node.config.mode !== 'form' || state === undefined) throw new Error('Question node no longer exists')
+      const answer = validateQuestionProtocolAnswer(question, request.answer)
+      this.revalidateReleasedAccess(record)
+      state.status = 'completed'
+      state.output = cloneWorkflow(answer)
+      state.completedAt = new Date().toISOString()
+      state.elapsedMs = 0
+      state.error = undefined
+      record.status = 'queued'
+      record.error = undefined
+      record.waitingQuestionNodeId = undefined
+      record.waitingQuestion = undefined
+      this.prepareQueuedRecord(record)
+      appendQuestionAnswerReceipt(record, { ...request, answer })
+      await this.save(record, 'question-resolved', '表单已提交，继续运行', node.id)
+      this.worker.wake()
+      return this.options.runStore.get(runId) ?? record
+    } finally {
+      releaseMutation()
+    }
   }
 
   private async decideApproval(
@@ -1053,7 +1107,7 @@ export class WorkflowRunService {
     try {
       const current = this.options.runStore.get(runId)
       if (current === undefined) throw new Error(`Workflow run not found: ${runId}`)
-      if (current.status === 'queued' || current.status === 'running' || current.status === 'waiting-approval') throw new Error('运行尚未结束，不能执行补偿')
+      if (current.status === 'queued' || current.status === 'running' || current.status === 'waiting-approval' || current.status === 'waiting-question') throw new Error('运行尚未结束，不能执行补偿')
       if ([current.releaseId, current.environmentId, current.traceId].some((value) => value !== undefined)) this.requireWorkflowForRecord(current)
       this.revalidateReleasedAccess(current)
       record = current
@@ -1773,7 +1827,7 @@ export class WorkflowRunService {
         const outcomes = await Promise.all(runnable.map(({ node, state, incoming }) => this.executeReadyNode(
           node, state, incoming, record, outputs, active, workflow, nodeMap, stateMap,
         )))
-        if (outcomes.some((outcome) => outcome === 'waiting-approval' || outcome === 'stopped')) return
+        if (outcomes.some((outcome) => outcome === 'waiting-approval' || outcome === 'waiting-question' || outcome === 'stopped')) return
       }
 
       if (active.leaseLost) return
@@ -1833,7 +1887,7 @@ export class WorkflowRunService {
     workflow: WorkflowDefinition,
     nodeMap: Map<string, WorkflowNode>,
     stateMap: Map<string, WorkflowNodeRunState>,
-  ): Promise<'completed' | 'waiting-approval' | 'stopped'> {
+  ): Promise<'completed' | 'waiting-approval' | 'waiting-question' | 'stopped'> {
     state.status = 'running'
     state.startedAt = new Date().toISOString()
     if (state.executionScope === undefined) this.resetDownstreamNodeStates(workflow, node.id, stateMap, outputs)
@@ -1893,6 +1947,19 @@ export class WorkflowRunService {
         record.error = error.message
         await this.save(record, 'approval-requested', error.message, node.id)
         return 'waiting-approval'
+      }
+      if (error instanceof WorkflowQuestionRequired) {
+        state.status = 'pending'
+        state.startedAt = undefined
+        state.completedAt = undefined
+        state.elapsedMs = 0
+        record.status = 'waiting-question'
+        record.waitingQuestionNodeId = node.id
+        record.error = error.message
+        const event = this.createEvent('question-requested', error.message, node.id)
+        record.waitingQuestion = { ...error.protocol, nodeId: node.id, sourceEventId: event.id }
+        await this.saveEvents(record, [event])
+        return 'waiting-question'
       }
       if (error instanceof WorkflowAmbiguousEffectError) {
         state.status = 'pending'
@@ -2401,7 +2468,7 @@ export class WorkflowRunService {
       }
       case 'approval': throw new WorkflowApprovalRequired(node.config.message)
       case 'wait-input': {
-        if (node.config.mode !== 'approval') throw new Error('表单等待暂未接入运行时恢复通道。')
+        if (node.config.mode === 'form') throw new WorkflowQuestionRequired(node.config.message, questionProtocolForForm(node, record.workflowRevision))
         throw new WorkflowApprovalRequired(node.config.message)
       }
       case 'transform': {
@@ -2844,7 +2911,7 @@ export class WorkflowRunService {
     const saved = auditOnly && this.options.runStore.mutations.isWorkflowDeleted(record.workflowId)
       ? await this.options.runStore.saveRetainedAudit(record)
       : await this.options.runStore.save(record)
-    for (const listener of this.listeners) listener(cloneWorkflow(saved))
+    for (const listener of this.listeners) { try { listener(cloneWorkflow(saved)) } catch { /* The transition is already durable. */ } }
   }
 }
 
@@ -2919,6 +2986,83 @@ function appendApprovalDecisionReceipt(record: WorkflowRunRecord, request: Workf
   receipts.push({ ...request, decidedAt: new Date().toISOString() })
 }
 
+function normalizeQuestionAnswerRequest(input: WorkflowQuestionAnswerRequest): WorkflowQuestionAnswerRequest {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new Error('Question answer request is required')
+  const allowed = new Set(['requestId', 'answer', 'expectedQuestionEventId', 'expectedNodeId', 'expectedTaskId', 'expectedRequirementVersion', 'expectedActionVersion', 'sourceRevision'])
+  const unknown = Object.keys(input).find((key) => !allowed.has(key))
+  if (unknown !== undefined) throw new Error(`Question answer field ${unknown} is not supported`)
+  const text = (value: unknown, field: string): string => {
+    if (typeof value !== 'string' || value.trim() === '') throw new Error(`Question answer ${field} is required`)
+    return value.trim()
+  }
+  if (!Number.isSafeInteger(input.expectedRequirementVersion) || input.expectedRequirementVersion < 1) throw new Error('Question answer expectedRequirementVersion must be a positive integer')
+  if (input.expectedActionVersion !== 1) throw new Error('Question answer expectedActionVersion is unsupported')
+  if (!Number.isSafeInteger(input.sourceRevision) || input.sourceRevision < 1) throw new Error('Question answer sourceRevision must be a positive integer')
+  if (!isWorkflowValue(input.answer)) throw new Error('Question answer must be JSON-safe')
+  return {
+    requestId: text(input.requestId, 'requestId'), answer: cloneWorkflow(input.answer),
+    expectedQuestionEventId: text(input.expectedQuestionEventId, 'expectedQuestionEventId'), expectedNodeId: text(input.expectedNodeId, 'expectedNodeId'),
+    expectedTaskId: text(input.expectedTaskId, 'expectedTaskId'), expectedRequirementVersion: input.expectedRequirementVersion,
+    expectedActionVersion: 1, sourceRevision: input.sourceRevision,
+  }
+}
+
+function sameQuestionAnswerRequest(existing: WorkflowQuestionAnswerRequest, expected: WorkflowQuestionAnswerRequest): boolean {
+  return existing.requestId === expected.requestId && existing.expectedQuestionEventId === expected.expectedQuestionEventId
+    && existing.expectedNodeId === expected.expectedNodeId && existing.expectedTaskId === expected.expectedTaskId
+    && existing.expectedRequirementVersion === expected.expectedRequirementVersion && existing.expectedActionVersion === expected.expectedActionVersion
+    && existing.sourceRevision === expected.sourceRevision && JSON.stringify(existing.answer) === JSON.stringify(expected.answer)
+}
+
+function appendQuestionAnswerReceipt(record: WorkflowRunRecord, request: WorkflowQuestionAnswerRequest): void {
+  const receipts = record.questionAnswerReceipts ?? (record.questionAnswerReceipts = [])
+  receipts.push({ ...request, answer: cloneWorkflow(request.answer), resolvedAt: new Date().toISOString() })
+}
+
+function questionProtocolForForm(node: Extract<WorkflowNode, { type: 'wait-input' }>, sourceRevision: number): WorkflowQuestionProtocol {
+  const fields = node.config.fields ?? []
+  if (fields.length === 0) throw new Error('表单等待节点缺少字段。')
+  for (const field of fields) {
+    if (field.type === 'file' || field.type === 'file-list') throw new Error('表单等待节点暂不支持文件字段。')
+  }
+  const prompt = node.config.message.trim()
+  if (fields.length === 1 && (fields[0]!.type ?? 'string') === 'string') {
+    const field = fields[0]!
+    if (field.options !== undefined) return { version: 1, sourceRevision, prompt, response: { type: 'single-choice', options: field.options.map((option) => ({ ...option })) } }
+    return { version: 1, sourceRevision, prompt, response: { type: 'text' } }
+  }
+  if (fields.some((field) => field.options !== undefined)) throw new Error('多字段表单等待节点不支持单选字段。')
+  return {
+    version: 1, sourceRevision, prompt,
+    response: { type: 'structured', schema: { fields: fields.map((field) => ({ key: field.name, type: (field.type ?? 'string') as 'string' | 'number' | 'boolean' | 'json', ...(field.required === false ? {} : { required: true }) })) } },
+  }
+}
+
+function validateQuestionProtocolAnswer(protocol: WorkflowQuestionProtocol, value: WorkflowValue): WorkflowValue {
+  if (protocol.response.type === 'text') {
+    if (typeof value !== 'string' || value.trim() === '') throw new Error('Question text answer must be non-empty text')
+    if (value.length > (protocol.response.maxLength ?? 10_000)) throw new Error('Question text answer exceeds its maximum length')
+    return value
+  }
+  if (protocol.response.type === 'single-choice') {
+    if (typeof value !== 'string' || !protocol.response.options.some((option) => option.value === value)) throw new Error('Question answer is not an allowed option')
+    return value
+  }
+  if (value === null || Array.isArray(value) || typeof value !== 'object') throw new Error('Question structured answer must be an object')
+  const answer = value as Record<string, WorkflowValue>
+  const fields = protocol.response.schema.fields
+  if (Object.keys(answer).some((key) => !fields.some((field) => field.key === key))) throw new Error('Question structured answer has an unknown field')
+  for (const field of fields) {
+    const candidate = answer[field.key]
+    if (candidate === undefined) { if (field.required) throw new Error(`Question structured answer is missing ${field.key}`); continue }
+    if (field.type === 'string' && (typeof candidate !== 'string' || field.required === true && candidate.trim() === '')) throw new Error(`Question structured answer ${field.key} must be non-empty string`)
+    if (field.type === 'number' && (typeof candidate !== 'number' || !Number.isFinite(candidate))) throw new Error(`Question structured answer ${field.key} must be number`)
+    if (field.type === 'boolean' && typeof candidate !== 'boolean') throw new Error(`Question structured answer ${field.key} must be boolean`)
+    if (field.type === 'json' && !isWorkflowValue(candidate)) throw new Error(`Question structured answer ${field.key} must be JSON-safe`)
+  }
+  return cloneWorkflow(value)
+}
+
 function appendCompensationEffectReconciliation(entry: WorkflowCompensationEntry, decision: WorkflowCompensationEffectReconciliation): void {
   const history = entry.effectReconciliationHistory ?? (entry.effectReconciliationHistory = entry.effectReconciliation === undefined ? [] : [cloneWorkflow(entry.effectReconciliation)])
   history.push(cloneWorkflow(decision))
@@ -2958,6 +3102,12 @@ class WorkflowApprovalRequired extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'WorkflowApprovalRequired'
+  }
+}
+
+class WorkflowQuestionRequired extends Error {
+  constructor(message: string, readonly protocol: WorkflowQuestionProtocol) {
+    super(message)
   }
 }
 
@@ -3564,7 +3714,7 @@ function isRetentionStatus(status: WorkflowRunRecord['status']): boolean {
 }
 
 function retentionExpiry(record: Pick<WorkflowRunRecord, 'status' | 'debug'>): string {
-  const days = record.debug === true || record.status === 'failed' || record.status === 'paused' || record.status === 'waiting-approval'
+  const days = record.debug === true || record.status === 'failed' || record.status === 'paused' || record.status === 'waiting-approval' || record.status === 'waiting-question'
     ? 30
     : 14
   return new Date(Date.now() + days * 24 * 60 * 60 * 1_000).toISOString()

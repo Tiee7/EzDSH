@@ -7,6 +7,7 @@ import { WorkActionService } from '../../src/main/work-items/work-action-service
 import { WorkItemService } from '../../src/main/work-items/work-item-service.js'
 import { WorkItemStore, WorkItemStoreConflictError } from '../../src/main/work-items/work-item-store.js'
 import type { WorkflowApprovalDecisionRequest, WorkflowRunRecord } from '../../src/shared/workflow.js'
+import type { WorkAction } from '../../src/shared/work-items.js'
 
 const directories: string[] = []
 
@@ -77,6 +78,207 @@ function workflowBridge(initial: WorkflowRunRecord) {
 }
 
 describe('WorkActionService', () => {
+  it('projects a frozen Workflow waiting question into one durable WorkAction', async () => {
+    const fixture = await taskFixture()
+    const run = waitingRun(fixture.commandId, 'approval-event-ignored')
+    run.workTask = { taskId: fixture.task.task.id, attemptId: fixture.task.attempts[0]!.id, requirementVersion: 1, commandId: fixture.commandId }
+    run.status = 'waiting-question'
+    run.waitingApprovalNodeId = undefined
+    run.waitingQuestionNodeId = 'question'
+    run.waitingQuestion = {
+      version: 1, sourceRevision: 4, sourceEventId: 'question-event-1', nodeId: 'question', prompt: 'Select channel',
+      response: { type: 'single-choice', options: [{ value: 'web', label: 'Web' }] },
+    }
+    run.events = [{ id: 'question-event-1', time: '2026-09-16T00:00:00.000Z', type: 'question-requested', nodeId: 'question', message: 'Select channel' }]
+    const service = new WorkActionService({ workItems: fixture.workItems, employeeRuns: {}, workflowBridge: workflowBridge(run) })
+
+    const observed = await service.observeWorkflowRun(run)
+
+    expect(observed?.actions).toEqual([expect.objectContaining({
+      kind: 'question', sourceEventId: 'question-event-1', nodeId: 'question',
+      question: expect.objectContaining({ version: 1, sourceRevision: 4, response: { type: 'single-choice', options: [{ value: 'web', label: 'Web' }] } }),
+    })])
+  })
+
+  it('supersedes a persisted question action when its Workflow run is cancelled', async () => {
+    const fixture = await taskFixture()
+    const run = waitingRun(fixture.commandId, 'approval-event-ignored')
+    run.workTask = { taskId: fixture.task.task.id, attemptId: fixture.task.attempts[0]!.id, requirementVersion: 1, commandId: fixture.commandId }
+    run.status = 'waiting-question'
+    run.waitingApprovalNodeId = undefined
+    run.waitingQuestionNodeId = 'question'
+    run.waitingQuestion = {
+      version: 1, sourceRevision: 4, sourceEventId: 'question-event-1', nodeId: 'question', prompt: 'Select channel',
+      response: { type: 'single-choice', options: [{ value: 'web', label: 'Web' }] },
+    }
+    run.events = [{ id: 'question-event-1', time: '2026-09-16T00:00:00.000Z', type: 'question-requested', nodeId: 'question', message: 'Select channel' }]
+    const service = new WorkActionService({ workItems: fixture.workItems, employeeRuns: {}, workflowBridge: workflowBridge(run) })
+    const waiting = await service.observeWorkflowRun(run)
+    expect(waiting?.actions[0]?.status).toBe('open')
+
+    run.status = 'cancelled'
+    run.waitingQuestionNodeId = undefined
+    run.waitingQuestion = undefined
+    run.events.push({ id: 'cancelled', time: '2026-09-16T00:01:00.000Z', type: 'run-cancelled' })
+    const cancelled = await service.observeWorkflowRun(run)
+
+    expect(cancelled?.actions[0]).toMatchObject({ kind: 'question', status: 'superseded', question: { sourceRevision: 4 } })
+  })
+
+  it('persists an explicit question protocol and sends only a validated text response', async () => {
+    const fixture = await taskFixture()
+    const run = waitingRun(fixture.commandId, 'approval-event-1')
+    run.workTask = { taskId: fixture.task.task.id, attemptId: fixture.task.attempts[0]!.id, requirementVersion: 1, commandId: fixture.commandId }
+    const workflows = workflowBridge(run)
+    const answerExpected = vi.fn(async () => ({ ...run, status: 'queued' as const, waitingApprovalNodeId: undefined }))
+    const service = new WorkActionService({ workItems: fixture.workItems, employeeRuns: {}, workflowBridge: { ...workflows, answerExpected } })
+    const action: WorkAction = {
+      id: 'question-1', taskId: fixture.task.task.id, runId: run.id, sourceEventId: 'question-event-1', requirementVersion: 1,
+      kind: 'question', status: 'open', nodeId: 'question',
+      question: {
+        version: 1, sourceRevision: 7, prompt: 'Which audience should receive this?',
+        response: { type: 'text', maxLength: 40 },
+      },
+    }
+    await fixture.workItems.syncWorkflowActions(fixture.task.task.id, run.id, [action])
+
+    const answered = await service.answerAction({
+      requestId: 'answer-question-text', taskId: fixture.task.task.id, actionId: action.id,
+      expectedSourceEventId: action.sourceEventId, expectedRequirementVersion: 1, expectedActionVersion: 1, answer: 'Teachers',
+    })
+
+    expect(answerExpected).toHaveBeenCalledWith(run.id, expect.objectContaining({
+      answer: 'Teachers', expectedQuestionEventId: 'question-event-1', expectedActionVersion: 1, sourceRevision: 7,
+    }))
+    expect(answered.actions.find((candidate) => candidate.id === action.id)?.status).toBe('resolved')
+  })
+
+  it('keeps an unknown question result retryable with the same request id', async () => {
+    const fixture = await taskFixture()
+    const run = waitingRun(fixture.commandId, 'question-event-retry')
+    run.workTask = { taskId: fixture.task.task.id, attemptId: fixture.task.attempts[0]!.id, requirementVersion: 1, commandId: fixture.commandId }
+    run.status = 'waiting-question'
+    run.waitingApprovalNodeId = undefined
+    run.waitingQuestionNodeId = 'question'
+    run.waitingQuestion = { version: 1, sourceRevision: 2, sourceEventId: 'question-event-retry', nodeId: 'question', prompt: 'Who?', response: { type: 'text' } }
+    run.events = [{ id: 'question-event-retry', time: '2026-09-16T00:00:00.000Z', type: 'question-requested', nodeId: 'question' }]
+    const workflows = workflowBridge(run)
+    const answeredRun = { ...run, status: 'queued' as const, waitingQuestionNodeId: undefined, waitingQuestion: undefined,
+      events: [...run.events, { id: 'resolved', time: '2026-09-16T00:01:00.000Z', type: 'question-resolved' as const, nodeId: 'question' }] }
+    const answerExpected = vi.fn()
+      .mockRejectedValueOnce(new Error('storage temporarily unavailable'))
+      .mockImplementationOnce(async () => { workflows.setCurrent(answeredRun); return answeredRun })
+    const service = new WorkActionService({ workItems: fixture.workItems, employeeRuns: {}, workflowBridge: { ...workflows, answerExpected } })
+    const observed = await service.observeWorkflowRun(run)
+    const action = observed!.actions.find((candidate) => candidate.kind === 'question')!
+    const request = { requestId: 'question-retry', taskId: fixture.task.task.id, actionId: action.id,
+      expectedSourceEventId: action.sourceEventId, expectedRequirementVersion: 1, expectedActionVersion: 1, answer: 'Teachers' }
+
+    await expect(service.answerAction(request)).rejects.toThrow('storage temporarily unavailable')
+    await expect(service.answerAction(request)).resolves.toMatchObject({ actions: [expect.objectContaining({ id: action.id, status: 'resolved' })] })
+    expect(answerExpected).toHaveBeenCalledTimes(2)
+  })
+
+  it('reconciles an accepted Workflow question receipt after a post-commit error', async () => {
+    const fixture = await taskFixture()
+    const run = waitingRun(fixture.commandId, 'question-event-accepted')
+    run.workTask = { taskId: fixture.task.task.id, attemptId: fixture.task.attempts[0]!.id, requirementVersion: 1, commandId: fixture.commandId }
+    run.status = 'waiting-question'
+    run.waitingApprovalNodeId = undefined
+    run.waitingQuestionNodeId = 'question'
+    run.waitingQuestion = { version: 1, sourceRevision: 2, sourceEventId: 'question-event-accepted', nodeId: 'question', prompt: 'Who?', response: { type: 'text' } }
+    run.events = [{ id: 'question-event-accepted', time: '2026-09-16T00:00:00.000Z', type: 'question-requested', nodeId: 'question' }]
+    const workflows = workflowBridge(run)
+    const answerExpected = vi.fn(async (_runId: string, request: import('../../src/shared/workflow.js').WorkflowQuestionAnswerRequest) => {
+      workflows.setCurrent({ ...run, status: 'queued', waitingQuestionNodeId: undefined, waitingQuestion: undefined,
+        questionAnswerReceipts: [{ ...request, resolvedAt: '2026-09-16T00:01:00.000Z' }],
+        events: [...run.events, { id: 'resolved', time: '2026-09-16T00:01:00.000Z', type: 'question-resolved', nodeId: 'question' }] })
+      throw new Error('listener failed after persistence')
+    })
+    const service = new WorkActionService({ workItems: fixture.workItems, employeeRuns: {}, workflowBridge: { ...workflows, answerExpected } })
+    const observed = await service.observeWorkflowRun(run)
+    const action = observed!.actions.find((candidate) => candidate.kind === 'question')!
+
+    const answered = await service.answerAction({ requestId: 'question-accepted', taskId: fixture.task.task.id, actionId: action.id,
+      expectedSourceEventId: action.sourceEventId, expectedRequirementVersion: 1, expectedActionVersion: 1, answer: 'Teachers' })
+
+    expect(answered.actions.find((candidate) => candidate.id === action.id)?.status).toBe('resolved')
+  })
+
+  it('rejects answers that do not match a question protocol before reserving its request id', async () => {
+    const fixture = await taskFixture()
+    const run = waitingRun(fixture.commandId, 'approval-event-1')
+    run.workTask = { taskId: fixture.task.task.id, attemptId: fixture.task.attempts[0]!.id, requirementVersion: 1, commandId: fixture.commandId }
+    const workflows = workflowBridge(run)
+    const answerExpected = vi.fn(async () => ({ ...run, status: 'queued' as const, waitingApprovalNodeId: undefined }))
+    const service = new WorkActionService({ workItems: fixture.workItems, employeeRuns: {}, workflowBridge: { ...workflows, answerExpected } })
+    const action: WorkAction = {
+      id: 'question-choice', taskId: fixture.task.task.id, runId: run.id, sourceEventId: 'question-event-choice', requirementVersion: 1,
+      kind: 'question', status: 'open', nodeId: 'question',
+      question: {
+        version: 1, sourceRevision: 3, prompt: 'Choose a publication channel',
+        response: { type: 'single-choice', options: [{ value: 'web', label: 'Website' }, { value: 'email', label: 'Email' }] },
+      },
+    }
+    await fixture.workItems.syncWorkflowActions(fixture.task.task.id, run.id, [action])
+    const request = {
+      requestId: 'invalid-question-choice', taskId: fixture.task.task.id, actionId: action.id,
+      expectedSourceEventId: action.sourceEventId, expectedRequirementVersion: 1, expectedActionVersion: 1,
+    }
+
+    await expect(service.answerAction({ ...request, answer: 'sms' })).rejects.toThrow(/option/u)
+    await expect(service.answerAction({ ...request, answer: 'web' })).resolves.toMatchObject({
+      actions: [expect.objectContaining({ id: action.id, status: 'resolved' })],
+    })
+    expect(answerExpected).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects legacy questions without an explicit protocol instead of guessing how to answer them', async () => {
+    const fixture = await taskFixture()
+    const run = waitingRun(fixture.commandId, 'approval-event-1')
+    run.workTask = { taskId: fixture.task.task.id, attemptId: fixture.task.attempts[0]!.id, requirementVersion: 1, commandId: fixture.commandId }
+    const workflows = workflowBridge(run)
+    const answerExpected = vi.fn()
+    const service = new WorkActionService({ workItems: fixture.workItems, employeeRuns: {}, workflowBridge: { ...workflows, answerExpected } })
+    const action: WorkAction = {
+      id: 'legacy-question', taskId: fixture.task.task.id, runId: run.id, sourceEventId: 'legacy-question-event', requirementVersion: 1,
+      kind: 'question', status: 'open', nodeId: 'question',
+    }
+    await fixture.workItems.syncWorkflowActions(fixture.task.task.id, run.id, [action])
+
+    await expect(service.answerAction({
+      requestId: 'legacy-question-answer', taskId: fixture.task.task.id, actionId: action.id,
+      expectedSourceEventId: action.sourceEventId, expectedRequirementVersion: 1, expectedActionVersion: 1, answer: 'anything',
+    })).rejects.toThrow(/protocol/u)
+    expect(answerExpected).not.toHaveBeenCalled()
+  })
+
+  it('accepts only JSON-safe values that match a structured question schema', async () => {
+    const fixture = await taskFixture()
+    const run = waitingRun(fixture.commandId, 'approval-event-1')
+    run.workTask = { taskId: fixture.task.task.id, attemptId: fixture.task.attempts[0]!.id, requirementVersion: 1, commandId: fixture.commandId }
+    const workflows = workflowBridge(run)
+    const answerExpected = vi.fn(async () => ({ ...run, status: 'queued' as const, waitingApprovalNodeId: undefined }))
+    const service = new WorkActionService({ workItems: fixture.workItems, employeeRuns: {}, workflowBridge: { ...workflows, answerExpected } })
+    const action: WorkAction = {
+      id: 'structured-question', taskId: fixture.task.task.id, runId: run.id, sourceEventId: 'structured-event', requirementVersion: 1,
+      kind: 'question', status: 'open', nodeId: 'question',
+      question: {
+        version: 1, sourceRevision: 2, prompt: 'Provide release details',
+        response: { type: 'structured', schema: { fields: [{ key: 'title', type: 'string', required: true }, { key: 'approved', type: 'boolean', required: true }] } },
+      },
+    }
+    await fixture.workItems.syncWorkflowActions(fixture.task.task.id, run.id, [action])
+    const request = {
+      requestId: 'structured-invalid', taskId: fixture.task.task.id, actionId: action.id,
+      expectedSourceEventId: action.sourceEventId, expectedRequirementVersion: 1, expectedActionVersion: 1,
+    }
+
+    await expect(service.answerAction({ ...request, answer: { title: 'Ship', approved: 'yes' } })).rejects.toThrow(/boolean/u)
+    await expect(service.answerAction({ ...request, answer: { title: '  ', approved: true } })).rejects.toThrow(/non-empty string/u)
+    await expect(service.answerAction({ ...request, requestId: 'structured-valid', answer: { title: 'Ship', approved: true } })).resolves.toBeDefined()
+    expect(answerExpected).toHaveBeenCalledWith(run.id, expect.objectContaining({ answer: { title: 'Ship', approved: true } }))
+  })
   it('closes an approval action for a workflow-backed employee method', async () => {
     const directory = await stateDirectory()
     const workItems = new WorkItemService(new WorkItemStore(directory))
@@ -220,7 +422,7 @@ describe('WorkActionService', () => {
       expectedSourceEventId: action.sourceEventId, expectedRequirementVersion: 1,
     }
 
-    expect(() => service.answerAction({ ...base, answer: 'yes' })).toThrow(/boolean/iu)
+    await expect(service.answerAction({ ...base, answer: 'yes' })).rejects.toThrow(/boolean/iu)
     await expect(service.answerAction({ ...base, answer: true })).resolves.toMatchObject({
       actions: [{ id: action.id, status: 'resolved' }],
     })

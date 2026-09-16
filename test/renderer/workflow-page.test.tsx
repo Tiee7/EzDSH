@@ -2413,6 +2413,7 @@ describe('WorkflowPage regressions', () => {
     expect(workflowPage.workflowRunCanDelete('completed')).toBe(true)
     expect(workflowPage.workflowRunCanDelete('running')).toBe(false)
     expect(workflowPage.workflowRunCanDelete('waiting-approval')).toBe(false)
+    expect(workflowPage.workflowRunCanDelete('waiting-question')).toBe(false)
   })
 
   it('auto-detects structured JSON strings while keeping ordinary text as Markdown', () => {

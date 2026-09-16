@@ -29,13 +29,13 @@ function queueBucket(environmentId?: string): string {
 }
 
 function isAdmitted(record: WorkflowRunRecord): boolean {
-  return record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval'
+  return record.status === 'queued' || record.status === 'running' || record.status === 'waiting-approval' || record.status === 'waiting-question'
 }
 
 function capacityMetrics(records: WorkflowRunRecord[], capacity: number): WorkflowQueueCapacityMetrics {
   const queued = records.filter((record) => record.status === 'queued').length
   const running = records.filter((record) => record.status === 'running').length
-  const waitingApproval = records.filter((record) => record.status === 'waiting-approval').length
+  const waitingApproval = records.filter((record) => record.status === 'waiting-approval' || record.status === 'waiting-question').length
   const admitted = queued + running + waitingApproval
   return { capacity, admitted, queued, running, waitingApproval, availableSlots: Math.max(0, capacity - admitted), overCapacity: admitted > capacity }
 }
@@ -72,9 +72,20 @@ export function isPersistedRunRecord(value: unknown): value is WorkflowRunRecord
   if (value === null || typeof value !== 'object') return false
   const record = value as Record<string, unknown>
   if (typeof record.id !== 'string' || typeof record.workflowId !== 'string' || typeof record.workflowRevision !== 'number' || !Number.isInteger(record.workflowRevision)) return false
-  if (!['queued', 'running', 'paused', 'waiting-approval', 'completed', 'failed', 'cancelled'].includes(record.status as string)) return false
+  if (!['queued', 'running', 'paused', 'waiting-approval', 'waiting-question', 'completed', 'failed', 'cancelled'].includes(record.status as string)) return false
   if (!Array.isArray(record.nodeStates) || !Array.isArray(record.events)) return false
+  const events = record.events
   if (!record.nodeStates.every(isPersistedNodeState)) return false
+  if (record.waitingQuestionNodeId !== undefined && !isNonEmptyString(record.waitingQuestionNodeId)) return false
+  if (record.status === 'waiting-question') {
+    if (!isPersistedWaitingQuestion(record.waitingQuestion) || record.waitingQuestion.nodeId !== record.waitingQuestionNodeId) return false
+    if (!events.some((event) => isMatchingQuestionEvent(event, record.waitingQuestion as Record<string, unknown>))) return false
+  } else if (record.waitingQuestion !== undefined) return false
+  if (record.questionAnswerReceipts !== undefined) {
+    if (!Array.isArray(record.questionAnswerReceipts) || !record.questionAnswerReceipts.every((receipt) => isPersistedQuestionReceipt(receipt, events))) return false
+    const requestIds = record.questionAnswerReceipts.map((receipt) => (receipt as { requestId: string }).requestId)
+    if (new Set(requestIds).size !== requestIds.length) return false
+  }
   if (record.parentRunId !== undefined && (typeof record.parentRunId !== 'string' || record.parentRunId.trim() === '')) return false
   if (record.workflowAncestry !== undefined && (!Array.isArray(record.workflowAncestry) || !record.workflowAncestry.every((id) => typeof id === 'string' && id.trim() !== ''))) return false
   if (record.effectIdempotencyKey !== undefined && (typeof record.effectIdempotencyKey !== 'string' || record.effectIdempotencyKey.trim() === '')) return false
@@ -86,6 +97,75 @@ export function isPersistedRunRecord(value: unknown): value is WorkflowRunRecord
   const queue = record.queue
   if (queue !== undefined && !isValidQueueState(queue)) return false
   return true
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0
+}
+
+function isPersistedQuestionResponse(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const response = value as Record<string, unknown>
+  if (response.type === 'text') return response.maxLength === undefined || isPositiveInteger(response.maxLength)
+  if (response.type === 'single-choice') {
+    if (!Array.isArray(response.options) || response.options.length === 0) return false
+    const values: string[] = []
+    for (const option of response.options) {
+      if (option === null || typeof option !== 'object' || Array.isArray(option)) return false
+      const item = option as Record<string, unknown>
+      if (!isNonEmptyString(item.value) || !isNonEmptyString(item.label)) return false
+      values.push(item.value)
+    }
+    return new Set(values).size === values.length
+  }
+  if (response.type !== 'structured' || response.schema === null || typeof response.schema !== 'object' || Array.isArray(response.schema)) return false
+  const fields = (response.schema as Record<string, unknown>).fields
+  if (!Array.isArray(fields) || fields.length === 0) return false
+  const keys: string[] = []
+  for (const field of fields) {
+    if (field === null || typeof field !== 'object' || Array.isArray(field)) return false
+    const item = field as Record<string, unknown>
+    if (!isNonEmptyString(item.key) || !['string', 'number', 'boolean', 'json'].includes(String(item.type))
+      || item.required !== undefined && typeof item.required !== 'boolean') return false
+    keys.push(item.key)
+  }
+  return new Set(keys).size === keys.length
+}
+
+function isPersistedWaitingQuestion(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const question = value as Record<string, unknown>
+  return question.version === 1
+    && isPositiveInteger(question.sourceRevision)
+    && isNonEmptyString(question.prompt)
+    && isNonEmptyString(question.sourceEventId)
+    && isNonEmptyString(question.nodeId)
+    && isPersistedQuestionResponse(question.response)
+}
+
+function isMatchingQuestionEvent(value: unknown, question: Record<string, unknown>): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const event = value as Record<string, unknown>
+  return event.id === question.sourceEventId && event.type === 'question-requested' && event.nodeId === question.nodeId
+}
+
+function isPersistedQuestionReceipt(value: unknown, events: unknown[]): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const receipt = value as Record<string, unknown>
+  if (!isNonEmptyString(receipt.requestId) || !isWorkflowValue(receipt.answer)
+    || !isNonEmptyString(receipt.expectedQuestionEventId) || !isNonEmptyString(receipt.expectedNodeId)
+    || !isNonEmptyString(receipt.expectedTaskId) || !isPositiveInteger(receipt.expectedRequirementVersion)
+    || receipt.expectedActionVersion !== 1 || !isPositiveInteger(receipt.sourceRevision)
+    || !isNonEmptyString(receipt.resolvedAt)) return false
+  return events.some((event) => {
+    if (event === null || typeof event !== 'object' || Array.isArray(event)) return false
+    const candidate = event as Record<string, unknown>
+    return candidate.id === receipt.expectedQuestionEventId && candidate.type === 'question-requested' && candidate.nodeId === receipt.expectedNodeId
+  })
 }
 
 function isPersistedNodeState(value: unknown): boolean {
@@ -536,11 +616,13 @@ export class WorkflowRunStore {
     return this.mutate(async () => {
       const record = this.runs.get(runId)
       if (record === undefined) return undefined
-      if (record.status === 'queued' || record.status === 'waiting-approval') {
+      if (record.status === 'queued' || record.status === 'waiting-approval' || record.status === 'waiting-question') {
         record.status = 'cancelled'
         record.error = '用户取消了运行'
         record.completedAt = requestedAt
         record.waitingApprovalNodeId = undefined
+        record.waitingQuestionNodeId = undefined
+        record.waitingQuestion = undefined
         record.queue = {
           ...(record.queue ?? { enqueuedAt: requestedAt, availableAt: requestedAt }),
           cancellationRequestedAt: requestedAt,
@@ -594,7 +676,7 @@ export class WorkflowRunStore {
       const removed: string[] = []
       for (const [id, record] of this.runs.entries()) {
         if (this.mutations.isRunProtected(id) || protectedIds.has(id)) continue
-        if (record.status === 'queued' || record.status === 'running' || record.status === 'paused' || record.status === 'waiting-approval') continue
+        if (record.status === 'queued' || record.status === 'running' || record.status === 'paused' || record.status === 'waiting-approval' || record.status === 'waiting-question') continue
         if (workflowRunHasUnresolvedAudit(record)) continue
         if (record.retentionExpiresAt === undefined) continue
         const expiresAt = new Date(record.retentionExpiresAt)

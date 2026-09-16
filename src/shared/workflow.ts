@@ -142,6 +142,8 @@ export interface WorkflowInputField {
   name: string
   label?: string
   type?: WorkflowInputFieldType
+  /** Stable values for a string field. Used by wait-input form questions as a single-choice contract. */
+  options?: Array<{ value: string; label: string }>
   required?: boolean
   defaultValue?: WorkflowValue
 }
@@ -495,7 +497,7 @@ export type WorkflowCreateInput = Pick<WorkflowDefinition, 'name' | 'description
 
 export type WorkflowUpdateInput = WorkflowCreateInput & { revision?: number }
 
-export type WorkflowRunStatus = 'queued' | 'running' | 'paused' | 'waiting-approval' | 'completed' | 'failed' | 'cancelled'
+export type WorkflowRunStatus = 'queued' | 'running' | 'paused' | 'waiting-approval' | 'waiting-question' | 'completed' | 'failed' | 'cancelled'
 export type WorkflowNodeRunStatus = 'pending' | 'running' | 'completed' | 'skipped' | 'failed' | 'cancelled'
 /** Journal state for an operation that may have reached an external system. */
 export type WorkflowNodeEffectState = 'none' | 'prepared' | 'dispatched' | 'confirmed' | 'unknown'
@@ -612,7 +614,7 @@ export interface WorkflowNodeRunState {
   error?: string
 }
 
-export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-effect-reconciled-not-dispatched' | 'node-effect-reconciled-dispatched' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-effect-prepared' | 'compensation-effect-dispatched' | 'compensation-effect-confirmed' | 'compensation-effect-unknown' | 'compensation-effect-reconciled-not-dispatched' | 'compensation-effect-reconciled-dispatched' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
+export type WorkflowRunEventType = 'run-created' | 'run-started' | 'node-started' | 'node-retry' | 'node-effect-prepared' | 'node-effect-dispatched' | 'node-effect-confirmed' | 'node-effect-reconciled-not-dispatched' | 'node-effect-reconciled-dispatched' | 'node-completed' | 'node-skipped' | 'node-failed' | 'compensation-started' | 'compensation-effect-prepared' | 'compensation-effect-dispatched' | 'compensation-effect-confirmed' | 'compensation-effect-unknown' | 'compensation-effect-reconciled-not-dispatched' | 'compensation-effect-reconciled-dispatched' | 'compensation-completed' | 'compensation-failed' | 'approval-requested' | 'approval-approved' | 'approval-rejected' | 'approval-resolved' | 'question-requested' | 'question-resolved' | 'run-completed' | 'run-failed' | 'run-paused' | 'run-cancelled'
 
 export interface WorkflowRunEvent {
   id: string
@@ -635,6 +637,39 @@ export interface WorkflowApprovalDecisionRequest {
 
 export interface WorkflowApprovalDecisionReceipt extends WorkflowApprovalDecisionRequest {
   decidedAt: string
+}
+
+export type WorkflowQuestionResponse =
+  | { type: 'text'; maxLength?: number }
+  | { type: 'single-choice'; options: Array<{ value: string; label: string }> }
+  | { type: 'structured'; schema: { fields: Array<{ key: string; type: 'string' | 'number' | 'boolean' | 'json'; required?: boolean }> } }
+
+/** Frozen at the moment a form node starts waiting, never reconstructed from the editable definition. */
+export interface WorkflowQuestionProtocol {
+  version: 1
+  sourceRevision: number
+  prompt: string
+  response: WorkflowQuestionResponse
+}
+
+export interface WorkflowWaitingQuestion extends WorkflowQuestionProtocol {
+  sourceEventId: string
+  nodeId: string
+}
+
+export interface WorkflowQuestionAnswerRequest {
+  requestId: string
+  answer: WorkflowValue
+  expectedQuestionEventId: string
+  expectedNodeId: string
+  expectedTaskId: string
+  expectedRequirementVersion: number
+  expectedActionVersion: 1
+  sourceRevision: number
+}
+
+export interface WorkflowQuestionAnswerReceipt extends WorkflowQuestionAnswerRequest {
+  resolvedAt: string
 }
 
 /** Main-only exact target for resuming one durable WorkTask Workflow run. */
@@ -704,6 +739,7 @@ export interface WorkflowRunRecord {
   events: WorkflowRunEvent[]
   /** Durable de-duplication for exact WorkTask approval occurrences. Legacy runs omit it. */
   approvalDecisionReceipts?: WorkflowApprovalDecisionReceipt[]
+  questionAnswerReceipts?: WorkflowQuestionAnswerReceipt[]
   /** Accepted targeted WorkTask controls, written with their run transition. Legacy runs omit it. */
   workTaskControlReceipts?: WorkflowWorkTaskControlReceipt[]
   compensationStack?: WorkflowCompensationEntry[]
@@ -725,6 +761,8 @@ export interface WorkflowRunRecord {
   /** Terminal workflow history is eligible for cleanup after this timestamp. */
   retentionExpiresAt?: string
   waitingApprovalNodeId?: string
+  waitingQuestionNodeId?: string
+  waitingQuestion?: WorkflowWaitingQuestion
   startedAt?: string
   completedAt?: string
   error?: string
@@ -1028,12 +1066,14 @@ export function deriveWorkflowLaunchFields(workflow: WorkflowDefinition): Workfl
     name: field.name,
     ...(field.label === undefined ? {} : { label: field.label }),
     ...(field.type === undefined ? {} : { type: field.type }),
+    ...(field.options === undefined ? {} : { options: field.options.map((option) => ({ ...option })) }),
     ...(field.required === undefined ? {} : { required: field.required }),
     ...(field.defaultValue === undefined ? {} : { defaultValue: cloneJsonSafeWorkflowValue(field.defaultValue) }),
   }))
 }
 
 function isValidWorkflowInputFieldValue(field: WorkflowInputField, value: unknown): value is WorkflowValue {
+  if (field.options !== undefined && !field.options.some((option) => option.value === value)) return false
   switch (field.type ?? 'string') {
     case 'string': return typeof value === 'string' && (field.required === false || value.trim() !== '')
     case 'number': return typeof value === 'number' && Number.isFinite(value)
@@ -1059,6 +1099,17 @@ function validateWorkflowInputFields(
     else if (fieldNames.has(name)) issues.push({ path: `${fieldPath}.name`, message: `${subject}名不能重复。` })
     else fieldNames.add(name)
     if (!['string', 'number', 'boolean', 'json', 'file', 'file-list'].includes(field.type ?? 'string')) issues.push({ path: `${fieldPath}.type`, message: `${subject}类型无效。` })
+    if (field.options !== undefined) {
+      if ((field.type ?? 'string') !== 'string' || field.options.length === 0) issues.push({ path: `${fieldPath}.options`, message: `${subject}选项只支持非空 string 字段。` })
+      const values = new Set<string>()
+      for (const [optionIndex, option] of field.options.entries()) {
+        const optionPath = `${fieldPath}.options.${optionIndex}`
+        if (typeof option.value !== 'string' || option.value.trim() === '') issues.push({ path: `${optionPath}.value`, message: `${subject}选项值不能为空。` })
+        else if (values.has(option.value)) issues.push({ path: `${optionPath}.value`, message: `${subject}选项值不能重复。` })
+        else values.add(option.value)
+        if (typeof option.label !== 'string' || option.label.trim() === '') issues.push({ path: `${optionPath}.label`, message: `${subject}选项标签不能为空。` })
+      }
+    }
     if (field.defaultValue !== undefined && !isValidWorkflowInputFieldValue(field, field.defaultValue)) issues.push({ path: `${fieldPath}.defaultValue`, message: `${subject}默认值与字段类型不兼容。` })
   }
 }
@@ -1168,6 +1219,9 @@ function readInputFields(value: unknown): WorkflowInputField[] | undefined {
       name: (typeof item.name === 'string' ? item.name.trim() : item.name) as string,
       ...(typeof item.label === 'string' && item.label.trim() !== '' ? { label: item.label.trim() } : {}),
       type,
+      ...(Array.isArray(item.options) ? { options: item.options.map((option) => isRecord(option)
+        ? { value: typeof option.value === 'string' ? option.value.trim() : '', label: typeof option.label === 'string' ? option.label.trim() : '' }
+        : { value: '', label: '' }) } : {}),
       required: item.required !== false,
       ...(defaultDescriptor === undefined ? {} : { defaultValue: defaultValue as WorkflowValue }),
     }

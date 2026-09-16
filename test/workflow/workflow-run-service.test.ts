@@ -576,7 +576,7 @@ async function createNodeService(options: {
 async function eventually(service: WorkflowRunService, runId: string): Promise<NonNullable<ReturnType<WorkflowRunService['get']>>> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const record = service.get(runId)
-    if (record !== undefined && ['completed', 'failed', 'cancelled', 'paused', 'waiting-approval'].includes(record.status)) return record as NonNullable<ReturnType<WorkflowRunService['get']>>
+    if (record !== undefined && ['completed', 'failed', 'cancelled', 'paused', 'waiting-approval', 'waiting-question'].includes(record.status)) return record as NonNullable<ReturnType<WorkflowRunService['get']>>
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error('run did not finish in time')
@@ -2811,6 +2811,69 @@ describe('workflow run service', () => {
     const approved = await service.approve(initial.id, true)
     expect(approved.events.at(-1)?.type).toBe('approval-approved')
     expect((await eventually(service, initial.id)).status).toBe('completed')
+  })
+
+  it('persists a versioned form question, replays its exact answer, and resumes the WorkTask run', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-question-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      ...graph(), id: 'workflow-question', name: 'Question',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'question', type: 'wait-input', label: 'Question', config: { mode: 'form', message: 'Choose an audience', fields: [{ name: 'audience', type: 'string', required: true, options: [{ value: 'teachers', label: 'Teachers' }, { value: 'parents', label: 'Parents' }] }] }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'question' }, { id: 'b', source: 'question', target: 'output' }],
+    })
+    const runStore = new WorkflowRunStore(dir)
+    const service = new WorkflowRunService({ workflowStore, runStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    const started = await service.start(workflow.id, 'start', {}, { taskId: 'task-question', attemptId: 'attempt-question', requirementVersion: 2, commandId: 'command-question' })
+    const waiting = await eventually(service, started.id)
+    expect(waiting).toMatchObject({ status: 'waiting-question', waitingQuestionNodeId: 'question', waitingQuestion: { version: 1, sourceRevision: workflow.revision, response: { type: 'single-choice' } } })
+    const request = {
+      requestId: 'answer-question', answer: 'teachers', expectedQuestionEventId: waiting.waitingQuestion!.sourceEventId,
+      expectedNodeId: 'question', expectedTaskId: 'task-question', expectedRequirementVersion: 2,
+      expectedActionVersion: 1 as const, sourceRevision: workflow.revision,
+    }
+    const reopenedStore = new WorkflowRunStore(dir)
+    const reopened = new WorkflowRunService({ workflowStore, runStore: reopenedStore, workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    const answered = await reopened.answerExpected(started.id, request)
+    const replay = await reopened.answerExpected(started.id, request)
+    expect(replay).toEqual(answered)
+    await expect(reopened.answerExpected(started.id, { ...request, answer: 'parents' })).rejects.toThrow(/request id/u)
+    expect((await eventually(reopened, started.id)).output).toBe('teachers')
+    expect(reopenedStore.get(started.id)?.questionAnswerReceipts).toHaveLength(1)
+  })
+
+  it('represents a single typed form field as a structured question', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-workflow-typed-question-'))
+    const workflowStore = new WorkflowStore(dir)
+    const workflow = await workflowStore.create({
+      ...graph(), id: 'workflow-typed-question', name: 'Typed question',
+      nodes: [
+        { id: 'input', type: 'input', label: 'Input', config: {}, position: { x: 0, y: 0 } },
+        { id: 'question', type: 'wait-input', label: 'Question', config: { mode: 'form', message: 'How many copies?', fields: [{ name: 'copies', type: 'number', required: true }] }, position: { x: 200, y: 0 } },
+        { id: 'output', type: 'output', label: 'Output', config: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'a', source: 'input', target: 'question' }, { id: 'b', source: 'question', target: 'output' }],
+    })
+    const service = new WorkflowRunService({ workflowStore, runStore: new WorkflowRunStore(dir), workflowRoot: dir,
+      createClient: () => ({ createSession: async () => ({ sessionId: 'unused' }), sendPrompt: async () => ({ text: 'unused' }) }), resolveEmployee: () => undefined,
+    })
+    const started = await service.start(workflow.id, 'start', {}, { taskId: 'task-question', attemptId: 'attempt-question', requirementVersion: 1, commandId: 'command-question' })
+    const waiting = await eventually(service, started.id)
+
+    expect(waiting.waitingQuestion?.response).toEqual({ type: 'structured', schema: { fields: [{ key: 'copies', type: 'number', required: true }] } })
+    await service.answerExpected(started.id, {
+      requestId: 'answer-typed-question', answer: { copies: 3 }, expectedQuestionEventId: waiting.waitingQuestion!.sourceEventId,
+      expectedNodeId: 'question', expectedTaskId: 'task-question', expectedRequirementVersion: 1,
+      expectedActionVersion: 1, sourceRevision: workflow.revision,
+    })
+    expect((await eventually(service, started.id)).output).toEqual({ copies: 3 })
   })
 
   it('records an approval rejection explicitly', async () => {

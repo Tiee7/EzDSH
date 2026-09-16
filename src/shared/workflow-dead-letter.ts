@@ -76,7 +76,7 @@ export function validateWorkflowRecoveryExecute(value: unknown): WorkflowRecover
 export function validateWorkflowDeadLetterQuery(value: unknown): WorkflowDeadLetterQuery {
   const raw = object(value ?? {})
   if (raw.workflowId !== undefined && !identifier(raw.workflowId) || raw.environmentId !== undefined && !identifier(raw.environmentId)
-    || raw.status !== undefined && !['failed', 'paused', 'queued', 'running', 'waiting-approval', 'completed', 'cancelled'].includes(String(raw.status))
+    || raw.status !== undefined && !['failed', 'paused', 'queued', 'running', 'waiting-approval', 'waiting-question', 'completed', 'cancelled'].includes(String(raw.status))
     || raw.offset !== undefined && (!Number.isSafeInteger(raw.offset) || (raw.offset as number) < 0)
     || raw.limit !== undefined && (!Number.isInteger(raw.limit) || (raw.limit as number) < 1 || (raw.limit as number) > 100)) throw new Error('Invalid dead-letter query')
   return { ...(raw.workflowId === undefined ? {} : { workflowId: raw.workflowId as string }), ...(raw.environmentId === undefined ? {} : { environmentId: raw.environmentId as string }),

@@ -9,6 +9,7 @@ import { WorkflowInternalSessionStore } from '../../src/main/workflow/workflow-i
 import type { WorkflowRunRecord } from '../../src/shared/workflow.js'
 import type { WorkflowCustomerEnvironment, WorkflowRelease } from '../../src/shared/workflow-operations.js'
 import { computeWorkflowReleaseSha256 } from '../../src/main/workflow/workflow-release-integrity.js'
+import { validateWorkflowDeadLetterQuery } from '../../src/shared/workflow-dead-letter.js'
 
 async function fixture(limits?: { global: number; perEnvironment: number }) {
   const dir = await mkdtemp(join(tmpdir(), 'ezdsh-dead-letter-'))
@@ -30,6 +31,10 @@ async function fixture(limits?: { global: number; perEnvironment: number }) {
 }
 
 describe('operational dead letter and bounded recovery', () => {
+  it('accepts waiting-question as a current run status filter', () => {
+    expect(validateWorkflowDeadLetterQuery({ status: 'waiting-question' })).toMatchObject({ status: 'waiting-question' })
+  })
+
   it('projects retention holds for reference-protected runs without unresolved effects', async () => {
     const f = await fixture()
     await f.save('parent', { status: 'completed' })

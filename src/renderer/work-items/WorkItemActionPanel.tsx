@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import type {
   WorkAction,
   WorkActionAnswerRequest,
+  WorkQuestionActionProtocol,
   WorkRunControlRequest,
   WorkRunRef,
   WorkTaskSnapshot,
@@ -37,6 +38,135 @@ function runStatusLabel(status: WorkRunRef['status'], english: boolean): string 
   return labels[status]
 }
 
+interface QuestionAnswerFormProps {
+  actionId: string
+  protocol: WorkQuestionActionProtocol
+  busy: boolean
+  english: boolean
+  onSubmit: (answer: unknown) => void
+}
+
+function QuestionAnswerForm({ actionId, protocol, busy, english, onSubmit }: QuestionAnswerFormProps): JSX.Element {
+  const [textAnswer, setTextAnswer] = useState('')
+  const [choiceAnswer, setChoiceAnswer] = useState('')
+  const [fieldAnswers, setFieldAnswers] = useState<Record<string, string>>({})
+  const [validationError, setValidationError] = useState('')
+  const response = protocol.response
+
+  function submit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    setValidationError('')
+    if (response.type === 'text') {
+      onSubmit(textAnswer)
+      return
+    }
+    if (response.type === 'single-choice') {
+      if (!response.options.some((option) => option.value === choiceAnswer)) {
+        setValidationError(english ? 'Select one of the available options.' : '请选择一个可用选项。')
+        return
+      }
+      onSubmit(choiceAnswer)
+      return
+    }
+    const answer: Record<string, unknown> = {}
+    for (const field of response.schema.fields) {
+      const raw = fieldAnswers[field.key] ?? ''
+      if (raw === '') {
+        if (field.required) {
+          setValidationError(english ? `${field.key} is required.` : `${field.key} 为必填项。`)
+          return
+        }
+        continue
+      }
+      if (field.type === 'number') {
+        const parsed = Number(raw)
+        if (!Number.isFinite(parsed)) {
+          setValidationError(english ? `${field.key} must be a finite number.` : `${field.key} 必须是有限数字。`)
+          return
+        }
+        answer[field.key] = parsed
+      } else if (field.type === 'boolean') {
+        answer[field.key] = raw === 'true'
+      } else if (field.type === 'json') {
+        try {
+          answer[field.key] = JSON.parse(raw) as unknown
+        } catch {
+          setValidationError(english ? `${field.key} must be valid JSON.` : `${field.key} 必须是有效 JSON。`)
+          return
+        }
+      } else {
+        answer[field.key] = raw
+      }
+    }
+    onSubmit(answer)
+  }
+
+  return <form className="work-item-question-form" onSubmit={submit}>
+    <p className="work-item-question-prompt">{protocol.prompt}</p>
+    {response.type === 'text' ? <label>
+      <span>{english ? 'Answer' : '回答'}</span>
+      <textarea
+        aria-label={english ? `Answer question ${actionId}` : `回答问题 ${actionId}`}
+        value={textAnswer}
+        maxLength={response.maxLength ?? 10_000}
+        rows={3}
+        disabled={busy}
+        onChange={(event) => setTextAnswer(event.target.value)}
+      />
+    </label> : null}
+    {response.type === 'single-choice' ? <label>
+      <span>{english ? 'Answer' : '回答'}</span>
+      <select
+        aria-label={english ? `Answer question ${actionId}` : `回答问题 ${actionId}`}
+        value={choiceAnswer}
+        disabled={busy}
+        onChange={(event) => setChoiceAnswer(event.target.value)}
+      >
+        <option value="">{english ? 'Select an option' : '请选择'}</option>
+        {response.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label> : null}
+    {response.type === 'structured' ? <div className="work-item-question-fields">
+      {response.schema.fields.map((field) => <label key={field.key}>
+        <span>{field.key}{field.required ? ' *' : ''}</span>
+        {field.type === 'boolean' ? <select
+          aria-label={`${protocol.prompt}: ${field.key}`}
+          value={fieldAnswers[field.key] ?? ''}
+          disabled={busy}
+          onChange={(event) => setFieldAnswers((current) => ({ ...current, [field.key]: event.target.value }))}
+        >
+          <option value="">{english ? 'Select' : '请选择'}</option>
+          <option value="true">{english ? 'Yes' : '是'}</option>
+          <option value="false">{english ? 'No' : '否'}</option>
+        </select> : field.type === 'json' ? <textarea
+          aria-label={`${protocol.prompt}: ${field.key}`}
+          value={fieldAnswers[field.key] ?? ''}
+          required={field.required}
+          disabled={busy}
+          rows={3}
+          onChange={(event) => setFieldAnswers((current) => ({ ...current, [field.key]: event.target.value }))}
+        /> : <input
+          type={field.type === 'number' ? 'number' : 'text'}
+          aria-label={`${protocol.prompt}: ${field.key}`}
+          value={fieldAnswers[field.key] ?? ''}
+          required={field.required}
+          disabled={busy}
+          onChange={(event) => setFieldAnswers((current) => ({ ...current, [field.key]: event.target.value }))}
+        />}
+      </label>)}
+    </div> : null}
+    {validationError ? <p className="work-item-question-error" role="alert">{validationError}</p> : null}
+    <div className="work-item-action-buttons">
+      <button
+        type="submit"
+        className="work-items-button"
+        aria-label={english ? `Submit answer ${actionId}` : `提交回答 ${actionId}`}
+        disabled={busy}
+      >{english ? 'Submit answer' : '提交回答'}</button>
+    </div>
+  </form>
+}
+
 /**
  * Sends durable action/control requests through injected callbacks. It never
  * projects a terminal state locally: only the returned snapshot is published.
@@ -54,6 +184,7 @@ export function WorkItemActionPanel({
   const [error, setError] = useState('')
   const inFlight = useRef(false)
   const controlRetries = useRef(new Map<string, WorkRunControlRequest>())
+  const answerRetries = useRef(new Map<string, WorkActionAnswerRequest>())
   const openActions = snapshot.actions.filter((action) => action.status === 'open')
 
   async function perform(key: string, operation: () => Promise<WorkTaskSnapshot>): Promise<void> {
@@ -71,15 +202,25 @@ export function WorkItemActionPanel({
     }
   }
 
-  function answer(action: WorkAction, value: boolean): void {
-    const request: WorkActionAnswerRequest = {
+  function answer(action: WorkAction, value: unknown): void {
+    const signature = JSON.stringify({
+      taskId: snapshot.task.id,
+      actionId: action.id,
+      sourceEventId: action.sourceEventId,
+      requirementVersion: action.requirementVersion,
+      actionVersion: action.question?.version,
+      answer: value,
+    })
+    const request = answerRetries.current.get(signature) ?? {
       requestId: crypto.randomUUID(),
       taskId: snapshot.task.id,
       actionId: action.id,
       expectedSourceEventId: action.sourceEventId,
       expectedRequirementVersion: action.requirementVersion,
+      ...(action.question === undefined ? {} : { expectedActionVersion: action.question.version }),
       answer: value,
     }
+    answerRetries.current.set(signature, request)
     void perform(`action:${action.id}`, () => onAnswer(request))
   }
 
@@ -146,6 +287,17 @@ export function WorkItemActionPanel({
           >{english ? 'Open executor' : '打开执行器'}</button> : null}
         </div>
       </>
+    }
+
+    if (action.question !== undefined) {
+      return <QuestionAnswerForm
+        key={`${action.id}:${action.question.version}:${action.question.sourceRevision}`}
+        actionId={action.id}
+        protocol={action.question}
+        busy={busyKey !== undefined}
+        english={english}
+        onSubmit={(value) => answer(action, value)}
+      />
     }
 
     return <>

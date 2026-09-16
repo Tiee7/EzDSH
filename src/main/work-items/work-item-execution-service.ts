@@ -159,10 +159,10 @@ function projectExecution(execution: EmployeeRunRecord | WorkflowRunRecord): Pic
   }
   return {
     runId: execution.id,
-    status: execution.status === 'waiting-approval' ? 'waiting' : execution.status,
+    status: execution.status === 'waiting-approval' || execution.status === 'waiting-question' ? 'waiting' : execution.status,
     rawStatus: execution.status,
     capabilities: {
-      cancel: ['queued', 'running', 'waiting-approval'].includes(execution.status),
+      cancel: ['queued', 'running', 'waiting-approval', 'waiting-question'].includes(execution.status),
       resume: ['paused', 'failed'].includes(execution.status),
       append: false,
     },

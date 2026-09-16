@@ -1,6 +1,7 @@
 import { createWindow } from '@mixmark-io/domino'
 import { act, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
+import { Simulate } from 'react-dom/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkItemActionPanel } from '../../src/renderer/work-items/WorkItemActionPanel.js'
 import type { WorkActionAnswerRequest, WorkRunControlRequest, WorkTaskSnapshot } from '../../src/shared/work-items.js'
@@ -52,6 +53,12 @@ function button(dom: ReturnType<typeof createWindow>, label: string): HTMLButton
   const found = dom.document.querySelector(`button[aria-label="${label}"]`)
   if (!found) throw new Error(`Missing button ${label}`)
   return found as HTMLButtonElement
+}
+
+function submitQuestion(dom: ReturnType<typeof createWindow>, actionId: string): void {
+  const form = dom.document.querySelector(`[data-action-id="${actionId}"] form`)
+  if (!form) throw new Error(`Missing question form ${actionId}`)
+  form.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true }))
 }
 
 describe('WorkItemActionPanel', () => {
@@ -140,5 +147,98 @@ describe('WorkItemActionPanel', () => {
 
     expect(dom.document.querySelector('button[aria-label="Resume recovery recovery-1"]')).toBeFalsy()
     expect(dom.document.body.textContent).toContain('has not declared resume capability')
+  })
+
+  it('renders a persisted text question and submits a versioned answer', async () => {
+    const current = snapshot()
+    const withQuestion: WorkTaskSnapshot = {
+      ...current,
+      actions: current.actions.map((item) => item.id === 'question-1' ? {
+        ...item,
+        question: {
+          version: 1 as const,
+          sourceRevision: 4,
+          prompt: 'Who should receive the release?',
+          response: { type: 'text' as const, maxLength: 40 },
+        },
+      } : item),
+    }
+    const answer = vi.fn(async () => withQuestion)
+    const { dom } = await mount(<WorkItemActionPanel snapshot={withQuestion} locale="en" onAnswer={answer} onControl={vi.fn()} onChanged={vi.fn()} onOpenExecutor={vi.fn()} />)
+
+    expect(dom.document.body.textContent).toContain('Who should receive the release?')
+    const field = dom.document.querySelector('textarea[aria-label="Answer question question-1"]') as HTMLTextAreaElement
+    await act(async () => { Simulate.change(field, { target: { value: 'Teachers' } } as never) })
+    await act(async () => submitQuestion(dom, 'question-1'))
+
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({
+      actionId: 'question-1',
+      expectedSourceEventId: 'event-question',
+      expectedRequirementVersion: 2,
+      expectedActionVersion: 1,
+      answer: 'Teachers',
+    }))
+  })
+
+  it('submits stable single-choice values and reuses the request id after an explicit failure', async () => {
+    const current = snapshot()
+    const withQuestion: WorkTaskSnapshot = {
+      ...current,
+      actions: current.actions.map((item) => item.id === 'question-1' ? {
+        ...item,
+        question: {
+          version: 1 as const,
+          sourceRevision: 5,
+          prompt: 'Choose a channel',
+          response: { type: 'single-choice' as const, options: [{ value: 'web', label: 'Website' }, { value: 'email', label: 'Email' }] },
+        },
+      } : item),
+    }
+    const answer = vi.fn<(request: WorkActionAnswerRequest) => Promise<WorkTaskSnapshot>>()
+      .mockRejectedValueOnce(new Error('Network unavailable'))
+      .mockResolvedValueOnce(withQuestion)
+    const { dom } = await mount(<WorkItemActionPanel snapshot={withQuestion} locale="en" onAnswer={answer} onControl={vi.fn()} onChanged={vi.fn()} onOpenExecutor={vi.fn()} />)
+    const field = dom.document.querySelector('select[aria-label="Answer question question-1"]') as HTMLSelectElement
+
+    await act(async () => { Simulate.change(field, { target: { value: 'web' } } as never) })
+    await act(async () => submitQuestion(dom, 'question-1'))
+    expect(dom.document.querySelector('[role="alert"]')?.textContent).toContain('Network unavailable')
+    await act(async () => submitQuestion(dom, 'question-1'))
+
+    expect(answer).toHaveBeenCalledTimes(2)
+    expect(answer.mock.calls[0]?.[0].answer).toBe('web')
+    expect(answer.mock.calls[1]?.[0].requestId).toBe(answer.mock.calls[0]?.[0].requestId)
+  })
+
+  it('collects typed structured fields before submitting', async () => {
+    const current = snapshot()
+    const withQuestion: WorkTaskSnapshot = {
+      ...current,
+      actions: current.actions.map((item) => item.id === 'question-1' ? {
+        ...item,
+        question: {
+          version: 1 as const,
+          sourceRevision: 6,
+          prompt: 'Release details',
+          response: { type: 'structured' as const, schema: { fields: [
+            { key: 'title', type: 'string' as const, required: true },
+            { key: 'copies', type: 'number' as const, required: true },
+            { key: 'approved', type: 'boolean' as const, required: true },
+          ] } },
+        },
+      } : item),
+    }
+    const answer = vi.fn(async () => withQuestion)
+    const { dom } = await mount(<WorkItemActionPanel snapshot={withQuestion} locale="en" onAnswer={answer} onControl={vi.fn()} onChanged={vi.fn()} onOpenExecutor={vi.fn()} />)
+
+    for (const [label, value] of [['Release details: title', 'Ship'], ['Release details: copies', '3'], ['Release details: approved', 'true']] as const) {
+      const field = dom.document.querySelector(`[aria-label="${label}"]`) as HTMLInputElement | HTMLSelectElement
+      await act(async () => {
+        Simulate.change(field, { target: { value } } as never)
+      })
+    }
+    await act(async () => submitQuestion(dom, 'question-1'))
+
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ answer: { title: 'Ship', copies: 3, approved: true } }))
   })
 })

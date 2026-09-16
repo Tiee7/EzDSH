@@ -124,6 +124,27 @@ describe('workflow safe execution store', () => {
     expect(store.get('malformed-loop')).toBeUndefined()
   })
 
+  it('rejects waiting questions and answer receipts without a complete persisted protocol', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ezdsh-question-malformed-'))
+    const questionEvent = { id: 'question-event', time: '2026-09-16T00:00:00.000Z', type: 'question-requested', nodeId: 'question' }
+    const valid = {
+      ...queuedRecord('valid-question'), status: 'waiting-question', waitingQuestionNodeId: 'question', events: [questionEvent],
+      waitingQuestion: { version: 1, sourceRevision: 1, prompt: 'Who?', sourceEventId: 'question-event', nodeId: 'question', response: { type: 'text' } },
+    }
+    await writeFile(join(dir, 'workflow-runs.json'), JSON.stringify([
+      { ...queuedRecord('missing-question'), status: 'waiting-question', waitingQuestionNodeId: 'question', events: [questionEvent] },
+      { ...valid, id: 'malformed-receipt', status: 'completed', waitingQuestionNodeId: undefined, waitingQuestion: undefined,
+        questionAnswerReceipts: [{ requestId: 'answer', answer: 'Teachers' }] },
+      valid,
+    ]))
+    const store = new WorkflowRunStore(dir)
+    await store.initialize()
+
+    expect(store.get('missing-question')).toBeUndefined()
+    expect(store.get('malformed-receipt')).toBeUndefined()
+    expect(store.get('valid-question')).toMatchObject({ status: 'waiting-question', waitingQuestion: { sourceEventId: 'question-event' } })
+  })
+
   it.each(['prepared', 'dispatched', 'confirmed', 'unknown'])('pauses recovery for nested %s loop effects', async (effectState) => {
     const dir = await mkdtemp(join(tmpdir(), 'ezdsh-loop-recovery-'))
     const store = new WorkflowRunStore(dir)

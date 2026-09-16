@@ -1,4 +1,4 @@
-import { isWorkflowValue } from './workflow.js'
+import { isWorkflowValue, type WorkflowQuestionProtocol, type WorkflowQuestionResponse } from './workflow.js'
 
 export type WorkExecutor =
   | { kind: 'employee'; employeeId: string; methodId?: string; methodVersion?: number }
@@ -81,6 +81,14 @@ export interface WorkArtifact {
   createdAt: string
 }
 
+/**
+ * The durable, renderer-safe contract for a question that needs a human answer.
+ * Version 1 intentionally supports only scalar text, a selected stable option,
+ * or a flat JSON object. More expressive schemas need a new version.
+ */
+export type WorkQuestionResponse = WorkflowQuestionResponse
+export type WorkQuestionActionProtocol = WorkflowQuestionProtocol
+
 export interface WorkAction {
   id: string
   taskId: string
@@ -90,6 +98,8 @@ export interface WorkAction {
   kind: 'approval' | 'question' | 'recovery'
   status: 'open' | 'resolved' | 'superseded'
   nodeId?: string
+  /** Present only for question actions produced by a versioned protocol. Legacy questions remain readable but cannot be answered. */
+  question?: WorkQuestionActionProtocol
 }
 
 export interface WorkTaskSnapshot {
@@ -163,6 +173,8 @@ export interface WorkActionAnswerRequest {
   actionId: string
   expectedSourceEventId: string
   expectedRequirementVersion: number
+  /** Required for a versioned question; omitted by legacy approval callers. */
+  expectedActionVersion?: number
   answer: unknown
 }
 
@@ -452,17 +464,21 @@ export function validateWorkRunControlRequest(value: unknown): WorkRunControlReq
 export function validateWorkActionAnswerRequest(value: unknown): WorkActionAnswerRequest {
   const request = record(value, '$')
   exactFields(request, [
-    'requestId', 'taskId', 'actionId', 'expectedSourceEventId', 'expectedRequirementVersion', 'answer'
+    'requestId', 'taskId', 'actionId', 'expectedSourceEventId', 'expectedRequirementVersion', 'expectedActionVersion', 'answer'
   ])
   if (!('answer' in request)) {
     throw new WorkItemValidationError('MISSING_FIELD', 'answer', 'answer is required')
   }
+  const expectedActionVersion = request.expectedActionVersion === undefined
+    ? undefined
+    : positiveSafeInteger(request.expectedActionVersion, 'expectedActionVersion')
   return {
     requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
     taskId: identifierField(request, 'taskId', WORK_ITEM_LIMITS.id),
     actionId: identifierField(request, 'actionId', WORK_ITEM_LIMITS.id),
     expectedSourceEventId: identifierField(request, 'expectedSourceEventId', WORK_ITEM_LIMITS.id),
     expectedRequirementVersion: positiveSafeInteger(request.expectedRequirementVersion, 'expectedRequirementVersion'),
+    ...(expectedActionVersion === undefined ? {} : { expectedActionVersion }),
     answer: request.answer,
   }
 }

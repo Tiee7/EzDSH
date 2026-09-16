@@ -4,12 +4,13 @@ import {
   validateWorkRunControlRequest,
   type WorkAction,
   type WorkActionAnswerRequest,
+  type WorkQuestionActionProtocol,
   type WorkRunControlRequest,
   type WorkRunStatus,
   type WorkTaskSnapshot,
   type WorkExecutor,
 } from '../../shared/work-items.js'
-import type { WorkflowApprovalDecisionRequest, WorkflowResumeRequest, WorkflowRunEvent, WorkflowRunRecord } from '../../shared/workflow.js'
+import { isWorkflowValue, type WorkflowApprovalDecisionRequest, type WorkflowQuestionAnswerRequest, type WorkflowResumeRequest, type WorkflowRunEvent, type WorkflowRunRecord, type WorkflowValue } from '../../shared/workflow.js'
 import { WorkItemService } from './work-item-service.js'
 
 export interface WorkActionEmployeeRunPort {
@@ -20,6 +21,8 @@ export interface WorkActionEmployeeRunPort {
 export interface WorkActionWorkflowBridgePort {
   get?(runId: string): Promise<WorkflowRunRecord | undefined> | WorkflowRunRecord | undefined
   approveExpected?(runId: string, request: WorkflowApprovalDecisionRequest): Promise<WorkflowRunRecord>
+  /** Optional until the Workflow executor implements question waiting/continuation. */
+  answerExpected?(runId: string, request: WorkflowQuestionAnswerRequest): Promise<WorkflowRunRecord>
   resume?(runId: string): Promise<WorkflowRunRecord>
   resumeExpected?(runId: string, request: WorkflowResumeRequest): Promise<WorkflowRunRecord>
   cancel?(runId: string): Promise<WorkflowRunRecord>
@@ -98,6 +101,37 @@ export class WorkActionService {
         nodeId: event.nodeId,
       }
     })
+    const questionRequests = record.events
+      .map((event, index) => ({ event, index }))
+      .filter((item): item is { event: WorkflowRunEvent & { nodeId: string }; index: number } =>
+        item.event.type === 'question-requested' && item.event.nodeId !== undefined)
+    const latestQuestionRequest = questionRequests.at(-1)?.event
+    for (const { event, index } of questionRequests) {
+      const nextRequestIndex = questionRequests.find((candidate) => candidate.index > index)?.index ?? record.events.length
+      const resolved = record.events.slice(index + 1, nextRequestIndex).some((candidate) =>
+        candidate.nodeId === event.nodeId && candidate.type === 'question-resolved')
+      const waiting = record.waitingQuestion?.sourceEventId === event.id && record.waitingQuestion.nodeId === event.nodeId
+        ? record.waitingQuestion
+        : undefined
+      const existing = snapshot.actions.find((candidate) => candidate.id === workflowActionId(record.id, event.id) && candidate.kind === 'question')
+      const protocol = waiting === undefined ? existing?.question : {
+        version: waiting.version,
+        sourceRevision: waiting.sourceRevision,
+        prompt: waiting.prompt,
+        response: structuredClone(waiting.response),
+      }
+      const open = !resolved
+        && latestQuestionRequest?.id === event.id
+        && record.status === 'waiting-question'
+        && record.waitingQuestionNodeId === event.nodeId
+        && waiting !== undefined
+      actions.push({
+        id: workflowActionId(record.id, event.id), taskId: record.workTask.taskId, runId: record.id,
+        sourceEventId: event.id, requirementVersion: record.workTask.requirementVersion,
+        kind: 'question', status: resolved ? 'resolved' : open ? 'open' : 'superseded', nodeId: event.nodeId,
+        ...(protocol === undefined ? {} : { question: protocol }),
+      })
+    }
     const statusProjection = await this.options.workItems.syncWorkflowRun(record.workTask.taskId, record.id, projectWorkflow(record))
     if (statusProjection === undefined) return undefined
     const projection = await this.options.workItems.syncWorkflowActions(record.workTask.taskId, record.id, actions)
@@ -158,11 +192,17 @@ export class WorkActionService {
     })
   }
 
-  answerAction(input: WorkActionAnswerRequest): Promise<WorkTaskSnapshot> {
+  async answerAction(input: WorkActionAnswerRequest): Promise<WorkTaskSnapshot> {
     const request = validateWorkActionAnswerRequest(input)
+    const snapshot = await this.options.workItems.get(request.taskId)
+    const action = snapshot?.actions.find((candidate) => candidate.id === request.actionId)
+    if (action?.kind === 'question') {
+      const answer = validateQuestionAnswer(action.question, request.expectedActionVersion, request.answer)
+      return this.serialize(request.requestId, () => this.answerQuestionActionOnce(request, answer))
+    }
     if (typeof request.answer !== 'boolean') throw new Error('Workflow approval answer must be boolean')
     const normalized = { ...request, answer: request.answer }
-    return this.serialize(request.requestId, () => this.answerActionOnce(normalized))
+    return this.serialize(request.requestId, () => this.answerApprovalActionOnce(normalized))
   }
 
   controlRun(input: WorkRunControlRequest): Promise<WorkTaskSnapshot> {
@@ -170,7 +210,7 @@ export class WorkActionService {
     return this.serialize(request.requestId, () => this.controlRunOnce(request))
   }
 
-  private async answerActionOnce(request: WorkActionAnswerRequest & { answer: boolean }): Promise<WorkTaskSnapshot> {
+  private async answerApprovalActionOnce(request: WorkActionAnswerRequest & { answer: boolean }): Promise<WorkTaskSnapshot> {
     const intent = await this.options.workItems.beginActionAnswer(request)
     if (intent.stage === 'resolved') return intent.snapshot
     if (intent.stage === 'rejected') throw new Error(intent.rejectionReason ?? `Action answer request ${request.requestId} was rejected`)
@@ -197,6 +237,59 @@ export class WorkActionService {
       await this.options.workItems.rejectActionAnswer(request, errorText(error))
       throw error
     }
+    return (await this.options.workItems.completeActionAnswer(request, projectWorkflow(decided))).snapshot
+  }
+
+  private async answerQuestionActionOnce(
+    request: WorkActionAnswerRequest,
+    answer: WorkflowValue,
+  ): Promise<WorkTaskSnapshot> {
+    const intent = await this.options.workItems.beginActionAnswer(request)
+    if (intent.stage === 'resolved') return intent.snapshot
+    if (intent.stage === 'rejected') throw new Error(intent.rejectionReason ?? `Action answer request ${request.requestId} was rejected`)
+    const action = intent.snapshot.actions.find((candidate) => candidate.id === intent.actionId)
+    if (action === undefined || action.kind !== 'question') throw new Error(`Action ${intent.actionId} is not a question`)
+    let protocol: WorkQuestionActionProtocol
+    try {
+      protocol = validateQuestionProtocol(action.question, request.expectedActionVersion)
+      validateQuestionAnswer(protocol, request.expectedActionVersion, answer)
+    } catch (error) {
+      await this.options.workItems.rejectActionAnswer(request, errorText(error))
+      throw error
+    }
+    const reference = intent.snapshot.runs.find((candidate) => candidate.runId === action.runId)
+    if (reference === undefined || !isWorkflowBackedExecutor(reference.executor)) throw new Error(`Workflow run ${action.runId} was not found for action ${action.id}`)
+    const workflowRequest: WorkflowQuestionAnswerRequest = {
+      requestId: request.requestId,
+      answer,
+      expectedQuestionEventId: request.expectedSourceEventId,
+      expectedNodeId: action.nodeId ?? protocolNodeId(action),
+      expectedTaskId: request.taskId,
+      expectedRequirementVersion: request.expectedRequirementVersion,
+      expectedActionVersion: protocol.version,
+      sourceRevision: protocol.sourceRevision,
+    }
+    let decided: WorkflowRunRecord | undefined
+    try {
+      const current = await this.options.workflowBridge.get?.(action.runId)
+      assertWorkflowAssociation(current, reference, request.taskId)
+      if (this.options.workflowBridge.answerExpected === undefined) throw new Error('Workflow question control is unavailable')
+      decided = await this.options.workflowBridge.answerExpected(action.runId, workflowRequest)
+      assertWorkflowAssociation(decided, reference, request.taskId)
+    } catch (error) {
+      let current: WorkflowRunRecord | undefined
+      try { current = await this.options.workflowBridge.get?.(action.runId) } catch { /* Preserve the original unknown result. */ }
+      if (current !== undefined && hasWorkflowQuestionAnswerReceipt(current, workflowRequest)) {
+        assertWorkflowAssociation(current, reference, request.taskId)
+        decided = current
+      } else {
+        if (current !== undefined && !isCurrentWorkflowQuestionTarget(current, reference, workflowRequest)) {
+          await this.options.workItems.rejectActionAnswer(request, errorText(error))
+        }
+        throw error
+      }
+    }
+    if (decided === undefined) throw new Error('Workflow question result is unavailable')
     return (await this.options.workItems.completeActionAnswer(request, projectWorkflow(decided))).snapshot
   }
 
@@ -259,6 +352,84 @@ function isWorkflowBackedExecutor(executor: WorkExecutor): boolean {
   return executor.kind === 'workflow' || (executor.kind === 'employee' && executor.methodId !== undefined)
 }
 
+function protocolNodeId(action: WorkAction): never {
+  throw new Error(`Question action ${action.id} has no Workflow node target`)
+}
+
+function hasWorkflowQuestionAnswerReceipt(record: WorkflowRunRecord, request: WorkflowQuestionAnswerRequest): boolean {
+  return record.questionAnswerReceipts?.some((receipt) =>
+    receipt.requestId === request.requestId
+    && receipt.expectedQuestionEventId === request.expectedQuestionEventId
+    && receipt.expectedNodeId === request.expectedNodeId
+    && receipt.expectedTaskId === request.expectedTaskId
+    && receipt.expectedRequirementVersion === request.expectedRequirementVersion
+    && receipt.expectedActionVersion === request.expectedActionVersion
+    && receipt.sourceRevision === request.sourceRevision
+    && JSON.stringify(receipt.answer) === JSON.stringify(request.answer)) === true
+}
+
+function isCurrentWorkflowQuestionTarget(
+  record: WorkflowRunRecord,
+  reference: WorkTaskSnapshot['runs'][number],
+  request: WorkflowQuestionAnswerRequest,
+): boolean {
+  const question = record.waitingQuestion
+  const latest = [...record.events].reverse().find((event) => event.type === 'question-requested')
+  return record.id === reference.runId
+    && record.origin?.kind === 'top-level'
+    && record.workTask?.taskId === request.expectedTaskId
+    && record.workTask.commandId === reference.commandId
+    && record.workTask.attemptId === reference.attemptId
+    && record.workTask.requirementVersion === request.expectedRequirementVersion
+    && record.status === 'waiting-question'
+    && record.waitingQuestionNodeId === request.expectedNodeId
+    && question?.nodeId === request.expectedNodeId
+    && question.sourceEventId === request.expectedQuestionEventId
+    && question.version === request.expectedActionVersion
+    && question.sourceRevision === request.sourceRevision
+    && latest?.id === request.expectedQuestionEventId
+}
+
+function validateQuestionProtocol(question: WorkQuestionActionProtocol | undefined, expectedVersion: number | undefined): WorkQuestionActionProtocol {
+  if (question === undefined || question.version !== 1) throw new Error('Question action has no supported protocol')
+  if (expectedVersion !== question.version) throw new Error('Question action version is stale')
+  if (!Number.isSafeInteger(question.sourceRevision) || question.sourceRevision < 1 || typeof question.prompt !== 'string' || question.prompt.trim() === '') throw new Error('Question protocol is invalid')
+  const response = question.response
+  if (response.type === 'text') {
+    if (response.maxLength !== undefined && (!Number.isSafeInteger(response.maxLength) || response.maxLength < 1)) throw new Error('Question text protocol is invalid')
+  } else if (response.type === 'single-choice') {
+    if (response.options.length === 0 || response.options.some((option) => option.value.trim() === '' || option.label.trim() === '') || new Set(response.options.map((option) => option.value)).size !== response.options.length) throw new Error('Question options are invalid')
+  } else if (response.type === 'structured') {
+    if (response.schema.fields.length === 0 || response.schema.fields.some((field) => field.key.trim() === '' || !['string', 'number', 'boolean', 'json'].includes(field.type)) || new Set(response.schema.fields.map((field) => field.key)).size !== response.schema.fields.length) throw new Error('Question schema is invalid')
+  } else throw new Error('Question response type is unsupported')
+  return question
+}
+
+function validateQuestionAnswer(question: WorkQuestionActionProtocol | undefined, expectedVersion: number | undefined, answer: unknown): WorkflowValue {
+  const protocol = validateQuestionProtocol(question, expectedVersion)
+  if (protocol.response.type === 'text') {
+    if (typeof answer !== 'string' || answer.trim() === '') throw new Error('Question text answer must be non-empty')
+    if (answer.length > (protocol.response.maxLength ?? 10_000)) throw new Error('Question text answer exceeds its maximum length')
+    return answer
+  }
+  if (protocol.response.type === 'single-choice') {
+    if (typeof answer !== 'string' || !protocol.response.options.some((option) => option.value === answer)) throw new Error('Question answer is not an allowed option')
+    return answer
+  }
+  if (typeof answer !== 'object' || answer === null || Array.isArray(answer) || !isWorkflowValue(answer)) throw new Error('Question structured answer must be JSON-safe object')
+  const value = answer as Record<string, unknown>
+  const fields = protocol.response.schema.fields
+  if (Object.keys(value).some((key) => !fields.some((field) => field.key === key))) throw new Error('Question structured answer has an unknown field')
+  for (const field of fields) {
+    const candidate = value[field.key]
+    if (candidate === undefined) { if (field.required) throw new Error(`Question structured answer is missing ${field.key}`); continue }
+    if (field.type === 'string' && (typeof candidate !== 'string' || field.required === true && candidate.trim() === '')) throw new Error(`Question structured answer ${field.key} must be non-empty string`)
+    if (field.type === 'number' && (typeof candidate !== 'number' || !Number.isFinite(candidate))) throw new Error(`Question structured answer ${field.key} must be number`)
+    if (field.type === 'boolean' && typeof candidate !== 'boolean') throw new Error(`Question structured answer ${field.key} must be boolean`)
+  }
+  return value as WorkflowValue
+}
+
 function hasWorkflowResumeReceipt(record: WorkflowRunRecord, request: WorkRunControlRequest): boolean {
   return record.workTaskControlReceipts?.some((receipt) =>
     receipt.action === 'resume'
@@ -309,10 +480,10 @@ function projectEmployee(record: EmployeeRunRecord): Pick<WorkTaskSnapshot['runs
 
 function projectWorkflow(record: WorkflowRunRecord): Pick<WorkTaskSnapshot['runs'][number], 'status' | 'rawStatus' | 'capabilities'> {
   return {
-    status: record.status === 'waiting-approval' ? 'waiting' : record.status,
+    status: record.status === 'waiting-approval' || record.status === 'waiting-question' ? 'waiting' : record.status,
     rawStatus: record.status,
     capabilities: {
-      cancel: ['queued', 'running', 'waiting-approval'].includes(record.status),
+      cancel: ['queued', 'running', 'waiting-approval', 'waiting-question'].includes(record.status),
       resume: ['paused', 'failed'].includes(record.status),
       append: false,
     },

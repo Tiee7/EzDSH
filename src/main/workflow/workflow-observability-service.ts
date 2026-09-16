@@ -192,6 +192,8 @@ function kindForRunEvent(type: WorkflowRunEventType): WorkflowObservationEvent['
     case 'approval-approved':
     case 'approval-rejected':
     case 'approval-resolved':
+    case 'question-requested':
+    case 'question-resolved':
       return 'node'
     case 'run-created':
     case 'run-started':
