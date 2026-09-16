@@ -13,6 +13,8 @@ export interface WorkItemListFilter {
   employeeId?: string
   workflowId?: string
   query?: string
+  projectId?: string
+  unassignedProject?: true
 }
 
 /** The view to restore when the user closes the linked employee/workflow surface. */
@@ -100,12 +102,29 @@ function normalizeFilter(value: unknown): WorkItemListFilter | undefined {
   const employeeId = optionalText(value.employeeId)
   const workflowId = optionalText(value.workflowId)
   const query = optionalText(value.query, MAX_QUERY_LENGTH)
-  if (status === undefined && employeeId === undefined && workflowId === undefined && query === undefined) return undefined
+  const projectId = optionalText(value.projectId)
+  const unassignedProject = value.unassignedProject === true ? true : undefined
+  const hasProjectId = Object.prototype.hasOwnProperty.call(value, 'projectId')
+  const hasUnassignedProject = Object.prototype.hasOwnProperty.call(value, 'unassignedProject')
+  const projectFilter = hasProjectId && hasUnassignedProject
+    ? {}
+    : {
+        ...(projectId === undefined ? {} : { projectId }),
+        ...(unassignedProject === undefined ? {} : { unassignedProject }),
+      }
+  if (
+    status === undefined &&
+    employeeId === undefined &&
+    workflowId === undefined &&
+    query === undefined &&
+    Object.keys(projectFilter).length === 0
+  ) return undefined
   return {
     ...(status === undefined ? {} : { status }),
     ...(employeeId === undefined ? {} : { employeeId }),
     ...(workflowId === undefined ? {} : { workflowId }),
     ...(query === undefined ? {} : { query }),
+    ...projectFilter,
   }
 }
 

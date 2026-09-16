@@ -101,6 +101,91 @@ describe('work item navigation context', () => {
     expect(restored).not.toBe(origin)
   })
 
+  it.each([
+    { projectId: 'project-1' },
+    { unassignedProject: true as const },
+  ])('round-trips project filter %o without changing navigation version 1', (projectFilter) => {
+    const context = openEmployeeFromWorkItem({
+      employeeId: 'researcher',
+      returnTo: {
+        destination: 'work-items',
+        source: 'work-items',
+        filter: { status: 'active', ...projectFilter },
+      },
+    })
+
+    const parsed = parseWorkItemNavigation(serializeWorkItemNavigation(context))
+
+    expect(parsed).toEqual(context)
+    expect(parsed?.version).toBe(1)
+    expect(parsed?.returnTo?.filter).toEqual({ status: 'active', ...projectFilter })
+  })
+
+  it('drops conflicting project constraints while preserving other valid filters', () => {
+    const parsed = parseWorkItemNavigation({
+      destination: 'work-items',
+      returnTo: {
+        destination: 'work-items',
+        source: 'work-items',
+        filter: {
+          status: 'review',
+          query: 'brief',
+          projectId: 'project-1',
+          unassignedProject: true,
+        },
+      },
+    })
+
+    expect(parsed?.returnTo?.filter).toEqual({ status: 'review', query: 'brief' })
+  })
+
+  it('retains legacy filters that do not contain project fields', () => {
+    const parsed = parseWorkItemNavigation({
+      version: 1,
+      destination: 'work-items',
+      returnTo: {
+        destination: 'work-items',
+        source: 'work-items',
+        filter: { employeeId: 'writer', workflowId: 'flow-2' },
+      },
+    })
+
+    expect(parsed?.returnTo?.filter).toEqual({ employeeId: 'writer', workflowId: 'flow-2' })
+  })
+
+  it.each([
+    '',
+    '  project-1  \u0000',
+    'x'.repeat(257),
+  ])('drops unsafe project ID %j at the existing safe text boundary', (projectId) => {
+    const parsed = parseWorkItemNavigation({
+      destination: 'work-items',
+      returnTo: {
+        destination: 'work-items',
+        source: 'work-items',
+        filter: { query: 'brief', projectId },
+      },
+    })
+
+    expect(parsed?.returnTo?.filter).toEqual({ query: 'brief' })
+  })
+
+  it('clones project filter state when creating and restoring navigation', () => {
+    const filter = { projectId: 'project-1' }
+    const returnTo = {
+      destination: 'work-items' as const,
+      source: 'work-items' as const,
+      filter,
+    }
+    const context = createWorkItemNavigation({ destination: 'employees', employeeId: 'researcher', returnTo })
+    const restored = restoreWorkItemNavigation(context)
+
+    expect(context.returnTo?.filter).toEqual(filter)
+    expect(context.returnTo?.filter).not.toBe(filter)
+    expect(restored?.filter).toEqual(filter)
+    expect(restored?.filter).not.toBe(context.returnTo?.filter)
+  })
+
   it('rejects malformed JSON instead of treating it as a navigation command', () => {
     expect(parseWorkItemNavigation('{not-json')).toBeUndefined()
     expect(parseWorkItemNavigation(null)).toBeUndefined()
