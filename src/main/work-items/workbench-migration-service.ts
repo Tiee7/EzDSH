@@ -16,6 +16,8 @@ import type {
   WorkbenchMigrationReport,
   WorkbenchMigrationReportItem,
   WorkbenchMigrationReportRequest,
+  WorkbenchMigrationMaterialCopyItem,
+  WorkbenchMigrationMaterialCopyPlan,
   WorkbenchMigrationPlan,
   WorkbenchMigrationPlanItem,
   WorkbenchMigrationPreparation,
@@ -442,7 +444,36 @@ function buildPlan(preview: WorkbenchImportPreview): WorkbenchMigrationPlan {
       conflicts,
     })
   }
-  const mappingHash = sha256(stableStringify(items))
+  const identitiesBySourceKey = new Map<string, string[]>()
+  for (const item of items) {
+    const sourceKey = baseSourceKey(item.identity.sourceKey)
+    const identities = identitiesBySourceKey.get(sourceKey) ?? []
+    identities.push(item.identity.identity)
+    identitiesBySourceKey.set(sourceKey, identities)
+  }
+  const materialCopyItems: WorkbenchMigrationMaterialCopyItem[] = preview.files.map((file) => {
+    const linkedIdentities = [...new Set(file.linkedSourceKeys.flatMap((sourceKey) =>
+      identitiesBySourceKey.get(baseSourceKey(sourceKey)) ?? []))].sort()
+    const destinationRelativePath = `.ezdsh/workbench-migration/${preview.sourceId}/${preview.sourceHash}/materials/${file.relativePath}`
+    const status = file.status === 'available' ? 'ready' as const : file.status
+    return {
+      sourceRelativePath: file.relativePath,
+      destinationRelativePath,
+      status,
+      linkedIdentities,
+      ...(file.size === undefined ? {} : { size: file.size }),
+      ...(file.contentHash === undefined ? {} : { contentHash: file.contentHash }),
+      ...(status === 'missing' ? { reason: '源文件不存在，复制前必须重新预览并确认' }
+        : status === 'unsafe' ? { reason: '源路径不安全，复制协议拒绝跟随符号链接或越界路径' }
+          : {}),
+    }
+  }).sort((left, right) => left.destinationRelativePath.localeCompare(right.destinationRelativePath))
+  const materialCopy: WorkbenchMigrationMaterialCopyPlan = {
+    schemaVersion: 1,
+    destinationRoot: '.ezdsh/workbench-migration',
+    items: materialCopyItems,
+  }
+  const mappingHash = sha256(stableStringify({ items, materialCopy }))
   return {
     schemaVersion: 1,
     sourceId: preview.sourceId,
@@ -451,6 +482,7 @@ function buildPlan(preview: WorkbenchImportPreview): WorkbenchMigrationPlan {
     mappingHash,
     generatedAt: new Date().toISOString(),
     items,
+    materialCopy,
   }
 }
 

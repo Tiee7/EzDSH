@@ -44,6 +44,28 @@ export interface WorkbenchMigrationPlanItem {
   conflicts: string[]
 }
 
+/**
+ * A deterministic, side-effect-free copy plan for legacy Markdown materials.
+ * `ready` means the source bytes were read and hashed during preview; it does
+ * not grant an executor access to those bytes and does not mean they were
+ * copied yet.
+ */
+export interface WorkbenchMigrationMaterialCopyItem {
+  sourceRelativePath: string
+  destinationRelativePath: string
+  status: 'ready' | 'missing' | 'unsafe'
+  linkedIdentities: string[]
+  size?: number
+  contentHash?: string
+  reason?: string
+}
+
+export interface WorkbenchMigrationMaterialCopyPlan {
+  schemaVersion: 1
+  destinationRoot: string
+  items: WorkbenchMigrationMaterialCopyItem[]
+}
+
 export interface WorkbenchMigrationPlan {
   schemaVersion: 1
   sourceId: string
@@ -52,6 +74,8 @@ export interface WorkbenchMigrationPlan {
   mappingHash: string
   generatedAt: string
   items: WorkbenchMigrationPlanItem[]
+  /** Present on plans generated after the material-copy protocol slice. */
+  materialCopy?: WorkbenchMigrationMaterialCopyPlan
 }
 
 export interface WorkbenchMigrationReceipt {

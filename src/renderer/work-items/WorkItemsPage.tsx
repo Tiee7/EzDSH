@@ -543,6 +543,17 @@ function WorkbenchMigrationPanel({ locale }: { locale: 'zh' | 'en' }): JSX.Eleme
       </div>
       {preparation === undefined ? null : <>
         <p className="work-items-migration-result" role="status">{preparation.message} {locale === 'en' ? `${preparation.receipts.filter((receipt) => receipt.status === 'ready').length} items ready.` : `${preparation.receipts.filter((receipt) => receipt.status === 'ready').length} 项已准备。`}</p>
+        {preparation.plan.materialCopy === undefined ? null : <div className="work-items-migration-files" aria-label={locale === 'en' ? 'Material copy protocol' : '资料复制协议'}>
+          <small>{locale === 'en'
+            ? `Copy protocol preview: ${preparation.plan.materialCopy.items.filter((item) => item.status === 'ready').length} ready · ${preparation.plan.materialCopy.items.filter((item) => item.status !== 'ready').length} blocked. No bytes copied.`
+            : `复制协议预览：${preparation.plan.materialCopy.items.filter((item) => item.status === 'ready').length} 项可复制 · ${preparation.plan.materialCopy.items.filter((item) => item.status !== 'ready').length} 项被阻断。当前不会复制文件。`}</small>
+          <ul className="work-items-migration-list">
+            {preparation.plan.materialCopy.items.map((material) => <li key={material.destinationRelativePath}>
+              <span><strong>{material.sourceRelativePath}</strong><small>{material.status} · {material.linkedIdentities.length} {locale === 'en' ? 'linked item(s)' : '个关联项'}</small></span>
+              <code>{material.destinationRelativePath}</code>
+            </li>)}
+          </ul>
+        </div>}
         {report === undefined ? null : <div className="work-items-migration-report">
           <span>{locale === 'en' ? `Report: ${report.counts.applied} applied · ${report.counts.failed} failed · ${report.counts.unknown} unknown · ${report.items.filter((item) => item.targetStatus === 'missing').length} targets missing` : `报告：${report.counts.applied} 已应用 · ${report.counts.failed} 失败 · ${report.counts.unknown} 未知 · ${report.items.filter((item) => item.targetStatus === 'missing').length} 个目标缺失`}</span>
           <button type="button" className="work-items-button work-items-button-quiet" disabled={busy !== undefined} onClick={() => { void refreshReport(preparation.plan) }}>{locale === 'en' ? 'Refresh report' : '刷新报告'}</button>

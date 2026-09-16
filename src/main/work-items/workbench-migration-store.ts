@@ -81,7 +81,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function validPlan(value: unknown): value is WorkbenchMigrationPlan {
   if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.sourceId !== 'string' || typeof value.sourceHash !== 'string'
     || typeof value.sourceDirectory !== 'string' || typeof value.mappingHash !== 'string' || typeof value.generatedAt !== 'string'
-    || !Array.isArray(value.items)) return false
+    || !Array.isArray(value.items) || (value.materialCopy !== undefined && !validMaterialCopy(value.materialCopy))) return false
   const identities = new Set<string>()
   return value.items.every((item) => {
     if (!isRecord(item) || !isRecord(item.identity) || !isRecord(item.source) || !isRecord(item.target) || !Array.isArray(item.conflicts)) return false
@@ -108,6 +108,34 @@ function validPlan(value: unknown): value is WorkbenchMigrationPlan {
       && (target.targetId === undefined || typeof target.targetId === 'string')
       && item.conflicts.every((entry) => typeof entry === 'string')
   })
+}
+
+function validMaterialCopy(value: unknown): boolean {
+  if (!isRecord(value) || value.schemaVersion !== 1 || value.destinationRoot !== '.ezdsh/workbench-migration'
+    || !Array.isArray(value.items)) return false
+  const sourcePaths = new Set<string>()
+  const destinationPaths = new Set<string>()
+  return value.items.every((item) => {
+    if (!isRecord(item) || typeof item.sourceRelativePath !== 'string' || !safeRelativePath(item.sourceRelativePath)
+      || typeof item.destinationRelativePath !== 'string' || !safeRelativePath(item.destinationRelativePath)
+      || !item.destinationRelativePath.startsWith('.ezdsh/workbench-migration/')
+      || !['ready', 'missing', 'unsafe'].includes(String(item.status))
+      || !Array.isArray(item.linkedIdentities) || item.linkedIdentities.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+      return false
+    }
+    if (sourcePaths.has(item.sourceRelativePath) || destinationPaths.has(item.destinationRelativePath)) return false
+    sourcePaths.add(item.sourceRelativePath)
+    destinationPaths.add(item.destinationRelativePath)
+    if (item.size !== undefined && (!Number.isSafeInteger(item.size) || (item.size as number) < 0)) return false
+    if (item.contentHash !== undefined && (typeof item.contentHash !== 'string' || !/^[a-f0-9]{64}$/u.test(item.contentHash))) return false
+    return item.reason === undefined || typeof item.reason === 'string'
+  })
+}
+
+function safeRelativePath(value: string): boolean {
+  const normalized = value.trim().replaceAll('\\', '/')
+  if (normalized === '' || normalized.startsWith('/') || normalized.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) return false
+  return normalized === value
 }
 
 function validReceipt(value: unknown): value is WorkbenchMigrationReceipt {
