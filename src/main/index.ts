@@ -1316,7 +1316,7 @@ function assertWorkItemExecutionAvailable(): void {
 }
 
 function registerIpcHandlers(): void {
-  registerWorkItemIpc(ipcMain, () => workItemIpcScope)
+  registerWorkItemIpc(ipcMain, () => workItemIpcScope, () => developerMode)
   registerWorkflowRunDefinitionIpc(ipcMain, () => workflowRunService)
   registerWorkflowDeadLetterIpc(ipcMain, () => workflowRunService)
   registerWorkflowOperationalHealthIpc(ipcMain, () => workflowOperationalHealthService)

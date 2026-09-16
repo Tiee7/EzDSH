@@ -279,6 +279,7 @@ interface IpcMainRegistrar {
 export function registerWorkItemIpc(
   ipcMain: IpcMainRegistrar,
   resolveScope: () => WorkItemIpcWorkspaceScope | undefined,
+  isDeveloperMode: () => boolean = () => true,
 ): void {
   const register = (
     channel: typeof WORK_ITEM_IPC_CHANNELS[number],
@@ -297,6 +298,7 @@ export function registerWorkItemIpc(
 
   register('work-items:list', (services, input) => services.workItems.list(validateWorkItemQuery(input)))
   register('work-items:attention', async (services): Promise<WorkbenchAttentionSnapshot> => {
+    if (!isDeveloperMode()) throw new Error('Workbench attention is available only in developer mode')
     const snapshots = await services.workItems.list({ includeArchived: false })
     return deriveWorkbenchAttention(snapshots)
   })
