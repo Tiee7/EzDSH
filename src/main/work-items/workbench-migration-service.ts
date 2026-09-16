@@ -5,7 +5,7 @@ import {
   type WorkbenchImportCandidate,
   type WorkbenchImportPreview,
 } from './workbench-import.js'
-import { WorkbenchMigrationStore } from './workbench-migration-store.js'
+import { WorkbenchMigrationStore, WorkbenchMigrationStoreConflictError } from './workbench-migration-store.js'
 import type {
   WorkbenchMigrationIdentity,
   WorkbenchMigrationApplyRequest,
@@ -181,7 +181,8 @@ export class WorkbenchMigrationService {
       return { receipt, targetId: snapshot.task.id }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
-      await this.store.failApply(item.identity.identity, plan.sourceHash, plan.mappingHash, { code: 'TARGET_CREATE_FAILED', message: detail }).catch(() => undefined)
+      const failureStatus = error instanceof WorkbenchMigrationStoreConflictError && error.code === 'TARGET_CONFLICT' ? 'unknown' as const : 'failed' as const
+      await this.store.failApply(item.identity.identity, plan.sourceHash, plan.mappingHash, { code: 'TARGET_CREATE_FAILED', message: detail }, failureStatus).catch(() => undefined)
       throw error
     }
   }
