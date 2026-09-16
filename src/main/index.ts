@@ -1321,9 +1321,10 @@ function emitWorkDutyEvent(event: WorkDutyEvent): void {
 }
 
 function startWorkDutyScheduler(): void {
-  if (workDutyScheduler !== undefined) return
   const store = workDutyStore
   if (store === undefined) throw new Error('Work duty store is not ready')
+  if (stopWorkDutyListener === undefined) stopWorkDutyListener = store.onChanged(emitWorkDutyEvent)
+  if (workDutyScheduler !== undefined) return
   workDutyScheduler = new WorkDutyScheduler({
     store,
     canExecute: () => {
