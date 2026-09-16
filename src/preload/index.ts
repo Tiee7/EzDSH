@@ -11,6 +11,14 @@ import type { MobileRemoteSnapshot } from '../shared/mobile-remote.js'
 import type { NotificationInboxItem, NotificationInboxSnapshot, NotificationSettings } from '../shared/notifications.js'
 import type { WorkbenchAttentionSnapshot } from '../shared/workbench-attention.js'
 import type {
+  WorkbenchMigrationPreparation,
+  WorkbenchMigrationPreparationRequest,
+  WorkbenchMigrationApplyRequest,
+  WorkbenchMigrationApplyResult,
+  WorkbenchMigrationState,
+} from '../shared/workbench-migration.js'
+import type { WorkbenchImportPreview } from '../main/work-items/workbench-import.js'
+import type {
   WorkDuty,
   WorkDutyCreateReceipt,
   WorkDutyCreateRequest,
@@ -185,6 +193,12 @@ const bridge: EzDSHBridge = {
         ipcRenderer.on('work-duties:state-change', handler)
         return () => ipcRenderer.removeListener('work-duties:state-change', handler)
       },
+    },
+    migration: {
+      preview: (sourceDirectory: string) => invoke<WorkbenchImportPreview>('workbench-migration:preview', sourceDirectory),
+      prepare: (request: WorkbenchMigrationPreparationRequest) => invoke<WorkbenchMigrationPreparation>('workbench-migration:prepare', request),
+      apply: (request: WorkbenchMigrationApplyRequest) => invoke<WorkbenchMigrationApplyResult>('workbench-migration:apply', request),
+      state: () => invoke<WorkbenchMigrationState>('workbench-migration:state'),
     },
   },
   employees: {

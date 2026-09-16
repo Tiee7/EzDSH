@@ -153,6 +153,9 @@ import { NativeNotificationService, type NativeNotificationLike } from './notifi
 import { NotificationInboxStore } from './notifications/notification-inbox-store.js'
 import { WorkDutyScheduler } from './work-items/work-duty-scheduler.js'
 import { WorkDutyStore } from './work-items/work-duty-store.js'
+import { WorkbenchMigrationService } from './work-items/workbench-migration-service.js'
+import { WorkbenchMigrationStore } from './work-items/workbench-migration-store.js'
+import type { WorkbenchMigrationApplyRequest, WorkbenchMigrationPreparationRequest } from '../shared/workbench-migration.js'
 import {
   CURRENT_DATA_SCHEMA_VERSION,
   RecoveryManager,
@@ -191,6 +194,7 @@ let developerMode = false
 let languageTagPath: string | undefined
 let languageTagVisible = true
 let notificationSettingsPath: string | undefined
+let workbenchMigrationService: WorkbenchMigrationService | undefined
 let notificationSettings: NotificationSettings = { ...DEFAULT_NOTIFICATION_SETTINGS }
 let notificationSettingsWriteChain: Promise<void> = Promise.resolve()
 let runtimeNotificationService: RuntimeNotificationService | undefined
@@ -863,6 +867,19 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     onObserverError: logWorkItemObserverError,
     openArtifact: (storedPath) => shell.openPath(storedPath),
   })
+  workbenchMigrationService = new WorkbenchMigrationService(new WorkbenchMigrationStore(layout.state), {
+    createWorkItem: async (request) => {
+      const scope = workItemIpcScope
+      if (scope === undefined) throw new Error('Work item workspace is not ready')
+      return scope.invoke(async (services) => {
+        const authorizedScope = services.authorizeScope === undefined
+          ? request.scope
+          : await services.authorizeScope(request.scope)
+        return services.workItems.create({ ...request, scope: authorizedScope })
+      })
+    },
+  })
+  await workbenchMigrationService.initialize()
   startWorkDutyScheduler()
   await workflowRunService.cleanupExpiredInternalArtifacts(async (sessionId) => {
     const deleted = await deleteArchivedSessionFromStore(layout.harness, sessionId)
@@ -1261,6 +1278,7 @@ async function reopenWorkItemWorkspaceScope(): Promise<void> {
 async function stopApplicationComponents(reportProgress?: RecoveryStopProgressReporter): Promise<void> {
   await workDutyScheduler?.stop()
   workDutyScheduler = undefined
+  workbenchMigrationService = undefined
   stopWorkDutyListener?.()
   stopWorkDutyListener = undefined
   const workspaceScope = workItemIpcScope
@@ -1696,6 +1714,42 @@ function registerIpcHandlers(): void {
       requireDeveloperModeFeature()
       if (workDutyStore === undefined) throw new Error('Work duty store is not ready')
       return success(await workDutyStore.resume(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workbench-migration:preview', async (_event, sourceDirectory: unknown): Promise<IpcResult<Awaited<ReturnType<WorkbenchMigrationService['preview']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workbenchMigrationService === undefined) throw new Error('Workbench migration service is not ready')
+      return success(await workbenchMigrationService.preview(sourceDirectory as string))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workbench-migration:prepare', async (_event, input: WorkbenchMigrationPreparationRequest): Promise<IpcResult<Awaited<ReturnType<WorkbenchMigrationService['prepare']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workbenchMigrationService === undefined) throw new Error('Workbench migration service is not ready')
+      return success(await workbenchMigrationService.prepare(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workbench-migration:apply', async (_event, input: WorkbenchMigrationApplyRequest): Promise<IpcResult<Awaited<ReturnType<WorkbenchMigrationService['apply']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workbenchMigrationService === undefined) throw new Error('Workbench migration service is not ready')
+      return success(await workbenchMigrationService.apply(input))
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('workbench-migration:state', async (): Promise<IpcResult<Awaited<ReturnType<WorkbenchMigrationService['state']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (workbenchMigrationService === undefined) throw new Error('Workbench migration service is not ready')
+      return success(await workbenchMigrationService.state())
     } catch (error) {
       return failure(error)
     }

@@ -177,6 +177,12 @@ export interface EzDSHBridge {
       resume(request: WorkDutyResumeRequest): Promise<WorkDutyMutationReceipt>
       onChange(listener: (event: import('./work-duty.js').WorkDutyEvent) => void): () => void
     }
+    migration: {
+      preview(sourceDirectory: string): Promise<import('../main/work-items/workbench-import.js').WorkbenchImportPreview>
+      prepare(request: import('./workbench-migration.js').WorkbenchMigrationPreparationRequest): Promise<import('./workbench-migration.js').WorkbenchMigrationPreparation>
+      apply(request: import('./workbench-migration.js').WorkbenchMigrationApplyRequest): Promise<import('./workbench-migration.js').WorkbenchMigrationApplyResult>
+      state(): Promise<import('./workbench-migration.js').WorkbenchMigrationState>
+    }
   }
   employees: {
     methods: EmployeeMethodsBridge
