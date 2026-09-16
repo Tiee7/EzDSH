@@ -424,6 +424,15 @@ export function WorkItemDetail({
             locale={locale}
           />
         </section> : null}
+        {snapshot.task.origin?.kind === 'conversation' ? <section className="work-item-detail-section work-item-origin-section">
+          <div className="work-item-detail-section-heading"><h3>{locale === 'en' ? 'Source conversation' : '来源对话'}</h3><span>{locale === 'en' ? 'Captured provenance' : '已固定来源'}</span></div>
+          <dl className="work-item-requirement">
+            <div><dt>{locale === 'en' ? 'Session ID' : '会话 ID'}</dt><dd><code>{snapshot.task.origin.sessionId}</code></dd></div>
+            <div><dt>{locale === 'en' ? 'Through sequence' : '读取到序号'}</dt><dd>{snapshot.task.origin.throughSeq}</dd></div>
+            <div><dt>{locale === 'en' ? 'Snapshot hash' : '快照哈希'}</dt><dd><code>{snapshot.task.origin.snapshotHash}</code></dd></div>
+          </dl>
+          <p className="work-item-origin-note">{locale === 'en' ? 'The original transcript is not copied into the Work Item; it can be re-read while the Runtime session remains available.' : '原始对话正文不会复制到工作项；只有在 Runtime 会话仍可访问时才能重新读取。'}</p>
+        </section> : null}
         <WorkItemScopePanel scope={snapshot.task.scope} project={project} locale={locale} />
         <section className="work-item-detail-section">
           <div className="work-item-detail-section-heading">

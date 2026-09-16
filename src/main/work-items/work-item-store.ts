@@ -880,6 +880,7 @@ export class WorkItemStore {
         currentRequirementVersion: 1,
         status: 'open',
         acceptedArtifactIds: [],
+        ...(request.origin === undefined ? {} : { origin: { ...request.origin } }),
         createdAt: now,
         updatedAt: now
       }

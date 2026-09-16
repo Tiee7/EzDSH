@@ -91,6 +91,7 @@ import type {
   WorkflowReleaseSummary,
 } from './workflow-operations.js'
 import type { WorkItemsBridge } from './work-items.js'
+import type { ConversationSnapshot } from './conversation-work.js'
 
 /** Payload sent from main to renderer when a deep-link install should begin. */
 export interface DeepLinkInstallTarget {
@@ -119,6 +120,9 @@ export interface EzDSHBridge {
     listProcesses(): Promise<DshRuntimeProcess[]>
     stopProcess(pid: number): Promise<void>
     openLog(): Promise<void>
+    /** Developer-only bounded session catalog used by the Harness work-item actions. */
+    listSessions(): Promise<import('./channel-bridge.js').DshSessionSummary[]>
+    getConversation(sessionId: string): Promise<ConversationSnapshot | undefined>
     onStateChange(listener: (snapshot: RuntimeSnapshot) => void): () => void
   }
   runtimeView: {

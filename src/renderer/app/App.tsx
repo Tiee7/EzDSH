@@ -28,7 +28,8 @@ import { WorkflowPage } from '../workflow/WorkflowPage.js'
 import { DocsPage } from '../docs/DocsPage.js'
 import { SettingsPage } from '../settings/SettingsPage.js'
 import { WorkItemsPage } from '../work-items/WorkItemsPage.js'
-import type { WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
+import { createWorkItemNavigation, type WorkItemNavigationContext } from '../work-items/work-item-navigation.js'
+import type { WorkTaskSnapshot } from '../../shared/work-items.js'
 import { UpdateCenter } from '../update-center/UpdateCenter.js'
 import { shouldKeepTabMounted } from './page-lifecycle.js'
 import { RecoveryPanel } from '../recovery/RecoveryPanel.js'
@@ -479,6 +480,16 @@ export function App() {
                       url={runtimeUrl}
                       active={activeTab === 'harness' && workspaceOperation === undefined}
                       sessionId={deepLinkSession?.sessionId}
+                      developerMode={developerMode}
+                      locale={locale}
+                      onWorkItemCreated={(snapshot: WorkTaskSnapshot) => {
+                        openWorkItemNavigation(createWorkItemNavigation({
+                          destination: 'detail',
+                          source: 'harness',
+                          taskId: snapshot.task.id,
+                          returnTo: { destination: 'work-items', source: 'harness' },
+                        }))
+                      }}
                     />
                   </div>
                 )

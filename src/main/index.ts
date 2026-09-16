@@ -76,6 +76,7 @@ import { getApplicationMenuTemplate } from './application-menu.js'
 import { LocaleService, writeDshLocale } from './locale/locale-service.js'
 import { ChannelBridgeService } from './channel-bridge/index.js'
 import { DshSessionClient } from './channel-bridge/dsh-session.js'
+import { ConversationService } from './conversation/conversation-service.js'
 import { deleteArchivedSessionFromStore } from './channel-bridge/archived-session-store.js'
 import { openDeepLinkedSession } from './session-deep-link.js'
 import { NavigationService } from './navigation/navigation-service.js'
@@ -185,6 +186,7 @@ let notificationRuntimeUrl: string | undefined
 let storeService: StoreService | undefined
 let dshPluginCommandRunner: PluginCommandRunner | undefined
 let channelBridgeService: ChannelBridgeService | undefined
+let conversationService: ConversationService | undefined
 let navigationService: NavigationService | undefined
 let externalApiService: ExternalApiService | undefined
 let mobileRemoteService: MobileRemoteService | undefined
@@ -864,6 +866,9 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     const message = error instanceof Error ? error.message : String(error)
     console.error('[channel-bridge] failed to initialize:', message)
   })
+  conversationService = new ConversationService({
+    getRuntimeUrl: () => runtimeManager?.snapshot().url,
+  })
 
   providerService = new ProviderService(layout, {
     listRuntimeModels: async () => {
@@ -1367,6 +1372,24 @@ function registerIpcHandlers(): void {
       const errorMessage = await shell.openPath(runtimeManager.snapshot().logPath)
       if (errorMessage !== '') throw new Error(errorMessage)
       return success(undefined)
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('runtime:list-sessions', async (): Promise<IpcResult<Awaited<ReturnType<ConversationService['listSessions']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (conversationService === undefined) throw new Error('Conversation service is not ready')
+      return success(await conversationService.listSessions())
+    } catch (error) {
+      return failure(error)
+    }
+  })
+  ipcMain.handle('runtime:get-conversation', async (_event, sessionId: string): Promise<IpcResult<Awaited<ReturnType<ConversationService['getSnapshot']>>>> => {
+    try {
+      requireDeveloperModeFeature()
+      if (conversationService === undefined) throw new Error('Conversation service is not ready')
+      return success(await conversationService.getSnapshot(sessionId))
     } catch (error) {
       return failure(error)
     }

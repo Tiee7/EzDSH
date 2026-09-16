@@ -1,4 +1,5 @@
 import { isWorkflowValue, type WorkflowQuestionProtocol, type WorkflowQuestionResponse } from './workflow.js'
+import type { ConversationWorkOrigin } from './conversation-work.js'
 import type {
   EmployeeRunContext,
   EmployeeRunObserverState,
@@ -131,6 +132,8 @@ export interface WorkTask {
   status: WorkTaskStatus
   activeAttemptId?: string
   acceptedArtifactIds: string[]
+  /** Optional provenance for tasks explicitly converted from a conversation. */
+  origin?: ConversationWorkOrigin
   cancellation?: WorkTaskCancellation
   archivedAt?: string
   createdAt: string
@@ -299,6 +302,7 @@ export interface WorkTaskCreateRequest {
   goal: string
   acceptance: string
   scope: WorkScope
+  origin?: ConversationWorkOrigin
 }
 
 export interface WorkTaskExecuteRequest {
@@ -709,6 +713,26 @@ function workScope(value: unknown): WorkScope {
   }
 }
 
+function conversationOrigin(value: unknown): ConversationWorkOrigin {
+  const origin = record(value, 'origin')
+  exactFields(origin, ['kind', 'sessionId', 'throughSeq', 'snapshotHash'], 'origin')
+  if (origin.kind !== 'conversation') {
+    throw new WorkItemValidationError('INVALID_VALUE', 'origin.kind', 'origin.kind is not supported')
+  }
+  if (typeof origin.throughSeq !== 'number' || !Number.isSafeInteger(origin.throughSeq) || origin.throughSeq < -1) {
+    throw new WorkItemValidationError('INVALID_INTEGER', 'origin.throughSeq', 'origin.throughSeq must be a safe sequence number')
+  }
+  if (typeof origin.snapshotHash !== 'string' || !/^[a-f0-9]{64}$/u.test(origin.snapshotHash)) {
+    throw new WorkItemValidationError('INVALID_VALUE', 'origin.snapshotHash', 'origin.snapshotHash must be a SHA-256 hex digest')
+  }
+  return {
+    kind: 'conversation',
+    sessionId: identifierField(origin, 'sessionId', WORK_ITEM_LIMITS.id, 'origin.sessionId'),
+    throughSeq: origin.throughSeq,
+    snapshotHash: origin.snapshotHash,
+  }
+}
+
 function workExecutor(value: unknown): WorkExecutor {
   const executor = record(value, 'executor')
   if (!('kind' in executor)) {
@@ -743,13 +767,14 @@ function workExecutor(value: unknown): WorkExecutor {
 
 export function validateWorkTaskCreateRequest(value: unknown): WorkTaskCreateRequest {
   const request = record(value, '$')
-  exactFields(request, ['requestId', 'title', 'goal', 'acceptance', 'scope'])
+  exactFields(request, ['requestId', 'title', 'goal', 'acceptance', 'scope', 'origin'])
   return {
     requestId: identifierField(request, 'requestId', WORK_ITEM_LIMITS.id),
     title: textField(request, 'title', WORK_ITEM_LIMITS.title),
     goal: textField(request, 'goal', WORK_ITEM_LIMITS.requirementText),
     acceptance: textField(request, 'acceptance', WORK_ITEM_LIMITS.requirementText),
-    scope: workScope(request.scope)
+    scope: workScope(request.scope),
+    ...(request.origin === undefined ? {} : { origin: conversationOrigin(request.origin) }),
   }
 }
 

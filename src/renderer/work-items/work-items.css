@@ -59,6 +59,7 @@
 .work-item-requirement div { display: grid; gap: 4px; }
 .work-item-requirement dt { color: var(--ezdsh-text-faint); font-size: 10px; font-weight: 700; }
 .work-item-requirement dd { margin: 0; color: var(--ezdsh-text-body); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+.work-item-origin-note { margin: 10px 0 0; color: var(--ezdsh-text-faint); font-size: 11px; line-height: 1.5; }
 .work-item-scope-list { display: grid; gap: 10px; margin: 12px 0 0; }
 .work-item-scope-list > div { display: grid; grid-template-columns: minmax(110px, .35fr) minmax(0, 1fr); gap: 12px; align-items: baseline; }
 .work-item-scope-list dt { color: var(--ezdsh-text-faint); font-size: 10px; font-weight: 700; }

@@ -94,6 +94,8 @@ const bridge: EzDSHBridge = {
     listProcesses: () => invoke('runtime:list-processes'),
     stopProcess: (pid: number) => invoke('runtime:stop-process', pid),
     openLog: () => invoke('runtime:open-log'),
+    listSessions: () => invoke('runtime:list-sessions'),
+    getConversation: (sessionId: string) => invoke('runtime:get-conversation', sessionId),
     onStateChange: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof listener>[0]) => listener(snapshot)
       ipcRenderer.on('runtime:state-change', handler)
