@@ -802,6 +802,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     credentials: workflowCredentialStore,
   })
   const workflowAiDiagnostics = new WorkflowAiDiagnostics(layout.logs)
+  const workflowInternalSessionStore = new WorkflowInternalSessionStore(layout.state)
   workflowRunService = new WorkflowRunService({
     workflowStore,
     runStore: workflowRunStore,
@@ -825,7 +826,7 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
     resolveReleasedWorkflow: (releaseId) => workflowReleaseStore?.get(releaseId),
     resolveWorkflowEnvironment: (environmentId) => workflowEnvironmentStore?.get(environmentId),
     allowLegacyHttp: false,
-    internalSessionStore: new WorkflowInternalSessionStore(layout.state),
+    internalSessionStore: workflowInternalSessionStore,
   })
   workflowDeploymentService = new WorkflowDeploymentService({
     workflowStore,
@@ -941,6 +942,20 @@ async function initializeWorkspaceServices(layout: UserDataLayout): Promise<void
   })
   conversationService = new ConversationService({
     getRuntimeUrl: () => runtimeManager?.snapshot().url,
+    listInternalSessionIds: async () => {
+      const employeeRuns = employeeService === undefined
+        ? []
+        : await employeeService.listWorkItemRuns()
+      return new Set([
+        // A newly created employee session belongs to the executor even after
+        // the run has reached a terminal state. Sessions explicitly supplied
+        // by a user remain eligible for the human conversation surface.
+        ...employeeRuns
+          .filter((run) => run.sessionEvidence === 'created')
+          .map((run) => run.sessionId),
+        ...workflowInternalSessionStore.list().map((session) => session.sessionId),
+      ])
+    },
   })
 
   providerService = new ProviderService(layout, {

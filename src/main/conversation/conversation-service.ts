@@ -9,6 +9,8 @@ const MAX_TOTAL_MESSAGE_LENGTH = 60_000
 
 export interface ConversationServiceOptions {
   getRuntimeUrl(): string | undefined
+  /** Session ids owned by employee/workflow execution, not by the Harness chat UI. */
+  listInternalSessionIds?: () => Promise<ReadonlySet<string>>
 }
 
 /** Main-owned, read-only bridge from a DSH Session to a bounded conversion snapshot. */
@@ -16,7 +18,14 @@ export class ConversationService {
   constructor(private readonly options: ConversationServiceOptions) {}
 
   async listSessions(): Promise<DshSessionSummary[]> {
-    return this.client().listSessions()
+    const [sessions, internalSessionIds] = await Promise.all([
+      this.client().listSessions(),
+      this.listInternalSessionIds(),
+    ])
+    // DSH's session list is an event-store inventory. It intentionally also
+    // contains blank sessions and sessions created for executor internals.
+    // Conversation conversion is a human-chat surface, so expose neither.
+    return sessions.filter((session) => session.blank !== true && !internalSessionIds.has(session.sessionId))
   }
 
   async getSnapshot(sessionId: string): Promise<ConversationSnapshot | undefined> {
@@ -25,9 +34,12 @@ export class ConversationService {
       throw new Error('Conversation session id is invalid')
     }
     const client = this.client()
-    const sessions = await client.listSessions()
+    const [sessions, internalSessionIds] = await Promise.all([
+      client.listSessions(),
+      this.listInternalSessionIds(),
+    ])
     const session = sessions.find((candidate) => candidate.sessionId === normalized)
-    if (session === undefined) return undefined
+    if (session === undefined || internalSessionIds.has(normalized)) return undefined
     const [history, workspaces] = await Promise.all([
       client.getSessionHistory(normalized, { maxMessages: 200 }),
       client.listWorkspaces().catch(() => [] as DshWorkspaceSummary[]),
@@ -70,6 +82,10 @@ export class ConversationService {
     const runtimeUrl = this.options.getRuntimeUrl()
     if (runtimeUrl === undefined) throw new Error('DSH Runtime 尚未启动')
     return new DshSessionClient({ baseUrl: runtimeUrl, timeoutMs: 15_000 })
+  }
+
+  private async listInternalSessionIds(): Promise<ReadonlySet<string>> {
+    return this.options.listInternalSessionIds?.() ?? new Set<string>()
   }
 }
 

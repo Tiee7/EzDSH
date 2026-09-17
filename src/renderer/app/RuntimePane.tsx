@@ -101,7 +101,7 @@ export function RuntimePane({ url, active, sessionId, developerMode = false, loc
   }, [active, conversationRefreshNonce, developerMode, selectedSessionId, url])
 
   const openWorkDialog = (): void => {
-    if (conversation === undefined || loadingCatalogs) return
+    if (conversation === undefined || conversation.messages.length === 0 || loadingCatalogs) return
     const unavailable: Array<'employees' | 'workflows' | 'projects'> = []
     setLoadingCatalogs(true)
     void Promise.allSettled([
@@ -162,7 +162,7 @@ export function RuntimePane({ url, active, sessionId, developerMode = false, loc
           {sessions.map((item) => <option key={item.sessionId} value={item.sessionId}>{item.title || item.sessionId}{item.running ? (locale === 'en' ? ' · running' : ' · 进行中') : ''}</option>)}
         </select>
       </label>
-      <button type="button" className="runtime-work-button" disabled={conversation === undefined || loadingConversation || loadingCatalogs} onClick={openWorkDialog}>{locale === 'en' ? 'Save as work item…' : '保存为工作项…'}</button>
+      <button type="button" className="runtime-work-button" disabled={conversation === undefined || conversation.messages.length === 0 || loadingConversation || loadingCatalogs} onClick={openWorkDialog}>{locale === 'en' ? 'Save as work item…' : '保存为工作项…'}</button>
       <button type="button" className="runtime-work-button runtime-work-button-quiet" disabled={loadingSessions} onClick={refreshSessions}>{locale === 'en' ? 'Refresh' : '刷新'}</button>
       {conversationError ? <span className="runtime-work-error" role="status">{conversationError}</span> : null}
     </div> : null}
