@@ -216,7 +216,11 @@ function WorkDutyPanel({ snapshots, employees, locale }: {
   useEffect(() => {
     void refresh()
     void window.EzDSH.workflows.list().then(setWorkflows).catch(() => setWorkflows([]))
-    return window.EzDSH.workbench.duties.onChange(() => { void refresh() })
+    // Keep the task browser readable when an older/partial preload bridge has
+    // not exposed the optional scheduled-duties surface yet.
+    const dutiesBridge = window.EzDSH.workbench?.duties
+    if (dutiesBridge === undefined) return
+    return dutiesBridge.onChange(() => { void refresh() })
   }, [refresh])
 
   const setPaused = useCallback(async (duty: WorkDuty, paused: boolean): Promise<void> => {
@@ -640,7 +644,9 @@ export function WorkItemsPage({ copy, locale = 'zh', developerMode = false, runt
   const refreshNotificationInbox = useCallback(async (): Promise<void> => {
     const sequence = ++notificationInboxRequestSequence.current
     try {
-      const next = await window.EzDSH.notifications.getInbox()
+      const notificationsBridge = window.EzDSH.notifications
+      if (notificationsBridge === undefined) return
+      const next = await notificationsBridge.getInbox()
       if (mounted.current && sequence === notificationInboxRequestSequence.current) setNotificationInbox(next)
     } catch {
       // The work item surface remains usable when the developer-only inbox is unavailable.
@@ -648,11 +654,15 @@ export function WorkItemsPage({ copy, locale = 'zh', developerMode = false, runt
   }, [])
 
   const markNotificationRead = useCallback((id: string): void => {
-    void window.EzDSH.notifications.markInboxRead(id).catch(() => undefined)
+    const notificationsBridge = window.EzDSH.notifications
+    if (notificationsBridge === undefined) return
+    void notificationsBridge.markInboxRead(id).catch(() => undefined)
   }, [])
 
   const dismissNotification = useCallback((id: string): void => {
-    void window.EzDSH.notifications.dismissInbox(id).catch(() => undefined)
+    const notificationsBridge = window.EzDSH.notifications
+    if (notificationsBridge === undefined) return
+    void notificationsBridge.dismissInbox(id).catch(() => undefined)
   }, [])
 
   const selectTask = useCallback((taskId: string): void => {
@@ -950,9 +960,12 @@ export function WorkItemsPage({ copy, locale = 'zh', developerMode = false, runt
     void refresh()
     void refreshAttention()
     void refreshNotificationInbox()
-    const unsubscribeNotificationInbox = window.EzDSH.notifications.onInboxChange((snapshot) => {
-      if (mounted.current) setNotificationInbox(snapshot)
-    })
+    const notificationsBridge = window.EzDSH.notifications
+    const unsubscribeNotificationInbox = notificationsBridge === undefined
+      ? () => undefined
+      : notificationsBridge.onInboxChange((snapshot) => {
+          if (mounted.current) setNotificationInbox(snapshot)
+        })
     void window.EzDSH.employees.list().then((employees) => {
       if (!mounted.current) return
       setEmployeeDirectory(new Map(employees.map((employee) => [employee.id, employee])))

@@ -129,6 +129,7 @@ describe('WorkItem IPC registration and workspace ownership', () => {
 
     expect([...handlers.keys()]).toEqual([
       'work-items:list',
+      'work-items:attention',
       'work-items:get',
       'work-items:get-run-detail',
       'work-items:project-context',
@@ -137,6 +138,8 @@ describe('WorkItem IPC registration and workspace ownership', () => {
       'work-items:revise',
       'work-items:cancel-task',
       'work-items:archive',
+      'work-items:preview-delete',
+      'work-items:purge-delete',
       'work-items:accept-artifact',
       'work-items:open-artifact',
       'work-items:control-run',
