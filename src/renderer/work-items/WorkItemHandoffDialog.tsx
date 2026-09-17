@@ -103,21 +103,26 @@ export function WorkItemHandoffDialog({ snapshot, executors, mode, loadingExecut
               <select aria-label={english ? 'Executor' : '交给谁执行'} value={selected} disabled={busy} onChange={(event) => { setSelected(event.target.value); setInput('') }}>
                 {executors.map((option, index) => <option key={index} value={String(index)}>{option.label}</option>)}
               </select>
+              <small>{english ? 'Who performs this new attempt.' : '选择本轮负责执行的员工或 Workflow。'}</small>
             </label>
             <label className="work-item-handoff-field"><span>{english ? 'Source run' : '承接哪次运行'}</span>
               <select aria-label={english ? 'Source run' : '承接哪次运行'} value={sourceRunId} disabled={busy} onChange={(event) => setSourceRunId(event.target.value)}>
                 <option value="">{english ? 'No source run' : '不引用来源运行'}</option>
                 {snapshot.runs.filter((run) => run.runId).map((run) => <option key={run.runId} value={run.runId}>{run.runId} · {run.status} · v{run.requirementVersion}</option>)}
               </select>
+              <small>{english ? 'Optional: link this attempt to an earlier run.' : '可选：记录本轮承接的是哪一次运行。'}</small>
             </label>
             <label className="work-item-handoff-field work-item-handoff-field-wide"><span>{executor?.kind === 'workflow' ? (english ? 'Workflow input (JSON)' : '流程输入（JSON）') : (english ? 'Instructions for this attempt' : '本轮执行说明')}</span>
               <textarea aria-label={english ? 'Execution input' : '执行输入'} value={input} disabled={busy} rows={5} onChange={(event) => setInput(event.target.value)} />
+              <small>{executor?.kind === 'workflow'
+                ? (english ? 'Structured values passed to the workflow.' : '填写流程需要的结构化参数。')
+                : (english ? 'Describe the concrete action for this attempt.' : '写清本轮要完成的具体动作。')}</small>
             </label>
           </div>
           {executor?.kind === 'workflow' ? <p className="work-item-handoff-note">{english ? 'Map the required inputs explicitly. To use an unfinished result, wait for it or specify a saved draft version. No conversation or artifact is copied automatically.' : '请明确填写流程所需的输入映射。依赖未完成的成果时，等待成果产生或明确指定已保存的草稿版本。聊天和成果不会自动复制到输入。'}</p> : null}
           {localMaterials.length === 0 ? null : <section className="work-item-handoff-materials" aria-label={english ? 'Materials for this attempt' : '本轮资料'}>
             <strong>{english ? 'Materials for this attempt (optional)' : '本轮资料（可选）'}</strong>
-            <p>{english ? 'Nothing is selected by default. Only checked local files are sent as material inputs; Main authorizes them and checks their current version before execution.' : '默认不选择任何资料。只有勾选的本地文件会作为本轮资料输入发送；Main 会在执行前授权并校验当前版本。'}</p>
+            <p>{english ? 'Nothing is selected by default. Only checked local files are sent as material inputs; the app checks permission and the current version before execution.' : '默认不选择任何资料。只有勾选的本地文件会作为本轮资料输入发送；应用会在执行前确认权限并校验当前版本。'}</p>
             <div className="work-item-handoff-material-list">
               {localMaterials.map((material) => <label className="work-item-handoff-material-option" key={material.materialId}>
                 <input

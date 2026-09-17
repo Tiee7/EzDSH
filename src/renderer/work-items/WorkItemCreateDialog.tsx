@@ -55,17 +55,35 @@ interface PendingSubmission {
 const copy = {
   zh: {
     title: '创建工作项',
+    intro: '先写清要完成什么，再决定是否现在执行。保存后，这项工作会出现在工作台中，执行过程和成果也会跟着它保留。',
+    flowDefine: '1. 定义工作',
+    flowDefineHelp: '标题、目标、验收标准说明要做什么，以及什么算完成。',
+    flowContext: '2. 补充上下文（可选）',
+    flowContextHelp: '项目用于归类；选择员工时还会作为员工会话的项目上下文。资料只引用你明确输入的本地文件。',
+    flowExecute: '3. 选择执行',
+    flowExecuteHelp: '只创建会先保存；选择员工或 Workflow 会在保存后立即开始一次执行。',
+    flowReview: '4. 查看结果',
+    flowReviewHelp: '执行后在工作项详情查看运行记录和成果，验收通过或重做；失败可以重试。',
     titleField: '标题',
+    titleHelp: '用一句话命名这项工作，方便之后在列表中找到它。',
     goal: '目标',
+    goalHelp: '写最终想得到的结果；它会和执行说明一起交给执行者。',
     acceptance: '验收标准',
+    acceptanceHelp: '写判断结果是否合格的条件；后续验收和重做都会依据它。',
     project: '项目',
+    projectHelp: '用于归类；选择员工时会作为员工会话的项目上下文，但不会把外部项目路径写成本地工作目录。',
     noProject: '不选择项目',
     executor: '处理方式',
+    executorHelp: '只创建：先保存，稍后从工作项详情执行。员工或 Workflow：保存后立即开始一次执行。',
     createOnly: '只创建，稍后处理',
     employee: '员工',
+    employeeHelp: '选择负责本次执行的员工。',
     workflow: 'Workflow',
+    workflowHelp: '选择要运行的固定流程版本。',
     employeeInput: '执行说明',
+    employeeInputHelp: '写这一次要完成的具体动作；它会和目标、验收标准一起发送。',
     workflowInput: 'Workflow 输入（JSON）',
+    workflowInputHelp: '传给流程的结构化输入；没有额外参数时保留 {}。',
     close: '关闭',
     submitCreate: '只创建',
     submitExecute: '创建并执行',
@@ -85,23 +103,41 @@ const copy = {
     catalogFallback: '仍可不选项目并只创建工作项。',
     materials: '资料',
     materialsPlaceholder: '每行输入一个工作项工作目录内的相对本地文件路径，例如 docs/brief.md',
-    materialsHelp: '这里仅登记你明确输入的资料身份，不会读取、猜测或复制文件。Main 会在创建和执行时检查路径是否存在并校验授权。',
+    materialsHelp: '可选。每行写一个当前工作区内的本地文件路径；创建或执行前会检查文件是否存在并确认权限。',
     materialsNone: '尚未选择资料。',
     materialsInvalid: '资料路径必须是工作项工作目录内的相对路径，每行一个文件；不能使用绝对路径或 ..。',
   },
   en: {
     title: 'Create work item',
+    intro: 'Describe the outcome first, then decide whether to run it now. Once saved, the work item keeps its execution history and deliverables in the Workbench.',
+    flowDefine: '1. Define the work',
+    flowDefineHelp: 'Title, goal, and acceptance criteria say what to do and what counts as done.',
+    flowContext: '2. Add context (optional)',
+    flowContextHelp: 'A project groups the item and provides employee session context; materials reference only local files you enter explicitly.',
+    flowExecute: '3. Choose execution',
+    flowExecuteHelp: 'Create only saves it; choosing an employee or workflow starts one attempt after saving.',
+    flowReview: '4. Review the result',
+    flowReviewHelp: 'Open the work item to review runs and deliverables, accept or redo the result, and retry failures.',
     titleField: 'Title',
+    titleHelp: 'Name the work in one sentence so you can find it later.',
     goal: 'Goal',
+    goalHelp: 'Describe the result you want; it is sent with the execution instructions.',
     acceptance: 'Acceptance criteria',
+    acceptanceHelp: 'State how you will decide whether the result is good enough; review and redo use this.',
     project: 'Project',
+    projectHelp: 'Used for grouping and employee session context; an external project path is never written as the local working directory.',
     noProject: 'No project',
     executor: 'Processing mode',
+    executorHelp: 'Create only saves it for later. Employee or workflow saves it and starts one execution immediately.',
     createOnly: 'Create only, handle later',
     employee: 'Employee',
+    employeeHelp: 'Choose who will perform this execution.',
     workflow: 'Workflow',
+    workflowHelp: 'Choose the fixed workflow version to run.',
     employeeInput: 'Execution instructions',
+    employeeInputHelp: 'Describe the concrete action for this attempt; it is sent with the goal and criteria.',
     workflowInput: 'Workflow input (JSON)',
+    workflowInputHelp: 'Structured input for the workflow; keep {} when there are no extra parameters.',
     close: 'Close',
     submitCreate: 'Create only',
     submitExecute: 'Create and execute',
@@ -121,7 +157,7 @@ const copy = {
     catalogFallback: 'You can still create the work item without a project.',
     materials: 'Materials',
     materialsPlaceholder: 'One work-item-working-directory-relative local file per line, for example docs/brief.md',
-    materialsHelp: 'This only records the material identities you explicitly enter. Files are not read, guessed, or copied. Main checks the path and authorization during creation and execution.',
+    materialsHelp: 'Optional. Enter one local file path inside the current workspace per line; existence and permission are checked before creation or execution.',
     materialsNone: 'No materials selected.',
     materialsInvalid: 'Material paths must stay within the work item working directory, one file per line; absolute paths and .. are not allowed.',
   },
@@ -305,6 +341,13 @@ export function WorkItemCreateDialog({
     <section className="work-item-create-dialog" role="dialog" aria-modal="true" aria-labelledby="work-item-create-dialog-title">
       <div className="work-item-create-fields">
       <h2 id="work-item-create-dialog-title">{text.title}</h2>
+      <p className="work-item-create-intro">{text.intro}</p>
+      <ol className="work-item-create-flow" aria-label={locale === 'en' ? 'Creation flow' : '创建流程'}>
+        <li><strong>{text.flowDefine}</strong><span>{text.flowDefineHelp}</span></li>
+        <li><strong>{text.flowContext}</strong><span>{text.flowContextHelp}</span></li>
+        <li><strong>{text.flowExecute}</strong><span>{text.flowExecuteHelp}</span></li>
+        <li><strong>{text.flowReview}</strong><span>{text.flowReviewHelp}</span></li>
+      </ol>
       {unavailableCatalogs.length === 0 ? null : <p className="work-item-create-catalog-notice" role="status">
         {text.catalogUnavailable}{unavailableCatalogs.map((catalog) => catalog === 'employees'
           ? text.catalogEmployees
@@ -312,23 +355,27 @@ export function WorkItemCreateDialog({
             ? text.catalogWorkflows
             : text.catalogProjects).join(locale === 'en' ? ', ' : '、')}{locale === 'en' ? '. ' : '。'}{text.catalogFallback}
       </p>}
-      <label>{text.titleField}
+      <label><span>{text.titleField}</span>
         <input aria-label={text.titleField} aria-required="true" value={title} disabled={busy || locked} onChange={(event) => setTitle(event.target.value)} />
+        <small className="work-item-create-field-help">{text.titleHelp}</small>
       </label>
-      <label>{text.goal}
+      <label><span>{text.goal}</span>
         <textarea aria-label={text.goal} aria-required="true" rows={4} value={goal} disabled={busy || locked} onChange={(event) => setGoal(event.target.value)} />
+        <small className="work-item-create-field-help">{text.goalHelp}</small>
       </label>
-      <label>{text.acceptance}
+      <label><span>{text.acceptance}</span>
         <textarea aria-label={text.acceptance} aria-required="true" rows={4} value={acceptance} disabled={busy || locked} onChange={(event) => setAcceptance(event.target.value)} />
+        <small className="work-item-create-field-help">{text.acceptanceHelp}</small>
       </label>
-      <label>{text.project}
+      <label><span>{text.project}</span>
         <select aria-label={text.project} value={projectId} disabled={busy || locked} onChange={(event) => setProjectId(event.target.value)}>
           <option value="">{text.noProject}</option>
           {projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.label}</option>)}
         </select>
+        <small className="work-item-create-field-help">{text.projectHelp}</small>
       </label>
       <section className="work-item-create-materials" data-material-selection="manual-local-file" aria-label={text.materials}>
-        <label>{text.materials}
+        <label><span>{text.materials}</span>
           <textarea
             aria-label={text.materials}
             aria-describedby="work-item-create-material-help"
@@ -356,31 +403,36 @@ export function WorkItemCreateDialog({
           }
         })()}
       </section>
-      <label>{text.executor}
+      <label><span>{text.executor}</span>
         <select aria-label={text.executor} value={mode} disabled={busy || locked} onChange={(event) => selectMode(event.target.value as 'none' | 'employee' | 'workflow')}>
           <option value="none">{text.createOnly}</option>
           <option value="employee" disabled={employees.length === 0}>{text.employee}</option>
           <option value="workflow" disabled={workflows.length === 0}>{text.workflow}</option>
         </select>
+        <small className="work-item-create-field-help">{text.executorHelp}</small>
       </label>
       {mode === 'employee' ? <>
-        <label>{text.employee}
+        <label><span>{text.employee}</span>
           <select aria-label={text.employee} value={employeeId} disabled={busy || locked} onChange={(event) => setEmployeeId(event.target.value)}>
             {employees.map((employee) => <option key={`${employee.employeeId}:${employee.methodId ?? ''}:${employee.methodVersion ?? ''}`} value={employee.employeeId}>{employee.label}</option>)}
           </select>
+          <small className="work-item-create-field-help">{text.employeeHelp}</small>
         </label>
-        <label>{text.employeeInput}
+        <label><span>{text.employeeInput}</span>
           <textarea aria-label={text.employeeInput} aria-required="true" rows={4} value={executionInput} disabled={busy || locked} onChange={(event) => setExecutionInput(event.target.value)} />
+          <small className="work-item-create-field-help">{text.employeeInputHelp}</small>
         </label>
       </> : null}
       {mode === 'workflow' ? <>
-        <label>{text.workflow}
+        <label><span>{text.workflow}</span>
           <select aria-label={text.workflow} value={workflowId} disabled={busy || locked} onChange={(event) => setWorkflowId(event.target.value)}>
             {workflows.map((workflow) => <option key={`${workflow.workflowId}:${workflow.workflowRevision ?? ''}`} value={workflow.workflowId}>{workflow.label}</option>)}
           </select>
+          <small className="work-item-create-field-help">{text.workflowHelp}</small>
         </label>
-        <label>{text.workflowInput}
+        <label><span>{text.workflowInput}</span>
           <textarea aria-label={text.workflowInput} aria-required="true" rows={6} value={executionInput} disabled={busy || locked} onChange={(event) => setExecutionInput(event.target.value)} />
+          <small className="work-item-create-field-help">{text.workflowInputHelp}</small>
         </label>
       </> : null}
       {locked ? <p>{text.createdRetry}</p> : null}
