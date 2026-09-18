@@ -495,7 +495,7 @@ describe('RuntimeManager', () => {
       runtimeEntryPath: '/dev/null',
       command: process.execPath,
       appVersion: '1.8.1540',
-      runtimeVersion: '0.1.6-alpha.1',
+      runtimeVersion: '0.1.6-alpha.2',
       patchPaths: ['/app/plugins/chat-search/cordis.patch.yml'],
       startupTimeoutMs: 2_000,
       stopTimeoutMs: 1_000,
@@ -533,7 +533,7 @@ describe('RuntimeManager', () => {
     await expect(import('node:fs/promises').then(({ access }) => access(layout.harness))).resolves.toBeUndefined()
     const runtimeLog = await readFile(join(layout.logs, 'harness.log'), 'utf8')
     expect(runtimeLog).toContain('appVersion=1.8.1540')
-    expect(runtimeLog).toContain('runtimeVersion=0.1.6-alpha.1')
+    expect(runtimeLog).toContain('runtimeVersion=0.1.6-alpha.2')
     expect(runtimeLog).toContain('runtimeEntryPath=/dev/null')
     expect(runtimeLog).toContain(`DSH_HOME=${layout.harness}`)
   })

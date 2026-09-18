@@ -17,7 +17,7 @@ describe('mode-menu-plus node half', () => {
       '@deepseek-ai/dsh-client-connection',
       '@deepseek-ai/dsh-client-locale',
     ])
-    expect(pkg.peerDependencies['@deepseek-ai/dsh-client-store']).toBe('^0.1.6-alpha.1')
+    expect(pkg.peerDependencies['@deepseek-ai/dsh-client-store']).toBe('^0.1.6-alpha.2')
     expect(pkg.peerDependencies['@deepseek-ai/dsh-client-runtime']).toBeUndefined()
   })
 

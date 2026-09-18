@@ -3,9 +3,9 @@ import { execFileSync } from 'node:child_process'
 // The packaged Runtime is built from the vendored upstream workspace. The
 // same release is also pinned in the root npm dependencies for development
 // and source-build prerequisites.
-export const PINNED_DSH_RUNTIME_VERSION = '0.1.6-alpha.1'
-export const PINNED_DSH_SOURCE_COMMIT = '0a15e36e7f82b6ed45af6fa9759f29b40dcd965d'
-export const PUBLISHED_DSH_PACKAGE_VERSION = '0.1.6-alpha.1'
+export const PINNED_DSH_RUNTIME_VERSION = '0.1.6-alpha.2'
+export const PINNED_DSH_SOURCE_COMMIT = 'ddefc45fbc7f8e46dd73185e68295696d1297887'
+export const PUBLISHED_DSH_PACKAGE_VERSION = '0.1.6-alpha.2'
 
 export function assertPinnedDshRuntimeVersion(label, actualVersion) {
   if (actualVersion !== PINNED_DSH_RUNTIME_VERSION) {
