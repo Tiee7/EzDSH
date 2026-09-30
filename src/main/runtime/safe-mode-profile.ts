@@ -94,7 +94,7 @@ export class SafeModeProfileController {
         await writeAtomic(join(directory, 'preset.yml'), 'name: 安全模式\ndescription: 保留当前工作文件夹，但不加载第三方插件、Skills、自定义 Agent 模式或项目指令。\n')
       }
       await writeAtomic(join(stagedProfile, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-      await writeAtomic(join(stagedProfile, 'cordis.patch.yml'), safeProfilePatch(this.presetRoot, defaultPreset))
+      await writeAtomic(join(stagedProfile, 'cordis.patch.yml'), safeProfilePatch(defaultPreset, presetIds))
       await writeAtomic(join(stagedProfile, 'pnpm-workspace.yaml'), 'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n')
 
       // Recheck ownership before publishing; only fully generated directories
@@ -201,18 +201,41 @@ export class SafeModeProfileController {
   }
 }
 
-function safeProfilePatch(presetRoot: string, defaultPreset: string): string {
-  return [
-    '- id: agent-presets',
+function safeProfilePatch(defaultPreset: string, presetIds: readonly string[]): string {
+  const builtinPresets = new Set<string>(DEFAULT_PRESET_IDS)
+  const rows = [
+    '- id: agent-preset-registry',
     '  config:',
     `    default: ${JSON.stringify(defaultPreset)}`,
-    '    roots:',
-    `      - path: ${JSON.stringify(presetRoot)}`,
-    '        trust: system',
-    '    includeShippedRoot: false',
-    '    includeUserRoot: false',
-    '',
-  ].join('\n')
+  ]
+  const customPresetIds: string[] = []
+  for (const presetId of presetIds) {
+    if (builtinPresets.has(presetId)) rows.push(...safePresetPatchRows(presetId, 0, false))
+    else customPresetIds.push(presetId)
+  }
+  if (customPresetIds.length > 0) {
+    rows.push('- insert:')
+    for (const presetId of customPresetIds) rows.push(...safePresetPatchRows(presetId, 4, true))
+  }
+  rows.push('')
+  return rows.join('\n')
+}
+
+function safePresetPatchRows(presetId: string, indent: number, includePluginName: boolean): string[] {
+  const rowIndent = ' '.repeat(indent)
+  const fieldIndent = ' '.repeat(indent + 2)
+  const configIndent = ' '.repeat(indent + 4)
+  const pluginIndent = ' '.repeat(indent + 6)
+  return [
+    `${rowIndent}- id: ${JSON.stringify(`preset-${presetId}`)}`,
+    ...(includePluginName ? [`${fieldIndent}name: '@deepseek-ai/dsh-agent-preset'`] : []),
+    `${fieldIndent}config:`,
+    `${configIndent}id: ${JSON.stringify(presetId)}`,
+    `${configIndent}name: 安全模式`,
+    `${configIndent}description: 保留当前工作文件夹，但不加载第三方插件、Skills、自定义 Agent 模式或项目指令。`,
+    `${configIndent}plugins:`,
+    ...SAFE_AGENT_COMPOSITION.trimEnd().split('\n').map((line) => `${pluginIndent}${line}`),
+  ]
 }
 
 const SAFE_AGENT_COMPOSITION = `# EzDSH Safe Mode: built-in tools only; no project instructions, Skills, custom presets, or delegation.

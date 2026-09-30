@@ -111,7 +111,7 @@ function assertSharedRuntimeModule(packageName, importerNames) {
 assertSharedRuntimeModule('@deepseek-ai/dsh-tools', ['@deepseek-ai/dsh-agent-loop'])
 assertSharedRuntimeModule('@deepseek-ai/dsh-scope', [
   '@deepseek-ai/dsh-agent',
-  '@deepseek-ai/dsh-agent-presets',
+  '@deepseek-ai/dsh-agent-preset-registry',
   '@deepseek-ai/dsh-tool-subagent',
   '@deepseek-ai/dsh-system-prompt',
   '@deepseek-ai/dsh-persona'

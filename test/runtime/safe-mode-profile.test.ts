@@ -291,7 +291,7 @@ describe('SafeModeProfileController', () => {
     })
 
     expect(stderr).toBe('')
-    expect(stdout).toContain('agent-presets')
+    expect(stdout).toContain('agent-preset-registry')
     expect(stdout).not.toContain('normal-only-plugin')
     expect(stdout).toMatch(/name: '@deepseek-ai\/dsh-skill-filesystem'\n  disabled: true/u)
     expect(stdout).toMatch(/name: '@deepseek-ai\/dsh-tool-skill'\n  disabled: true/u)

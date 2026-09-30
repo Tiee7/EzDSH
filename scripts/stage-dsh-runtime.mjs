@@ -280,7 +280,7 @@ const identityPackageNames = [
   // back into the source checkout.
   '@deepseek-ai/dsh-agent',
   '@deepseek-ai/dsh-agent-loop',
-  '@deepseek-ai/dsh-agent-presets',
+  '@deepseek-ai/dsh-agent-preset-registry',
   '@deepseek-ai/dsh-tool-subagent',
   '@deepseek-ai/dsh-system-prompt',
   '@deepseek-ai/dsh-persona'

@@ -17,6 +17,18 @@ afterEach(async () => {
 })
 
 describe('DSH Runtime identity links', () => {
+  it('tracks the current preset registry package as a scope-identity importer', async () => {
+    const [stagerSource, verifierSource] = await Promise.all([
+      readFile('scripts/stage-dsh-runtime.mjs', 'utf8'),
+      readFile('scripts/verify-runtime-bundle.mjs', 'utf8')
+    ])
+
+    expect(stagerSource).toContain("'@deepseek-ai/dsh-agent-preset-registry'")
+    expect(verifierSource).toContain("'@deepseek-ai/dsh-agent-preset-registry'")
+    expect(stagerSource).not.toContain("'@deepseek-ai/dsh-agent-presets'")
+    expect(verifierSource).not.toContain("'@deepseek-ai/dsh-agent-presets'")
+  })
+
   it('materializes identity packages at the runtime root and removes nested copies', async () => {
     const root = await tempRoot()
     const pnpmRoot = join(root, 'node_modules', '.pnpm')
