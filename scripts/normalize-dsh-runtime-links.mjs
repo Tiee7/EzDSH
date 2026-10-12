@@ -50,9 +50,23 @@ export async function materializeIdentityPackages(pnpmRoot, publicNodeModules, r
   for (const packageName of packageNames) {
     const packageSegments = packageName.split('/')
     const publicPackage = join(publicNodeModules, ...packageSegments)
-    const publicPackageIsLink = (await lstat(publicPackage)).isSymbolicLink()
-    const canonicalPath = await realpath(publicPackage)
     const rootPackage = join(rootNodeModules, ...packageSegments)
+    let publicPackageStats
+    try {
+      publicPackageStats = await lstat(publicPackage)
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+      const rootPackageStats = await lstat(rootPackage)
+      if (!rootPackageStats.isSymbolicLink()) continue
+      const canonicalPath = await realpath(rootPackage)
+      await rm(rootPackage, { recursive: true, force: true })
+      await cp(canonicalPath, rootPackage, { recursive: true, force: true })
+      canonicalPaths.push(canonicalPath)
+      materializedCount += 1
+      continue
+    }
+    const publicPackageIsLink = publicPackageStats.isSymbolicLink()
+    const canonicalPath = await realpath(publicPackage)
     await mkdir(join(rootNodeModules, ...packageSegments.slice(0, -1)), { recursive: true })
     await rm(rootPackage, { recursive: true, force: true })
     await cp(canonicalPath, rootPackage, { recursive: true, force: true })

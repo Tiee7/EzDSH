@@ -113,4 +113,37 @@ describe('DSH Runtime identity links', () => {
         .rejects.toMatchObject({ code: 'ENOENT' })
     }
   })
+
+  it('keeps a peer-only identity package already copied at the runtime root', async () => {
+    const root = await tempRoot()
+    const pnpmRoot = join(root, 'node_modules', '.pnpm')
+    const publicNodeModules = join(pnpmRoot, 'node_modules')
+    const rootNodeModules = join(root, 'node_modules')
+    const rootPackage = join(rootNodeModules, '@deepseek-ai', 'dsh-scope')
+    const nestedCopy = join(
+      pnpmRoot,
+      '@deepseek-ai+dsh-agent@file+packages+core+agent',
+      'node_modules',
+      '@deepseek-ai',
+      'dsh-scope'
+    )
+
+    await Promise.all([
+      mkdir(rootPackage, { recursive: true }),
+      mkdir(nestedCopy, { recursive: true })
+    ])
+    await writeFile(join(rootPackage, 'package.json'), '{"name":"@deepseek-ai/dsh-scope"}')
+    await writeFile(join(nestedCopy, 'package.json'), '{"name":"@deepseek-ai/dsh-scope"}')
+
+    const result = await materializeIdentityPackages(
+      pnpmRoot,
+      publicNodeModules,
+      rootNodeModules,
+      ['@deepseek-ai/dsh-scope']
+    )
+
+    expect(result).toEqual({ materializedCount: 0, nestedRemovedCount: 1 })
+    await expect(readFile(join(rootPackage, 'package.json'), 'utf8')).resolves.toContain('dsh-scope')
+    await expect(readFile(join(nestedCopy, 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
 })
