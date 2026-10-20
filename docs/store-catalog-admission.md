@@ -19,7 +19,7 @@ Example:
 npm run verify:store:plugin -- \
   --source github:owner/repository#v1.2.3 \
   --package-name example-plugin \
-  --dsh-version 0.2.1-alpha.2 \
+  --dsh-version 0.2.1-rc.2 \
   --pnpm-version 11.7.0 \
   --json
 ```
