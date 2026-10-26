@@ -6,7 +6,7 @@ export interface NormalizedCommand {
 /** Accepts both a bare executable and a quoted/space-separated one-line command. */
 export function normalizeCommandLine(command: string, args: readonly string[]): NormalizedCommand {
   const parts = splitCommandLine(command.trim())
-  if (parts.length === 0) throw new Error('External service command is required')
+  if (parts.length === 0 || parts[0]?.trim() === '') throw new Error('External service command is required')
   return {
     command: parts[0]!,
     args: [...parts.slice(1), ...args],
