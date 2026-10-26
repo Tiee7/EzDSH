@@ -49,6 +49,18 @@ function definition(overrides: Partial<ExternalServiceDefinition> = {}): Externa
 }
 
 describe('ExternalServiceManager', () => {
+  it('rejects empty quoted executables without persisting or spawning a service', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ezdsh-empty-external-command-'))
+    const spawnProcess = vi.fn(() => new FakeChild() as unknown as ChildProcess)
+    const manager = new ExternalServiceManager(options(root, spawnProcess))
+    await manager.initialize()
+    for (const command of ['"" --version', "'' --version", '"   " --version']) {
+      await expect(manager.create(definition({ cwd: root, command }))).rejects.toThrow('External service command is required')
+    }
+    expect(manager.list()).toEqual([])
+    expect(spawnProcess).not.toHaveBeenCalled()
+  })
+
   it('persists definitions and keeps manual-only services stopped on auto-start', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ezdsh-external-services-'))
     const spawned: string[][] = []
